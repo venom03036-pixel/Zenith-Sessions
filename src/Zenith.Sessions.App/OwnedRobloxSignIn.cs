@@ -51,7 +51,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             {
                 var directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false);
                 bool started = false;
-                try { return await dispatcher.InvokeAsync(() => { started = true; return RunAsync(directory, timeout.Token); }, DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
+                try { return await dispatcher.InvokeAsync(() => RunAsync(directory, timeout.Token, () => started = true), DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
                 finally
                 {
                     if (!started)
@@ -70,7 +70,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         finally { Volatile.Write(ref _active, 0); }
     }
 
-    private async Task<RobloxSessionCredential> RunAsync(SignInProfileDirectory directory, CancellationToken ct)
+    /// <summary>Calls <paramref name="ownCleanup"/> once its window and handlers exist; from then on its own finally,
+    /// not <see cref="SignInAsync"/>, removes the folder.</summary>
+    private async Task<RobloxSessionCredential> RunAsync(SignInProfileDirectory directory, CancellationToken ct, Action ownCleanup)
     {
         var browser = new WebView2();
         var status = new TextBlock { Text = "Opening Roblox’s own sign-in page…", TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 8, 0, 0) };
@@ -92,9 +94,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         var completion = new TaskCompletionSource<RobloxSessionCredential>(TaskCreationOptions.RunContinuationsAsynchronously);
         var browserExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         CoreWebView2Environment? environment = null;
-        CoreWebView2? guarded = null;
+        CoreWebView2? core = null;
         Task? saveTask = null;
-        bool closing = false, controllerReady = false, externalInstalled = false, framesInstalled = false;
+        bool closing = false, initializationStarted = false, controllerReady = false, externalInstalled = false, framesInstalled = false, navigationInstalled = false;
         EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited = (_, _) => browserExited.TrySetResult();
         void HidePending() { if (!closing) { window.IsEnabled = false; window.Hide(); } }
         CancelEventHandler close = (_, e) => { if (!closing) { e.Cancel = true; HidePending(); completion.TrySetCanceled(ct.IsCancellationRequested ? ct : new CancellationToken(true)); } };
@@ -108,6 +110,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         using var registration = ct.Register(() => { completion.TrySetCanceled(ct); dispatcher.BeginInvoke(HidePending, DispatcherPriority.Send); });
         RobloxSessionCredential? accepted = null;
         bool cleaned = false;
+        ownCleanup();
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -125,13 +128,14 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             ct.ThrowIfCancellationRequested();
             var options = environment.CreateCoreWebView2ControllerOptions(); options.IsInPrivateModeEnabled = true;
             options.ProfileName = "ZenithSignIn";
+            initializationStarted = true;
             await browser.EnsureCoreWebView2Async(environment, options);
             controllerReady = true;
+            // Captured once: after a browser crash the control's getter throws, and teardown must not depend on it.
+            core = browser.CoreWebView2;
             ct.ThrowIfCancellationRequested();
-            var core = browser.CoreWebView2;
             // Install the launch guards before any page opens. Roblox's Play button starts roblox-player: from a hidden
             // child frame that NavigationStarting never sees. A runtime that cannot install them fails closed below.
-            guarded = core;
             core.LaunchingExternalUriScheme += ExternalScheme; externalInstalled = true;
             core.FrameNavigationStarting += FrameNavigationStarting; framesInstalled = true;
             core.Settings.IsPasswordAutosaveEnabled = false; core.Settings.IsGeneralAutofillEnabled = false;
@@ -141,7 +145,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             core.NewWindowRequested += NewWindowRequested;
             core.DownloadStarting += DownloadStarting;
             core.PermissionRequested += PermissionRequested;
-            core.ProcessFailed += ProcessFailed;
+            core.ProcessFailed += ProcessFailed; navigationInstalled = true;
             core.Navigate("https://www.roblox.com/login");
             save.IsEnabled = true;
             status.Text = "Complete sign-in on Roblox, including any security challenge. Then choose Save this Roblox sign-in. Zenith saves the session with Windows protection, never your password.";
@@ -158,26 +162,15 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             HidePending();
             save.IsEnabled = false;
             if (saveTask is not null) await saveTask;
-            bool cookieProblem = false;
-            if (controllerReady)
-            {
-                // A controller whose browser process failed can reject event removal as well as cookie
-                // deletion. Neither stops removal of the whole folder once the browser's exit is confirmed.
-                try
-                {
-                    var core = browser.CoreWebView2;
-                    core.NavigationStarting -= NavigationStarting; core.NewWindowRequested -= NewWindowRequested;
-                    core.DownloadStarting -= DownloadStarting; core.PermissionRequested -= PermissionRequested; core.ProcessFailed -= ProcessFailed;
-                    core.CookieManager.DeleteAllCookies();
-                }
-                catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { cookieProblem = true; }
-            }
-            browser.Dispose();
-            closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close();
             // The cleanup stays tracked past this observation: a late browser exit still removes the folder and clears the latch.
-            // The launch guards stay installed through cookie deletion and controller shutdown, until the browser's exit.
-            cleaned = await SettleCleanupAsync(FinishCleanupAsync(browserExited.Task, controllerReady, cookieProblem, directory,
-                () => { DetachLaunchGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
+            // Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
+            var live = core; var initialized = initializationStarted ? environment : null;
+            cleaned = await SettleCleanupAsync(TeardownAsync(
+                live is null ? null : () => { live.Stop(); live.CookieManager.DeleteAllCookies(); },
+                browser.Dispose,
+                () => { closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close(); },
+                controllerReady, initialized is null ? null : () => initialized.GetProcessInfos().Count, browserExited.Task, directory,
+                () => { DetachGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
             if (!cleaned) accepted?.Dispose();
             if (completion.Task.IsCompletedSuccessfully && !ReferenceEquals(accepted, completion.Task.Result)) completion.Task.Result.Dispose();
         }
@@ -215,13 +208,18 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         {
             if (!RobloxSignInNavigation.IsAllowedFrame(e.Uri)) { e.Cancel = true; status.Text = ExternalLaunchRefused; }
         }
-        void DetachLaunchGuards()
+        void DetachGuards()
         {
-            if (guarded is null) return;
+            if (core is null) return;
             try
             {
-                if (externalInstalled) guarded.LaunchingExternalUriScheme -= ExternalScheme;
-                if (framesInstalled) guarded.FrameNavigationStarting -= FrameNavigationStarting;
+                if (externalInstalled) core.LaunchingExternalUriScheme -= ExternalScheme;
+                if (framesInstalled) core.FrameNavigationStarting -= FrameNavigationStarting;
+                if (navigationInstalled)
+                {
+                    core.NavigationStarting -= NavigationStarting; core.NewWindowRequested -= NewWindowRequested;
+                    core.DownloadStarting -= DownloadStarting; core.PermissionRequested -= PermissionRequested; core.ProcessFailed -= ProcessFailed;
+                }
             }
             // The browser's exit is already confirmed: a closed controller may reject removal, but nothing live is left unguarded.
             catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
@@ -234,6 +232,26 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
     internal Task CleanupSettled { get { lock (_state) return _cleanup; } }
     private bool CleanupFailedUntilRestart { get { lock (_state) return _cleanupFailed && _cleanup.IsCompleted; } }
+
+    /// <summary>Tears one sign-in browser down in the handoff probe's order. After a browser crash the control and its
+    /// closed controller can reject every native step, so each failure is recorded and the later steps still run: the
+    /// window always closes and the folder's lease always reaches the tracked cleanup. Initialization that failed after
+    /// it started may have left a browser using the folder, so its exit is awaited too. The guards stay installed
+    /// until that exit is confirmed; a confirmed exit removes the folder despite an earlier problem.</summary>
+    internal static async Task TeardownAsync(Action? stopAndClearCookies, Action dispose, Action close, bool controllerReady,
+        Func<int>? runningBrowserProcesses, Task browserExited, SignInProfileDirectory directory, Action detachGuards)
+    {
+        bool problem = false;
+        try { stopAndClearCookies?.Invoke(); } catch (Exception) { problem = true; }
+        try { dispose(); } catch (Exception) { problem = true; }
+        try { close(); } catch (Exception) { problem = true; }
+        bool awaitBrowserExit = controllerReady;
+        if (!awaitBrowserExit && runningBrowserProcesses is not null)
+            try { awaitBrowserExit = runningBrowserProcesses() != 0; }
+            // Unknown is treated as running: removing a folder a live browser still uses deletes some files and fails on others.
+            catch (Exception) { awaitBrowserExit = true; problem = true; }
+        await FinishCleanupAsync(browserExited, awaitBrowserExit, problem, directory, detachGuards);
+    }
 
     /// <summary>Removes the private folder after the browser's real exit, even when cookie deletion failed:
     /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.</summary>
