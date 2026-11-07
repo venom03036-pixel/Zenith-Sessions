@@ -227,7 +227,12 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         void NewWindowRequested(object? _, CoreWebView2NewWindowRequestedEventArgs e) { e.Handled = true; status.Text = "Pop-up navigation is disabled in this private sign-in. Use an option on Roblox’s page."; }
         void DownloadStarting(object? _, CoreWebView2DownloadStartingEventArgs e) { e.Cancel = true; }
         void PermissionRequested(object? _, CoreWebView2PermissionRequestedEventArgs e) { e.State = CoreWebView2PermissionState.Deny; }
-        void ProcessFailed(object? _, CoreWebView2ProcessFailedEventArgs e) { completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved.")); }
+        void ProcessFailed(object? _, CoreWebView2ProcessFailedEventArgs e)
+        {
+            // A helper or subframe process WebView2 restarts by itself keeps the sign-in, its challenge progress and its guards.
+            if (!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)) { status.Text = WebView2ProcessFailurePolicy.RecoveredNotice; return; }
+            completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved."));
+        }
     }
     internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
     internal Task CleanupSettled { get { lock (_state) return _cleanup; } }

@@ -289,7 +289,13 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         void NewWindowRequested(object? _,CoreWebView2NewWindowRequestedEventArgs e){e.Handled=true;status.Text="The page requested a pop-up, which this inspection blocks. No external launch was permitted.";}
         void DownloadStarting(object? _,CoreWebView2DownloadStartingEventArgs e){e.Cancel=true;}
         void PermissionRequested(object? _,CoreWebView2PermissionRequestedEventArgs e){e.State=CoreWebView2PermissionState.Deny;}
-        void ProcessFailed(object? _,CoreWebView2ProcessFailedEventArgs e){completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));}
+        void ProcessFailed(object? _,CoreWebView2ProcessFailedEventArgs e)
+        {
+            // A helper or subframe process WebView2 restarts by itself keeps the check and its guards; ending it here
+            // would leave native preparation's pending record needing a new sign-in.
+            if(!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)){status.Text=WebView2ProcessFailurePolicy.RecoveredNotice;return;}
+            completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));
+        }
         void DetachClosedGuards()
         {
             if(core is null)return;
