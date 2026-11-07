@@ -75,11 +75,14 @@ public sealed record SessionObservation(int ProcessId, long ProcessStartUtcTicks
     nint Window, string WindowTitle, bool Minimized, bool Visible, long WorkingSetBytes,
     long PrivateCommitBytes, double? CpuPercent, DateTimeOffset ObservedUtc, string? Problem = null,
     long? PrivateWorkingSetBytes = null,long? VirtualAddressBytes = null,double? PageFaultsPerSecond = null,
-    ProcessIoRates? IoRates = null)
+    ProcessIoRates? IoRates = null, bool? WindowHung = null, bool NotResponding = false)
 {
+    // WindowHung: this sample's IsHungAppWindow result for the visible main window; null when it was not checked.
+    // NotResponding: set only by ClientResponsivenessReducer after consecutive hung samples.
     public string InstanceKey => $"{ProcessId}:{ProcessStartUtcTicks}";
     public string ProcessLabel => $"PID {ProcessId}";
-    public string Status => Problem is not null ? "Observation unavailable" : Minimized ? "Minimized" : Visible ? "Open · account unverified" : "No visible window";
+    public string Status => Problem is not null ? "Observation unavailable" : NotResponding ? "Not responding · account unverified"
+        : Minimized ? "Minimized" : Visible ? "Open · account unverified" : "No visible window";
     public string MemoryDisplay => $"{WorkingSetBytes / (double)CapacityPolicy.GiB:0.00} GiB";
 }
 

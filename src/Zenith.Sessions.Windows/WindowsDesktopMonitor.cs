@@ -16,6 +16,7 @@ public sealed class DesktopSamplingCadence(TimeProvider? timeProvider = null)
 {
     public const int SystemSampleMs = 1000, MaximumProcessSamples = 128;
     private readonly TimeProvider _clock = timeProvider ?? TimeProvider.System;
+    private readonly ClientResponsivenessReducer _responsiveness = new();
     private ResourceSnapshot? _resources;
     private IReadOnlyList<SessionObservation>? _sessions;
     private long _systemAt, _processAt;
@@ -69,6 +70,8 @@ public sealed class DesktopSamplingCadence(TimeProvider? timeProvider = null)
                 if (written != owned.Length) Array.Resize(ref owned, written);
                 ct.ThrowIfCancellationRequested();
                 long revision = checked(_revisionCounter + 1);
+                // Hang evidence advances once per accepted enumeration; cached, failed and canceled scans never count.
+                owned = _responsiveness.Apply(owned);
                 _sessions = Array.AsReadOnly(owned); _processAt = now;
                 _processObservedUtc = observedUtc; _processRevision = revision; _revisionCounter = revision;
                 _processInventoryComplete = complete; _processProblem = null;
@@ -108,6 +111,7 @@ public sealed class DesktopSamplingCadence(TimeProvider? timeProvider = null)
     {
         _resources = null; _sessions = null; _systemAt = 0; _processAt = 0;
         _processObservedUtc = null; _processRevision = 0; _processInventoryComplete = false; _processProblem = null;
+        _responsiveness.Clear();
         // Keep the instance's revision counter monotonic if the sampling cache is reused after clear.
     }
 }
@@ -237,8 +241,11 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
                         if (ioCounters is null) _ioRates.Unavailable(ioProcess.Value);
                         else { io = _ioRates.Observe(ioProcess.Value, ioCounters, ct); liveIo.Add(ioProcess.Value); }
                         bool visible = window != 0 && Native.IsWindowVisible(window);
+                        // One read-only user32 query on the already-known main window: no extra window enumeration,
+                        // no message sent to the client, no process handle. Hidden windows are not judged.
+                        bool? hung = visible ? IsHung(window) : null;
                         sessions.Add(new(processId, start, "Version not sampled", window, "Roblox", window != 0 && Native.IsIconic(window),
-                            visible, working, commit, percent, _clock.GetUtcNow(),null,measured?.PrivateWorkingSetBytes,virtualAddress,faultsPerSecond,io));
+                            visible, working, commit, percent, _clock.GetUtcNow(),null,measured?.PrivateWorkingSetBytes,virtualAddress,faultsPerSecond,io,hung));
                     }
                     catch (Exception ex) when (ex is InvalidOperationException or Win32Exception or UnauthorizedAccessException)
                     {
@@ -275,6 +282,8 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         ulong a = (ulong)pages, b = (ulong)size;
         return b != 0 && a <= ulong.MaxValue / b ? a * b : 0;
     }
+    /// <summary>Windows' own "Not responding" test: the window's thread has not processed messages for about 5 s.</summary>
+    internal static bool IsHung(nint window) => window != 0 && Native.IsHungAppWindow(window);
     private static bool SameInstance(SessionObservation session)
     {
         return NativeClientWindowAdapter.SameClient(session);
@@ -329,6 +338,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindow(nint window);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint window);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsIconic(nint window);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsHungAppWindow(nint window);
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint process);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ShowWindowAsync(nint window, int command);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool SetForegroundWindow(nint window);
