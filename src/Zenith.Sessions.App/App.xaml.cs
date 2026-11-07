@@ -36,7 +36,7 @@ public partial class App : Application
         var guard=_guard=UnhandledExceptionGuard.Attach(Dispatcher,Options.DataRoot,()=>_shell);
         await OpenWorkspaceAsync(()=>
         {
-            ThemeManager.Apply(Resources, ThemeCatalog.DefaultId);
+            ApplyStartupTheme(Resources, Options.DataRoot);
             _shell = new ShellViewModel(Options.DataRoot, Options.SampleProfiles, Dispatcher,enableAutomaticPublicImages:!Options.SampleProfiles);
             MainWindow = new MainWindow(_shell); MainWindow.Show();
             Coordinator?.Listen(ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
@@ -65,6 +65,13 @@ public partial class App : Application
         }
         static async Task StopAsync(IAsyncDisposable started)=>await started.DisposeAsync();
     }
+    /// <summary>
+    /// UI thread, before the manager window is created: the theme saved in <paramref name="root"/>, so the first frame does not
+    /// flash the default palette. A missing, damaged or unreadable file keeps the default without delay; the settings load that
+    /// follows the window's Loaded event applies the theme it reads (for example from the backup) and reports any problem.
+    /// </summary>
+    internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>
+        ThemeManager.Apply(resources,Zenith.Sessions.Windows.SettingsStore.ReadTheme(root)??ThemeCatalog.DefaultId);
     internal static string StartupFailureMessage(Type error)=>
         $"Zenith Sessions could not open its local workspace ({error.Name}). Existing files were preserved. Check the app files and data-folder access, then retry.";
 }

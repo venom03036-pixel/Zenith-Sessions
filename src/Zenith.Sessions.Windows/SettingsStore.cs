@@ -79,19 +79,30 @@ public sealed class SettingsStore(string root) : IDisposable
     public ManagerWindowPlacement? ReadManagerWindow()
     {
         if (!_writer.Wait(0)) return null;
+        try { return ReadMainBeforeShow(Path)?.ManagerWindow; }
+        finally { _writer.Release(); }
+    }
+    /// <summary>
+    /// UI thread, at startup before the workspace and its store exist (so nothing in this process writes settings yet): the theme
+    /// id saved in the main settings file under <paramref name="root"/>, or null, so the first frame uses the saved palette.
+    /// Same best-effort rules as <see cref="ReadManagerWindow"/>: one bounded read of the main file only (never the backup or
+    /// temporary copy), null on any problem, and never creates, repairs or recovers files. <see cref="LoadAsync"/> still decides.
+    /// </summary>
+    public static string? ReadTheme(string root) => ReadMainBeforeShow(System.IO.Path.Combine(root, "settings.json"))?.Theme;
+    private static SessionsSettings? ReadMainBeforeShow(string path)
+    {
         try
         {
-            if (!Exists(Path)) return null;
+            if (!Exists(path)) return null;
             byte[] bytes;
-            using (var file = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
             {
                 if (file.Length > MaximumBytes) return null;
                 bytes = new byte[(int)file.Length]; file.ReadExactly(bytes);
             }
-            return Decode(bytes, CancellationToken.None).Settings.ManagerWindow;
+            return Decode(bytes, CancellationToken.None).Settings;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidDataException) { return null; }
-        finally { _writer.Release(); }
     }
     private static string? Notice(SettingsRead read, string? notice)
     {
