@@ -21,12 +21,17 @@ public sealed partial class ShellViewModel
                 return await QueueFrozenRecipientsAsync(destination,snapshot,epoch,ct);
             },CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
         ServerBrowser.PropertyChanged+=BundleDestinationChanged;
+        RecipientBundles.PropertyChanged+=BundleSelectionChanged;
+        RefreshDestinationCapacity();
     }
     private void BundleDestinationChanged(object? sender,PropertyChangedEventArgs args)
     {if(args.PropertyName==nameof(ServerBrowserViewModel.CanUseDestination))RecipientBundles.RefreshAvailability();}
+    private void BundleSelectionChanged(object? sender,PropertyChangedEventArgs args)
+    {if(args.PropertyName==nameof(RecipientBundlesViewModel.SelectedBundle))RefreshDestinationCapacity();}
     private async Task DisposeRecipientBundlesAsync()
     {
         ServerBrowser.PropertyChanged-=BundleDestinationChanged;
+        RecipientBundles.PropertyChanged-=BundleSelectionChanged;
         await RecipientBundles.DisposeAsync();
         await Task.WhenAll(RecipientBundles.Refresh.Execution,RecipientBundles.SaveChecked.Execution,RecipientBundles.ReplaceRecipients.Execution,RecipientBundles.AddChecked.Execution,RecipientBundles.RemoveMissing.Execution,
             RecipientBundles.Rename.Execution,RecipientBundles.Delete.Execution,RecipientBundles.Review.Execution,RecipientBundles.Queue.Execution);

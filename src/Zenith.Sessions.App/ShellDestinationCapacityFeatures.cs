@@ -9,6 +9,10 @@ public sealed partial class ShellViewModel
     private readonly HashSet<AccountRow> _capacitySubscriptions = [];
     private string _requestedCapacity = "Choose recipients and explicitly use a public server to compare its reported capacity.";
     public string RequestedCapacitySummary { get => _requestedCapacity; private set => Set(ref _requestedCapacity, value); }
+    private const string NoBundleCapacity = "Select a saved bundle to compare its recipients with the used server's reported capacity.";
+    private string _bundleCapacity = NoBundleCapacity;
+    /// <summary>Advice for "Queue bundle": counts every recipient reference in the selected bundle, not checked accounts.</summary>
+    public string BundleCapacitySummary { get => _bundleCapacity; private set => Set(ref _bundleCapacity, value); }
     public int DestinationRecipientCount
     {
         get
@@ -51,11 +55,16 @@ public sealed partial class ShellViewModel
     private void RefreshDestinationCapacity()
     {
         Raise(nameof(DestinationRecipientCount));
-        RequestedCapacitySummary = IsLocked || _shuttingDown
+        string? unavailable = IsLocked || _shuttingDown
             ? "Capacity advice is unavailable while controls are locked or stopping. No seats are reserved."
             : ServerBrowser.HasDestinationDraft
                 ? "Use or discard the pending destination before comparing reported capacity."
-                : ServerBrowser.AssessRequestedCapacity(DestinationRecipientCount).Explanation;
+                : null;
+        RequestedCapacitySummary = unavailable ?? ServerBrowser.AssessRequestedCapacity(DestinationRecipientCount).Explanation;
+        // RecipientBundles is created after this feature is initialized, so a refresh can precede it.
+        BundleCapacitySummary = unavailable ?? (RecipientBundles?.SelectedBundle is { } bundle
+            ? bundle.Name + " · " + ServerBrowser.AssessRequestedCapacity(bundle.ProfileIds.Count).Explanation
+            : NoBundleCapacity);
     }
     private void DisposeDestinationCapacity()
     {
