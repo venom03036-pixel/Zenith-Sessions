@@ -46,6 +46,20 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
     }
 
     [Theory]
+    [InlineData("RobloxPlayerBeta.exe")]
+    [InlineData("RobloxPlayer.exe")]
+    [InlineData("RobloxPlayerLauncher.exe")]
+    [InlineData("Roblox.exe")]
+    public async Task OnlyTheSharedDirectPlayerFilenamesCanBecomeTheTrialInstallation(string name)
+    {
+        await using var h = new Harness(); var candidate = Candidate() with { ExecutablePath = @"C:\Synthetic\" + name };
+        bool direct = RobloxNativePlayerFiles.IsDirectPlayer(candidate.ExecutablePath);
+        Assert.Equal(name is "RobloxPlayerBeta.exe" or "RobloxPlayer.exe", direct);
+        if (direct) h.Slot.Configure(candidate); else Assert.Throws<ArgumentException>(() => h.Slot.Configure(candidate));
+        Assert.Equal(direct, h.Slot.Selected); Assert.Empty(h.Created);
+    }
+
+    [Theory]
     [InlineData("bootstrapper")]
     [InlineData("launcher")]
     [InlineData("missing")]

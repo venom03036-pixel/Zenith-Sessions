@@ -94,6 +94,28 @@ public sealed class ClientExecutableTrustTests : IDisposable
         Assert.Equal(ClientExecutableTrustReason.BootstrapperNotEvaluated, result.Reason); Assert.Equal(0, policy.Calls);
     }
 
+    // One filename rule for every layer: discovery lists the direct players and the launcher; the publisher
+    // check evaluates only the direct players and reports the launcher as not evaluated.
+    [Theory]
+    [InlineData("RobloxPlayerBeta.exe", true, false)]
+    [InlineData("RobloxPlayer.exe", true, false)]
+    [InlineData("robloxplayerbeta.EXE", true, false)]
+    [InlineData("RobloxPlayerLauncher.exe", false, true)]
+    [InlineData("Roblox.exe", false, false)]
+    public async Task DiscoveryAndPublisherCheckShareOneNativePlayerFilenameRule(string name, bool direct, bool launcher)
+    {
+        Directory.CreateDirectory(Root); string path = Path.Combine(Root, name); File.WriteAllBytes(path, [1, 2, 3, 4]);
+        Assert.Equal(direct, RobloxNativePlayerFiles.IsDirectPlayer(path)); Assert.Equal(launcher, RobloxNativePlayerFiles.IsLauncher(path));
+        Assert.Equal(direct || launcher, RobloxNativePlayerFiles.IsInventoryPlayer(path));
+        Assert.Equal(direct || launcher, WindowsClientInstallationDiscovery.TryNormalizeExecutablePath(path, out _, out var product));
+        Assert.Equal(ClientInstallationProduct.Roblox, product);
+        var policy = new Policy(); await using var verifier = new WindowsClientExecutableTrust(policy);
+        var result = await verifier.VerifyAsync(Candidate(path), default);
+        Assert.Equal(launcher, result.Reason == ClientExecutableTrustReason.BootstrapperNotEvaluated);
+        Assert.Equal(direct ? ClientExecutableTrustStatus.VerifiedRobloxPublisher : launcher ? ClientExecutableTrustStatus.Unknown : ClientExecutableTrustStatus.Rejected, result.Status);
+        Assert.Equal(direct ? 1 : 0, policy.Calls);
+    }
+
     [Theory]
     [InlineData(@"\\server\share\RobloxPlayerBeta.exe")]
     [InlineData(@"\\?\C:\Synthetic\RobloxPlayerBeta.exe")]

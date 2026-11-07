@@ -23,6 +23,29 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(CapabilityState.Unavailable,shell.SelectedInstallation.Candidate.NamedAccountLaunch);
     });
 
+    [Fact]
+    public Task PublisherCheckIsUnavailableForTheRobloxLauncherRow()=>OnUi(async()=>
+    {
+        // Discovery lists RobloxPlayerLauncher.exe as a Roblox row, but the verifier never checks a launcher's
+        // publisher, so the button must not offer a check that can only answer "not evaluated".
+        var trust=new TrustProbe();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),
+            installationDiscovery:new InstallationProbe{ExtraPath="C:\\Synthetic\\RobloxPlayerLauncher.exe"},executableTrust:trust);
+        await shell.InitializeAsync();shell.RefreshInstallations.Execute(null);await shell.RefreshInstallations.Execution;
+        var launcher=shell.InstallationCandidates.Single(row=>row.ExecutablePath.EndsWith("RobloxPlayerLauncher.exe",StringComparison.OrdinalIgnoreCase));
+        var player=shell.InstallationCandidates.Single(row=>row.ExecutablePath.EndsWith("RobloxPlayerBeta.exe",StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ClientInstallationProduct.Roblox,launcher.Candidate.Product);
+        shell.SelectedInstallation=launcher;
+        Assert.False(shell.CanVerifyInstallationPublisher);
+        Assert.Contains("launcher",shell.PublisherVerificationStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("RobloxPlayerBeta.exe",shell.PublisherVerificationStatus,StringComparison.Ordinal);
+        shell.VerifyInstallationPublisher.Execute(null);await shell.VerifyInstallationPublisher.Execution;
+        Assert.Equal(0,trust.Calls);Assert.DoesNotContain(launcher.ExecutablePath,shell.NativeTrialInstallation);
+        shell.SelectedInstallation=player;
+        Assert.True(shell.CanVerifyInstallationPublisher);
+        Assert.Equal("Select a native Roblox installation, then explicitly verify its publisher.",shell.PublisherVerificationStatus);
+    });
+
     [Theory]
     [InlineData(false)] [InlineData(true)]
     public Task ChangingSelectionOrLockingDiscardsLatePublisherSuccess(bool useLock)=>OnUi(async()=>

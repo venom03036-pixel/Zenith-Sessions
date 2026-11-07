@@ -17,9 +17,14 @@ public sealed partial class ShellViewModel
         get => _publisherBusy;
         private set { if (Set(ref _publisherBusy, value)) { Raise(nameof(CanVerifyInstallationPublisher)); Raise(nameof(CanRefreshInstallations)); } }
     }
+    private const string PublisherLauncherStatus = "This row is the Roblox launcher (RobloxPlayerLauncher.exe), which installs and updates Roblox. Its publisher is not checked here; select a RobloxPlayerBeta.exe row to verify the player.";
+    // The verifier checks only the direct player files; a launcher row would always answer "not evaluated".
     public bool CanVerifyInstallationPublisher => _ready && !IsLocked && !_shuttingDown && !IsSample
         && !IsInstallationDiscoveryBusy && !IsPublisherVerificationBusy
-        && SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox, FileState: ClientInstallationFileState.PresentUnverified };
+        && SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox, FileState: ClientInstallationFileState.PresentUnverified } candidate
+        && RobloxNativePlayerFiles.IsDirectPlayer(candidate.ExecutablePath);
+    private string PublisherIdleText() => SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox } candidate
+        && RobloxNativePlayerFiles.IsLauncher(candidate.ExecutablePath) ? PublisherLauncherStatus : PublisherIdleStatus;
     public AsyncCommand VerifyInstallationPublisher { get; private set; } = null!;
     public Command CancelPublisherVerification { get; private set; } = null!;
 
@@ -73,7 +78,7 @@ public sealed partial class ShellViewModel
             if (generation != _publisherGeneration && !_shuttingDown)
                 PublisherVerificationStatus = ReferenceEquals(SelectedInstallation, selected)
                     ? "Verification cancelled. Trust remains unknown; verify again to check this file."
-                    : PublisherIdleStatus;
+                    : PublisherIdleText();
             IsPublisherVerificationBusy = false;
         }
     }
@@ -89,6 +94,6 @@ public sealed partial class ShellViewModel
         Interlocked.Increment(ref _publisherGeneration); _publisherStop?.Cancel();
         PublisherVerificationStatus = IsPublisherVerificationBusy
             ? "Verification cancelled. Waiting for Windows to finish its owned check; late results are discarded."
-            : PublisherIdleStatus;
+            : PublisherIdleText();
     }
 }

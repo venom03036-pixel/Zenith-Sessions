@@ -352,9 +352,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         try
         {
             if (!Path.IsPathFullyQualified(path) || !Path.GetFullPath(path).Equals(path, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(invalid);
-            string name = Path.GetFileName(path);
-            if (!name.Equals("RobloxPlayerBeta.exe", StringComparison.OrdinalIgnoreCase) && !name.Equals("RobloxPlayer.exe", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException(invalid);
+            if (!RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { throw new ArgumentException(invalid); }
         if (!Metadata(candidate.ProductName) || !Metadata(candidate.FileVersion)) throw new ArgumentException(invalid);

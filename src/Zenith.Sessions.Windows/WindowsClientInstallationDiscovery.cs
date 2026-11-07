@@ -95,8 +95,8 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
         {
             ct.ThrowIfCancellationRequested();var evidence=new ClientInstallationEvidence(ClientInstallationHintSource.StandardInstallPath,root.Product);
             if(root.Product!=ClientInstallationProduct.Roblox) Probe(Path.Combine(root.Root,root.Product+".exe"),evidence);
-            foreach(string executable in PlayerNames) Probe(Path.Combine(root.Root,"Roblox","Player",executable),evidence);
-            if(root.Product==ClientInstallationProduct.Roblox) foreach(string executable in PlayerNames) Probe(Path.Combine(root.Root,"Player",executable),evidence);
+            foreach(string executable in RobloxNativePlayerFiles.InventoryNames) Probe(Path.Combine(root.Root,"Roblox","Player",executable),evidence);
+            if(root.Product==ClientInstallationProduct.Roblox) foreach(string executable in RobloxNativePlayerFiles.InventoryNames) Probe(Path.Combine(root.Root,"Player",executable),evidence);
             // An accepted root near the hint limit can yield an oversized Versions path: that is one invalid hint, not a failed scan.
             if(!TryNormalizeDirectory(Path.Combine(root.Root,"Versions"),out var versions))
             {Issue(ClientInstallationIssueCode.InvalidHint,root.Product,ClientInstallationHintSource.VersionDirectory);continue;}
@@ -109,7 +109,7 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
             {
                 string name=directories.Names[index];
                 if(!ValidVersionName(name)) {Issue(ClientInstallationIssueCode.InvalidHint,root.Product,ClientInstallationHintSource.VersionDirectory);continue;}
-                foreach(string executable in PlayerNames) Probe(Path.Combine(root.Root,"Versions",name,executable),new(ClientInstallationHintSource.VersionDirectory,root.Product));
+                foreach(string executable in RobloxNativePlayerFiles.InventoryNames) Probe(Path.Combine(root.Root,"Versions",name,executable),new(ClientInstallationHintSource.VersionDirectory,root.Product));
             }
         }
         foreach(var product in Enum.GetValues<ClientInstallationProduct>())
@@ -123,7 +123,6 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
         return new(_time.GetUtcNow(),successfulQueries==0?ClientInstallationSnapshotStatus.Unavailable:partial?ClientInstallationSnapshotStatus.Partial:ClientInstallationSnapshotStatus.Complete,
             Array.AsReadOnly(rows),Array.AsReadOnly(issues.ToArray()));
     }
-    private static readonly string[] PlayerNames=["RobloxPlayerBeta.exe","RobloxPlayer.exe","RobloxPlayerLauncher.exe"];
     public static bool TryParseExecutableCommand(string? command,out string? executable)
     {
         executable=null;if(command is null || command.Length is <1 or >MaximumHintCharacters || command.Any(char.IsControl)) return false;
@@ -143,7 +142,7 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
         normalized=null;product=default;if(!TryNormalizeDirectory(value,out var path)) return false;
         string name=Path.GetFileName(path);product=name.ToLowerInvariant() switch
         {"bloxstrap.exe"=>ClientInstallationProduct.Bloxstrap,"fishstrap.exe"=>ClientInstallationProduct.Fishstrap,"froststrap.exe"=>ClientInstallationProduct.Froststrap,_=>ClientInstallationProduct.Roblox};
-        if(product==ClientInstallationProduct.Roblox && !PlayerNames.Contains(name,StringComparer.OrdinalIgnoreCase)) return false;
+        if(product==ClientInstallationProduct.Roblox && !RobloxNativePlayerFiles.IsInventoryPlayer(path)) return false;
         normalized=path;return true;
     }
     internal static bool TryNormalizeDirectory(string? value,[System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? normalized)

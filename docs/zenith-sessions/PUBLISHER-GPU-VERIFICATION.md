@@ -22,7 +22,7 @@ Newly reviewed reference options include secret export/recovery, private-server 
 
 ## Explicit selected-file publisher check
 
-Settings → Roblox installation → Refresh → select a present native Roblox executable → Verify Roblox publisher. This reads one selected file, never starts or installs it and never makes it the launch provider. Bootstrapper authenticity policies remain unknown.
+Settings → Roblox installation → Refresh → select a present native Roblox executable → Verify Roblox publisher. This reads one selected file, never starts or installs it and never makes it the launch provider. Bootstrapper authenticity policies remain unknown. The button is available only for the player files (RobloxPlayerBeta.exe or RobloxPlayer.exe); a RobloxPlayerLauncher.exe row explains that the launcher is not checked.
 
 The [Windows verifier](../../src/Zenith.Sessions.Windows/WindowsClientExecutableTrust.cs) binds two bounded SHA-256 passes, WinVerifyTrust and signer extraction to one pinned read handle. It compares exact volume/file identity, length/times and a reopened path. Local-normal-path and ancestor checks reject redirected/device/network cases. Windows code-signing verification and an offline X509Chain require cached revocation/chain evidence, the code-signing EKU and the exact Roblox Corporation organization. Missing or unusable evidence remains unknown. An unsigned/mismatched/changed file never receives an account handoff.
 
