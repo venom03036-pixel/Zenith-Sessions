@@ -204,13 +204,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public IReadOnlyList<AccountOrder> Orders { get; } = Enum.GetValues<AccountOrder>();
     public IReadOnlyList<AccountSortChoice> SortChoices { get; } = [new("Name",AccountOrder.Name),new("Priority",AccountOrder.Priority),new("Recently updated",AccountOrder.RecentlyUpdated),new("Favorites first",AccountOrder.FavoritesFirst)];
     public AccountSortChoice SortChoice { get=>SortChoices.First(c=>c.Value==Order); set { if(value is not null) Order=value.Value; } }
-    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources();if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
+    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources();if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
     public bool IsOverview => Tab == "Overview"; public bool IsAccounts => Tab == "Accounts"; public bool IsSessions => Tab == "Sessions";
     public bool IsAutomation => Tab == "Automation"; public bool IsSettings => Tab == "Settings"; public bool IsGuide => Tab == "Guide";
     public bool IsJoinGame=>Tab=="JoinGame";
     public bool IsSessionWorkspace=>IsSessions || IsJoinGame;
     public bool IsDiagnostics=>Tab=="Diagnostics";
     public bool IsWindows=>Tab=="Windows";
+    // The open page as the sidebar names it. The window title leads with it (taskbar, Alt-Tab) and the window announces it to
+    // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
+    public string PageName=>IsJoinGame?"Join a game":Tab;
+    public string WindowTitle=>PageName+" · "+InstanceTitle;
     public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
     public bool CompactLayout { get=>_compactLayout; set=>Set(ref _compactLayout,value); }

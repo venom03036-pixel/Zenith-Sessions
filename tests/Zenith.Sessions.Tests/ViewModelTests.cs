@@ -282,9 +282,10 @@ public sealed class ViewModelTests : IDisposable
         Assert.InRange(library.InstanceTitle.Length,1,127); Assert.StartsWith("Zenith Sessions · Library nnn",library.InstanceTitle);
         // The real tray icon refuses text over its limit, which would stop the window from opening.
         using var tray=new System.Windows.Forms.NotifyIcon { Text=library.InstanceTitle };
-        // Taskbar and Alt-Tab entries use the window title, so it carries the same name as the tray icon.
+        // Taskbar and Alt-Tab entries use the window title, so it carries the same name as the tray icon after the open page.
+        Assert.Equal("Overview · "+library.InstanceTitle,library.WindowTitle);
         using var xaml=typeof(ViewModelTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
-        Assert.Equal("{Binding InstanceTitle, Mode=OneTime}",(string?)System.Xml.Linq.XDocument.Load(xaml).Root!.Attribute("Title"));
+        Assert.Equal("{Binding WindowTitle}",(string?)System.Xml.Linq.XDocument.Load(xaml).Root!.Attribute("Title"));
     }).WaitAsync(TimeSpan.FromSeconds(10));
     [Fact]
     public Task FavoritesAndNotesRoundTripThroughTheActualMetadataCommands()=>CheckAsync(async vm=>

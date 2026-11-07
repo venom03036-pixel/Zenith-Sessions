@@ -35,6 +35,7 @@ public partial class MainWindow : Window
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
         vm.ThemeChanged += SetTheme;
+        vm.PropertyChanged += AnnouncePageChange;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Zenith_Macros_Teal.ico")).Stream;
         using var original = new System.Drawing.Icon(stream);
         // Tray Panic, Lock and Exit act on this manager only, so its icon names it (personal, sample preview or another library).
@@ -105,7 +106,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _panicKey.Dispose();
-        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme;
+        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
         _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;PreviewKeyDown-=SettingsPagePreviewKeyDown;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
@@ -147,6 +148,15 @@ public partial class MainWindow : Window
         (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(text) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(text))
             ?.RaiseAutomationEvent(System.Windows.Automation.Peers.AutomationEvents.LiveRegionChanged);
     }
+    // The title follows the page through its binding; the page name is raised only when the page actually changes.
+    private void AnnouncePageChange(object? sender, PropertyChangedEventArgs e)
+    { if (e.PropertyName == nameof(ShellViewModel.PageName)) AnnouncePage(this, _vm.PageName); }
+    /// <summary>Tells screen readers which page opened. Not important and only the latest is kept, like a polite live region, so
+    /// quick page changes do not queue up or interrupt other speech.</summary>
+    internal static void AnnouncePage(UIElement window, string page) =>
+        (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(window) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(window))
+            ?.RaiseNotificationEvent(System.Windows.Automation.AutomationNotificationKind.ActionCompleted,
+                System.Windows.Automation.AutomationNotificationProcessing.MostRecent, page + " page", "ZenithPageChanged");
     // Reopening from the tray or a second launch is the user returning, so the idle lock counts it as input.
     private void Restore() { _vm.NoteUserInput(); Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
     public void RestoreFromLaunch() => Restore();
