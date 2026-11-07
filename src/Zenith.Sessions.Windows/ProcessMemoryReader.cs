@@ -25,11 +25,9 @@ public static class ProcessMemoryReader
             || extended && (ulong)memory.PrivateWorkingSet>long.MaxValue) return null;
         return new((long)memory.WorkingSet,(long)memory.PrivateUsage,extended?(long)memory.PrivateWorkingSet:null,memory.PageFaultCount);
     }
-    // GetProcessTimes' exit FILETIME is undefined while running; do not require it to be zero.
+    // A QUERY_LIMITED handle has no SYNCHRONIZE right, so liveness is STILL_ACTIVE (259) from GetExitCodeProcess.
     private static bool SameStart(SafeProcessHandle handle,long expected)=>Native.GetExitCodeProcess(handle,out uint code) && code==259
-        && Native.GetProcessTimes(handle,out long start,out _,out _,out _)
-        && start>=0 && start<=DateTime.MaxValue.Ticks-DateTime.FromFileTimeUtc(0).Ticks
-        && DateTime.FromFileTimeUtc(start).Ticks==expected;
+        && ProcessInstanceIdentity.MatchesStart(handle,expected);
     private static class Native
     {
         [StructLayout(LayoutKind.Sequential)] internal struct MemoryCounters
@@ -39,7 +37,6 @@ public static class ProcessMemoryReader
             internal ulong SharedCommit;
         }
         [DllImport("kernel32.dll",SetLastError=true)] internal static extern SafeProcessHandle OpenProcess(uint access,[MarshalAs(UnmanagedType.Bool)]bool inherit,int id);
-        [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] internal static extern bool GetProcessTimes(SafeProcessHandle handle,out long created,out long exited,out long kernel,out long user);
         [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] internal static extern bool GetExitCodeProcess(SafeProcessHandle handle,out uint code);
         [DllImport("kernel32.dll",SetLastError=true)] [return:MarshalAs(UnmanagedType.Bool)] internal static extern bool K32GetProcessMemoryInfo(SafeProcessHandle handle,ref MemoryCounters counters,uint size);
     }
