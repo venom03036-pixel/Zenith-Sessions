@@ -126,6 +126,23 @@ public sealed partial class TargetedMacroExecutionTests
         Assert.Throws<TargetedMacroPlanException>(() => TargetedMacroPlan.Compile(source, invalid == "scope" ? (TargetedMacroScope)0 : TargetedMacroScope.OwnedWindowDiagnostic));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DisabledSavedMacroIsRefusedAsDisabledNotAsAResourceLimit(bool withSavedTarget)
+    {
+        var model = Model(Key());
+        model.Settings.IsActive = false;
+        if (withSavedTarget)
+            model.Settings.Target = new() { Mode = MacroTargetMode.Screen };
+        var error = Assert.Throws<TargetedMacroPlanException>(() => TargetedMacroPlan.Compile(model, TargetedMacroScope.OwnedWindowDiagnostic));
+        Assert.NotEqual(TargetedMacroPlanProblem.ResourceLimit, error.Problem);
+        Assert.NotEqual(TargetedMacroPlanProblem.UnsupportedTarget, error.Problem);
+        Assert.DoesNotContain("limits", error.Message);
+        Assert.Equal(TargetedMacroPlanProblem.Disabled, error.Problem);
+        Assert.Equal("The saved macro is disabled. Enable it in the editor before running it.", error.Message);
+    }
+
     [Fact]
     public async Task FrozenPlanAndPrivateRealInterpreterStepsIgnoreLaterSourceMutation()
     {

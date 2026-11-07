@@ -192,12 +192,14 @@ public sealed class SavedMacroPlanPreparerTests
     [InlineData("target", TargetedMacroPlanProblem.UnsupportedTarget)]
     [InlineData("screen", TargetedMacroPlanProblem.UnsupportedInput)]
     [InlineData("indefinite", TargetedMacroPlanProblem.ResourceLimit)]
+    [InlineData("disabled", TargetedMacroPlanProblem.Disabled)]
     public async Task WholeDocumentRefusalRemainsTypedAndCannotReturnAPartialPlan(string invalid, TargetedMacroPlanProblem problem)
     {
         var reference = Reference();
         var model = invalid == "screen" ? Model(reference.MacroId, new ClickStep()) : Model(reference.MacroId);
         if (invalid == "target") model.Settings.Target = new() { Mode = MacroTargetMode.Screen };
         if (invalid == "indefinite") model.Settings.RepeatUntilStopped = true;
+        if (invalid == "disabled") model.Settings.IsActive = false;
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference, model))));
         await using var preparer = new SavedMacroPlanPreparer(source);
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);

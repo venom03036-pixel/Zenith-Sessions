@@ -16,7 +16,9 @@ public enum TargetedMacroPlanProblem
     UnsupportedTarget,
     UnsupportedStep,
     UnsupportedInput,
-    ResourceLimit
+    ResourceLimit,
+    // Appended last so the existing numeric values do not change.
+    Disabled
 }
 
 public sealed class TargetedMacroPlanException(TargetedMacroPlanProblem problem) : Exception(problem switch
@@ -25,6 +27,7 @@ public sealed class TargetedMacroPlanException(TargetedMacroPlanProblem problem)
     TargetedMacroPlanProblem.UnsupportedStep => "The entire macro must use supported flat input and delay actions before it can run.",
     TargetedMacroPlanProblem.UnsupportedInput => "The macro contains unsupported input or coordinate semantics.",
     TargetedMacroPlanProblem.ResourceLimit => "The macro exceeds the bounded execution plan limits.",
+    TargetedMacroPlanProblem.Disabled => "The saved macro is disabled. Enable it in the editor before running it.",
     _ => "The macro document or execution settings are invalid."
 })
 {
@@ -99,6 +102,10 @@ public sealed class TargetedMacroPlan
         {
             if (source.Id == Guid.Empty || source.SchemaVersion != MacroSchema.CurrentVersion || source.Settings is null || source.Steps is null)
                 throw Bad(TargetedMacroPlanProblem.InvalidDocument);
+            // A macro the user switched off is refused for that reason first: it is the most
+            // actionable cause, and it is not a plan-limit or target-policy problem.
+            if (!source.Settings.IsActive)
+                throw Bad(TargetedMacroPlanProblem.Disabled);
             // Explicit unbound fixture consent is required; never strip a saved Screen,
             // active-window, application or title-based policy to make it executable here.
             if (source.Settings.Target is not null)
@@ -189,7 +196,7 @@ public sealed class TargetedMacroPlan
         public static Settings Copy(MacroSettings source)
         {
             var value = new Settings(source.PlaybackSpeed, source.RepeatCount, source.MaxRuntime, source.MaxIterations, source.MaxLoopDepth);
-            if (!source.IsActive || source.RepeatUntilStopped || !double.IsFinite(value.Speed) || value.Speed is < 0.1 or > 10 || value.Repeats is < 1 or > MaximumRepeats || value.Runtime <= TimeSpan.Zero || value.Runtime > MaximumRuntime || value.Iterations is < 1 or > MaximumStepExecutions || value.Depth is < 1 or > 8)
+            if (source.RepeatUntilStopped || !double.IsFinite(value.Speed) || value.Speed is < 0.1 or > 10 || value.Repeats is < 1 or > MaximumRepeats || value.Runtime <= TimeSpan.Zero || value.Runtime > MaximumRuntime || value.Iterations is < 1 or > MaximumStepExecutions || value.Depth is < 1 or > 8)
                 throw Bad(TargetedMacroPlanProblem.ResourceLimit);
             return value;
         }
