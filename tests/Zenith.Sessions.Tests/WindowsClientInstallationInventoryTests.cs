@@ -1,4 +1,9 @@
+using System.ComponentModel;
 using System.IO;
+using System.Runtime.InteropServices;
+using System.Text;
+using Microsoft.Win32;
+using Microsoft.Win32.SafeHandles;
 using Xunit;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
@@ -64,6 +69,88 @@ public sealed class WindowsClientInstallationInventoryTests : IDisposable
         Assert.Equal(ClientInstallationFileState.SkippedUnsafe,source.InspectExecutable(@"Z:\Synthetic\RobloxPlayerBeta.exe",default).State);
         Assert.Throws<InvalidDataException>(()=>source.ReadVersionDirectories(@"Z:\Synthetic\Roblox\Versions",8,default));
         Assert.Equal(new[]{@"Z:\",@"Z:\",@"Z:\"},queried);
+    }
+    public static TheoryData<uint,byte[],string?> RegistryStringShapes()
+    {
+        byte[] player=Encoding.Unicode.GetBytes(@"C:\A\RobloxPlayerBeta.exe"+"\0");
+        return new()
+        {
+            {1u,player,@"C:\A\RobloxPlayerBeta.exe"},
+            {1u,[],""},
+            {1u,Encoding.Unicode.GetBytes(new string('A',2048)),new string('A',2048)},
+            // An embedded NUL survives decoding so the command/path parser rejects it later.
+            {1u,Encoding.Unicode.GetBytes("a\0b\0"),"a\0b"},
+            {2u,player,null},
+            {3u,player,null},
+            {1u,[0x41,0x00,0x42],null},
+            {1u,Encoding.Unicode.GetBytes(new string('A',2049)),null},
+            {1u,[0x00,0xD8],null},
+        };
+    }
+    [Theory]
+    [MemberData(nameof(RegistryStringShapes))]
+    public void RegistryStringDecoderAcceptsOnlyBoundedStrictRegSz(uint kind,byte[] data,string? expected)
+    {
+        if(expected is null) Assert.Throws<InvalidDataException>(()=>WindowsClientInstallationInventorySource.DecodeRegistryString(kind,data));
+        else Assert.Equal(expected,WindowsClientInstallationInventorySource.DecodeRegistryString(kind,data));
+    }
+    [Fact]
+    public async Task ActualRegistryReadReturnsOwnedSyntheticValuesThroughRealRegQueryValueEx()
+    {
+        Directory.CreateDirectory(_root);var opened=new List<SafeRegistryHandle>();
+        string player=Path.Combine(_root,"Synthetic","Roblox","Versions","version-abc","RobloxPlayerBeta.exe"),command="\""+player+"\" %1";
+        using(var hive=new OwnedApplicationHive(Path.Combine(_root,"synthetic.hive")))
+        {
+            hive.SetValue(@"Software\Classes\roblox-player\shell\open\command",null,command,RegistryValueKind.String);
+            hive.SetValue(@"Software\Classes\roblox\shell\open\command",null,@"%LOCALAPPDATA%\Roblox\RobloxPlayerBeta.exe",RegistryValueKind.ExpandString);
+            hive.SetValue(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Bloxstrap","InstallLocation",@"C:\"+new string('a',2100),RegistryValueKind.String);
+            hive.SetValue(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Fishstrap","InstallLocation",new byte[]{0x43,0,0x3a,0},RegistryValueKind.Binary);
+            RegistryKey Open() {var root=hive.OpenFresh();opened.Add(root.Handle);return root;}
+            var source=new WindowsClientInstallationInventorySource(_root,true,Open);
+            Assert.Equal(command,source.ReadRegistryValue(ClientInstallationRegistryHint.RobloxPlayerProtocol,default));
+            Assert.Throws<InvalidDataException>(()=>source.ReadRegistryValue(ClientInstallationRegistryHint.RobloxProtocol,default));
+            Assert.Throws<InvalidDataException>(()=>source.ReadRegistryValue(ClientInstallationRegistryHint.BloxstrapInstallLocation,default));
+            Assert.Throws<InvalidDataException>(()=>source.ReadRegistryValue(ClientInstallationRegistryHint.FishstrapInstallLocation,default));
+            Assert.Null(source.ReadRegistryValue(ClientInstallationRegistryHint.FroststrapInstallLocation,default));
+            // Key present without the value: the native ERROR_FILE_NOT_FOUND branch, then the key is removed again.
+            hive.SetValue(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Froststrap","DisplayName","Synthetic",RegistryValueKind.String);
+            Assert.Null(source.ReadRegistryValue(ClientInstallationRegistryHint.FroststrapInstallLocation,default));
+            hive.DeleteKey(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Froststrap");
+            var snapshot=await new WindowsClientInstallationDiscovery(source).DiscoverAsync(default);
+            var candidate=Assert.Single(snapshot.Candidates);
+            Assert.Equal(player,candidate.ExecutablePath);Assert.Equal(ClientInstallationFileState.Missing,candidate.FileState);
+            Assert.Equal([new ClientInstallationEvidence(ClientInstallationHintSource.RobloxPlayerProtocol,ClientInstallationProduct.Roblox)],candidate.Evidence);
+            Assert.Contains(new ClientInstallationIssue(ClientInstallationIssueCode.InvalidHint),snapshot.Issues);
+            Assert.Equal(ClientInstallationSnapshotStatus.Partial,snapshot.Status);
+            // One fresh root per read (six direct, five during discovery), each closed by the source that opened it.
+            Assert.Equal(11,opened.Count);Assert.All(opened,handle=>Assert.True(handle.IsClosed));
+            var disabled=new WindowsClientInstallationInventorySource(_root,false,Open);
+            foreach(var hint in Enum.GetValues<ClientInstallationRegistryHint>()) Assert.Null(disabled.ReadRegistryValue(hint,default));
+            Assert.Equal(11,opened.Count);
+        }
+        Assert.False(File.Exists(player));
+    }
+    /// <summary>A private application hive (RegLoadAppKey) in the test's owned temp folder, so the user's real HKCU is never opened or written.</summary>
+    private sealed class OwnedApplicationHive : IDisposable
+    {
+        private const int KeyRead=0x20019,KeyAllAccess=0xF003F;
+        private readonly string _file;
+        private readonly RegistryKey _writer;
+        public OwnedApplicationHive(string file) {_file=file;_writer=Load(file,KeyAllAccess);}
+        public void SetValue(string path,string? name,object value,RegistryValueKind kind)
+        {using var key=_writer.CreateSubKey(path,writable:true);key.SetValue(name,value,kind);}
+        public void DeleteKey(string path)=>_writer.DeleteSubKeyTree(path);
+        /// <summary>A fresh read-only handle on every call; the caller owns and disposes it.</summary>
+        public RegistryKey OpenFresh()=>Load(_file,KeyRead);
+        public void Dispose()=>_writer.Dispose();
+        private static RegistryKey Load(string file,int access)
+        {
+            int error=RegLoadAppKey(file,out var handle,access,0,0);
+            if(error!=0) {handle.Dispose();throw new Win32Exception(error);}
+            return RegistryKey.FromHandle(handle);
+        }
+        [DllImport("advapi32.dll",EntryPoint="RegLoadAppKeyW",CharSet=CharSet.Unicode)]
+        private static extern int RegLoadAppKey(string file,out SafeRegistryHandle key,int desired,int options,int reserved);
     }
     public void Dispose()
     {

@@ -18,15 +18,25 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
     private readonly string? _localOverride;
     private readonly bool _includeRegistry;
     private readonly Func<string,uint> _driveType;
+    private readonly Func<RegistryKey> _openRegistryRoot;
+    private static readonly UnicodeEncoding StrictUtf16=new(false,false,true);
     /// <summary>Tests may provide an owned application-data root and disable registry reads. No registry or filesystem write API is used.</summary>
     public WindowsClientInstallationInventorySource(string? localAppDataOverride=null,bool includeCurrentUserRegistry=true)
-        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType) { }
+        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType,OpenCurrentUserRoot) { }
     internal WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<string,uint> driveType)
+        :this(localAppDataOverride,includeCurrentUserRegistry,driveType,OpenCurrentUserRoot) { }
+    /// <summary>Points the real RegQueryValueEx read at an owned root (tests use a private application hive). The opener must
+    /// return a fresh key on every call: each read owns and disposes the root it opened. The fixed relative paths are unchanged.</summary>
+    internal WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<RegistryKey> openRegistryRoot)
+        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType,openRegistryRoot) { }
+    private WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<string,uint> driveType,Func<RegistryKey> openRegistryRoot)
     {
         if(localAppDataOverride is not null && !WindowsClientInstallationDiscovery.TryNormalizeDirectory(localAppDataOverride,out _))
             throw new ArgumentException("Use a fully qualified local metadata root.",nameof(localAppDataOverride));
         _localOverride=localAppDataOverride;_includeRegistry=includeCurrentUserRegistry;_driveType=driveType??throw new ArgumentNullException(nameof(driveType));
+        _openRegistryRoot=openRegistryRoot??throw new ArgumentNullException(nameof(openRegistryRoot));
     }
+    private static RegistryKey OpenCurrentUserRoot()=>RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,RegistryView.Default);
     public string? GetLocalAppData(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();string path=_localOverride??Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -39,19 +49,28 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();
         (string path,string? name)=RegistryLocation(hint);if(!_includeRegistry) return null;
-        using var root=RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,RegistryView.Default);
+        using var root=_openRegistryRoot();
         using var key=root.OpenSubKey(path,writable:false);if(key is null) return null;
         uint bytes=0;int error=RegQueryValueEx(key.Handle,name,IntPtr.Zero,out uint kind,null,ref bytes);
         if(error==2) return null;
         if(error!=0) throw new Win32Exception(error);
-        // REG_EXPAND_SZ is deliberately not expanded; only an actual bounded REG_SZ is accepted.
-        if(kind!=1 || bytes>MaximumRegistryValueBytes || bytes%2!=0) throw new InvalidDataException("The installation registry value has an unsupported shape.");
+        if(!IsBoundedRegSz(kind,bytes)) throw UnsupportedShape();
         var buffer=new byte[bytes];ct.ThrowIfCancellationRequested();
         error=RegQueryValueEx(key.Handle,name,IntPtr.Zero,out kind,buffer,ref bytes);ct.ThrowIfCancellationRequested();
         if(error!=0 || kind!=1 || bytes>buffer.Length || bytes%2!=0) throw new InvalidDataException("The installation registry value changed during its bounded read.");
-        try {return new UnicodeEncoding(false,false,true).GetString(buffer,0,(int)bytes).TrimEnd('\0');}
+        return DecodeRegistryString(kind,buffer.AsSpan(0,(int)bytes));
+    }
+    /// <summary>Accepts only a bounded, even-length REG_SZ of strict UTF-16LE and trims trailing NULs. An embedded NUL is kept so the
+    /// command/path parsers reject it. Throws <see cref="InvalidDataException"/> for any other shape.</summary>
+    internal static string DecodeRegistryString(uint kind,ReadOnlySpan<byte> data)
+    {
+        if(!IsBoundedRegSz(kind,(uint)data.Length)) throw UnsupportedShape();
+        try {return StrictUtf16.GetString(data).TrimEnd('\0');}
         catch(DecoderFallbackException) {throw new InvalidDataException("The installation registry value is not valid Unicode.");}
     }
+    // REG_EXPAND_SZ is deliberately not expanded; only an actual bounded REG_SZ (type 1) is accepted.
+    private static bool IsBoundedRegSz(uint kind,uint bytes)=>kind==1 && bytes<=MaximumRegistryValueBytes && bytes%2==0;
+    private static InvalidDataException UnsupportedShape()=>new("The installation registry value has an unsupported shape.");
     private static (string Path,string? Name) RegistryLocation(ClientInstallationRegistryHint hint)=>hint switch
     {
         ClientInstallationRegistryHint.RobloxProtocol=>(@"Software\Classes\roblox\shell\open\command",null),
