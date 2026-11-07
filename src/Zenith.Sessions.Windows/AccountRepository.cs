@@ -127,7 +127,8 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
         try
         {
         await using var db = await OpenAsync(ct);
-        using var tx = db.BeginTransaction();
+        // Read-only: deferred keeps one SHARED snapshot for count and page without taking the writers' RESERVED lock.
+        using var tx = db.BeginTransaction(deferred: true);
         using var command = db.CreateCommand(); command.Transaction = tx;
         const string where = " WHERE ($group IS NULL OR group_name=$group COLLATE ZENITH_GROUP OR EXISTS(SELECT 1 FROM json_each(zenith_groups_json(group_name,additional_groups)) AS membership WHERE membership.value=$group COLLATE ZENITH_GROUP)) AND (instr(lower(label),lower($search))>0 OR instr(lower(username),lower($search))>0 OR instr(lower(notes),lower($search))>0) ";
         command.Parameters.AddWithValue("$group", (object?)group ?? DBNull.Value);
@@ -351,7 +352,8 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
     }
     public async Task<CredentialCleanupPage> ReadCredentialCleanupAsync(CancellationToken ct)
     {
-        await using var db=await OpenAsync(ct); using var tx=db.BeginTransaction(); using var command=db.CreateCommand(); command.Transaction=tx;
+        // Read-only: deferred (SHARED) like the page read, so it never waits for another connection's write reservation.
+        await using var db=await OpenAsync(ct); using var tx=db.BeginTransaction(deferred:true); using var command=db.CreateCommand(); command.Transaction=tx;
         command.CommandText="SELECT count(*) FROM credential_cleanup"; int count=Convert.ToInt32(await command.ExecuteScalarAsync(ct));
         command.CommandText="SELECT profile_id FROM credential_cleanup ORDER BY profile_id LIMIT 100";
         var ids=new List<Guid>();
