@@ -100,6 +100,63 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task RoutedLinkWhileACheckIsRunningSaysItWasNotChecked()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true,Response=_=>Private()};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            // The Find box hands over a second link while the first is still being checked.
+            Assert.True(RobloxShareLinkParser.TryParse(Link("ExperienceDetails"),out var second));await vm.CheckAsync(second!);
+            Assert.Equal(1,resolver.Calls);Assert.Equal(0,second!.Code.Length); // Not checked, and its code was zeroed.
+            Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);Assert.DoesNotContain("Checking the share link",vm.Status,StringComparison.Ordinal);
+        }
+        finally {resolver.Hold=false;resolver.Release();await first.WaitAsync(TimeSpan.FromSeconds(5));}
+        // The first link's answer appears, and still says the pasted link was not the one checked, so it is not saved by mistake.
+        Assert.True(vm.HasPrivateResult);Assert.Null(f.Browser.Destination);
+        Assert.Contains("Private server link checked",vm.Status,StringComparison.Ordinal);Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);
+        Assert.DoesNotContain(ShareCode,vm.Status,StringComparison.Ordinal);
+        vm.LinkInput=Link("Server");await vm.CheckAsync(); // A later check of its own says nothing about the earlier refusal.
+        Assert.Equal(2,resolver.Calls);Assert.DoesNotContain("was not checked",vm.Status,StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task RoutedLinkWhileACancelledCheckIsStoppingSaysItWasNotChecked()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            vm.Cancel(); // Leaving the page; this resolver ignores its token, so the check is still stopping when the user comes back.
+            Assert.True(RobloxShareLinkParser.TryParse(Link("ExperienceDetails"),out var second));await vm.CheckAsync(second!);
+            Assert.Equal(1,resolver.Calls);Assert.Equal(0,second!.Code.Length);Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);
+        }
+        finally {resolver.Hold=false;resolver.Release();await first.WaitAsync(TimeSpan.FromSeconds(5));}
+        Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Null(f.Browser.Destination);Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);
+        Assert.True(RobloxShareLinkParser.TryParse(Link("ExperienceDetails"),out var again));await vm.CheckAsync(again!); // Pasting it again now checks it.
+        Assert.Equal(2,resolver.Calls);Assert.Equal(5,f.Browser.Destination!.PlaceId);
+    });
+
+    [Fact]
+    public Task RoutedLinkIsRefusedSilentlyWhenTheDirectoriesAreLocked()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            f.Allowed=false;vm.Cancel(); // Lock or Panic: nothing new is checked and no refusal is shown over the stopped page.
+            string before=vm.Status;
+            Assert.True(RobloxShareLinkParser.TryParse(Link("ExperienceDetails"),out var second));await vm.CheckAsync(second!);
+            Assert.Equal(1,resolver.Calls);Assert.Equal(0,second!.Code.Length);Assert.Equal(before,vm.Status);
+        }
+        finally {resolver.Hold=false;resolver.Release();await first.WaitAsync(TimeSpan.FromSeconds(5));}
+        Assert.DoesNotContain("was not checked",vm.Status,StringComparison.Ordinal);
+    });
+
+    [Fact]
     public Task PrivateResultShowsLast4AndDisabledJoin()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();

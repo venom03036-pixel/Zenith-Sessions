@@ -14,6 +14,8 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     public const string LauncherNote="Joining private servers needs launcher support (coming next)";
     private const string IdleStatus="Paste a private server or game share link, then choose Check link.";
     private const string AccountChangedStatus="Share link check stopped because the selected account changed. Paste the link again to check it with the selected account.";
+    private const string NotCheckedStatus="A previous share link check is still running or stopping. This link was not checked; paste it again when it finishes.";
+    private const string NotCheckedNote="The share link pasted while this check ran was not checked; paste it again to check it.";
     private readonly IRobloxShareLinkResolver? _resolver;
     private readonly IPrivateServerStore? _store;
     private readonly ServerBrowserViewModel _browser;
@@ -29,6 +31,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private long _generation,_storeGeneration;
     private Guid? _checkProfile; // The account whose saved session the running check uses, while its answer may still be shown.
     private bool _busy,_storeBusy,_disposed;
+    private bool _refusedWhileChecking; // A routed link was refused while the running check ran, so that check's answer must not pass for it.
     private string _input="",_saveName="",_status=IdleStatus,_resultTitle="",_resultDetail="";
     private string? _resultGame; // The checked game's public name, kept with a saved server so the list shows the game, not its place ID.
     private RobloxShareLinkResolution? _result;
@@ -74,11 +77,16 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         if(!RobloxShareLinkParser.TryParse(_input,out var link)) {SetStatus("Paste a roblox.com/share link.");return Task.CompletedTask;}
         return CheckAsync(link!,ct);
     }
-    /// <summary>Check an already parsed link (also the Find box route). Takes ownership of the link; the box is cleared before any request.</summary>
+    /// <summary>
+    /// Check an already parsed link (also the Find box route). Takes ownership of the link; the box is cleared before any request.
+    /// Lock, Panic and disposal refuse it silently. While a check runs or is still stopping, the Find box cannot see that, so the
+    /// link is refused with a status that says it was not checked, instead of being dropped under a stale "Checking…" line.
+    /// </summary>
     public Task CheckAsync(RobloxShareLink link,CancellationToken ct=default)
     {
         ArgumentNullException.ThrowIfNull(link);
-        if(!Allowed || _busy || !_active.IsCompleted) {link.Dispose();return Task.CompletedTask;}
+        if(!Allowed) {link.Dispose();return Task.CompletedTask;}
+        if(_busy || !_active.IsCompleted) {link.Dispose();_refusedWhileChecking=true;SetStatus(NotCheckedStatus);return Task.CompletedTask;}
         ClearInput();
         if(_selectedProfile() is not { } profile || profile==Guid.Empty) {link.Dispose();SetStatus("Select a signed-in account first. Share links are checked with that account.");return Task.CompletedTask;}
         if(_resolver is null) {link.Dispose();SetStatus("Share links cannot be checked in this build.");return Task.CompletedTask;}
@@ -86,7 +94,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         // What the user had asked for when the check started: a game result may replace only this, never a newer choice or draft.
         var requested=new RequestedSnapshot(_browser.Destination,_browser.LinkInput);
         var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
-        long generation=Interlocked.Increment(ref _generation);_stop=stop;_busy=true;_checkProfile=profile;_status="Checking the share link with the selected account…";
+        long generation=Interlocked.Increment(ref _generation);_stop=stop;_busy=true;_checkProfile=profile;_refusedWhileChecking=false;_status="Checking the share link with the selected account…";
         Raise(nameof(Status));Raise(nameof(IsBusy));NotifyAvailability();
         _active=RunCheckAsync(link,profile,requested,generation,stop);Track(_active);return _active;
     }
@@ -99,7 +107,12 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         {
             try {resolution=await _resolver!.ResolveShareLinkAsync(profile,link,stop.Token);}
             finally {link.Dispose();}
-            if(MayPublish(profile,generation,stop)) await PublishAsync(resolution,profile,requested,generation,stop);
+            if(MayPublish(profile,generation,stop))
+            {
+                await PublishAsync(resolution,profile,requested,generation,stop);
+                // The answer is for the earlier link: keep saying the refused one was not checked, so it is not saved as that link.
+                if(_refusedWhileChecking && Current(generation,stop)) SetStatus(_status+" "+NotCheckedNote);
+            }
         }
         catch(OperationCanceledException) { }
         catch(Exception error) {if(Current(generation,stop)) SetStatus("The share link could not be checked right now. Try again later.");ReportSafeFailure(error);}
