@@ -6,7 +6,13 @@ namespace Zenith.Sessions.App;
 
 public sealed record InstallationCandidateRow(ClientInstallationCandidate Candidate)
 {
-    public string Product => Candidate.Product.ToString();
+    // A Roblox player found under a bootstrapper's folder carries that bootstrapper as its
+    // evidence product. Native trials reject it by design, so the row names its owner.
+    public ClientInstallationProduct? ManagedBy => Candidate.Product == ClientInstallationProduct.Roblox
+        ? Candidate.Evidence.Where(item => item.Product != ClientInstallationProduct.Roblox)
+            .Select(item => (ClientInstallationProduct?)item.Product).FirstOrDefault()
+        : null;
+    public string Product => ManagedBy is { } owner ? $"Roblox · {owner}-managed" : Candidate.Product.ToString();
     public string Version => Candidate.FileVersion ?? "Unknown";
     public string FileState => Candidate.FileState switch
     {
@@ -16,7 +22,7 @@ public sealed record InstallationCandidateRow(ClientInstallationCandidate Candid
         ClientInstallationFileState.SkippedUnsafe => "Path skipped",
         _ => "Metadata unavailable"
     };
-    public string Evidence => string.Join(", ", Candidate.Evidence.Select(item => item.Source switch
+    public string Evidence => string.Join(", ", Candidate.Evidence.Select(item => (item.Product != Candidate.Product ? item.Product + " " : "") + item.Source switch
     {
         ClientInstallationHintSource.RobloxProtocol => "roblox registration",
         ClientInstallationHintSource.RobloxPlayerProtocol => "roblox-player registration",
