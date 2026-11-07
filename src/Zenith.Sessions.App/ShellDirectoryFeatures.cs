@@ -19,7 +19,7 @@ public sealed partial class AccountRow
         LaunchState.Queued=>"Cancel",LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing=>"Cancel",
         LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.Arrived or LaunchState.ClientStartedUnverified=>"Review",
         LaunchState.Blocked when _launchProblem==LaunchProblem.InsufficientCapacity=>"Cancel",
-        LaunchState.Blocked=>"Details",_=>KnownUserId is null || Identity is "Sign in required" or "Expired" or "Expired link"?"Sign in":"Launch"
+        LaunchState.Blocked=>"Details",_=>SignInStatusBusy?"Refresh":KnownUserId is null || Identity is "Sign in required" or "Expired" or "Expired link"?"Sign in":"Launch"
     };
     public string LaunchStatus=>_launchState switch
     {
@@ -28,7 +28,8 @@ public sealed partial class AccountRow
         null=>"No verified client",_=>_launchState.ToString()!
     };
     public string PowerExplanation=>_launchState is LaunchState.Queued or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing?
-        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):KnownUserId is null?
+        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):SignInStatusBusy?
+        "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
         "Connect this saved profile through Roblox's sign-in page. Games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
     public void SetPublicPresentation(PublicAccountData value)
     {
@@ -131,6 +132,17 @@ public sealed partial class ShellViewModel
                     || launch.Operation.State==LaunchState.Blocked && launch.Operation.Problem==LaunchProblem.InsufficientCapacity)
                     await _launchQueue.CancelAsync(launch.Id,_lifetime.Token);
                 else Notice=launch.Detail.Length>0?launch.Detail:"Review this account's existing client before another launch.";
+                return;
+            }
+            if(row.SignInStatusBusy)
+            {
+                // Busy storage is not a missing sign-in: reload the page instead of opening Roblox sign-in.
+                long epoch=_directoryGeneration;
+                await LoadAccountsAsync(_lifetime.Token);
+                if(epoch!=_directoryGeneration || !CanUseDirectories()) return;
+                Notice=Accounts.FirstOrDefault(a=>a.Profile.Id==row.Profile.Id) is {SignInStatusBusy:true}
+                    ?"Protected sign-in storage is still busy. Zenith checks it again shortly; protected files were not changed."
+                    :"Saved sign-in status reloaded.";
                 return;
             }
             if(row.KnownUserId is null || row.Identity is "Sign in required" or "Expired" or "Expired link") {await AuthorizeSelectedAsync(false);return;}

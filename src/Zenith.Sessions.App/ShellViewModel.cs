@@ -23,6 +23,11 @@ public sealed partial class AccountRow(AccountProfile profile) : Observable
         Profile.Username.Length==0?"Sign in to identify this account":"@"+Profile.Username+" · entered label";
     public long? KnownUserId=>_authorizationMetadata?.VerifiedUserId;
     public long? AuthorizationGeneration=>_authorizationMetadata?.Generation;
+    /// <summary>Last-known summary, carried to the next page load only while the protected store is busy.</summary>
+    internal AuthorizationMetadata? CachedAuthorization=>_authorizationMetadata;
+    internal const string BusyIdentity="Sign-in status busy";
+    /// <summary>The protected store was busy, so this row's saved sign-in was not read. It is not a missing sign-in.</summary>
+    public bool SignInStatusBusy=>_identity==BusyIdentity;
     public string Group => Profile.GroupsSummary;
     public string FavoriteLabel=>Profile.IsFavorite?"★ Favorite":"☆ Add favorite";
     public string Notes=>Profile.Notes.Length==0?"No notes added.":Profile.Notes;
@@ -152,6 +157,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
     private Task _queryTask = Task.CompletedTask, _monitorTask = Task.CompletedTask, _initializeTask = Task.CompletedTask;
+    /// <summary>The owned debounced account query or busy-store retry; shutdown joins it.</summary>
+    internal Task AccountQuery=>_queryTask;
     private Task? _disposeTask;
     private readonly HashSet<Task> _profileOperations=[];
     private readonly SemaphoreSlim _profileSerial=new(1,1);
@@ -441,34 +448,46 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         int allCount = query.Group is null && query.Search.Length == 0 ? page.Total
             : (await Task.Run(() => _accounts.ReadAsync(new(PageSize: 1), ct), ct)).Total;
         if (generation != _queryGeneration || ct.IsCancellationRequested) return;
-        var rows=await Task.Run(async ()=>
+        // A busy store is retryable and says nothing about a saved sign-in. Keep each visible row's
+        // last-known link instead (launch and dispatch re-check the vault generation and fail closed).
+        var lastKnown=new Dictionary<Guid,AuthorizationMetadata>(Accounts.Count);
+        foreach(var published in Accounts) if(published.CachedAuthorization is { } known) lastKnown[published.Profile.Id]=known;
+        var (rows,storeBusy)=await Task.Run(async ()=>
         {
             var result=new List<AccountRow>();
             var ids=page.Items.Select(p=>p.Id).ToArray();
             var summaries=new Dictionary<Guid,AuthorizationMetadata>(ids.Length);
-            HashSet<Guid>? unavailable=null;
+            HashSet<Guid>? unavailable=null, busy=null;
             try { foreach(var summary in await _vault.ReadSummariesAsync(ids,ct)) summaries[summary.ProfileId]=summary; }
+            catch(AuthorizationVaultBusyException) { busy=[..ids]; }
             catch(Exception ex) when(ex is InvalidDataException or IOException or UnauthorizedAccessException)
             {
                 // One damaged or locked record must not hide every other row's link. Only on this
                 // degraded path, re-read each visible profile alone (same validation, same lease)
                 // so just the failing rows are marked; cancellation still propagates.
                 unavailable=[];
-                foreach(Guid id in ids)
+                for(int i=0;i<ids.Length;i++)
                 {
                     ct.ThrowIfCancellationRequested();
-                    try { if(await _vault.GetSummaryAsync(id,ct) is { } summary) summaries[id]=summary; }
-                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException) { unavailable.Add(id); }
+                    try { if(await _vault.GetSummaryAsync(ids[i],ct) is { } summary) summaries[ids[i]]=summary; }
+                    // Every later read would wait out the same 2-second lease deadline.
+                    catch(AuthorizationVaultBusyException) { busy=[..ids[i..]]; break; }
+                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException) { unavailable.Add(ids[i]); }
                 }
             }
             foreach(var item in page.Items)
             {
                 ct.ThrowIfCancellationRequested(); var row=new AccountRow(item);
                 if(summaries.TryGetValue(item.Id,out var summary)) row.SetCachedAuthorization(summary);
+                else if(busy?.Contains(item.Id)==true)
+                {
+                    if(lastKnown.TryGetValue(item.Id,out var known)) row.SetCachedAuthorization(known);
+                    else row.SetAuthorization(AccountRow.BusyIdentity,"Protected storage was busy, so this saved sign-in was not read. Zenith checks again shortly, or choose Refresh. Protected files were not changed.");
+                }
                 else if(unavailable?.Contains(item.Id)==true) row.SetAuthorization("Link index unavailable","Protected files were preserved. Sign in again or review storage access; account metadata remains usable.");
                 result.Add(row);
             }
-            return result;
+            return (result,busy is not null);
         },ct);
         await RefreshMainAccountDisplayAsync(rows,generation,ct);
         if(generation!=_queryGeneration || ct.IsCancellationRequested) return;
@@ -502,6 +521,31 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(selectedGroup is not null && Group.Value is null) ScheduleQuery();
         }
         if(generation==_queryGeneration && !ct.IsCancellationRequested && publicImageEpoch==_directoryGeneration) QueueCurrentPublicImages();
+        if(storeBusy && generation==_queryGeneration && !ct.IsCancellationRequested) ScheduleBusyStoreRetry(generation);
+    }
+    private static readonly TimeSpan BusyStoreRetryDelay=TimeSpan.FromSeconds(1);
+    private int? _busyStoreRetryGeneration;
+    /// <summary>
+    /// Re-reads the same page once after the protected store reported busy. It is owned like a
+    /// debounced query (chained into <see cref="_queryTask"/>, cancelled with <see cref="_queryCancellation"/>
+    /// and joined at shutdown), keeps the current page, and allows one retry per query generation,
+    /// so a store that stays busy cannot loop. Any newer search, filter, page or reload supersedes it.
+    /// </summary>
+    private void ScheduleBusyStoreRetry(int generation)
+    {
+        if(_busyStoreRetryGeneration==generation || _shuttingDown || _lifetime.IsCancellationRequested) return;
+        _busyStoreRetryGeneration=generation;
+        // The prior query may be the one publishing now; it is awaited, never cancelled, before its source is disposed.
+        var priorCancellation=_queryCancellation; var prior=_queryTask;
+        _queryCancellation=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _queryTask=RetryBusyStoreQueryAsync(prior,priorCancellation,generation,_queryCancellation.Token);
+    }
+    private async Task RetryBusyStoreQueryAsync(Task prior,CancellationTokenSource? priorCancellation,int generation,CancellationToken ct)
+    {
+        try { await prior; } finally { priorCancellation?.Dispose(); }
+        try { await Task.Delay(BusyStoreRetryDelay,ct); if(generation==_queryGeneration && !_libraryUnavailable) await LoadAccountsAsync(ct,generation); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { Fail(ex); }
     }
     public Task SaveAccountAsync(AccountProfile profile)=>OwnProfileOperation(()=>SaveAccountCoreAsync(profile));
     private async Task ChangeWindowAsync(object? parameter,ClientWindowAction action)
