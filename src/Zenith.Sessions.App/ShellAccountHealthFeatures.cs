@@ -89,7 +89,7 @@ public sealed partial class ShellViewModel
             {
                 // Storage or programming failure: show what the protected store now holds, then report it.
                 await LoadAccountsAsync(_lifetime.Token);
-                if (stop.IsCancellationRequested || _preserveStopNotice || IsLocked) { _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()); return; }
+                if (stop.IsCancellationRequested || _preserveStopNotice || IsLocked) { _diagnostics.RecordFailure(ManagerSubsystem.SignIn,error.GetType()); return; }
                 throw;
             }
             if (_lifetime.IsCancellationRequested || _shuttingDown) return;

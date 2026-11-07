@@ -327,7 +327,7 @@ public sealed partial class ShellViewModel
             if(SelectedAccount is { } row && Accounts.Contains(row) && row.Profile.PreferredPlaceId==place) row.SetPreferredGameName(place,game.Name);
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
-        catch(Exception error) {_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());} // The name is decoration; "Place {id}" stands without it.
+        catch(Exception error) {_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType());} // The name is decoration; "Place {id}" stands without it.
         finally
         {
             if(ReferenceEquals(_preferredGameStop,stop)) {_preferredGameStop=null;_preferredGamePlace=0;}
@@ -382,7 +382,7 @@ public sealed partial class ShellViewModel
             try{review=_launchQueue.CaptureBatchReview(target,snapshot);}
             catch(ArgumentException error)
             {
-                _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+                _diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());
                 return $"Place {target.PlaceId} destination requests: one or more selected accounts could not be reviewed. Review the accounts and try again. No request was made.";
             }
             IReadOnlyList<LaunchBatchRow> rows;

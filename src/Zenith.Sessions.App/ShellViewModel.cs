@@ -623,7 +623,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             Notice = "Profile saved, but the account list could not refresh. Use Refresh to reload it.";
             AddEvent($"Profile saved; list refresh failed ({ex.GetType().Name}).");
-            _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Library,ex.GetType());
             return;
         }
         Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
@@ -913,7 +913,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private void ReportPresentationFault(Exception exception)
     {
         // Every fault reaches diagnostics (type only, Rule 10); the notice and event are latched until a presentation completes.
-        _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Telemetry,exception.GetType());
         if(_presentationFaulted) return;
         _presentationFaulted=true;
         Notice="The dashboard could not show the latest measurement. Monitoring and launch safety checks continue; restart Zenith Sessions if the display stays out of date.";
@@ -994,7 +994,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(placement is null || !placement.IsValid || !_ready || _shuttingDown || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
         _settings=_settings with { ManagerWindow=placement };
         try { await SaveCurrentSettingsAsync(); }
-        catch(Exception ex) { _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType()); }
+        catch(Exception ex) { _diagnostics.RecordFailure(ManagerSubsystem.Settings,ex.GetType()); }
     }
     public async Task RequestCloseAsync(SessionObservation session)
     {
@@ -1202,7 +1202,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             Notice=refresh?"The saved sign-in check ended before it finished. Existing profiles were preserved; review this account's sign-in status, then check again."
                 :"Roblox sign-in ended before a session was saved. Existing profiles were preserved; start sign-in again when you are ready.";
             AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
-            _diagnostics.Record(ManagerEventKind.OperationFailed,ended.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.SignIn,ended.GetType());
         }
         catch(Exception)
         {
@@ -1247,13 +1247,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(swept.Kept==0) return;
             _signInFolderNote=$" {swept.Kept} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use, not recognized or could not be removed. If sign-in reports a problem with this folder, close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
-            _diagnostics.Record(ManagerEventKind.OperationFailed);
+            _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {
             _signInFolderNote=" Leftover private sign-in folders could not be checked at startup, so signin-browser-data was left unchanged. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
             AddEvent("Leftover private sign-in folders could not be checked and were kept for review. See Settings, Protected-file recovery.");
-            _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.SignIn,ex.GetType());
         }
     }
     private LaunchAdmission ReadLaunchAdmission(IReadOnlyList<LaunchOperation> operations)

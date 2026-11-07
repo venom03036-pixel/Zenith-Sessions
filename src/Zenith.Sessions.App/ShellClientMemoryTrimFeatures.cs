@@ -117,9 +117,9 @@ public sealed partial class ShellViewModel
     {
         StopClientTrimOperations();
         try { await _clientTrimWork; }
-        catch (Exception error) { _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()); }
+        catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientMemory,error.GetType()); }
         PropertyChanged -= ClientTrimOwnerChanged;
         try { await _clientTrim.DisposeAsync(); }
-        catch (Exception error) { _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()); }
+        catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientMemory,error.GetType()); }
     }
 }

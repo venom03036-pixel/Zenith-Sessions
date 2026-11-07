@@ -14,6 +14,17 @@ public sealed class DiagnosticsViewModelTests : IDisposable
     private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-diagnostic-ui-tests-"+Guid.NewGuid().ToString("N"));
     private string Data=>Path.Combine(_root,"data");
     [Fact]
+    public void EveryShellFailureRecordNamesTheSubsystemThatFailed()
+    {
+        // Only the last-chance unhandled-fault seams cannot know which part failed; every other shell failure names it.
+        string app=Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot,"src","Zenith.Sessions.App");
+        var unnamed=Directory.GetFiles(app,"*.cs").SelectMany(file=>File.ReadAllLines(file).Select((line,index)=>(File:Path.GetFileName(file),Line:index+1,Text:line)))
+            .Where(line=>line.Text.Contains("_diagnostics.Record(ManagerEventKind.OperationFailed",StringComparison.Ordinal)
+                && !line.Text.Contains("_diagnostics.Record(ManagerEventKind.OperationFailed,errorType)",StringComparison.Ordinal))
+            .Select(line=>line.File+":"+line.Line).ToArray();
+        Assert.Empty(unnamed);
+    }
+    [Fact]
     public void EveryManagerSubsystemHasItsOwnFixedLabel()
     {
         // The enum is append-only. A member added without a label would read "Unrecognized subsystem" in the view and the report.

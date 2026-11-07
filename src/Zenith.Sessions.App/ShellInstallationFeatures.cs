@@ -151,7 +151,7 @@ public sealed partial class ShellViewModel
         try { return await _clientReleases.GetCurrentWindowsPlayerReleaseAsync(ct); }
         catch (Exception error) when (!(error is OperationCanceledException && ct.IsCancellationRequested))
         {
-            _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Installation,error.GetType());
             return new(PublicDirectoryState.Failure, null, "The request to the public version service failed.");
         }
     }
