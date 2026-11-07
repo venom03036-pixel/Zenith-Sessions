@@ -82,6 +82,17 @@ public sealed class RobloxFavoriteGamesViewModelTests
     });
 
     [Fact]
+    public Task CancelWhileEligibleSaysStoppedNotLoadsWhenPageOpens()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var directory=new FavoritesDirectory(3);await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
+        vm.SetAccount(ProfileA,156,3,"A");await vm.LoadAsync();Assert.Equal(3,vm.Chips.Count);
+        vm.Cancel(); // Panic or Lock while Join a game stays open: nothing reloads by itself.
+        Assert.Empty(vm.Chips);Assert.Equal("Stopped. Choose Refresh to load favorites again.",vm.Status);
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;Assert.Equal(2,directory.Requests);Assert.Equal(3,vm.Chips.Count); // Refresh does what the status says.
+        vm.SetAccount(ProfileB,157,1,"B");Assert.Equal("Roblox favorites load when Join a game opens.",vm.Status); // An account change keeps its own wording.
+    });
+
+    [Fact]
     public Task UnavailableOrRestrictedShowsAStatusWithoutAutomaticRetry()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Response=new(PublicDirectoryState.Unknown,null,"synthetic-provider-text")};

@@ -132,16 +132,20 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
     }
     private void ClearChips() {_all.Clear();_showAll=false;PublishChips();}
 
-    /// <summary>Leaving the page, Lock, Panic or an account change: cancel, clear and forget this visit's page.</summary>
-    public void Cancel()=>Invalidate();
-    private void Invalidate()
+    /// <summary>
+    /// Leaving the page, Lock or Panic: cancel, clear and forget this visit's page. The page may still be open (Panic,
+    /// Unlock), so the status names Refresh; opening the page again replaces it.
+    /// </summary>
+    public void Cancel()=>Invalidate(stopped:true);
+    private void Invalidate(bool stopped=false)
     {
         Interlocked.Increment(ref _generation);try {_stop?.Cancel();} catch(ObjectDisposedException) { }
         if(_stop is not null) {_stop=null;_busy=false;Raise(nameof(IsBusy));} // The cancelled run is fenced; it disposes its own source.
         _loaded=null;ClearChips();
         _status=_account is not { } account?"Select an account to show its Roblox favorites."
             :account.UserId is null || account.Generation is null?"Sign in to show this account's Roblox favorites"
-            :_directory is null?"Roblox favorites are unavailable in this build.":"Roblox favorites load when Join a game opens.";
+            :_directory is null?"Roblox favorites are unavailable in this build."
+            :stopped?"Stopped. Choose Refresh to load favorites again.":"Roblox favorites load when Join a game opens.";
         Raise(nameof(Status));
     }
     private void SetStatus(string status) {_status=status;Raise(nameof(Status));}

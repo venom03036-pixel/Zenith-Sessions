@@ -256,6 +256,70 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(offered, (bool)ReportedBinding(row, (string?)action.Attribute("IsEnabled")));
     });
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task PanicOrLockOnJoinGameKeepsRecentlyPlayedStoppedUntilThePageIsOpenedAgain(bool locked) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        var games = new RecentlyPlayedGames();
+        var (_, logs, desktop) = ReportedInputs(DateTimeOffset.UtcNow);
+        monitor.Inventory = desktop;
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
+            publicDirectory: games, serverDirectory: new SearchServers(), gameDirectory: games);
+        await shell.InitializeAsync();
+        var serial = await HoldReportedSamplerAsync(shell);
+        // A stopped correlator ignores offers, so every sample, including the 1 Hz loop, presents this synthetic log snapshot.
+        var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
+        await correlator.DisposeAsync();
+        ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
+        ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);
+        serial.Release();
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.Sessions).Log.ReportedPlaceId);
+
+        shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
+        Assert.Equal(1, games.Lookups(ReportedPlace));
+
+        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); shell.Unlock.Execute(null); }
+        else shell.Panic.Execute(null);
+        Assert.Empty(shell.RecentlyPlayed.Chips);
+        // The next desktop sample on the same page: the real sample and presentation path the 1 Hz loop runs.
+        shell.Refresh.Execute(null); await shell.Refresh.Execution; await shell.RecentlyPlayed.ActiveOperation;
+        Assert.True(shell.IsJoinGame);
+        Assert.Empty(shell.RecentlyPlayed.Chips);
+        Assert.Equal(1, games.Lookups(ReportedPlace)); // No second lookup without a user action.
+
+        shell.Navigate.Execute("Sessions"); shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
+        Assert.Equal(2, games.Lookups(ReportedPlace)); // Opening the page again is the explicit action that resumes it.
+    });
+
+    /// <summary>Counts public place lookups per place; every other public request is unexpected here.</summary>
+    private sealed class RecentlyPlayedGames : IPublicRobloxDirectory, IPublicRobloxGameDirectory
+    {
+        private readonly Dictionary<long, int> _lookups = [];
+        public int Lookups(long placeId) => _lookups.GetValueOrDefault(placeId);
+        public Task<PublicDirectoryResult<PublicRobloxGame>> LookupGameAsync(long requestedPlaceId, CancellationToken ct)
+        {
+            _lookups[requestedPlaceId] = Lookups(requestedPlaceId) + 1;
+            return Task.FromResult(SearchTest.Ok(new PublicRobloxGame(requestedPlaceId, 201, requestedPlaceId, "Synthetic recently played",
+                7, "Creator", PublicRobloxCreatorKind.User, 17, 20, DateTimeOffset.UtcNow)));
+        }
+        public Task<PublicDirectoryResult<PublicRobloxGameIcon>> GetGameIconAsync(long universeId, CancellationToken ct)
+            => Task.FromResult(new PublicDirectoryResult<PublicRobloxGameIcon>(PublicDirectoryState.Unknown, null, "Synthetic optional image unavailable"));
+        public Task<PublicDirectoryResult<EncodedPublicGameIcon>> FetchGameIconAsync(PublicRobloxGameIcon icon, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic icon download");
+        public Task<PublicDirectoryResult<PublicRobloxUser>> LookupUserAsync(long userId, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic identity request");
+        public Task<PublicDirectoryResult<PublicRobloxAvatar>> GetAvatarAsync(long userId, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic avatar request");
+        public Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic avatar download");
+        public void ClearMemoryCache() { }
+    }
+
     private static readonly string[] ReportedActions = ["Join same game", "Join same server", "Copy reported server link"];
     private static readonly System.Xml.Linq.XNamespace ReportedUi = "http://schemas.microsoft.com/winfx/2006/xaml/presentation",
         ReportedXaml = "http://schemas.microsoft.com/winfx/2006/xaml";

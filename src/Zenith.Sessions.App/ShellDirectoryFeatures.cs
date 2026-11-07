@@ -51,6 +51,8 @@ public sealed partial class ShellViewModel
     private PublicAccountPageLoader _publicImageLoader=null!;
     private readonly bool _enableAutomaticPublicImages;
     private bool _publicImagesAllowed,_publicImagesSuspended,_publicImageContextVisible;
+    /// <summary>Set by Panic and Lock; cleared only when Join a game is opened again or the account changes there, as favorites resume.</summary>
+    private bool _recentlyPlayedSuspended;
     public Task PublicImageOperation=>_publicImageLoader.ActiveOperation;
     private CancellationTokenSource? _publicRefreshStop;
     private long _directoryGeneration;
@@ -168,6 +170,7 @@ public sealed partial class ShellViewModel
         if(IsJoinGame && CanUseDirectories()) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
         else RobloxFavorites.Cancel();
         if(IsJoinGame && CanUseDirectories()) {ShareLink.SelectedAccountChanged();_=ShareLink.LoadSavedAsync();} else ShareLink.Cancel();
+        if(IsJoinGame && CanUseDirectories()) _recentlyPlayedSuspended=false; // The same explicit actions that restart favorites and saved servers.
         RefreshRecentlyPlayed();
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
@@ -176,11 +179,14 @@ public sealed partial class ShellViewModel
         ShowJoinStep.Execute("2");ShowServerTab.Execute("Private");
         return ShareLink.CheckAsync(link);
     }
-    /// <summary>A new client or history observation while Join a game is open: rebuild the recently played chips from what the logs reported.</summary>
+    /// <summary>
+    /// A new client or history observation while Join a game is open: rebuild the recently played chips from what the logs
+    /// reported. After Panic or Lock the chips stay stopped; a desktop sample is not a user action.
+    /// </summary>
     private void RefreshRecentlyPlayed()
     {
         if(RecentlyPlayed is null) return;
-        if(IsJoinGame && CanUseDirectories()) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
+        if(IsJoinGame && CanUseDirectories() && !_recentlyPlayedSuspended) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
         else RecentlyPlayed.Cancel();
     }
     private List<RecentlyPlayedSource> BuildRecentlyPlayedSources()
@@ -294,7 +300,7 @@ public sealed partial class ShellViewModel
         _publicPresentation.Clear();foreach(var row in Accounts) row.ClearPublicPresentation();
         DestinationSearch.CancelWork(clearInput:true);
         RobloxFavorites.Cancel();
-        RecentlyPlayed.Cancel();
+        _recentlyPlayedSuspended=true;RecentlyPlayed.Cancel();
         ShareLink.Cancel();
     }
     private async Task StopDirectoryFeaturesAsync()
