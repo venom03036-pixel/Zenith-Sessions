@@ -7,8 +7,9 @@ namespace Zenith.Sessions.Tests;
 // Share links are checked with the selected account's saved session, on a click only. Codes never reach text.
 public sealed class ShareLinkViewModelTests
 {
-    private static readonly Guid ProfileA=Guid.Parse("11111111-1111-4111-8111-111111111111");
+    private static readonly Guid ProfileA=Guid.Parse("11111111-1111-4111-8111-111111111111"),ProfileB=Guid.Parse("22222222-2222-4222-8222-222222222222");
     private const string ShareCode="4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e",LinkCode="98765432109876543210";
+    private const string AccountChanged="Share link check stopped because the selected account changed. Paste the link again to check it with the selected account.";
     private static string Link(string type)=>"https://www.roblox.com/share?code="+ShareCode+"&type="+type;
     private static RobloxShareLinkResolution Private()=>new(RobloxShareLinkOutcome.PrivateServer,5,6,7,new ProtectedPrivateServerCode(LinkCode));
 
@@ -49,6 +50,53 @@ public sealed class ShareLinkViewModelTests
         resolver.Hold=false;resolver.Release();await check;
         Assert.Equal("Adopt",f.Browser.LinkInput);Assert.Null(f.Browser.Destination);Assert.True(vm.HasResult);
         Assert.Contains("newer choice was kept",vm.Status,StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task SelectingAnotherAccountCancelsTheRunningCheckAndItsResultIsNeverShown()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;
+        var resolver=new Resolver{Hold=true,Response=_=>late=Private()};
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            vm.SelectedAccountChanged(); // The same account's row was reloaded: the check goes on.
+            profile=null;vm.SelectedAccountChanged();profile=ProfileA;vm.SelectedAccountChanged(); // A list reload empties the selection for a moment.
+            Assert.False(resolver.LastToken.IsCancellationRequested);Assert.Contains("Checking",vm.Status);
+            profile=ProfileB;vm.SelectedAccountChanged();
+            Assert.True(resolver.LastToken.IsCancellationRequested);Assert.Equal(AccountChanged,vm.Status);
+        }
+        finally {resolver.Hold=false;resolver.Release();await check.WaitAsync(TimeSpan.FromSeconds(5));} // The resolver answers anyway, after its token was cancelled.
+        Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);Assert.Equal("",vm.ResultDetail);
+        Assert.Equal(0,late!.PrivateServerCode!.Length);Assert.Equal(0,f.Directory.GameRequests); // The late code was disposed, never shown.
+        vm.LinkInput=Link("Server");await vm.CheckAsync(); // Checking again uses the account selected now.
+        Assert.Equal(ProfileB,resolver.LastProfile);Assert.True(vm.HasPrivateResult);
+    });
+
+    [Fact]
+    public Task AResultIsNotShownWhenItsAccountIsNoLongerSelected()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;
+        var resolver=new Resolver{Hold=true,Response=_=>late=Private()};
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        profile=null; // The account was filtered out of the list, so nothing is selected when the answer arrives.
+        resolver.Hold=false;resolver.Release();await check;
+        Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);Assert.Equal(0,late!.PrivateServerCode!.Length);
+    });
+
+    [Fact]
+    public Task SelectingAnotherAccountWhileTheGameIsNamedDisposesTheCheckedCode()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;var games=new CancellableGames();
+        var resolver=new Resolver{Response=_=>late=Private()};
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:games);
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await games.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        profile=ProfileB;vm.SelectedAccountChanged();
+        Assert.True(games.LastToken.IsCancellationRequested);await check.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);
+        Assert.Equal(0,late!.PrivateServerCode!.Length); // Cancelled mid-lookup, the checked code is still zeroed, not left to the finalizer.
     });
 
     [Fact]
@@ -223,6 +271,17 @@ public sealed class ShareLinkViewModelTests
         public void Release()=>_release.TrySetResult();
         public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId,RobloxShareLink link,CancellationToken ct)
         {Calls++;LastProfile=profileId;LastToken=ct;Entered.TrySetResult();if(Hold)await _release.Task;return Response?.Invoke(link)??new(RobloxShareLinkOutcome.Experience,5,6);}
+    }
+    // A game lookup that honours its token, like the real directory: cancelling it ends the lookup with OperationCanceledException.
+    private sealed class CancellableGames:IPublicRobloxGameDirectory
+    {
+        public CancellationToken LastToken;
+        public TaskCompletionSource Entered {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<PublicDirectoryResult<PublicRobloxGame>> LookupGameAsync(long requestedPlaceId,CancellationToken ct)
+        {LastToken=ct;Entered.TrySetResult();await Task.Delay(Timeout.Infinite,ct);throw new InvalidOperationException("A cancelled synthetic lookup never answers.");}
+        public Task<PublicDirectoryResult<PublicRobloxGameIcon>> GetGameIconAsync(long universeId,CancellationToken ct)=>throw new InvalidOperationException("Unexpected synthetic icon request");
+        public Task<PublicDirectoryResult<EncodedPublicGameIcon>> FetchGameIconAsync(PublicRobloxGameIcon icon,CancellationToken ct)=>throw new InvalidOperationException("Unexpected synthetic icon download");
+        public void ClearMemoryCache(){}
     }
     private sealed class Store:IPrivateServerStore
     {

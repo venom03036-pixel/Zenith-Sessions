@@ -156,7 +156,10 @@ public sealed partial class ShellViewModel
     private bool CanAutomaticallyLoadPublicImages()=>_enableAutomaticPublicImages && !IsSample && !_publicImagesSuspended && IsAccounts
         && _clientPreviewWindowVisible && CanUseDirectories();
     private bool CanUseDestinationSearch()=>CanUseDirectories() && IsJoinGame && _clientPreviewWindowVisible;
-    /// <summary>Join a game opened or the selected account changed: bind Roblox favorites to that account, load once per visit and rebuild recently played; leaving cancels both.</summary>
+    /// <summary>
+    /// Join a game opened or the selected account changed: bind Roblox favorites to that account, load once per visit and
+    /// rebuild recently played; a share-link check made with another account's session stops. Leaving cancels them all.
+    /// </summary>
     private void RefreshJoinGameSources()
     {
         if(RobloxFavorites is null) return;
@@ -164,7 +167,7 @@ public sealed partial class ShellViewModel
         RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
         if(IsJoinGame && CanUseDirectories()) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
         else RobloxFavorites.Cancel();
-        if(IsJoinGame && CanUseDirectories()) _=ShareLink.LoadSavedAsync(); else ShareLink.Cancel();
+        if(IsJoinGame && CanUseDirectories()) {ShareLink.SelectedAccountChanged();_=ShareLink.LoadSavedAsync();} else ShareLink.Cancel();
         RefreshRecentlyPlayed();
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
