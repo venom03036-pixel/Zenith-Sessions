@@ -47,10 +47,11 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         var monitor=new Monitor();await using var shell=Create(monitor);
         await shell.InitializeAsync();await Until(()=>shell.Overview.ObservedProcesses==8);
         int thrown=0,presented=0;bool faulting=true;
-        // SampleTime is assigned inside the sampler's presentation step; its handler stands in for any display defect.
+        // ProcessInventoryStatus is assigned inside the sampler's presentation step and carries each sample's time;
+        // its handler stands in for any display defect.
         shell.PropertyChanged+=(_,e)=>
         {
-            if(e.PropertyName!=nameof(ShellViewModel.SampleTime)) return;
+            if(e.PropertyName!=nameof(ShellViewModel.ProcessInventoryStatus)) return;
             if(faulting) {thrown++;throw new InvalidOperationException("Synthetic presentation fault.");}
             presented++;
         };

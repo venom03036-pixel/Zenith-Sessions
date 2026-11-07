@@ -18,7 +18,7 @@ public sealed class TelemetryHistory
 {
     public const int MaximumClients = 128, MaximumPoints = 120;
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(2);
-    public static readonly TimeSpan MaximumSystemAge = TimeSpan.FromSeconds(3);
+    public static readonly TimeSpan MaximumSystemAge = CapacityPolicy.ResourceSampleExpiry;
     public static readonly TimeSpan MaximumClientAge = TimeSpan.FromSeconds(10);
     private readonly object _gate = new();
     private readonly List<SystemTelemetryPoint> _systemPoints = [];

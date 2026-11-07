@@ -54,7 +54,7 @@ public static class LaunchReservationProjection
             if (!observations.TryAdd(row.ProcessId, row)) freshInventory = false;
         }
         var resource = desktop.Resources;
-        bool freshResource = resource is { IsValid: true } && Fresh(resource.ObservedUtc, now);
+        bool freshResource = resource is { IsValid: true } && Fresh(resource.ObservedUtc, now, CapacityPolicy.ResourceSampleExpiry);
         var fallbackBudget = LaunchResourceBudget.FromSettings(settings);
         var reservations = new List<ResourceReservation>(operations.Length); var safelyObserved = new HashSet<Guid>();
         var fullBudgets = new List<LaunchResourceBudget>(operations.Length); bool forecastsKnown = true;
@@ -112,7 +112,9 @@ public static class LaunchReservationProjection
         return new(reservations.AsReadOnly(), occupied, freshInventory, credited, full, explanation, safelyObserved.ToFrozenSet(), forecastsKnown);
     }
 
-    private static bool Fresh(DateTimeOffset observed, DateTimeOffset now) => observed != default && observed <= now && now - observed <= MaximumEvidenceAge;
+    // Process evidence ages against MaximumEvidenceAge; the system sample against the shared resource expiry.
+    private static bool Fresh(DateTimeOffset observed, DateTimeOffset now) => Fresh(observed, now, MaximumEvidenceAge);
+    private static bool Fresh(DateTimeOffset observed, DateTimeOffset now, TimeSpan age) => observed != default && observed <= now && now - observed <= age;
     private static bool ClosureAcknowledged(LaunchOperation operation) => operation.State == LaunchState.Cancelled && operation.Problem == LaunchProblem.ClientClosureAcknowledged;
     private static bool CleanMemory(SessionObservation row, ResourceSnapshot resource) => row.WorkingSetBytes >= 0
         && (ulong)row.WorkingSetBytes <= resource.TotalPhysical && row.PrivateCommitBytes >= 0 && (ulong)row.PrivateCommitBytes <= resource.CommitUsed

@@ -49,7 +49,7 @@ public sealed partial class ShellViewModel
         {
             RefreshClientPreviewContext();
             if(!CanStartWindowsOverview) {ClientPreviews.Fence("Overview previews need a visible unlocked Windows page and fresh healthy resources. Sample mode never captures real windows.");return;}
-            ClientPreviews.StartOverview(Volatile.Read(ref _latestDesktop)!.Resources.ObservedUtc.AddSeconds(3));
+            ClientPreviews.StartOverview(Volatile.Read(ref _latestDesktop)!.Resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
         });
         FocusOverviewClient=new(_=>FocusOverviewClientAsync(),Fail);
     }
@@ -59,7 +59,7 @@ public sealed partial class ShellViewModel
         var now=DateTimeOffset.UtcNow;
         return snapshot is not null && snapshot.Resources.IsValid && snapshot.Resources.ObservedUtc!=default
             && snapshot.Resources.ObservedUtc-now<=ClientPreviewLimits.MaximumFutureSkew
-            && now-snapshot.Resources.ObservedUtc<=TimeSpan.FromSeconds(3) && !Volatile.Read(ref _lastPressure).Held;
+            && now-snapshot.Resources.ObservedUtc<=CapacityPolicy.ResourceSampleExpiry && !Volatile.Read(ref _lastPressure).Held;
     }
     private void SetClientPreviewMode(bool previews)=>SetSessionPresentation(previews,false);
     private void SetSessionPresentation(bool previews,bool history)
@@ -95,7 +95,7 @@ public sealed partial class ShellViewModel
         ClientPreviews.ObserveInventory(snapshot);ClientPreviews.ValidateObservedTargets(snapshot);
         RefreshClientPreviewContext();
         if(_clientPreviewAllowed)
-            ClientPreviews.RenewResourceLease(snapshot.Resources.ObservedUtc.AddSeconds(3));
+            ClientPreviews.RenewResourceLease(snapshot.Resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
     }
     // The presenter applies each inventory after this sample's RefreshClientPreviewContext has already
     // raised, so the shell follows the selected tile's own CanFocus. A removed tile clears the selection
@@ -160,6 +160,6 @@ public sealed partial class ShellViewModel
         if(selected.Length>ClientPreviewLimits.MaximumTargets || selected.Any(row=>row.Window==0 || row.ProcessId<=0 || row.ProcessStartUtcTicks<=0 || row.Problem is not null))
         {ClientPreviews.Fence("Choose up to four current client windows with a valid process start time. No window was substituted.");return;}
         var resources=Volatile.Read(ref _latestDesktop)!.Resources;
-        ClientPreviews.Start(selected.Select(row=>new ClientPreviewTarget(new(null,row.ProcessId,row.ProcessStartUtcTicks),row.Window)).ToArray(),resources.ObservedUtc.AddSeconds(3));
+        ClientPreviews.Start(selected.Select(row=>new ClientPreviewTarget(new(null,row.ProcessId,row.ProcessStartUtcTicks),row.Window)).ToArray(),resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
     }
 }

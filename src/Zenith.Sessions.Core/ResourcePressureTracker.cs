@@ -12,7 +12,7 @@ public sealed class ResourcePressureTracker
     public PressureDecision Observe(ResourceSnapshot sample,CapacityDecision memory,DateTimeOffset now)
     {
         bool fresh=memory.SamplesHealthy && sample.CpuPercent is >=0 and <=100 && sample.ObservedUtc<=now.AddSeconds(1);
-        bool discontinuity=_last is { } previous && (sample.ObservedUtc<=previous || sample.ObservedUtc-previous>TimeSpan.FromSeconds(3));
+        bool discontinuity=_last is { } previous && (sample.ObservedUtc<=previous || sample.ObservedUtc-previous>CapacityPolicy.ResourceSampleExpiry);
         if(discontinuity || !fresh) { _cpuHighSince=null; _healthySince=null; _gpuHighSince=null; _gpuObserved=null; }
         if(!fresh || discontinuity)
         { _held|=_measured; _last=sample.ObservedUtc; return new(true,"Resource admission held: waiting for coherent memory, commit and CPU measurements."); }

@@ -181,8 +181,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private GroupFilter _group=GroupFilter.All;
     private AccountOrder _order;
     private AccountRow? _selected;
-    private int _accountCount, _sessionCount;
-    private string _physical = "Measuring…", _commit = "Measuring…", _cpu = "Measuring…", _capacity = "Waiting for measurements", _sampleTime = "—";
+    private int _accountCount;
+    private string _capacity = "Waiting for measurements";
     private string _pageLabel = "0 accounts", _saveStatus = "Not loaded";
     public string DataRoot { get; }
     public bool IsSample { get; }
@@ -227,12 +227,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string PageLabel { get => _pageLabel; private set => Set(ref _pageLabel, value); }
     public string SaveStatus { get => _saveStatus; private set => Set(ref _saveStatus, value); }
     public int AccountCount { get => _accountCount; private set => Set(ref _accountCount, value); }
-    public int SessionCount { get => _sessionCount; private set => Set(ref _sessionCount, value); }
-    public string Physical { get => _physical; private set => Set(ref _physical, value); }
-    public string Commit { get => _commit; private set => Set(ref _commit, value); }
-    public string Cpu { get => _cpu; private set => Set(ref _cpu, value); }
     public string Capacity { get => _capacity; private set => Set(ref _capacity, value); }
-    public string SampleTime { get => _sampleTime; private set => Set(ref _sampleTime, value); }
     public bool Dense { get => _settings.DenseAccounts; set { if (_settings.DenseAccounts == value) return; _settings = _settings with { DenseAccounts = value }; Raise(); PreferencesEdited(); } }
     private string _spareRam = "3", _physicalPerClient = "2.5", _commitPerClient = "3", _maximumClients = "", _oauthClientId = "", _callbackPort="47635";
     public string SpareRam { get => _spareRam; set { if (Set(ref _spareRam, value)) PreferencesEdited(); } }
@@ -582,8 +577,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             while(!ct.IsCancellationRequested)
             {
                 await SampleAsync(ct).ConfigureAwait(false);
-                // One owned loop, no catch-up bursts. Essential native measurements stay 1 Hz.
-                await Task.Delay(Math.Min(1000,Volatile.Read(ref _activePerformance).ProcessSampleMs),ct).ConfigureAwait(false);
+                // One owned loop, no catch-up bursts. Essential native measurements stay at the policy's fixed cadence.
+                var policy=Volatile.Read(ref _activePerformance);
+                await Task.Delay(Math.Min(policy.EssentialResourceSampleMs,policy.ProcessSampleMs),ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
@@ -663,10 +659,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private void PresentSample(SamplePresentation sample)
     {
-        var (snapshot,capacity,projection,pressure,now)=sample;var memory=snapshot.Resources;
-        Physical = memory.IsValid ? $"{memory.AvailablePhysical / (double)CapacityPolicy.GiB:0.0} / {memory.TotalPhysical / (double)CapacityPolicy.GiB:0.0} GiB free" : "Unavailable";
-        Commit = memory.IsValid ? $"{memory.CommitUsed / (double)CapacityPolicy.GiB:0.0} / {memory.CommitLimit / (double)CapacityPolicy.GiB:0.0} GiB used" : "Unavailable";
-        Cpu = memory.CpuPercent is { } percent ? $"{percent:0}%" : "Warming up";
+        // Resource headlines are the Overview projection's, which also checks freshness.
+        var (snapshot,capacity,projection,pressure,now)=sample;
         Capacity=(projection.ForecastsKnown?capacity.Explanation+" ":"")+projection.Explanation;
         RefreshNativeTrialFeatures();
         PressureNotice=pressure.Explanation;RecordOverviewSample(snapshot,capacity,projection);
@@ -674,7 +668,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RefreshDiagnosticsView();
         RefreshDestinationCapacity();
         foreach(var account in Accounts) account.UpdateAuthorizationClock(DateTimeOffset.UtcNow);
-        SessionCount = snapshot.Sessions.Count; SampleTime = $"Updated {memory.ObservedUtc.LocalDateTime:T}";
         ProcessInventoryStatus=snapshot.Problem is null && snapshot.ProcessInventoryComplete && snapshot.ProcessObservedUtc is { } at && at<=now.AddSeconds(1) && now-at<=RecentClientHistoryReducer.MaximumInventoryAge
             ? $"Process inventory sampled {at.LocalDateTime:T} · complete scan. Account identity remains unverified."
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";

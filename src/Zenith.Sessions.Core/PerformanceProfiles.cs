@@ -39,8 +39,8 @@ public sealed record ManagerPerformanceSettings(ManagerPerformanceProfile Profil
 public sealed record ManagerPerformancePolicy(ManagerPerformanceProfile Profile, int ProcessSampleMs, int PresentationMs,
     int StaggerMs, int StabilizationMs, Guid? MainAccountProfileId = null, int MainAccountPriorityBoost = 0)
 {
-    public int EssentialResourceSampleMs => 1000;
-    public int ResourceSampleExpiryMs => 3000;
+    public int EssentialResourceSampleMs => (int)CapacityPolicy.EssentialResourceSampleInterval.TotalMilliseconds;
+    public int ResourceSampleExpiryMs => (int)CapacityPolicy.ResourceSampleExpiry.TotalMilliseconds;
     public bool NeedsMainAccount => Profile == ManagerPerformanceProfile.MainAccountPriority && MainAccountProfileId is null;
     public string DisplayName => Profile switch
     {
@@ -59,7 +59,7 @@ public sealed record ManagerPerformancePolicy(ManagerPerformanceProfile Profile,
             string priority = NeedsMainAccount ? " Select a main saved account to enable its launch-order priority."
                 : MainAccountPriorityBoost > 0 ? " The selected main account receives a bounded 100-point launch-order boost; queue aging and admission guards still apply."
                 : " Launch order follows the existing profile priorities and queue aging.";
-            return timing + priority + " Essential RAM, commit and CPU safety sampling stays at 1000 ms with 3000 ms expiry. Resource headroom stays configured separately.";
+            return timing + priority + FormattableString.Invariant($" Essential RAM, commit and CPU safety sampling stays at {EssentialResourceSampleMs} ms with {ResourceSampleExpiryMs} ms expiry. Resource headroom stays configured separately.");
         }
     }
     public string PendingCapabilities => "Native FPS/graphics and client CPU/render policies, live previews, macro scheduling and per-account performance overrides require supported integration and validation. Faster manager observations do not establish improved game FPS or measured capacity gains.";
