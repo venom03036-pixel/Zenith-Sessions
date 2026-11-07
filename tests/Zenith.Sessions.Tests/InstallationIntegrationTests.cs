@@ -240,7 +240,7 @@ public sealed partial class ClientWindowIntegrationTests
             "Roblox registration: An installation hint was malformed, unsupported or oversized. Its raw value was discarded."
         }, vm.InstallationIssues);
         Assert.Equal("File found · unverified", vm.InstallationCandidates[0].FileState);
-        Assert.Equal("Too large to inspect (over 256 MB)", vm.InstallationCandidates[1].FileState);
+        Assert.Equal("Too large to inspect (over 512 MB)", vm.InstallationCandidates[1].FileState);
 
         // An issue naming a product or source that does not exist is inconsistent metadata, not a line to show.
         discovery.Override = Snapshot(new ClientInstallationIssue(ClientInstallationIssueCode.MultipleCandidates, (ClientInstallationProduct)99));

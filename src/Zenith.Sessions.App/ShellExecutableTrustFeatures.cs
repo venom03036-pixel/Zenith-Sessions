@@ -55,7 +55,7 @@ public sealed partial class ShellViewModel
                 || result.Status == ClientExecutableTrustStatus.VerifiedRobloxPublisher
                     && (result.Reason != ClientExecutableTrustReason.Verified || result.File is null || result.Signer is null
                         || !string.Equals(result.File.FullPath,selected.ExecutablePath,StringComparison.OrdinalIgnoreCase)
-                        || result.File.Length is <=0 or >536870912 || result.File.FileId.Length!=32 || !result.File.FileId.All(char.IsAsciiHexDigit)
+                        || result.File.Length is <=0 or >WindowsClientExecutableTrust.MaximumFileBytes || result.File.FileId.Length!=32 || !result.File.FileId.All(char.IsAsciiHexDigit)
                         || !string.Equals(result.Signer.Organization,"Roblox Corporation",StringComparison.OrdinalIgnoreCase) || result.Signer.CertificateSha256.Length!=64 || !result.Signer.CertificateSha256.All(char.IsAsciiHexDigit)
                         || result.Signer.NotAfterUtc<=result.Signer.NotBeforeUtc
                         || result.Sha256 is not { Length: 64 } hash || !hash.All(char.IsAsciiHexDigit)))

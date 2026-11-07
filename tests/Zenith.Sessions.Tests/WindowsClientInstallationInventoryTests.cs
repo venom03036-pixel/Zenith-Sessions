@@ -183,6 +183,37 @@ public sealed class WindowsClientInstallationInventoryTests : IDisposable
         Assert.Equal(CapabilityState.Unverified,candidate.Authenticity);Assert.Equal(CapabilityState.Unavailable,candidate.NamedAccountLaunch);
         Assert.Equal(before,await File.ReadAllBytesAsync(player));Assert.Single(Directory.GetFiles(_root,"*",SearchOption.AllDirectories));
     }
+    [Fact]
+    public void InventorySizeCapNeverHidesAFileTheVerifierWouldAccept()
+    {
+        // The inventory reads only the 64 KiB-bounded version resource, so a lower cap of its own would protect nothing: it would only
+        // mark a file "too large" that Verify Roblox publisher still accepts, and so disable Verify and the native trial for that row.
+        string Player(string folder,long length)
+        {
+            string directory=Path.Combine(_root,"Roblox","Versions",folder),path=Path.Combine(directory,"RobloxPlayerBeta.exe");
+            Directory.CreateDirectory(directory);SparseFixture(path,length);return path;
+        }
+        string over256=Player("version-over256",256L*1024*1024+1),atCap=Player("version-atcap",WindowsClientExecutableTrust.MaximumFileBytes);
+        string overCap=Player("version-overcap",WindowsClientExecutableTrust.MaximumFileBytes+1);
+        var source=new WindowsClientInstallationInventorySource(_root,includeCurrentUserRegistry:false);
+        // The fixtures carry no version resource, so a file the verifier accepts reads as MetadataUnavailable, never TooLarge.
+        Assert.Equal(ClientInstallationFileState.MetadataUnavailable,source.InspectExecutable(over256,default).State);
+        Assert.Equal(ClientInstallationFileState.MetadataUnavailable,source.InspectExecutable(atCap,default).State);
+        Assert.Equal(ClientInstallationFileState.TooLarge,source.InspectExecutable(overCap,default).State);
+        Assert.Equal(WindowsClientExecutableTrust.MaximumFileBytes,WindowsClientInstallationInventorySource.MaximumExecutableBytes);
+    }
+    /// <summary>An MZ-prefixed file of the given length, marked sparse first so the test never allocates hundreds of MiB of disk.</summary>
+    private static void SparseFixture(string path,long length)
+    {
+        using var stream=new FileStream(path,FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None);
+        if(!DeviceIoControl(stream.SafeFileHandle,FsctlSetSparse,IntPtr.Zero,0,IntPtr.Zero,0,out _,IntPtr.Zero)) throw new Win32Exception(Marshal.GetLastWin32Error());
+        stream.Write([0x4d,0x5a,0,0]);stream.SetLength(length);stream.Flush();
+        Assert.NotEqual((FileAttributes)0,File.GetAttributes(path)&FileAttributes.SparseFile);Assert.Equal(length,new FileInfo(path).Length);
+    }
+    private const uint FsctlSetSparse=0x000900C4;
+    [DllImport("kernel32.dll",SetLastError=true)]
+    [return:MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DeviceIoControl(SafeFileHandle device,uint code,IntPtr input,uint inputBytes,IntPtr output,uint outputBytes,out uint returned,IntPtr overlapped);
     /// <summary>A private application hive (RegLoadAppKey) in the test's owned temp folder, so the user's real HKCU is never opened or written.</summary>
     private sealed class OwnedApplicationHive : IDisposable
     {

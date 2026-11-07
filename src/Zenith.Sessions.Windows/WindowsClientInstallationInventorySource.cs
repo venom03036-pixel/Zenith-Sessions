@@ -14,7 +14,9 @@ namespace Zenith.Sessions.Windows;
 public sealed class WindowsClientInstallationInventorySource : IClientInstallationInventorySource
 {
     public const int MaximumRegistryValueBytes=4096,MaximumVersionResourceBytes=65536;
-    public const long MaximumExecutableBytes=256L*1024*1024;
+    // Only the version resource is read (bounded above), so this cap guards nothing of its own: it must never mark a file
+    // too large that the publisher verifier would still check, or Verify and the native trial go dark for that row.
+    public const long MaximumExecutableBytes=WindowsClientExecutableTrust.MaximumFileBytes;
     private readonly string? _localOverride;
     private readonly bool _includeRegistry;
     private readonly Func<string,uint> _driveType;
