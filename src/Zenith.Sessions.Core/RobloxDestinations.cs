@@ -145,7 +145,8 @@ public static class RobloxDestinationParser
         return Resolved(placeId.Value, job);
     }
 
-    private static bool TryQuery(string fields, out Dictionary<string, string> query)
+    // Also the share link parser's query reader, so both parsers share one set of query limits.
+    internal static bool TryQuery(string fields, out Dictionary<string, string> query)
     {
         query = new(StringComparer.OrdinalIgnoreCase);
         if (fields.Length == 0) return true;

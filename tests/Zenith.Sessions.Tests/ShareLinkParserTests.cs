@@ -15,6 +15,7 @@ public sealed class ShareLinkParserTests
     public void ParsesExperienceAndServerShareLinks(string input, RobloxShareLinkType type, string expectedCode)
     {
         Assert.True(RobloxShareLinkParser.TryParse(input, out var link)); using var owned = link!;
+        Assert.Equal(RobloxDestinationKind.UnresolvedShareLink, RobloxDestinationParser.Parse(input).Kind);
         Assert.Equal(type, owned.Type); Assert.Equal(expectedCode.Length, owned.Code.Length);
         string revealed = ""; owned.Code.Reveal(code => revealed = new string(code));
         Assert.Equal(expectedCode, revealed);
@@ -29,6 +30,7 @@ public sealed class ShareLinkParserTests
     public void ParsesInviteAndVersion2ShareLinks(string input, RobloxShareLinkType type)
     {
         Assert.True(RobloxShareLinkParser.TryParse(input, out var link)); using var owned = link!;
+        Assert.Equal(RobloxDestinationKind.UnresolvedShareLink, RobloxDestinationParser.Parse(input).Kind);
         Assert.Equal(type, owned.Type);
         string revealed = ""; owned.Code.Reveal(code => revealed = new string(code));
         Assert.Equal(Code, revealed); Assert.DoesNotContain(Code, owned.ToString(), StringComparison.Ordinal);
@@ -75,6 +77,17 @@ public sealed class ShareLinkParserTests
     [InlineData("   ")]
     public void RejectsOtherHostsHttpExtraParametersAndBadCodes(string input)
     {
+        Assert.False(RobloxShareLinkParser.TryParse(input, out var link)); Assert.Null(link);
+    }
+
+    // One definition of a safe roblox.com link: the share parser accepts only what the destination parser already
+    // classifies as a share link (path, escape and query hardening included), so the two cannot drift apart.
+    [Theory]
+    [InlineData("https://www.roblox.com/x/../share?code=abc&type=Server")]
+    [InlineData("https://www.roblox.com/share?code=abc&type=Server%00")]
+    public void ShareParserRejectsWhatTheDestinationParserRejects(string input)
+    {
+        Assert.NotEqual(RobloxDestinationKind.UnresolvedShareLink, RobloxDestinationParser.Parse(input).Kind);
         Assert.False(RobloxShareLinkParser.TryParse(input, out var link)); Assert.Null(link);
     }
 

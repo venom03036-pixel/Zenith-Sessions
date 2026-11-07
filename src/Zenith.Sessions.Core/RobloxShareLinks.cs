@@ -158,6 +158,12 @@ public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, I
 /// carry no type). The query must hold exactly those two fields. The existing destination parser keeps discarding share
 /// codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
 /// </summary>
+/// <remarks>
+/// One definition of a safe roblox.com link: input is first classified by <see cref="RobloxDestinationParser.Parse"/>, so its
+/// readable-input, HTTPS, exact-host, authority, userinfo, port, fragment, escape, path and query rules apply here unchanged.
+/// This parser only narrows that result, by design: ro.blox.com, roblox:// fields, a code on another path (or as shareCode)
+/// and any extra query field are not share links it can resolve.
+/// </remarks>
 public static class RobloxShareLinkParser
 {
     public const int MaximumInputLength = RobloxDestinationParser.MaximumInputLength;
@@ -166,18 +172,12 @@ public static class RobloxShareLinkParser
     public static bool TryParse(string? input, out RobloxShareLink? link)
     {
         link = null;
-        if (string.IsNullOrWhiteSpace(input) || input.Length > MaximumInputLength || input.Any(char.IsControl)) return false;
-        string text = input.Trim();
-        if (text.Any(char.IsWhiteSpace) || text.Contains('\\') || !ValidEscapes(text)) return false;
-        if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps || uri.UserInfo.Length != 0
-            || uri.Port != 443 || uri.Fragment.Length != 0 || uri.Host is not ("www.roblox.com" or "roblox.com")) return false;
-        // Do not let Uri normalization turn a different input into an allowlisted host.
-        int start = text.IndexOf("://", StringComparison.Ordinal) + 3;
-        int authorityEnd = text.IndexOfAny(['/', '?', '#'], start);
-        string authority = authorityEnd < 0 ? text[start..] : text[start..authorityEnd];
-        if (!authority.Equals(uri.Host, StringComparison.OrdinalIgnoreCase) && !authority.Equals(uri.Host + ":443", StringComparison.OrdinalIgnoreCase)) return false;
+        if (input is null || RobloxDestinationParser.Parse(input).Kind != RobloxDestinationKind.UnresolvedShareLink) return false;
+        if (!Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
+            || uri.Host is not ("www.roblox.com" or "roblox.com")) return false;
         if (!uri.AbsolutePath.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase)) return false;
-        if (!TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2 || !query.TryGetValue("code", out string? code)) return false;
+        if (!RobloxDestinationParser.TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2
+            || !query.TryGetValue("code", out string? code)) return false;
         if (code.Length is 0 or > MaximumCodeLength || !code.All(char.IsAsciiLetterOrDigit)) return false;
         RobloxShareLinkType kind;
         if (query.TryGetValue("type", out string? type))
@@ -192,27 +192,6 @@ public static class RobloxShareLinkParser
         else if (query.TryGetValue("v", out string? version) && version.Equals("v2", StringComparison.OrdinalIgnoreCase)) kind = RobloxShareLinkType.DeepLinkV2;
         else return false;
         link = new RobloxShareLink(new ProtectedShareCode(code), kind);
-        return true;
-    }
-
-    private static bool ValidEscapes(string text)
-    {
-        for (int index = text.IndexOf('%'); index >= 0; index = text.IndexOf('%', index + 1))
-            if (index + 2 >= text.Length || !char.IsAsciiHexDigit(text[index + 1]) || !char.IsAsciiHexDigit(text[index + 2])) return false;
-        return true;
-    }
-
-    private static bool TryQuery(string query, out Dictionary<string, string> fields)
-    {
-        fields = new(StringComparer.OrdinalIgnoreCase);
-        if (query.Length == 0) return true;
-        foreach (string part in query.Split('&'))
-        {
-            int separator = part.IndexOf('=');
-            if (separator <= 0) return false;
-            string key = Uri.UnescapeDataString(part[..separator]), value = Uri.UnescapeDataString(part[(separator + 1)..]);
-            if (!fields.TryAdd(key, value)) return false;
-        }
         return true;
     }
 }
