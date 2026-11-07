@@ -10,19 +10,41 @@ namespace Zenith.Sessions.Windows;
 /// <summary>Only current-user documented log roots; no recursive scan, credential folders or file writes.</summary>
 internal sealed class WindowsClientLogProbe : IClientLogProbe
 {
+    private static readonly string[] ClientImageNames = ["RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Roblox.exe"];
     private readonly (string Path, ClientLogVariant Variant)[] _roots;
+    private readonly string _anchor;
     private readonly Dictionary<string, ClientLogCandidate> _known = new(StringComparer.OrdinalIgnoreCase);
     private IEnumerator<string>? _scan;
     private int _root;
     private readonly SecurityIdentifier? _user;
 
-    internal WindowsClientLogProbe()
+    internal WindowsClientLogProbe() : this(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)) { }
+
+    private WindowsClientLogProbe(string local) : this(
+        [(Path.Combine(local, "Roblox", "logs"), ClientLogVariant.Win32),
+            (Path.Combine(local, "Packages", "ROBLOXCorporation.ROBLOX_55nm5eh3cm0pr", "LocalState", "logs"), ClientLogVariant.Uwp)],
+        local, CurrentUser()) { }
+
+    /// <summary>
+    /// Every root must sit below <paramref name="trustedAnchor"/> with no reparse point on the way; production passes
+    /// LocalApplicationData. <paramref name="user"/> is the token owner a client process must have (null matches none).
+    /// </summary>
+    internal WindowsClientLogProbe(IReadOnlyList<(string Path, ClientLogVariant Variant)> roots, string trustedAnchor, SecurityIdentifier? user)
+    {
+        ArgumentNullException.ThrowIfNull(roots);
+        ArgumentNullException.ThrowIfNull(trustedAnchor);
+        _roots = roots.ToArray();
+        _anchor = trustedAnchor;
+        _user = user;
+    }
+
+    internal IReadOnlyList<(string Path, ClientLogVariant Variant)> Roots => Array.AsReadOnly(_roots);
+    internal string TrustedAnchor => _anchor;
+
+    private static SecurityIdentifier? CurrentUser()
     {
         using var current = WindowsIdentity.GetCurrent();
-        _user = current.User;
-        string local = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        _roots = [(Path.Combine(local, "Roblox", "logs"), ClientLogVariant.Win32),
-            (Path.Combine(local, "Packages", "ROBLOXCorporation.ROBLOX_55nm5eh3cm0pr", "LocalState", "logs"), ClientLogVariant.Uwp)];
+        return current.User;
     }
 
     public ClientLogCandidates Discover(int maximum, CancellationToken ct)
@@ -70,9 +92,9 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
             inspected >= 256 || Stopwatch.GetElapsedTime(began) >= TimeSpan.FromMilliseconds(50), denied);
     }
 
-    private static bool SafeDirectories(string path)
+    private bool SafeDirectories(string path)
     {
-        string local = Path.GetFullPath(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData));
+        string local = Path.GetFullPath(_anchor);
         if (path.StartsWith(@"\\", StringComparison.Ordinal) || !path.StartsWith(local + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return false;
         for (var directory = new DirectoryInfo(path); directory is not null; directory = directory.Parent)
         {
@@ -92,11 +114,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
         if (process.IsInvalid || !ProcessInstanceIdentity.MatchesStart(process, key.ProcessStartUtcTicks)) return false;
         var image = new StringBuilder(1024); uint length = (uint)image.Capacity;
         if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
-        string path = image.ToString();
-        string name = Path.GetFileName(path);
-        if (!new[] { "RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Roblox.exe" }.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
-        bool packaged = path.Split(Path.DirectorySeparatorChar).Any(component => component.Equals("WindowsApps", StringComparison.OrdinalIgnoreCase));
-        if (packaged != (variant == ClientLogVariant.Uwp)) return false;
+        if (!IsClientImage(image.ToString(), variant)) return false;
         if (!Native.OpenProcessToken(process, 0x8, out var token)) return false; // TOKEN_QUERY; never impersonates.
         using (token)
         {
@@ -104,6 +122,15 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
             catch (UnauthorizedAccessException) { return false; }
             catch (System.Security.SecurityException) { return false; }
         }
+    }
+
+    /// <summary>The image must be an allowed client name, and a WindowsApps path component means the packaged (UWP) variant.</summary>
+    internal static bool IsClientImage(string imagePath, ClientLogVariant variant)
+    {
+        string name = Path.GetFileName(imagePath);
+        if (!ClientImageNames.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
+        bool packaged = imagePath.Split(Path.DirectorySeparatorChar).Any(component => component.Equals("WindowsApps", StringComparison.OrdinalIgnoreCase));
+        return packaged == (variant == ClientLogVariant.Uwp);
     }
 
     public ResourceHolderResult QueryHolders(string path, CancellationToken ct) => RestartManagerLogQuery.Query(path, ct);

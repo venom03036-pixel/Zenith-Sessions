@@ -99,6 +99,28 @@ public sealed class RecentClientHistoryStoreTests : IDisposable
         await Task.WhenAll(write, next); var read = await store.LoadAsync(default);
         Assert.Equal(3, read.Revision); Assert.Equal(500, Assert.Single(read.Entries).Process.ProcessId);
     }
+
+    [Fact]
+    public async Task EndEvidenceRoundTripsAndEntriesWithoutItKeepTheOriginalRowShape()
+    {
+        using var store = new RecentClientHistoryStore(_root);
+        var evidence = Entry() with { NotRespondingUtc = Now.AddSeconds(1), DisconnectedUtc = Now, DisconnectReason = 277,
+            FaultCheck = new(Now.AddSeconds(8), true, Now.AddSeconds(1), 0xC0000005, 2) };
+        var plain = Entry(456);
+        await store.SaveAsync(Snapshot(1, evidence, plain), default);
+        var read = await store.LoadAsync(default);
+        Assert.Equal(evidence, read.Entries[0]); Assert.Equal(plain, read.Entries[1]);
+        Assert.Equal(ClientEndCause.Crashed, read.Entries[0].EndCause);
+        // Rows without end evidence keep the earlier fourteen-field shape, so they stay readable by earlier versions.
+        using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = store.Path, Pooling = false, Mode = SqliteOpenMode.ReadOnly }.ToString());
+        await db.OpenAsync(); using var command = db.CreateCommand();
+        command.CommandText = "SELECT payload FROM history_entries ORDER BY ordinal";
+        var payloads = new List<string>();
+        using (var rows = await command.ExecuteReaderAsync()) while (await rows.ReadAsync()) payloads.Add(rows.GetString(0));
+        using var withEvidence = System.Text.Json.JsonDocument.Parse(payloads[0]); using var without = System.Text.Json.JsonDocument.Parse(payloads[1]);
+        Assert.Equal(22, withEvidence.RootElement.EnumerateObject().Count()); Assert.Equal(14, without.RootElement.EnumerateObject().Count());
+    }
+
     public void Dispose()
     {
         string full = System.IO.Path.GetFullPath(_root), temporary = System.IO.Path.GetFullPath(System.IO.Path.GetTempPath());

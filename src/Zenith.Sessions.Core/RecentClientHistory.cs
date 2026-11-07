@@ -1,13 +1,67 @@
 namespace Zenith.Sessions.Core;
 
-/// <summary>Presence history only; reported identity/destination are last-known unverified diagnostics.</summary>
+/// <summary>How an ended client most likely ended, from the strongest evidence recorded for that exact process.</summary>
+public enum ClientEndCause { Unknown, Crashed, NotResponding, Disconnected, LeftGame, PossibleCrash, LaunchedElsewhere }
+
+/// <summary>
+/// One read-only look for crash records after a client ended. A fault is Windows' Application Error record naming this
+/// exact process (pid and creation time). Crash dumps are only counted by creation time near the end, so one may belong to
+/// another client. Complete is false when a source could not be fully read; finding nothing never proves there was no crash.
+/// </summary>
+public sealed record ClientFaultCheck(DateTimeOffset CheckedUtc, bool Complete, DateTimeOffset? FaultRecordedUtc = null,
+    uint? ExceptionCode = null, int CrashDumps = 0)
+{
+    public const int MaximumCrashDumps = 99;
+    internal bool IsValidFor(RecentClientHistoryEntry entry) => entry.NoLongerObservedUtc is { } gone && CheckedUtc >= gone
+        && CrashDumps is >= 0 and <= MaximumCrashDumps
+        && (FaultRecordedUtc is { } fault ? fault.UtcTicks >= entry.Process.ProcessStartUtcTicks && fault <= CheckedUtc : ExceptionCode is null);
+}
+
+/// <summary>One blocking, bounded, read-only crash-record check for one ended client. Only cancellation throws.</summary>
+public interface IClientFaultProbe
+{
+    ClientFaultCheck Check(RecentClientHistoryEntry ended, DateTimeOffset now, CancellationToken ct);
+}
+
+/// <summary>
+/// Pure. Names the strongest recorded end evidence: a Windows fault record for this exact process, then a hang seen at the
+/// last observation, then a disconnect the client logged, then an unattributed crash dump. A Zenith close request alone is
+/// never a cause; it stays a separate fact because it does not prove why the process ended.
+/// </summary>
+public static class ClientEndClassifier
+{
+    public static ClientEndCause Classify(RecentClientHistoryEntry entry)
+    {
+        ArgumentNullException.ThrowIfNull(entry);
+        if (entry.NoLongerObservedUtc is null) return ClientEndCause.Unknown;
+        if (entry.FaultCheck?.FaultRecordedUtc is not null) return ClientEndCause.Crashed;
+        if (entry.NotRespondingUtc is not null) return ClientEndCause.NotResponding;
+        if (entry.DisconnectedUtc is not null)
+            return entry.DisconnectReason == ClientLogObservation.AccountLaunchedElsewhereReason ? ClientEndCause.LaunchedElsewhere
+                : ClientLogObservation.IsPlayerInitiated(entry.DisconnectReason) ? ClientEndCause.LeftGame : ClientEndCause.Disconnected;
+        return entry.FaultCheck is { CrashDumps: > 0 } ? ClientEndCause.PossibleCrash : ClientEndCause.Unknown;
+    }
+}
+
+/// <summary>
+/// Presence history; reported identity/destination are last-known unverified diagnostics. NotRespondingUtc and
+/// DisconnectedUtc describe the latest observation before the client ended; FaultCheck is the one check made after it ended.
+/// </summary>
 public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Process, DateTimeOffset FirstObservedUtc,
     DateTimeOffset LastObservedUtc, DateTimeOffset? NoLongerObservedUtc = null, DateTimeOffset? CloseRequestedUtc = null,
     long? LastKnownUserId = null, DateTimeOffset? LastKnownUserIdentityUtc = null,
-    ObservedSessionDestination? LastKnownDestination = null)
+    ObservedSessionDestination? LastKnownDestination = null, DateTimeOffset? NotRespondingUtc = null,
+    DateTimeOffset? DisconnectedUtc = null, int? DisconnectReason = null, ClientFaultCheck? FaultCheck = null)
 {
     public string Outcome => NoLongerObservedUtc is null ? "Currently observed" : "No longer observed";
-    public string Cause => "Unknown";
+    public ClientEndCause EndCause => ClientEndClassifier.Classify(this);
+    public string Cause => EndCause switch
+    {
+        ClientEndCause.Crashed => "Crashed", ClientEndCause.NotResponding => "Not responding",
+        ClientEndCause.Disconnected => "Disconnected", ClientEndCause.LeftGame => "Left the game",
+        ClientEndCause.LaunchedElsewhere => "Account launched elsewhere",
+        ClientEndCause.PossibleCrash => "Possible crash", _ => "Unknown"
+    };
     public bool CanAuthorizeAccountAction => false;
 
     public RecentClientHistoryEntry Validated(bool ended)
@@ -20,7 +74,11 @@ public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Pr
                 || NoLongerObservedUtc is { } until && close - until > RecentClientHistoryReducer.MaximumInventoryAge)
             || LastKnownUserId.HasValue != LastKnownUserIdentityUtc.HasValue || LastKnownUserId is <= 0
             || LastKnownUserIdentityUtc is { } userTime && !ValidFactTime(userTime)
-            || LastKnownDestination is { } destination && (destination.PlaceId <= 0 || destination.JobId == Guid.Empty || destination.UniverseId is <= 0 || !ValidFactTime(destination.ObservedUtc)))
+            || LastKnownDestination is { } destination && (destination.PlaceId <= 0 || destination.JobId == Guid.Empty || destination.UniverseId is <= 0 || !ValidFactTime(destination.ObservedUtc))
+            || NotRespondingUtc is { } hung && !ValidFactTime(hung)
+            || DisconnectedUtc is { } disconnected && !ValidFactTime(disconnected)
+            || DisconnectReason is { } reason && (DisconnectedUtc is null || reason is <= 0 or > ClientLogObservation.MaximumDisconnectReason)
+            || FaultCheck is { } check && !check.IsValidFor(this))
             throw new ArgumentException("The client presence history entry is inconsistent.");
         return this;
     }
@@ -56,6 +114,11 @@ public sealed class RecentClientHistoryReducer
 {
     public const int MaximumActive = 128, MaximumEnded = 100;
     public static readonly TimeSpan MaximumInventoryAge = TimeSpan.FromSeconds(10);
+    /// <summary>
+    /// A crash-record check waits FaultCheckDelay after a client ended so Windows and Roblox's crash handler can finish
+    /// writing, and is skipped for ends older than MaximumFaultCheckAge (for example history restored much later).
+    /// </summary>
+    public static readonly TimeSpan FaultCheckDelay = TimeSpan.FromSeconds(5), MaximumFaultCheckAge = TimeSpan.FromMinutes(10);
     private readonly object _gate = new();
     private readonly Dictionary<SessionProcessKey, RecentClientHistoryEntry> _active = [];
     private readonly List<RecentClientHistoryEntry> _ended = [];
@@ -118,12 +181,14 @@ public sealed class RecentClientHistoryReducer
                     int old = _ended.FindIndex(item => item.Process == key);
                     if (old >= 0)
                     {
-                        entry = _ended[old].LastObservedUtc <= presence ? _ended[old] with { NoLongerObservedUtc = null } : new(Guid.NewGuid(), key, presence, presence);
+                        entry = _ended[old].LastObservedUtc <= presence ? _ended[old] with { NoLongerObservedUtc = null, FaultCheck = null } : new(Guid.NewGuid(), key, presence, presence);
                         _ended.RemoveAt(old); persisted = true;
                     }
                     else entry = new(Guid.NewGuid(), key, presence, presence);
                 }
                 var next = entry with { LastObservedUtc = presence > entry.LastObservedUtc ? presence : entry.LastObservedUtc };
+                // Only the latest observation counts: a client that answered again is no longer recorded as hung.
+                if (presence >= entry.LastObservedUtc) next = next with { NotRespondingUtc = present[key].NotResponding ? presence : null };
                 SessionEvidenceSnapshot? matching = null; bool ambiguous = false;
                 foreach (var item in evidence)
                     if (item is not null && item.Process == key)
@@ -142,6 +207,12 @@ public sealed class RecentClientHistoryReducer
                     if (destination is { PlaceId: > 0 } target && target.JobId != Guid.Empty && target.UniverseId is not <= 0 && target.ObservedUtc.UtcTicks >= key.ProcessStartUtcTicks
                         && target.ObservedUtc <= next.LastObservedUtc && (next.LastKnownDestination is null || target.ObservedUtc >= next.LastKnownDestination.ObservedUtc))
                         next = next with { LastKnownDestination = target };
+                    // A logged disconnect lasts until the same client logs a join, connection or teleport.
+                    if (facts.Lifecycle == ObservedSessionLifecycle.Disconnected)
+                        next = next with { DisconnectedUtc = next.DisconnectedUtc ?? next.LastObservedUtc,
+                            DisconnectReason = next.DisconnectReason ?? (facts.DisconnectReason is > 0 and <= ClientLogObservation.MaximumDisconnectReason ? facts.DisconnectReason : null) };
+                    else if (facts.Lifecycle is ObservedSessionLifecycle.Joining or ObservedSessionLifecycle.Connected or ObservedSessionLifecycle.Teleporting)
+                        next = next with { DisconnectedUtc = null, DisconnectReason = null };
                 }
                 if (entry != next || !_active.ContainsKey(key)) changed = true;
                 _active[key] = next;
@@ -160,6 +231,34 @@ public sealed class RecentClientHistoryReducer
                 || (requestedUtc - entry.LastObservedUtc).Duration() > MaximumInventoryAge
                 || entry.CloseRequestedUtc is { } previous && requestedUtc <= previous) return false;
             _active[process] = entry with { CloseRequestedUtc = requestedUtc }; return true;
+        }
+    }
+    /// <summary>The earliest-ended client still waiting for its one settled crash-record check, or null.</summary>
+    public RecentClientHistoryEntry? NextFaultCheck(DateTimeOffset now)
+    {
+        lock (_gate)
+        {
+            RecentClientHistoryEntry? next = null;
+            foreach (var item in _ended)
+                if (item.FaultCheck is null && item.NoLongerObservedUtc is { } gone && now - gone >= FaultCheckDelay
+                    && now - gone <= MaximumFaultCheckAge && (next is null || gone < next.NoLongerObservedUtc)) next = item;
+            return next;
+        }
+    }
+    /// <summary>
+    /// Records the check for exactly the end it was made for. False when that entry was cleared, already checked, or came
+    /// back and possibly ended again since. An inconsistent check is a probe defect and throws ArgumentException.
+    /// </summary>
+    public bool RecordFaultCheck(RecentClientHistoryEntry ended, ClientFaultCheck check)
+    {
+        ArgumentNullException.ThrowIfNull(ended); ArgumentNullException.ThrowIfNull(check);
+        lock (_gate)
+        {
+            int index = _ended.FindIndex(item => item.EntryId == ended.EntryId);
+            if (index < 0 || _ended[index].FaultCheck is not null || _ended[index].Process != ended.Process
+                || _ended[index].NoLongerObservedUtc != ended.NoLongerObservedUtc) return false;
+            var next = (_ended[index] with { FaultCheck = check }).Validated(ended: true);
+            Advance(); _ended[index] = next; return true;
         }
     }
     public bool ClearEnded()

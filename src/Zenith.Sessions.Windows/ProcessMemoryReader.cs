@@ -16,7 +16,7 @@ public static class ProcessMemoryReader
         var measured=ReadCounters(handle);
         return measured is not null && SameStart(handle,expectedStartUtcTicks) ? measured : null;
     }
-    /// <summary>Counters for the process an already-open handle refers to. The caller owns identity checks.</summary>
+    /// <summary>Counters through a caller-owned handle with PROCESS_QUERY_LIMITED_INFORMATION. The caller owns identity checks.</summary>
     internal static ProcessMemoryReading? ReadCounters(SafeProcessHandle handle)
     {
         uint full=(uint)Marshal.SizeOf<Native.MemoryCounters>();

@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Zenith.Sessions.Core;
 
@@ -18,15 +19,21 @@ public sealed record ProcessLogDiagnostic(SessionProcessKey Process, SessionLogC
 public sealed record SessionLogDiscoverySnapshot(long Revision, DateTimeOffset ObservedUtc,
     IReadOnlyList<ProcessLogDiagnostic> Sessions, int CandidateCount, bool BudgetLimited);
 
+/// <summary>
+/// ReadsPerPass bounds the turns that may query holders or bind new logs. SharedReadBytes is the per-pass
+/// content/anchor budget for those turns; a pass may raise it to one BytesPerReader read per bound reader
+/// (never above MaximumPassReadBytes) and spend the extra on further reads of logs that still have unread bytes.
+/// </summary>
 public sealed record SessionLogCorrelatorOptions(int MaximumReaders = 16, int MaximumCandidates = 64,
     int MaximumProcesses = 128, int ReadsPerPass = 4, int SharedReadBytes = 64 * 1024,
     int BytesPerReader = 16 * 1024, int ReplayFactsPerReader = 128)
 {
+    internal const int MaximumPassReadBytes = 1024 * 1024;
     internal SessionLogCorrelatorOptions Validated()
     {
         if (MaximumReaders is < 1 or > 64 || MaximumCandidates < MaximumReaders || MaximumCandidates > 256
             || MaximumProcesses is < 1 or > 1024 || ReadsPerPass is < 1 or > 16
-            || SharedReadBytes is < 1024 or > 1024 * 1024 || BytesPerReader is < 1024 or > 65536
+            || SharedReadBytes is < 1024 or > MaximumPassReadBytes || BytesPerReader is < 1024 or > 65536
             || ReplayFactsPerReader is < 1 or > 256) throw new ArgumentOutOfRangeException(nameof(SessionLogCorrelatorOptions));
         return this;
     }
@@ -49,6 +56,8 @@ internal interface IClientLogProbe : IDisposable
 /// Reconciliation is driven by offers, not a new timer. All paths stay inside this Windows implementation.
 /// RM calls are synchronous: cancellation/deadlines are checked between native calls, not hard interrupts.
 /// DisposeAsync cancels and awaits the actual owner; it never abandons native work or starts replacement workers.
+/// A failed pass is retried by the same owner on a later offer; only consecutive failures end it. A failed discovery
+/// keeps every bound reader and its published facts; only a failure after a reader was touched resets them all.
 /// </summary>
 public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 {
@@ -65,10 +74,22 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         public SessionLogCorrelationStatus Status;
         public DateTimeOffset QueryUtc, LeaseUntil;
         public long? QueryAt;
-        public long LastVisit;
+        // LastVisit orders only the regular rotation; LastRead also counts extra backlog reads.
+        public long LastVisit, LastRead;
         public long ReplayFloorOffset;
+        // The last read stopped on its byte cap, not its fact cap, and the file still has bytes past the cursor.
+        public bool UnreadBytes;
     }
 
+    // A holder observation is trusted for this long. Holders are still re-queried on every visit made
+    // 5 s or more after the last query (QueryDue), so the lease never extends without a fresh observation.
+    // With 16 bound readers, one scout slot per pass leaves 3 visits per pass, so each bound reader is
+    // revisited every 5-6 passes: 25 s covers passes of up to about 4 s (10 s lapsed at 2 s passes).
+    // It stays under the 30 s lease cap that SessionEvidenceRegistry and SessionLogProjection enforce;
+    // the 15 s display freshness check there is separate and does not discard facts.
+    private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
+    // The fifth failed pass in a row ends the worker, so a persistent fault still reaches DisposeAsync.
+    private const int MaximumConsecutivePassFailures = 5;
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
     private readonly IClientLogProbe _probe;
@@ -82,10 +103,11 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private ClientLogCandidates _candidates = new(Array.Empty<ClientLogCandidate>(), false);
     private long? _lastPass, _lastDiscovery;
     private long _revision, _visit;
-    private int _liveReaders, _disposed;
+    private int _liveReaders, _disposed, _consecutiveFailures;
     private bool _scoutFirst;
-    // Include the reader's bounded rewrite anchor in the shared content-read budget.
-    private int ReaderByteBudget => Math.Max(1, Math.Min(_options.BytesPerReader, _options.SharedReadBytes) - 64);
+    // One turn reserves one full per-reader read, which includes the reader's bounded rewrite anchor.
+    private int TurnBytes => Math.Min(_options.BytesPerReader, _options.SharedReadBytes);
+    private int ReaderByteBudget => Math.Max(1, TurnBytes - 64);
 
     public WindowsSessionLogCorrelator(SessionLogCorrelatorOptions? options = null, TimeProvider? timeProvider = null)
         : this(new WindowsClientLogProbe(), options, timeProvider) { }
@@ -129,7 +151,23 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 }
                 if (_lastPass is { } prior && _clock.GetElapsedTime(prior) < TimeSpan.FromSeconds(1)) continue;
                 _lastPass = _clock.GetTimestamp();
-                await PassAsync(input, _stop.Token).ConfigureAwait(false);
+                try
+                {
+                    var discoveryFailure = await PassAsync(input, _stop.Token).ConfigureAwait(false);
+                    if (discoveryFailure is null) _consecutiveFailures = 0;
+                    // The pass already kept every reader and published. A failed discovery still counts as a failed
+                    // pass, so a persistent probe fault ends this owner on the fifth in a row and surfaces at DisposeAsync.
+                    else if (++_consecutiveFailures == MaximumConsecutivePassFailures) discoveryFailure.Throw();
+                }
+                catch (Exception) when (!_stop.IsCancellationRequested && _consecutiveFailures < MaximumConsecutivePassFailures - 1)
+                {
+                    // A pass that failed after touching a reader is not terminal: drop every cursor, mark all rows
+                    // Unavailable, and rediscover on the next offer, which the 1 s pass gate already rate-limits. A failed
+                    // discovery never reaches here (PassAsync keeps the readers). Repeated failures still end this owner.
+                    _consecutiveFailures++;
+                    ClearReaders(); _candidates = new(Array.Empty<ClientLogCandidate>(), false); _lastDiscovery = null;
+                    Publish(Volatile.Read(ref _latest), [], SessionLogCorrelationStatus.Unavailable);
+                }
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
@@ -141,20 +179,36 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         finally { ClearReaders(); _probe.Dispose(); }
     }
 
-    private async Task PassAsync(Input input, CancellationToken ct)
+    /// <returns>The failure of this pass's discovery, or null when discovery succeeded or was not due.</returns>
+    private async Task<ExceptionDispatchInfo?> PassAsync(Input input, CancellationToken ct)
     {
+        ExceptionDispatchInfo? discoveryFailure = null;
         if (_lastDiscovery is null || _clock.GetElapsedTime(_lastDiscovery.Value) >= TimeSpan.FromSeconds(5))
         {
             _lastDiscovery = _clock.GetTimestamp();
-            _candidates = _probe.Discover(_options.MaximumCandidates, ct);
-            var candidates = _candidates.Files.Take(_options.MaximumCandidates).ToArray();
-            var keep = candidates.Select(c => c.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var reader in _readers.Values.Where(reader => !keep.Contains(reader.Candidate.Path)
-                && (reader.Log is null || reader.Process is not { } process || !input.Processes.Contains(process))).ToArray())
-                Remove(reader);
-            foreach (var candidate in candidates)
-                if (!_readers.ContainsKey(candidate.Path))
-                    _readers.Add(candidate.Path, new(candidate));
+            ClientLogCandidates? found = null;
+            try { found = _probe.Discover(_options.MaximumCandidates, ct); }
+            catch (Exception failure) when (!ct.IsCancellationRequested)
+            {
+                // Discovery runs before any reader is touched (for example ERROR_OPERATION_ABORTED surfacing as an
+                // OperationCanceledException). Keep every reader, cursor, holder lease and bound row: only discovery is
+                // unavailable, so unbound rows publish Unavailable. It is retried on the next offer (1 s pass gate).
+                discoveryFailure = ExceptionDispatchInfo.Capture(failure);
+                _lastDiscovery = null;
+                _candidates = _candidates with { Unavailable = true };
+            }
+            if (found is not null)
+            {
+                _candidates = found;
+                var candidates = _candidates.Files.Take(_options.MaximumCandidates).ToArray();
+                var keep = candidates.Select(c => c.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var reader in _readers.Values.Where(reader => !keep.Contains(reader.Candidate.Path)
+                    && (reader.Log is null || reader.Process is not { } process || !input.Processes.Contains(process))).ToArray())
+                    Remove(reader);
+                foreach (var candidate in candidates)
+                    if (!_readers.ContainsKey(candidate.Path))
+                        _readers.Add(candidate.Path, new(candidate));
+            }
         }
 
         foreach (var reader in _readers.Values)
@@ -167,7 +221,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         var active = readers.Where(static reader => reader.Log is not null).OrderBy(static reader => reader.LastVisit).ToArray();
         var scouting = readers.Where(reader => reader.Log is null && QueryDue(reader)).OrderBy(static reader => reader.LastVisit).ToArray();
         int count = Math.Min(active.Length + scouting.Length,
-            Math.Min(_options.ReadsPerPass, _options.SharedReadBytes / Math.Min(_options.BytesPerReader, _options.SharedReadBytes)));
+            Math.Min(_options.ReadsPerPass, _options.SharedReadBytes / TurnBytes));
         int activeIndex = 0, scoutIndex = 0;
         bool limited = _candidates.BudgetLimited || scouting.Length > 0 && count < active.Length + scouting.Length;
         if (active.Length > 0 && scouting.Length > 0) _scoutFirst = !_scoutFirst;
@@ -180,12 +234,34 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             bool scout = scoutIndex < scouting.Length
                 && (activeIndex == active.Length || n == scoutTurn);
             var reader = scout ? scouting[scoutIndex++] : active[activeIndex++];
-            reader.LastVisit = ++_visit;
+            reader.LastVisit = reader.LastRead = ++_visit;
             await ObserveAsync(reader, input, ct).ConfigureAwait(false);
         }
+
+        // A chatty client can write more than one per-reader read between its regular turns. Raise the pass budget
+        // to one full read per bound reader (at most 1 MiB) and spend what the regular turns left on further reads
+        // of logs whose last read stopped on its byte cap, least recently read first, inside the same 2 s deadline.
+        // These turns never start a holder query (a reader whose query is due waits for its regular turn) and do not
+        // move a reader in the regular rotation, so holder queries per pass stay within ReadsPerPass and every bound
+        // reader is still revisited, and its holder lease renewed, exactly as often as before.
+        long passBytes = Math.Min(SessionLogCorrelatorOptions.MaximumPassReadBytes,
+            Math.Max(_options.SharedReadBytes, (long)active.Length * TurnBytes));
+        for (long turn = count; turn < passBytes / TurnBytes; turn++)
+        {
+            Reader? next = null;
+            foreach (var reader in readers)
+                if (reader.Log is not null && reader.Batch is not null && reader.UnreadBytes && !QueryDue(reader)
+                    && (next is null || reader.LastRead < next.LastRead)) next = reader;
+            if (next is null) break;
+            ct.ThrowIfCancellationRequested();
+            if (_clock.GetElapsedTime(began) >= TimeSpan.FromSeconds(2)) { limited = true; break; }
+            next.LastRead = ++_visit;
+            await ObserveAsync(next, input, ct).ConfigureAwait(false);
+        }
         limited |= _liveReaders == _options.MaximumReaders && readers.Any(static reader => reader.Process is not null && reader.Log is null);
-        if (!input.Processes.SequenceEqual(Volatile.Read(ref _latest).Processes)) return;
+        if (!input.Processes.SequenceEqual(Volatile.Read(ref _latest).Processes)) return discoveryFailure;
         Publish(input, readers, _candidates.Unavailable ? SessionLogCorrelationStatus.Unavailable : SessionLogCorrelationStatus.Unknown, limited);
+        return discoveryFailure;
     }
 
     private async Task ObserveAsync(Reader reader, Input input, CancellationToken ct)
@@ -199,7 +275,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             {
                 reader.QueryAt = _clock.GetTimestamp();
                 var result = _probe.QueryHolders(reader.Candidate.Path, ct);
-                reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc.AddSeconds(10);
+                reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc + HolderLease;
                 if (result.Status != SessionLogCorrelationStatus.ResourceHolderObserved)
                 { Reset(reader, result.Status, keepQuery: true); return; }
                 if (result.Holders.Count != 1)
@@ -217,7 +293,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             if (reader.Status != SessionLogCorrelationStatus.ResourceHolderObserved) return;
             var now = _clock.GetUtcNow();
             if (reader.Process is not { } process || reader.QueryAt is not { } queried
-                || _clock.GetElapsedTime(queried) >= TimeSpan.FromSeconds(10) || reader.QueryUtc - now > TimeSpan.FromSeconds(2)
+                || _clock.GetElapsedTime(queried) >= HolderLease || reader.QueryUtc - now > TimeSpan.FromSeconds(2)
                 || reader.LeaseUntil <= now || !input.Processes.Contains(process)
                 || !_probe.IsCurrentClient(process, reader.Candidate.Variant))
             { Reset(reader, SessionLogCorrelationStatus.Unknown, keepQuery: refreshed); return; }
@@ -263,6 +339,9 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             }
             reader.Batch = batch with { Observations = Array.AsReadOnly(facts.ToArray()), ReplayFloorOffset = reader.ReplayFloorOffset };
             reader.Identity = after;
+            // A read stopped by its fact cap is not read again in the same pass: another read would push facts the
+            // consumer has not seen out of the bounded replay window. It continues on its next regular turn.
+            reader.UnreadBytes = batch.HasMore && batch.Observations.Count < _options.ReplayFactsPerReader;
         }
         catch (FileNotFoundException) { Reset(reader, SessionLogCorrelationStatus.Missing); }
         catch (DirectoryNotFoundException) { Reset(reader, SessionLogCorrelationStatus.Missing); }
@@ -333,6 +412,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         reader.Log = null;
         reader.Facts = null;
         reader.ReplayFloorOffset = 0;
+        reader.UnreadBytes = false;
         _liveReaders--;
     }
 

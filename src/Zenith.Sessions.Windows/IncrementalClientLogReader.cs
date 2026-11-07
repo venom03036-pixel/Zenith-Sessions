@@ -225,21 +225,65 @@ public sealed class IncrementalClientLogReader : IDisposable
             if (Number(body[(marker + 7)..]) is not { } user) return null;
             return new(stream, start, end, time, readUtc, ClientLogFact.UserIdentityObserved, UserId: user);
         }
-        if (tag.SequenceEqual("FLog::Network"))
-        {
-            if (StartsPhrase(body, "Replicator created"))
-                return new(stream, start, end, time, readUtc, ClientLogFact.Connected);
-            if (StartsPhrase(body, "Lost connection with reason")
-                || StartsPhrase(body, "Sending disconnect with reason")
-                || StartsPhrase(body, "Connection closed by server"))
-                return new(stream, start, end, time, readUtc, ClientLogFact.Disconnected);
-        }
+        if (tag.SequenceEqual("FLog::Network") && StartsPhrase(body, "Replicator created"))
+            return new(stream, start, end, time, readUtc, ClientLogFact.Connected);
+        if (Disconnect(tag, body, out int? reason))
+            return new(stream, start, end, time, readUtc, ClientLogFact.Disconnected, DisconnectReason: reason);
         if (tag.SequenceEqual("FLog::UgcExperienceController") && StartsPhrase(body, "UgcExperienceController: doTeleport"))
             return new(stream, start, end, time, readUtc, ClientLogFact.Teleporting);
+        // Its tag is not yet seen in a recorded line, so any first tag except the channels a game's own print/warn/error write.
+        if (!GameWritable(tag) && ContainsToken(body, "challengedByGcs"))
+            return new(stream, start, end, time, readUtc, ClientLogFact.HumanCheck);
         return null;
     }
+    /// <summary>Tags are those seen in recorded 0.743 lines; only a bounded numeric reason code leaves this method, never text.</summary>
+    private static bool Disconnect(ReadOnlySpan<char> tag, ReadOnlySpan<char> body, out int? reason)
+    {
+        reason = null;
+        bool network = tag.SequenceEqual("FLog::Network"), transport = tag.SequenceEqual("DFLog::RbxTransportDummyClient");
+        // "Time to disconnect replication data: <seconds>" carries a duration, not a reason.
+        if (network && StartsPhrase(body, "Time to disconnect replication data")) return true;
+        if (network && Marker(body, "Disconnection Notification", ". Reason:", out reason)
+            || network && Marker(body, "Lost connection with reason", " :", out reason)
+            || network && Marker(body, "Sending disconnect with reason", ":", out reason)
+            || transport && Marker(body, "Disconnected from server for reason", ":", out reason)
+            || (network || transport) && Marker(body, "Connection closed by server", " for reason:", out reason)) return true;
+        return false;
+    }
+    /// <summary>"marker lead N" or "marker lead Label: N", e.g. ". Reason: 267" or ": Player: 285 (Name)". Other text has no code.</summary>
+    private static bool Marker(ReadOnlySpan<char> body, ReadOnlySpan<char> marker, ReadOnlySpan<char> lead, out int? reason)
+    {
+        reason = null;
+        if (!StartsPhrase(body, marker)) return false;
+        var rest = body[marker.Length..];
+        // A space before the colon is optional ("reason : text" and "reason: 267" are both seen).
+        if (lead[0] == ' ' && !rest.StartsWith(lead, StringComparison.Ordinal)) lead = lead[1..];
+        if (!rest.StartsWith(lead, StringComparison.Ordinal)) return true;
+        rest = rest[lead.Length..].TrimStart();
+        int label = 0;
+        while (label < rest.Length && label <= 16 && char.IsAsciiLetter(rest[label])) label++;
+        if (label is > 0 and <= 16 && label < rest.Length && rest[label] == ':') rest = rest[(label + 1)..].TrimStart();
+        if (Number(rest) is { } code && code <= ClientLogObservation.MaximumDisconnectReason) reason = (int)code;
+        return true;
+    }
+    private static bool GameWritable(ReadOnlySpan<char> tag)
+    {
+        int separator = tag.IndexOf("::", StringComparison.Ordinal);
+        var channel = separator < 0 ? tag : tag[(separator + 2)..];
+        return channel.SequenceEqual("Output") || channel.SequenceEqual("Warning") || channel.SequenceEqual("Error");
+    }
+    private static bool ContainsToken(ReadOnlySpan<char> body, ReadOnlySpan<char> token)
+    {
+        for (int offset = 0, found; (found = body[offset..].IndexOf(token, StringComparison.Ordinal)) >= 0; offset += found + 1)
+        {
+            int at = offset + found, after = at + token.Length;
+            if ((at == 0 || !char.IsAsciiLetterOrDigit(body[at - 1]))
+                && (after == body.Length || !char.IsAsciiLetterOrDigit(body[after]))) return true;
+        }
+        return false;
+    }
     private static bool StartsPhrase(ReadOnlySpan<char> body, ReadOnlySpan<char> marker) => body.StartsWith(marker, StringComparison.Ordinal)
-        && (body.Length == marker.Length || char.IsWhiteSpace(body[marker.Length]) || body[marker.Length] == ':');
+        && (body.Length == marker.Length || char.IsWhiteSpace(body[marker.Length]) || body[marker.Length] is ':' or '.');
     private static long? Number(ReadOnlySpan<char> text)
     {
         int end = 0;

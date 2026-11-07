@@ -34,7 +34,14 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         public readonly List<string> QueriedPaths = [];
         public ResourceHolderResult Result = new(SessionLogCorrelationStatus.ResourceHolderObserved, new[] { new ResourceHolder(process.ProcessId, process.ProcessStartUtcTicks) });
         public IReadOnlyList<ClientLogCandidate> Files = new[] { new ClientLogCandidate(path, ClientLogVariant.Win32, SyntheticClientLogFixtures.Time) };
-        public ClientLogCandidates Discover(int maximum, CancellationToken ct) { ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Discoveries); return new(Files, false); }
+        public Exception? DiscoverFailure, EveryDiscoverFailure; // One-shot and persistent synthetic probe faults.
+        public ClientLogCandidates Discover(int maximum, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Discoveries);
+            if (Interlocked.Exchange(ref DiscoverFailure, null) is { } failure) throw failure;
+            if (EveryDiscoverFailure is { } persistent) throw persistent;
+            return new(Files, false);
+        }
         public bool IsCurrentClient(SessionProcessKey key, ClientLogVariant variant)
         {
             Interlocked.Increment(ref Validations);
@@ -193,6 +200,90 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
     }
 
     [Fact]
+    public async Task AOneOffProbeFailurePublishesUnavailableAndTheNextOfferRecovers()
+    {
+        // Win32Marshal maps ERROR_OPERATION_ABORTED to OperationCanceledException although shutdown was never requested.
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock(); var probe = new Probe(Log, Key()) { DiscoverFailure = new OperationCanceledException() };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        worker.Offer(Desktop(Key()), Key().HostId);
+        var failed = await After(worker);
+        var row = Assert.Single(failed.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.Unavailable, row.Correlation); Assert.Null(row.Batch);
+
+        clock.Advance(1000); worker.Offer(Desktop(Key()), Key().HostId);
+        var next = Assert.Single((await After(worker, failed.Revision)).Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, next.Correlation);
+        Assert.NotNull(next.Batch);
+        Assert.Equal(2, probe.Discoveries);
+        await worker.DisposeAsync(); // A recovered pass failure is not reported again at shutdown.
+        Assert.True(probe.Disposed);
+    }
+
+    [Fact]
+    public async Task AOneOffDiscoveryFailureKeepsBoundReadersAndTheReportedDestination()
+    {
+        // Discovery runs before any reader is touched, so its failure must not reset a healthy bound client's log evidence.
+        Write(SyntheticClientLogFixtures.Joining + SyntheticClientLogFixtures.Connected + SyntheticClientLogFixtures.Identity);
+        var key = Key() with { HostId = null }; // SessionLogProjection keys local processes without a host.
+        var clock = new Clock(); var probe = new Probe(Log, key); var desktop = Desktop(key);
+        var projection = new Zenith.Sessions.App.SessionLogProjection();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        void AssertReportedDestination(SessionLogDiscoverySnapshot logs)
+        {
+            projection.Update(desktop.Sessions, logs, clock.GetUtcNow());
+            var view = Assert.Single(projection.Snapshot(clock.GetUtcNow())).Value;
+            Assert.True(view.HasReportedDestination);
+            Assert.Equal(SyntheticClientLogFixtures.Place, view.ReportedPlaceId);
+            Assert.Equal(SyntheticClientLogFixtures.Job, view.ReportedJobId);
+            Assert.Equal(SyntheticClientLogFixtures.Job.ToString("D"), view.CurrentServer);
+        }
+
+        worker.Offer(desktop);
+        var bound = await After(worker);
+        var first = Assert.Single(bound.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, first.Correlation);
+        AssertReportedDestination(bound);
+
+        // Discovery is due again after 5 s and fails once (ERROR_OPERATION_ABORTED surfaces as OperationCanceledException).
+        probe.DiscoverFailure = new OperationCanceledException();
+        clock.Advance(5000); worker.Offer(desktop);
+        var failed = await After(worker, bound.Revision);
+        Assert.Equal(2, probe.Discoveries);
+        var kept = Assert.Single(failed.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, kept.Correlation);
+        Assert.Equal(first.SourceStamp, kept.SourceStamp); // The same reader and cursor; nothing is re-read from the start.
+        AssertReportedDestination(failed);
+
+        // The failed discovery is retried on the next offer rather than after another 5 s.
+        clock.Advance(1000); worker.Offer(desktop);
+        var next = await After(worker, failed.Revision);
+        Assert.Equal(3, probe.Discoveries);
+        Assert.Equal(first.SourceStamp, Assert.Single(next.Sessions).SourceStamp);
+        AssertReportedDestination(next);
+    }
+
+    [Fact]
+    public async Task FiveConsecutiveProbeFailuresStillEndTheWorkerAndSurfaceAtDisposal()
+    {
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock();
+        var probe = new Probe(Log, Key()) { EveryDiscoverFailure = new InvalidOperationException("Synthetic persistent probe fault.") };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        long revision = 0;
+        for (int pass = 0; pass < 5; pass++)
+        {
+            if (pass != 0) clock.Advance(1000);
+            worker.Offer(Desktop(Key()), Key().HostId);
+            var snapshot = await After(worker, revision); revision = snapshot.Revision;
+            Assert.Equal(SessionLogCorrelationStatus.Unavailable, Assert.Single(snapshot.Sessions).Correlation);
+        }
+        Assert.Equal(5, probe.Discoveries);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => worker.DisposeAsync().AsTask());
+        Assert.True(probe.Disposed);
+    }
+
+    [Fact]
     public async Task ProcessAndReaderWorkLimitsAreExplicit()
     {
         Write(SyntheticClientLogFixtures.Identity); var probe = new Probe(Log, Key());
@@ -257,10 +348,9 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task SixteenClientsAreCorrelatedBehindNewerUnownedCandidatesWithinThePassBudget()
+    // Sixteen running clients, each holding its own log, behind 24 newer history logs that no process holds.
+    private (SessionProcessKey[] Keys, Probe Probe) SixteenRunningClients()
     {
-        var clock = new Clock();
         var keys = Enumerable.Range(100, 16).Select(Key).ToArray();
         var expected = new Dictionary<string, SessionProcessKey>();
         var files = Enumerable.Range(0, 24).Select(i => Candidate($"history{i}")).ToList();
@@ -281,6 +371,50 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
             CurrentClient = key => keys.Contains(key),
             HolderFor = path => expected.TryGetValue(path, out var key) ? HeldBy(key) : new(SessionLogCorrelationStatus.Unknown, [])
         };
+        return (keys, probe);
+    }
+
+    [Fact]
+    public async Task SixteenBoundReadersKeepTheirHolderLeaseWhenPassesRunEveryTwoSeconds()
+    {
+        // One read slot per pass goes to a history scout, so each of the 16 bound readers is revisited
+        // only every 5-6 passes. At one pass per 2 s that is 10-12 s between holder re-queries.
+        var clock = new Clock();
+        var (keys, probe) = SixteenRunningClients();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        var desktop = Desktop(keys);
+        long revision = 0;
+        int steady = -1;
+        for (int pass = 0; pass < 80 && steady < 30; pass++)
+        {
+            if (pass != 0) clock.Advance(2000);
+            int queriesBefore = probe.Queries;
+            worker.Offer(desktop, keys[0].HostId);
+            var snapshot = await After(worker, revision); revision = snapshot.Revision;
+            Assert.InRange(probe.Queries - queriesBefore, 0, 4);
+            if (steady < 0)
+            {
+                if (snapshot.Sessions.All(row => row.Batch is not null)) steady = 0;
+                continue;
+            }
+            steady++;
+            Assert.Equal(16, snapshot.Sessions.Count);
+            var lapsed = snapshot.Sessions.Where(row => row.Correlation != SessionLogCorrelationStatus.ResourceHolderObserved
+                    || row.Batch is null || row.LeaseExpiresUtc is not { } expiry || expiry <= snapshot.ObservedUtc
+                    || snapshot.ObservedUtc - row.ObservedUtc > NativeTrialEvidence.MaximumLogAge)
+                .Select(row => $"{row.Process.ProcessId}:{row.Correlation}").ToArray();
+            Assert.True(lapsed.Length == 0,
+                $"Steady pass {steady} at +{(snapshot.ObservedUtc - SyntheticClientLogFixtures.Time).TotalSeconds:0}s: "
+                + $"{lapsed.Length} bound client(s) lost their holder lease or freshness between visits: {string.Join(", ", lapsed)}");
+        }
+        Assert.Equal(30, steady);
+    }
+
+    [Fact]
+    public async Task SixteenClientsAreCorrelatedBehindNewerUnownedCandidatesWithinThePassBudget()
+    {
+        var clock = new Clock();
+        var (keys, probe) = SixteenRunningClients();
         await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
         long revision = 0;
         SessionLogDiscoverySnapshot? complete = null;

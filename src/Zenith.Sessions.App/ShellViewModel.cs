@@ -317,7 +317,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
-        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null)
+        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -333,8 +333,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _diagnostics=new(root);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
+        // Crash records only mean something for real processes, so an injected (test or synthetic) monitor gets no default probe.
         RecentClients=new(historyStore??new RecentClientHistoryStore(root),CanUseDirectories,
-            error=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,error.GetType()),faultProbe??(monitor is null?new WindowsClientFaultProbe():null));
         _queueStore=new(root);
         _nativeCapture=new OwnedRobloxNativeHandoffCapture(root,dispatcher);
         // An injected development provider transfers ownership; it must remain Unverified.

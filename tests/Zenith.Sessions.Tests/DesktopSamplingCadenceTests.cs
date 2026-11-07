@@ -484,6 +484,33 @@ public sealed class DesktopSamplingCadenceTests
         Assert.True(next.ProcessObservedUtc < first.ProcessObservedUtc);
     }
 
+    [Fact]
+    public void HungWindowEvidenceCountsOnlyRealEnumerationsBeforeAClientIsShownAsNotResponding()
+    {
+        var clock = new Clock(); var measured = new Measurements(clock); var cadence = new DesktopSamplingCadence(clock);
+        long start = clock.GetUtcNow().AddMinutes(-1).UtcTicks; // One process instance across all enumerations.
+        DesktopProcessInventory Hung(CancellationToken _) => new([Session(clock.GetUtcNow()) with
+            { ProcessStartUtcTicks = start, Window = 0x1234, Visible = true, WindowHung = true }], Complete: true);
+        var first = cadence.SampleInventory(2000, measured.System, Hung, default);
+        clock.Advance(1000);
+        // A resource-only refresh reuses the cached inventory and is not another hung sample.
+        var cached = cadence.SampleInventory(2000, measured.System, Hung, default);
+        Assert.Same(first.Sessions, cached.Sessions);
+        clock.Advance(1000);
+        // A failed scan is not a sample either.
+        cadence.SampleInventory(2000, measured.System, _ => throw new Win32Exception("Synthetic unavailable inventory."), default);
+        clock.Advance(2000);
+        var second = cadence.SampleInventory(2000, measured.System, Hung, default);
+        Assert.False(second.Sessions[0].NotResponding);
+        Assert.Equal("Open · account unverified", second.Sessions[0].Status);
+        clock.Advance(2000);
+        var third = cadence.SampleInventory(2000, measured.System, Hung, default);
+        Assert.True(third.Sessions[0].NotResponding);
+        Assert.Equal("Not responding · account unverified", third.Sessions[0].Status);
+        cadence.Clear();
+        Assert.False(cadence.SampleInventory(2000, measured.System, Hung, default).Sessions[0].NotResponding);
+    }
+
     [Theory]
     [InlineData(499)]
     [InlineData(5001)]

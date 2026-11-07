@@ -146,6 +146,77 @@ public sealed class RecentClientHistoryViewModelTests
         vm.Observe(Frame(3,At.AddSeconds(2)),[],At.AddSeconds(2));Assert.Single(failures);
     }
 
+    [Fact]
+    public async Task EachEndedClientGetsOneSettledCrashRecordCheckAndTheOutcomeNamesWhatWindowsRecorded()
+    {
+        var store = new Store(); var probe = new Probe();
+        await using var vm = new RecentClientHistoryViewModel(store, () => true, null, probe);
+        await vm.InitializeAsync();
+        vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await vm.ActiveSave;
+        Assert.Empty(probe.Checked); Assert.Contains("cause unknown", Assert.Single(vm.Rows).Outcome);
+        vm.Observe(Frame(3, At.AddSeconds(7)), [], At.AddSeconds(7)); await vm.ActiveFaultCheck; await vm.ActiveSave;
+        var row = Assert.Single(vm.Rows);
+        Assert.Equal(ClientEndCause.Crashed, row.Entry.EndCause);
+        Assert.Equal("No longer observed · Windows recorded a crash (exception 0xC0000005)", row.Outcome);
+        Assert.Contains("Windows recorded an application fault for this exact process", row.Details);
+        Assert.Equal(row.Entry, Assert.Single(store.Stored.Entries));
+        vm.Observe(Frame(4, At.AddSeconds(8)), [], At.AddSeconds(8)); await vm.ActiveFaultCheck;
+        Assert.Single(probe.Checked);
+    }
+
+    [Theory]
+    [InlineData(273, "No longer observed · Roblox logged that the account launched in another client (reason 273)")]
+    [InlineData(285, "No longer observed · Roblox logged the player leaving (reason 285)")]
+    [InlineData(277, "No longer observed · Roblox logged a disconnect (reason 277)")]
+    public void OutcomeNamesALaunchElsewhereSeparatelyFromThePlayerLeaving(int reason, string expected)
+    {
+        // Reason 273 is a second launch of the same account ending this client, which the live Sessions label already names.
+        var key = new SessionProcessKey(null, 10001, At.AddMinutes(-1).UtcTicks);
+        var entry = new RecentClientHistoryEntry(Guid.NewGuid(), key, At, At, At.AddSeconds(1),
+            DisconnectedUtc: At, DisconnectReason: reason).Validated(ended: true);
+        Assert.Equal(expected, new RecentClientHistoryRow(entry).Outcome);
+    }
+
+    [Fact]
+    public async Task AFailingCrashRecordCheckIsReportedOnceAndShutdownCancelsAnInflightCheck()
+    {
+        var store = new Store(); var probe = new Probe { Fail = true }; List<Exception> failures = [];
+        await using (var vm = new RecentClientHistoryViewModel(store, () => true, failures.Add, probe))
+        {
+            await vm.InitializeAsync();
+            vm.Observe(Frame(1, At, Client(), Client(10002)), [], At);
+            vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
+            vm.Observe(Frame(3, At.AddSeconds(7)), [], At.AddSeconds(7)); await vm.ActiveFaultCheck;
+            vm.Observe(Frame(4, At.AddSeconds(8)), [], At.AddSeconds(8)); await vm.ActiveFaultCheck; await vm.ActiveSave;
+            Assert.Single(failures); Assert.Single(probe.Checked); Assert.Equal(2, vm.Rows.Count);
+            Assert.All(vm.Rows, item => Assert.Equal(ClientEndCause.Unknown, item.Entry.EndCause));
+        }
+        var blocking = new Probe { Block = true }; var other = new Store();
+        var stopping = new RecentClientHistoryViewModel(other, () => true, null, blocking);
+        await stopping.InitializeAsync();
+        stopping.Observe(Frame(1, At, Client()), [], At); stopping.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
+        stopping.Observe(Frame(3, At.AddSeconds(7)), [], At.AddSeconds(7));
+        await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await stopping.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(other.Disposed); Assert.True(blocking.Cancelled);
+    }
+
+    private sealed class Probe : IClientFaultProbe
+    {
+        public bool Fail, Block, Cancelled;
+        public List<RecentClientHistoryEntry> Checked { get; } = [];
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public ClientFaultCheck Check(RecentClientHistoryEntry ended, DateTimeOffset now, CancellationToken ct)
+        {
+            lock (Checked) Checked.Add(ended);
+            Started.TrySetResult();
+            if (Block) { ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10)); Cancelled = ct.IsCancellationRequested; ct.ThrowIfCancellationRequested(); }
+            if (Fail) throw new InvalidOperationException("Synthetic probe failure");
+            return new(now, true, ended.LastObservedUtc, 0xC0000005);
+        }
+    }
+
     private sealed class Store : ISessionHistoryStore, IDisposable
     {
         public bool FailLoad, FailSave, Disposed;

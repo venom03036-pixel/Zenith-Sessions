@@ -11,8 +11,26 @@ public sealed record RecentClientHistoryRow(RecentClientHistoryEntry Entry)
     public string Started => new DateTimeOffset(Entry.Process.ProcessStartUtcTicks, TimeSpan.Zero).ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
     public string LastSeen => Entry.LastObservedUtc.ToLocalTime().ToString("g", CultureInfo.CurrentCulture);
     public string MissingSince => Entry.NoLongerObservedUtc?.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) ?? "Unknown";
-    public string Outcome => Entry.CloseRequestedUtc is null ? "No longer observed · cause unknown" : "No longer observed · close requested · cause unknown";
+    public string Outcome => "No longer observed" + (Entry.CloseRequestedUtc is null ? "" : " · close requested") + Entry.EndCause switch
+    {
+        ClientEndCause.Crashed => " · Windows recorded a crash" + (Entry.FaultCheck?.ExceptionCode is { } code ? $" (exception 0x{code:X8})" : ""),
+        ClientEndCause.NotResponding => " · it was not responding when last seen",
+        ClientEndCause.Disconnected => " · Roblox logged a disconnect" + (Entry.DisconnectReason is { } reason ? $" (reason {reason})" : ""),
+        ClientEndCause.LeftGame => $" · Roblox logged the player leaving (reason {Entry.DisconnectReason})",
+        ClientEndCause.LaunchedElsewhere => $" · Roblox logged that the account launched in another client (reason {Entry.DisconnectReason})",
+        ClientEndCause.PossibleCrash => " · possible crash: a Roblox crash dump was written as it ended",
+        _ => " · cause unknown"
+    };
     public string CloseRequest => Entry.CloseRequestedUtc is { } time ? "Zenith requested a normal close at " + time.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "No Zenith close request was recorded. This does not establish a crash or deliberate user closure.";
+    public string CrashRecords => Entry.FaultCheck switch
+    {
+        null => "Crash records were not checked for this client.",
+        { FaultRecordedUtc: { } fault } => "Windows recorded an application fault for this exact process at " + fault.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) + ".",
+        { CrashDumps: > 0 } check => $"Roblox's crash folder gained {check.CrashDumps} crash dump file(s) as it ended. Another client may have written them.",
+        { Complete: true } => "No Windows fault record or new Roblox crash dump was found.",
+        _ => "Crash records could not be fully read."
+    };
+    public string Details => CloseRequest + Environment.NewLine + CrashRecords;
     public string LastReportedPlayer => Entry.LastKnownUserId is { } id && Entry.LastKnownUserIdentityUtc is { } time
         ? $"{id} · {time.ToLocalTime():g} · unverified" : "Unknown";
     public string LastReportedDestination => Entry.LastKnownDestination is { } destination
@@ -25,12 +43,13 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
     private readonly ISessionHistoryStore _store;
     private readonly Func<bool> _canUse;
     private readonly Action<Exception> _failed;
+    private readonly IClientFaultProbe? _faultProbe;
     private readonly RecentClientHistoryReducer _history = new();
     private readonly CancellationTokenSource _lifetime = new();
-    private Task _load = Task.CompletedTask, _save = Task.CompletedTask;
+    private Task _load = Task.CompletedTask, _save = Task.CompletedTask, _faultCheck = Task.CompletedTask;
     private Task? _dispose;
     private long _savedRevision, _shownRevision = -1;
-    private bool _loading, _saving, _loaded, _loadFailed, _saveFailed, _trackingFailed, _stopping;
+    private bool _loading, _saving, _loaded, _loadFailed, _saveFailed, _trackingFailed, _stopping, _checkingFaults, _faultChecksFailed;
     private string _status = "Recent client history has not opened yet.";
     public ObservableCollection<RecentClientHistoryRow> Rows { get; } = [];
     public string Status { get => _status; private set => Set(ref _status, value); }
@@ -42,9 +61,11 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
     public AsyncCommand Retry { get; }
     public Command Clear { get; }
 
-    public RecentClientHistoryViewModel(ISessionHistoryStore store, Func<bool> canUse, Action<Exception>? failed = null)
+    public Task ActiveFaultCheck => _faultCheck;
+    /// <param name="faultProbe">Optional read-only crash-record source; null records no fault checks.</param>
+    public RecentClientHistoryViewModel(ISessionHistoryStore store, Func<bool> canUse, Action<Exception>? failed = null, IClientFaultProbe? faultProbe = null)
     {
-        _store = store; _canUse = canUse; _failed = failed ?? (_ => { });
+        _store = store; _canUse = canUse; _failed = failed ?? (_ => { }); _faultProbe = faultProbe;
         Retry = new(_ => RetryAsync(), ReportUnexpectedFailure);
         Clear = new(_ => ClearEnded(), _ => CanClear);
     }
@@ -76,8 +97,33 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
         try
         {
             if (_history.Observe(snapshot, diagnostics, now)) { Publish(); StartSaveIfNeeded(); }
+            StartFaultCheckIfNeeded(now);
         }
         catch (Exception error) when(error is InvalidOperationException or ArgumentException) { PauseTracking(error); }
+    }
+    private void StartFaultCheckIfNeeded(DateTimeOffset now)
+    {
+        // Driven by the existing sample lane: at most one check in flight, the next starts from a later sample.
+        if (_faultProbe is not { } probe || _checkingFaults || _faultChecksFailed || _stopping || _trackingFailed
+            || _history.NextFaultCheck(now) is not { } ended) return;
+        _checkingFaults = true;
+        _faultCheck = CheckFaultAsync(probe, ended, now);
+    }
+    private async Task CheckFaultAsync(IClientFaultProbe probe, RecentClientHistoryEntry ended, DateTimeOffset now)
+    {
+        try
+        {
+            var token = _lifetime.Token;
+            var check = await Task.Run(() => probe.Check(ended, now, token), CancellationToken.None);
+            if (!_stopping && !_trackingFailed && _history.RecordFaultCheck(ended, check)) { Publish(); StartSaveIfNeeded(); }
+        }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
+        catch (Exception error)
+        {
+            // Crash records are optional evidence: stop checking, keep presence history running, report once.
+            _faultChecksFailed = true; _failed(error);
+        }
+        finally { _checkingFaults = false; }
     }
     public void RecordCloseRequest(SessionProcessKey process, DateTimeOffset requestedUtc)
     {
@@ -167,6 +213,12 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
         _stopping = true; RefreshAvailability();
         if (_loading) _lifetime.Cancel();
         try { await _load; await Retry.Execution; await _save; }
-        finally { _lifetime.Cancel(); _lifetime.Dispose(); (_store as IDisposable)?.Dispose(); }
+        finally
+        {
+            _lifetime.Cancel();
+            // The crash-record check observes the cancelled token and records nothing once stopping.
+            try { await _faultCheck; }
+            finally { _lifetime.Dispose(); (_store as IDisposable)?.Dispose(); }
+        }
     }
 }

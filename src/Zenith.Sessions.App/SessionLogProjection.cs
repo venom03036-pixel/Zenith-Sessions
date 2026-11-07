@@ -187,7 +187,7 @@ public sealed record SessionLogView(string Correlation, string ReportedUserId, s
             leased && evidence.ObservedUserId is { } user ? user.ToString(CultureInfo.InvariantCulture) : "Unknown",
             leased && evidence.CurrentDestination is { } current ? current.PlaceId.ToString(CultureInfo.InvariantCulture) : "Unknown",
             leased && evidence.CurrentDestination is { } server ? server.JobId.ToString("D") : "Unknown",
-            Destination(evidence.LastKnownDestination), leased ? evidence.Lifecycle.ToString() : "Unknown",
+            Destination(evidence.LastKnownDestination), leased ? LifecycleText(evidence) : "Unknown",
             evidence.Confidence == SessionEvidenceConfidence.Unknown ? "Not observed" : evidence.ObservedUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture),
             "A process using a log does not prove who wrote its lines. Parser formats remain unverified. Reported IDs never authorize account actions; expired and last-known destinations are kept separate.",
             evidence.LastKnownUserId is { } known && evidence.LastKnownUserIdentityUtc is { } at
@@ -196,5 +196,14 @@ public sealed record SessionLogView(string Correlation, string ReportedUserId, s
             leased && !evidence.Ambiguous ? evidence.CurrentDestination?.JobId : null,
             leased && !evidence.Ambiguous ? evidence.CurrentDestination?.UniverseId : null,
             leased && !evidence.Ambiguous ? evidence.CurrentDestination?.ObservedUtc : null);
+    }
+
+    private static string LifecycleText(SessionEvidenceSnapshot evidence)
+    {
+        string state = evidence.Lifecycle == ObservedSessionLifecycle.Disconnected && evidence.DisconnectReason is { } reason
+            ? $"Disconnected · reason {reason.ToString(CultureInfo.InvariantCulture)} · " + (reason == ClientLogObservation.AccountLaunchedElsewhereReason ? "account launched elsewhere"
+                : evidence.PlayerInitiatedDisconnect ? "you left" : "connection lost")
+            : evidence.Lifecycle.ToString();
+        return evidence.HumanCheckObservedUtc is null ? state : state + " · Roblox asked for a human check";
     }
 }
