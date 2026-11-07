@@ -135,6 +135,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private LaunchQueueSnapshot _latestQueue=LaunchQueueSnapshot.Empty;
     private int _queueUiScheduled;
     private bool _queueReady,_queuePaused=true;
+    private LaunchQueuePauseReason _shownQueuePauseReason;
     private sealed record ResourceAdmissionSnapshot(DesktopSnapshot Desktop,LaunchAdmission Admission);
     private ResourceAdmissionSnapshot? _resourceAdmission;
     private DesktopSnapshot? _latestDesktop;
@@ -872,6 +873,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             Interlocked.Exchange(ref _queueUiScheduled,0);
             var latest=Interlocked.Exchange(ref _pendingQueue,null);if(latest is null || _shuttingDown) return;
             _queuePaused=latest.Paused;Raise(nameof(QueuePauseLabel));
+            // Say once why the queue paused itself; the footer keeps its fixed-width counts.
+            if(latest.PauseReason!=_shownQueuePauseReason)
+            {
+                _shownQueuePauseReason=latest.PauseReason;
+                if(latest.PauseReason!=LaunchQueuePauseReason.None) {Notice=LaunchDescriptions.ExplainPause(latest.PauseReason);AddEvent(Notice);}
+            }
             var ids=latest.Operations.Select(o=>o.Intent.OperationId).ToHashSet();
             for(int i=Launches.Count-1;i>=0;i--) if(!ids.Contains(Launches[i].Id)) Launches.RemoveAt(i);
             var rows=Launches.ToDictionary(r=>r.Id);

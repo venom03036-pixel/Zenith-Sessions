@@ -23,7 +23,7 @@ public sealed partial class LaunchCoordinator
             if(!_trialOperations.TryGetValue(operationId,out long generation)||generation!=Interlocked.Read(ref _generation)
                 ||!_operations.Any(row=>row.Intent.OperationId==operationId&&row.State==LaunchState.Queued))return false;
             TrialResumeCheckedForTest?.Invoke();
-            _paused=false;
+            _pauseReason=LaunchQueuePauseReason.None;_paused=false;
             // Panic does not wait for this owner. Close its check/write race before any await, as
             // TryResumeAsync does; no queue runner can enter the serial boundary until the stop is restored.
             if(generation!=Interlocked.Read(ref _generation)){_paused=true;return false;}

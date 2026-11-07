@@ -17,10 +17,149 @@ public sealed class LaunchPacingTests
         => rows.Where(row => row.State == LaunchState.ClientStartedUnverified).Select(row => row.Intent.OperationId).ToHashSet();
     private static LaunchCoordinator Queue(Store store, Provider provider, Clock clock, int stabilization = 20, int stagger = 2,
         Func<IReadOnlyList<LaunchOperation>, IReadOnlySet<Guid>>? observed = null,
-        Func<IReadOnlyList<LaunchOperation>, LaunchAdmission>? admission = null)
+        Func<IReadOnlyList<LaunchOperation>, LaunchAdmission>? admission = null, Func<TimeSpan>? jitter = null)
         => new(store, provider, (_, _) => Task.FromResult(true), admission ?? (_ => new(true, "Synthetic healthy resources")), clock,
             startupDeadline: TimeSpan.FromMinutes(1), stabilization: TimeSpan.FromSeconds(stabilization), stagger: TimeSpan.FromSeconds(stagger),
-            observedReservations: observed ?? Fresh);
+            observedReservations: observed ?? Fresh, refusalJitter: jitter);
+    private static Func<TimeSpan> Jitter(int milliseconds) => () => TimeSpan.FromMilliseconds(milliseconds);
+    private static LaunchOperation Row(Store store, LaunchOperation operation) => store.Row(operation.Intent.OperationId)!;
+
+    [Fact]
+    public async Task RefusedStartsDoubleTheJitteredGapAndASecondRefusalInARowPausesWithTheRestStillQueued()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 2 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2, jitter: Jitter(700)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
+        var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 60 }, default, Binding, Destination);
+        var third = await queue.EnqueueAsync(Profile("Third") with { Priority = 30 }, default, Binding, Destination);
+        await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, first).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchProblem.StartupRejected, Row(store, first).Problem); Assert.Single(provider.Starts);
+        var pacing = queue.ReadPacing();
+        Assert.Equal(LaunchPacingReason.RefusalBackoff, pacing.Reason); Assert.Equal(TimeSpan.FromMilliseconds(4700), pacing.Remaining);
+        Assert.False(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.None, store.Last.PauseReason);
+        clock.Advance(TimeSpan.FromMilliseconds(4699)); queue.Signal(); await Settle(); Assert.Single(provider.Starts);
+        clock.Advance(TimeSpan.FromMilliseconds(1)); queue.Signal();
+        await Until(() => Row(store, second).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        // The second refusal in a row doubles the gap again and pauses the queue durably with its reason.
+        Assert.Equal(2, provider.Starts.Count); Assert.Equal(TimeSpan.FromMilliseconds(8700), queue.ReadPacing().Remaining);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.RepeatedRefusals, store.Last.PauseReason);
+        Assert.Equal(LaunchState.Queued, Row(store, third).State); Assert.Equal(LaunchProblem.None, Row(store, third).Problem);
+        clock.Advance(TimeSpan.FromMinutes(1)); queue.Signal(); await Settle();
+        Assert.Equal(2, provider.Starts.Count); Assert.Equal(LaunchState.Queued, Row(store, third).State);
+        // An explicit resume clears the reason; a start that gets through resets the backoff.
+        Assert.True(await queue.TryResumeAsync(default)); Assert.False(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.None, store.Last.PauseReason);
+        await Until(() => Row(store, third).State == LaunchState.ClientStartedUnverified); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchPacingReason.StartupStabilization, queue.ReadPacing().Reason);
+        provider.Refusals = 1; var fourth = await queue.EnqueueAsync(Profile("Fourth"), default, Binding, Destination);
+        clock.Advance(TimeSpan.FromSeconds(20)); queue.Signal();
+        await Until(() => Row(store, fourth).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(TimeSpan.FromMilliseconds(4700), queue.ReadPacing().Remaining); Assert.False(store.Last.Paused);
+        Assert.Equal(0, clock.TimersCreated);
+    }
+
+    [Theory]
+    [InlineData(2, 700, 4700)]
+    [InlineData(2, -1000, 3000)]
+    [InlineData(2, -5000, 3000)]
+    [InlineData(2, 5000, 5000)]
+    [InlineData(30, 1000, 61000)]
+    [InlineData(30, -1000, 59000)]
+    public async Task RefusalGapIsTwiceTheStaggerCappedAtSixtySecondsWithJitterBoundedToOneSecond(int stagger, int jitter, int expected)
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 1 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: stagger, jitter: Jitter(jitter)); await queue.InitializeAsync(default);
+        var only = await queue.EnqueueAsync(Profile("Only"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, only).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        var pacing = queue.ReadPacing();
+        Assert.Equal(LaunchPacingReason.RefusalBackoff, pacing.Reason); Assert.Equal(TimeSpan.FromMilliseconds(expected), pacing.Remaining);
+        Assert.False(store.Last.Paused);
+    }
+
+    [Fact]
+    public async Task ZeroSpacingHasNoRefusalGapToSpreadButTwoRefusalsInARowStillPause()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 2 };
+        await using var queue = Queue(store, provider, clock, stabilization: 0, stagger: 0, jitter: Jitter(700)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
+        var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 60 }, default, Binding, Destination);
+        var third = await queue.EnqueueAsync(Profile("Third") with { Priority = 30 }, default, Binding, Destination);
+        await queue.SetPausedAsync(false, default);
+        // No clock advance and no outside signal: the first refusal must not hold the second start.
+        await Until(() => Row(store, second).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchState.Failed, Row(store, first).State); Assert.True(queue.ReadPacing().Ready);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.RepeatedRefusals, store.Last.PauseReason);
+        Assert.Equal(LaunchState.Queued, Row(store, third).State); Assert.Equal(2, provider.Starts.Count);
+    }
+
+    [Fact]
+    public async Task DefaultJitterStaysWithinOneSecondOfTheDoubledGap()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 1 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2); await queue.InitializeAsync(default);
+        var only = await queue.EnqueueAsync(Profile("Only"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, only).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason);
+        Assert.InRange(queue.ReadPacing().Remaining, TimeSpan.FromSeconds(3), TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task ARefusalTenMinutesAfterTheLastIsCountedAsTheFirstAgain()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 2 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2, jitter: Jitter(0)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
+        var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 30 }, default, Binding, Destination);
+        await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, first).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(TimeSpan.FromSeconds(4), queue.ReadPacing().Remaining);
+        clock.Advance(TimeSpan.FromMinutes(10)); queue.Signal();
+        await Until(() => Row(store, second).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(TimeSpan.FromSeconds(4), queue.ReadPacing().Remaining); Assert.Equal(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason);
+        Assert.False(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.None, store.Last.PauseReason);
+    }
+
+    [Fact]
+    public async Task RefusedPreparationsBackOffAndPauseLikeRefusedStarts()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new PreparingProvider(clock) { PreparationRefusals = 2 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2, jitter: Jitter(-300)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueTrialAsync(Profile("First trial"), default, Binding, Destination);
+        Assert.True(await queue.ResumeTrialAsync(first.Intent.OperationId, default));
+        await Until(() => Row(store, first).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchProblem.PreparationRejected, Row(store, first).Problem);
+        Assert.Equal(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason); Assert.Equal(TimeSpan.FromMilliseconds(3700), queue.ReadPacing().Remaining);
+        Assert.False(store.Last.Paused);
+        var second = await queue.EnqueueTrialAsync(Profile("Second trial") with { Priority = 90 }, default, Binding, Destination);
+        var third = await queue.EnqueueTrialAsync(Profile("Third trial") with { Priority = 30 }, default, Binding, Destination);
+        Assert.True(await queue.ResumeTrialAsync(second.Intent.OperationId, default));
+        clock.Advance(TimeSpan.FromMilliseconds(3699)); queue.Signal(); await Settle(); Assert.Equal(1, provider.Preparations);
+        clock.Advance(TimeSpan.FromMilliseconds(1)); queue.Signal();
+        await Until(() => Row(store, second).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchProblem.PreparationRejected, Row(store, second).Problem);
+        Assert.Equal(LaunchState.Queued, Row(store, third).State);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.RepeatedRefusals, store.Last.PauseReason);
+        Assert.Equal(TimeSpan.FromMilliseconds(7700), queue.ReadPacing().Remaining);
+        Assert.Equal(2, provider.Preparations); Assert.Empty(provider.Starts); Assert.Equal(0, provider.LegacyCalls);
+    }
+
+    [Fact]
+    public async Task PanicStillCancelsTheActiveStartAtOnceAndARefusalAfterItIsNotCounted()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        var release = new TaskCompletionSource<ProviderLaunchResult>(TaskCreationOptions.RunContinuationsAsynchronously); provider.FirstReply = release;
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2, jitter: Jitter(700)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
+        var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 30 }, default, Binding, Destination);
+        await queue.SetPausedAsync(false, default);
+        try { await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)); queue.SignalPanic(); Assert.True(provider.LastToken.IsCancellationRequested); }
+        finally { release.TrySetResult(new ProviderLaunchResult(ProviderLaunchStatus.RejectedBeforeStart)); }
+        await Until(() => Row(store, first).State == LaunchState.Uncertain); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Equal(LaunchProblem.CancelledDuringStartup, Row(store, first).Problem);
+        Assert.NotEqual(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.None, store.Last.PauseReason);
+        Assert.Equal(LaunchState.Queued, Row(store, second).State); Assert.Single(provider.Starts);
+    }
 
     [Fact]
     public async Task DefaultUnverifiedReceiptWaitsTwentySecondsWithoutArrivalOrANewTimer()
@@ -343,23 +482,34 @@ public sealed class LaunchPacingTests
         public TaskCompletionSource<ProviderLaunchResult>? FirstReply;
         public ProviderLaunchStatus Status = ProviderLaunchStatus.ClientStartedUnverified;
         public int Confirmations;
+        // The next N attempts are refused before any client starts (no process claim).
+        public int Refusals;
+        public CancellationToken LastToken;
         public virtual ProviderCapability AccountLaunch { get; } = new("Synthetic", CapabilityState.Supported, "Memory-only fixture");
         public ProviderLaunchResult Result(LaunchIntent intent) => new(Status,
             Status == ProviderLaunchStatus.VerifiedArrival ? intent.UserId : null, Status == ProviderLaunchStatus.VerifiedArrival ? intent.PlaceId : null,
             12345 + Starts.Count, clock.GetUtcNow().AddMinutes(-1).UtcTicks, Status == ProviderLaunchStatus.VerifiedArrival ? intent.RequestedJobId : null);
         protected Task<ProviderLaunchResult> Emit(LaunchIntent intent)
-        { Starts.Enqueue(intent); Entered.TrySetResult(); return Starts.Count == 1 && FirstReply is not null ? FirstReply.Task : Task.FromResult(Result(intent)); }
-        public virtual Task<ProviderLaunchResult> LaunchAsync(LaunchIntent intent, CancellationToken ct) => Emit(intent);
+        {
+            Starts.Enqueue(intent); Entered.TrySetResult();
+            if (Refusals > 0) { Refusals--; return Task.FromResult(new ProviderLaunchResult(ProviderLaunchStatus.RejectedBeforeStart)); }
+            return Starts.Count == 1 && FirstReply is not null ? FirstReply.Task : Task.FromResult(Result(intent));
+        }
+        public virtual Task<ProviderLaunchResult> LaunchAsync(LaunchIntent intent, CancellationToken ct) { LastToken = ct; return Emit(intent); }
         public Task<bool> ConfirmArrivalAsync(LaunchIntent intent, ProviderLaunchResult observed, CancellationToken ct)
         { Interlocked.Increment(ref Confirmations); return Task.FromResult(true); }
     }
     private sealed class PreparingProvider(Clock clock) : Provider(clock), IPreparingLaunchProvider
     {
-        public int LegacyCalls;
+        public int LegacyCalls, Preparations, PreparationRefusals;
         public override ProviderCapability AccountLaunch { get; } = new("Synthetic trial", CapabilityState.Unverified, "No native capability proof");
         public override Task<ProviderLaunchResult> LaunchAsync(LaunchIntent intent, CancellationToken ct) { LegacyCalls++; return Task.FromResult(new ProviderLaunchResult(ProviderLaunchStatus.RejectedBeforeStart)); }
         public Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
-            => Task.FromResult(new LaunchPreparationResult(LaunchPreparationFailure.None, new Handle(this, context)));
+        {
+            Preparations++;
+            if (PreparationRefusals > 0) { PreparationRefusals--; return Task.FromResult(new LaunchPreparationResult(LaunchPreparationFailure.Rejected)); }
+            return Task.FromResult(new LaunchPreparationResult(LaunchPreparationFailure.None, new Handle(this, context)));
+        }
         private sealed class Handle(PreparingProvider owner, LaunchPreparationContext context) : IPreparedAccountLaunch
         {
             private bool _closed;

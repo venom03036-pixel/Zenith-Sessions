@@ -35,7 +35,12 @@ public sealed partial class LaunchCoordinator
                     timedOut?problem:LaunchProblem.None).ConfigureAwait(false);return;
             }
             if(problem!=LaunchProblem.None)
-            {await ChangeAsync(chosen,LaunchState.Failed,problem).ConfigureAwait(false);return;}
+            {
+                // Only the provider's own Rejected answer is a refusal; faults and expiry are not.
+                if(result?.Failure==LaunchPreparationFailure.Rejected)await FailRefusedPreparationAsync(chosen,generation,stagger).ConfigureAwait(false);
+                else await ChangeAsync(chosen,LaunchState.Failed,problem).ConfigureAwait(false);
+                return;
+            }
 
             bool validHandle=false;LaunchIntent? finalIntent=null;
             try {finalIntent=prepared?.DispatchIntent;validHandle=prepared is not null&&ReferenceEquals(prepared.Context,context)&&IsAllowedPreparedIntent(chosen.Intent,finalIntent);}
@@ -131,6 +136,17 @@ public sealed partial class LaunchCoordinator
         }
     }
 
+    private async Task FailRefusedPreparationAsync(LaunchOperation chosen,long generation,TimeSpan stagger)
+    {
+        await _serial.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            // A stop that lands while this waits for the lane wins: the refusal is not counted.
+            if(!PreparationStopped(generation))RecordRefusalOwned(chosen.Intent.OperationId,stagger);
+            await UpdateAsync(chosen,LaunchState.Failed,LaunchProblem.PreparationRejected,CancellationToken.None).ConfigureAwait(false);
+        }
+        finally{_serial.Release();}
+    }
     private bool PreparationStopped(long generation)=>_paused||_unhealthy||_stop.IsCancellationRequested
         ||generation!=Interlocked.Read(ref _generation)||_activeStop?.IsCancellationRequested!=false;
     internal static bool IsAllowedPreparedIntent(LaunchIntent original,LaunchIntent? final)
