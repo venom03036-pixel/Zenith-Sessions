@@ -260,7 +260,8 @@ public sealed class ViewModelTests : IDisposable
     public Task IsolatedSamplePreviewCannotClaimAGlobalDesktopShortcut()=>OnDispatcherAsync(async ()=>
     {
         await using var vm=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
-        vm.SetPanicRegistration(true);Assert.Equal("Panic stop",vm.PanicLabel);Assert.Contains("do not register global shortcuts",vm.PanicShortcutStatus);
+        bool asked=false;vm.AttachGlobalPanicShortcut(_=>asked=true);Assert.False(asked);
+        Assert.Equal("Panic stop",vm.PanicLabel);Assert.Contains("do not register global shortcuts",vm.PanicShortcutStatus);
         Assert.Equal(16,vm.AccountCount);
     }).WaitAsync(TimeSpan.FromSeconds(10));
     [Fact]

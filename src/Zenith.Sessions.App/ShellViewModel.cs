@@ -163,14 +163,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly SemaphoreSlim _preferencesWriter = new(1, 1);
     private int _pendingSaves;
     private bool _saveFailed;
-    private bool _panicRegistered;
     private string _pressureNotice="Waiting for a coherent resource sample.",_diagnosticsStatus="Diagnostics starting";
     private string _credentialCleanupStatus="Credential cleanup has not run.";
     public string CredentialCleanupStatus { get=>_credentialCleanupStatus; private set=>Set(ref _credentialCleanupStatus,value); }
     public string PressureNotice { get=>_pressureNotice; private set=>Set(ref _pressureNotice,value); }
     public string DiagnosticsStatus { get=>_diagnosticsStatus; private set=>Set(ref _diagnosticsStatus,value); }
-    public string PanicLabel=>_panicRegistered?"Panic stop · F12":"Panic stop";
-    public string PanicShortcutStatus=>IsSample?"Isolated sample previews do not register global shortcuts. F12 works while this preview is focused; Panic stop is also available.":_panicRegistered?"F12 is registered globally for this manager.":"Global F12 is unavailable, usually because Zenith already owns it. The Panic button and focused F12 remain available; existing shortcuts are preserved.";
     private int _queryGeneration, _page;
     private int _filteredTotal;
     private bool _updatingGroups;
@@ -390,9 +387,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
+            _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
             await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             await CleanupCredentialsAsync();
@@ -435,7 +433,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             await RecipientBundles.LoadAsync(_lifetime.Token);
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _ready=false; _libraryUnavailable=true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex); }
+        catch (Exception ex) { _ready=false; _libraryUnavailable=true; ApplySavedPanicShortcut(); RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex); }
     }
     private void ScheduleQuery()
     {
@@ -694,12 +692,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(MaximumClients)) { if (!int.TryParse(MaximumClients, out int value) || value < 1) throw new ArgumentException("The optional client limit must be a positive whole number."); maximum = value; }
         var limits = (_savedSettings.Capacity! with { SparePhysicalGiB = spare, NewClientPhysicalGiB = physical, NewClientCommitGiB = commit, UserMaximum = maximum }).Validated();
         var performance=ReadPerformanceDraft();
+        if(!PanicShortcut.TryParse(PanicShortcutText,out var panicShortcut,out string panicProblem)) throw new ArgumentException(panicProblem);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString() }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         await SaveCurrentSettingsAsync(requested);
+        ShowSavedPanicShortcut(panicShortcut);
     }
     private void PreferencesEdited()
     {
@@ -710,7 +710,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
-            && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes
+            && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -736,6 +736,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
+                // Only Save settings registers the saved panic shortcut, or tries a refused one again; autosaves leave it alone.
+                if (requested is not null && !ApplySavedPanicShortcut()) Notice = "Preferences saved. " + PanicShortcutStatus;
             }
             finally { _preferencesWriter.Release(); }
         }
@@ -799,7 +801,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
     // Raised even when the text is unchanged, so the footer's live region announces a repeated notice, such as a second copy, again.
     public void Inform(string message) { if(!Set(ref _notice,message,nameof(Notice))) Raise(nameof(Notice)); }
-    public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
     /// <summary>
     /// UI thread only. Windows is signing out, restarting or shutting down, and WPF closes every window next without
     /// the tray Exit path, so <see cref="DisposeAsync"/> never runs. Stops all work exactly as exit does, records

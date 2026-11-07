@@ -16,15 +16,17 @@ public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = 
 public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-mint", bool DenseAccounts = false,
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
-    ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0)
+    ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12")
 {
-    // ManagerWindow, CloseButtonExits and IdleLockMinutes are optional within schema 1: files without them load unchanged, and
-    // older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the tray;
-    // without IdleLockMinutes (or with 0) the manager never locks itself after idle time.
+    // ManagerWindow, CloseButtonExits, IdleLockMinutes and PanicShortcut are optional within schema 1: files without them load
+    // unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the
+    // tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without PanicShortcut the global
+    // panic shortcut is F12.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
-            || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes)) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
+            || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes)
+            || !global::Zenith.Sessions.Core.PanicShortcut.TryParse(PanicShortcut, out _, out _)) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
         (Capacity ?? new()).Validated();
         (Performance ?? new()).Validated();
         ManagerWindow?.Validated();

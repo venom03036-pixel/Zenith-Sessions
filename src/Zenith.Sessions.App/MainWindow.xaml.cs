@@ -55,8 +55,9 @@ public partial class MainWindow : Window
             // The window exists but is not shown yet, so it appears in place. Maximizing after the move keeps it on that display.
             if (_startPlacement is { } placement && ManagerWindowNative.Place(handle, placement.Bounds) && placement.Maximized)
                 WindowState = WindowState.Maximized;
+            // The shell registers the saved panic shortcut (F12 by default) once settings load, and again after Save settings.
             // Isolated sample previews must not take a real desktop transport shortcut.
-            vm.SetPanicRegistration(!vm.IsSample && _panicKey.RegisterF12(handle));
+            if (!vm.IsSample) vm.AttachGlobalPanicShortcut(shortcut => _panicKey.Register(handle, shortcut));
         };
         SystemEvents.SessionSwitch += OnSessionSwitch;
         InputManager.Current.PostProcessInput += NoteUserInput;
@@ -87,7 +88,7 @@ public partial class MainWindow : Window
     }
     private nint OnMessage(nint window, int message, nint w, nint l, ref bool handled)
     {
-        if (message == GlobalPanicRegistration.Message && w == GlobalPanicRegistration.Identifier) { _vm.Panic.Execute(null); handled = true; }
+        if (message == GlobalPanicRegistration.Message && GlobalPanicRegistration.IsPanic(w)) { _vm.Panic.Execute(null); handled = true; }
         return 0;
     }
     // A single left click on the tray icon reopens the window (a double click starts with one); the right button opens the menu.
@@ -229,6 +230,7 @@ public partial class MainWindow : Window
                 "maximum-clients"=>SettingsMaximumClients,
                 "close-button"=>SettingsCloseButtonExits,
                 "idle-lock"=>SettingsIdleLock,
+                "panic-shortcut"=>SettingsPanicShortcut,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
