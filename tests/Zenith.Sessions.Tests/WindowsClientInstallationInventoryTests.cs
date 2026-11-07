@@ -43,6 +43,34 @@ public sealed class WindowsClientInstallationInventoryTests : IDisposable
         Assert.Throws<ArgumentOutOfRangeException>(()=>source.ReadVersionDirectories(versions,9,default));
     }
     [Fact]
+    public void ActualDirectoryEnumerationSkipsFilesAndKeepsTheNewestVersionFolders()
+    {
+        var source=new WindowsClientInstallationInventorySource(_root,includeCurrentUserRegistry:false);
+        int cap=WindowsClientInstallationDiscovery.MaximumVersionEntriesPerRoot;
+        // Name order is the reverse of age, and a loose installer file and a leftover folder sort first: neither may use a slot.
+        string versions=Path.Combine(_root,"Roblox","Versions");Directory.CreateDirectory(Path.Combine(versions,"aaa-leftover"));
+        File.WriteAllBytes(Path.Combine(versions,"RobloxStudioInstaller.exe"),[0x4d,0x5a]);
+        var baseTime=new DateTime(2026,1,1,0,0,0,DateTimeKind.Utc);
+        for(int i=0;i<10;i++) Directory.CreateDirectory(Path.Combine(versions,$"version-{i:00}"));
+        for(int i=0;i<10;i++) Directory.SetLastWriteTimeUtc(Path.Combine(versions,$"version-{i:00}"),baseTime.AddHours(i));
+        Directory.SetLastWriteTimeUtc(Path.Combine(versions,"aaa-leftover"),baseTime.AddDays(30));
+        var newest=source.ReadVersionDirectories(versions,cap,default);
+        Assert.True(newest.Truncated);
+        Assert.Equal(Enumerable.Range(2,8).Reverse().Select(i=>$"version-{i:00}"),newest.Names);
+        // Seven version folders plus two loose files fit under the cap: nothing is dropped and no limit is reported.
+        string fits=Path.Combine(_root,"Fishstrap","Versions");Directory.CreateDirectory(fits);
+        File.WriteAllBytes(Path.Combine(fits,"a-installer.exe"),[0x4d,0x5a]);File.WriteAllBytes(Path.Combine(fits,"b-notes.txt"),[0x41]);
+        var seven=Enumerable.Range(0,7).Select(i=>$"version-{i:00}").ToArray();
+        foreach(string name in seven) Directory.CreateDirectory(Path.Combine(fits,name));
+        var all=source.ReadVersionDirectories(fits,cap,default);
+        Assert.False(all.Truncated);Assert.Equal(seven,all.Names.Order(StringComparer.Ordinal));
+        // The raw entry scan itself is bounded: past the scan bound the result is reported as truncated.
+        string crowded=Path.Combine(_root,"Bloxstrap","Versions");Directory.CreateDirectory(Path.Combine(crowded,"version-only"));
+        for(int i=0;i<WindowsClientInstallationDiscovery.MaximumVersionScanEntries;i++) File.WriteAllBytes(Path.Combine(crowded,$"zz-{i:000}.tmp"),[]);
+        var bounded=source.ReadVersionDirectories(crowded,cap,default);
+        Assert.True(bounded.Truncated);Assert.All(bounded.Names,name=>Assert.Equal("version-only",name));
+    }
+    [Fact]
     public void ActualQuerySurfaceRejectsUnknownRegistrySelectorsAndNeverExpandsUntrustedPaths()
     {
         Directory.CreateDirectory(_root);var source=new WindowsClientInstallationInventorySource(_root,includeCurrentUserRegistry:false);

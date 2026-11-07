@@ -80,6 +80,9 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
         ClientInstallationRegistryHint.FroststrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Froststrap","InstallLocation"),
         _=>throw new ArgumentOutOfRangeException(nameof(hint))
     };
+    /// <summary>Returns at most <paramref name="maximumEntries"/> plain version-* folder names, newest last-write time first (name breaks ties).
+    /// Loose files, reparse points and other folders never use a slot. At most <see cref="WindowsClientInstallationDiscovery.MaximumVersionScanEntries"/>
+    /// raw entries are examined; Truncated is set when that bound is passed or more version folders exist than were returned.</summary>
     public ClientInstallationVersionDirectories ReadVersionDirectories(string root,int maximumEntries,CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();
@@ -91,15 +94,24 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
         catch(FileNotFoundException) {return new([]);}
         catch(DirectoryNotFoundException) {return new([]);}
         if(HasReparseAncestor(normalized!)) throw new InvalidDataException("Redirected installation metadata folders are skipped.");
-        var names=new List<string>();int examined=0;bool truncated=false;
+        // Version folder names are random hashes, so enumeration (name) order says nothing about age: rank by last-write time instead.
+        var folders=new List<(string Name,DateTime Written)>();int examined=0;bool truncated=false;
         using var entries=Directory.EnumerateFileSystemEntries(normalized!,"*",SearchOption.TopDirectoryOnly).GetEnumerator();
         while(entries.MoveNext())
         {
-            ct.ThrowIfCancellationRequested();if(++examined>maximumEntries) {truncated=true;break;}
+            ct.ThrowIfCancellationRequested();if(++examined>WindowsClientInstallationDiscovery.MaximumVersionScanEntries) {truncated=true;break;}
+            string name=Path.GetFileName(entries.Current);
+            if(!WindowsClientInstallationDiscovery.ValidVersionName(name)) continue;
             var attributes=File.GetAttributes(entries.Current);
-            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))==FileAttributes.Directory) names.Add(Path.GetFileName(entries.Current));
+            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=FileAttributes.Directory) continue;
+            folders.Add((name,Directory.GetLastWriteTimeUtc(entries.Current)));
         }
-        ct.ThrowIfCancellationRequested();return new(Array.AsReadOnly(names.ToArray()),truncated);
+        ct.ThrowIfCancellationRequested();
+        folders.Sort((left,right)=>{int byTime=right.Written.CompareTo(left.Written);return byTime!=0?byTime:StringComparer.OrdinalIgnoreCase.Compare(left.Name,right.Name);});
+        if(folders.Count>maximumEntries) truncated=true;
+        var names=new string[Math.Min(folders.Count,maximumEntries)];
+        for(int index=0;index<names.Length;index++) names[index]=folders[index].Name;
+        return new(Array.AsReadOnly(names),truncated);
     }
     public ClientInstallationFileMetadata InspectExecutable(string path,CancellationToken ct)
     {

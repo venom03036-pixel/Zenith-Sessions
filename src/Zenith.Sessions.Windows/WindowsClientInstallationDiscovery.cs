@@ -10,6 +10,8 @@ namespace Zenith.Sessions.Windows;
 public sealed class WindowsClientInstallationDiscovery : IClientInstallationDiscovery
 {
     public const int MaximumFileProbes=128,MaximumCandidates=64,MaximumVersionEntriesPerRoot=8,MaximumIssues=32,MaximumHintCharacters=2048;
+    /// <summary>Raw entries (files and folders) examined per Versions root before the newest version folders are chosen.</summary>
+    public const int MaximumVersionScanEntries=64;
     private readonly IClientInstallationInventorySource _source;
     private readonly TimeProvider _time;
     private int _active;
@@ -158,7 +160,7 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
         try {normalized=Path.TrimEndingDirectorySeparator(Path.GetFullPath(value));return true;}
         catch(ArgumentException) {return false;}
     }
-    private static bool ValidVersionName(string? value)=>value is {Length:>8 and <=88} && value.StartsWith("version-",StringComparison.OrdinalIgnoreCase)
+    internal static bool ValidVersionName(string? value)=>value is {Length:>8 and <=88} && value.StartsWith("version-",StringComparison.OrdinalIgnoreCase)
         && value.All(c=>char.IsAsciiLetterOrDigit(c) || c is '-' or '_');
     private static readonly UTF8Encoding StrictUtf8=new(false,true);
     private static string? Display(string? value,int maximum)
