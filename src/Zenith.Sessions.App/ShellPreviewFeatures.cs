@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
@@ -10,6 +11,8 @@ public sealed partial class ShellViewModel
     private string _previewPage="";
     private CancellationTokenSource? _overviewFocusStop;
     private long _overviewFocusEpoch;
+    // The selected tile whose CanFocus the shell follows; owned here and released on reselection and disposal.
+    private ClientOverviewRow? _overviewFocusRow;
     public ClientPreviewsViewModel ClientPreviews {get;private set;}=null!;
     public Command StartClientPreviews {get;private set;}=null!;
     public Command StopClientPreviews {get;private set;}=null!;
@@ -22,8 +25,8 @@ public sealed partial class ShellViewModel
     public bool IsClientTableMode=>!_clientPreviewMode&&!_clientHistoryMode;
     public bool CanStartClientPreviews=>_clientPreviewAllowed && IsSessions && _clientPreviewMode && ClientPreviews.IsAvailable && FreshPreviewResources();
     public bool CanStartWindowsOverview=>_clientPreviewAllowed && IsWindows && ClientPreviews.IsAvailable && FreshPreviewResources();
-    public bool CanFocusOverviewClient=>_ready && !_shuttingDown && !IsLocked && !IsSample && IsWindows && _clientPreviewWindowVisible
-        && ClientPreviews.SelectedOverviewRow is {CanFocus:true};
+    public bool CanFocusOverviewClient=>OverviewFocusGatesOpen && ClientPreviews.SelectedOverviewRow is {CanFocus:true};
+    private bool OverviewFocusGatesOpen=>_ready && !_shuttingDown && !IsLocked && !IsSample && IsWindows && _clientPreviewWindowVisible;
     // The lock screen covers the page, so a locked dashboard has no visible roster either.
     private bool OverviewRosterVisible=>IsWindows && _clientPreviewWindowVisible && !IsLocked;
 
@@ -34,7 +37,7 @@ public sealed partial class ShellViewModel
         ClientPreviews.SetRosterVisible(OverviewRosterVisible);
         ClientPreviews.PropertyChanged+=(_,args)=>
         {if(args.PropertyName==nameof(ClientPreviewsViewModel.IsAvailable)) {Raise(nameof(CanStartClientPreviews));Raise(nameof(CanStartWindowsOverview));}
-            if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) Raise(nameof(CanFocusOverviewClient));};
+            if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) {TrackOverviewFocusRow();Raise(nameof(CanFocusOverviewClient));}};
         ShowClientPreviewMode=new(_=>SetClientPreviewMode(true));
         ShowClientTableMode=new(_=>SetClientPreviewMode(false));
         StopClientPreviews=new(_=>ClientPreviews.Fence("Previews stopped. Start explicitly to resume."));
@@ -92,6 +95,27 @@ public sealed partial class ShellViewModel
         if(_clientPreviewAllowed)
             ClientPreviews.RenewResourceLease(snapshot.Resources.ObservedUtc.AddSeconds(3));
     }
+    // The presenter applies each inventory after this sample's RefreshClientPreviewContext has already
+    // raised, so the shell follows the selected tile's own CanFocus. A removed tile clears the selection
+    // and is released through the same path; shutdown releases the last one.
+    private void TrackOverviewFocusRow()
+    {
+        var next=_shuttingDown?null:ClientPreviews.SelectedOverviewRow;
+        if(ReferenceEquals(next,_overviewFocusRow)) return;
+        if(_overviewFocusRow is { } prior) prior.PropertyChanged-=OverviewFocusRowChanged;
+        _overviewFocusRow=next;
+        if(next is not null) next.PropertyChanged+=OverviewFocusRowChanged;
+    }
+    // Raise only: this runs inside ApplyOverviewInventory, so a Fence, refresh or focus cancellation here would reenter the presenter.
+    private void OverviewFocusRowChanged(object? sender,PropertyChangedEventArgs args)
+    {if(args.PropertyName==nameof(ClientOverviewRow.CanFocus)) Raise(nameof(CanFocusOverviewClient));}
+    // Lock, Panic, shutdown, sample mode and a hidden page keep their own notices; only a tile that is
+    // no longer focusable while the page is usable explains the refused click.
+    private void ExplainRefusedOverviewFocus()
+    {
+        if(!OverviewFocusGatesOpen) return;
+        Notice=ClientPreviews.SelectedOverviewRow is { } row ? row.FocusRefusal() : "Focus not sent. Select a current client tile first.";
+    }
     private void CancelOverviewFocus()
     {
         Interlocked.Increment(ref _overviewFocusEpoch);
@@ -100,7 +124,7 @@ public sealed partial class ShellViewModel
     }
     private async Task FocusOverviewClientAsync()
     {
-        if(!CanFocusOverviewClient || ClientPreviews.SelectedOverviewRow is not {CanFocus:true} row) return;
+        if(!CanFocusOverviewClient || ClientPreviews.SelectedOverviewRow is not {CanFocus:true} row) {ExplainRefusedOverviewFocus();return;}
         // Pin the exact observed process/window. Later tile selection cannot redirect this request.
         var observation=row.Observation;long epoch=Interlocked.Increment(ref _overviewFocusEpoch);
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);

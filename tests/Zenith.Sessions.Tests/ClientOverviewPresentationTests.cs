@@ -316,6 +316,33 @@ public sealed partial class ClientPreviewPresentationTests
         finally {monitor.Reply.TrySetResult(false);}
     });
 
+    [Fact]
+    public Task FocusClientAvailabilityFollowsSelectedTileWhenAPartialScanMarksItLastKnown()=>OnUi(async()=>
+    {
+        var monitor=new PartialScanFocusMonitor();var provider=new PreviewProvider();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,monitor,new NoPublicDirectory(),new NoServerDirectory(),previewProvider:provider);
+        await shell.InitializeAsync();await Refresh(shell);shell.SetPreviewWindowVisible(true);shell.ShowWindowsOverview.Execute(null);
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);
+        var row=shell.ClientPreviews.OverviewRows.Single(tile=>tile.ProcessId==1);shell.ClientPreviews.SelectedOverviewRow=row;
+        Assert.True(shell.CanFocusOverviewClient);
+        // What the button's IsEnabled binding reads each time the shell announces the property.
+        var announced=new List<bool>();
+        shell.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ShellViewModel.CanFocusOverviewClient)) announced.Add(shell.CanFocusOverviewClient);};
+        // The next sample omits pid 1 from a partial scan; every later sample waits, so no shell refresh follows the apply.
+        monitor.ReportPartialScan();
+        await Until(()=>!row.CanFocus);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Same(row,shell.ClientPreviews.SelectedOverviewRow);Assert.False(shell.CanFocusOverviewClient);
+        Assert.NotEmpty(announced);Assert.False(announced[^1],"The last CanFocusOverviewClient notification still reported an enabled Focus client button.");
+        // A click that races the disabled state explains itself instead of doing nothing.
+        shell.FocusOverviewClient.Execute(null);await shell.FocusOverviewClient.Execution;
+        Assert.Contains("last-known",shell.Notice,StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0,monitor.FocusCalls);Assert.Equal(0,provider.CaptureCalls);
+        // Only the selected tile is followed, and disposal releases the subscription.
+        var other=shell.ClientPreviews.OverviewRows.Single(tile=>tile.ProcessId==2);shell.ClientPreviews.SelectedOverviewRow=other;
+        int count=announced.Count;row.Observe(row.Observation,true);Assert.Equal(count,announced.Count);
+        await shell.DisposeAsync();count=announced.Count;other.Observe(other.Observation,false);Assert.Equal(count,announced.Count);
+    });
+
     [Theory]
     [InlineData(false)] [InlineData(true)]
     public Task LockOrPanicDuringIgnoringFocusPreservesStopNoticeAndJoinsOwnership(bool panic)=>OnUi(async()=>
@@ -416,6 +443,27 @@ public sealed partial class ClientPreviewPresentationTests
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)
         {Pinned=session;Token=ct;Entered.TrySetResult();return Reply.Task;}
+        public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No close operation expected.");
+    }
+
+    private sealed class PartialScanFocusMonitor:IDesktopMonitor
+    {
+        private long _revision;private int _partial,_partialServed;
+        public int FocusCalls;
+        private readonly TaskCompletionSource<DesktopSnapshot> _hold=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void ReportPartialScan()=>Volatile.Write(ref _partial,1);
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            bool partial=Volatile.Read(ref _partial)==1;
+            // Exactly one partial scan; later samples wait for disposal's cancellation.
+            if(partial && Interlocked.Exchange(ref _partialServed,1)==1) return _hold.Task.WaitAsync(ct);
+            var now=DateTimeOffset.UtcNow;int[] pids=partial?[2]:[1,2];
+            var rows=pids.Select(pid=>new SessionObservation(pid,new DateTime(2026,1,1).Ticks,"Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
+            return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows,ProcessObservedUtc:now,ProcessRevision:Interlocked.Increment(ref _revision),ProcessInventoryComplete:!partial));
+        }
+        public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)
+        {Interlocked.Increment(ref FocusCalls);return Task.FromResult(false);}
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No close operation expected.");
     }
 

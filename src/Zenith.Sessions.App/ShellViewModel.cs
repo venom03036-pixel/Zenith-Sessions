@@ -760,6 +760,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopDirectoryFeaturesAsync();
         await RecentClients.DisposeAsync();
         try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex);}
+        TrackOverviewFocusRow(); // _shuttingDown is set, so this releases the selected tile's subscription.
         await DisposeClientWindowFeaturesAsync();
         await _favoritesReloadTask;
         await DestinationFavorites.DisposeAsync();
