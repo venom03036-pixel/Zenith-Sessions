@@ -315,6 +315,107 @@ public sealed class LaunchQueueRecoveryTests : IDisposable
         using var reopened=new LaunchQueueStore(_root);var saved=Assert.Single((await reopened.LoadAsync(default)).Operations);
         Assert.Equal(row.Intent,saved.Intent);Assert.Equal(LaunchState.Cancelled,saved.State);Assert.Equal(0,provider.Calls);
     }
+    [Fact]
+    public async Task InitializeCanBeRetriedAfterAFailedStartupPersistWithoutDuplicatingRows()
+    {
+        // A crash between CreateNew and File.Replace leaves a .tmp behind a valid primary. The
+        // startup write then fails closed; once the user sets that file aside, a retry must
+        // rebuild from disk instead of appending the same rows again or keeping the old fault.
+        var operation=Row() with { State=LaunchState.Queued,Problem=LaunchProblem.None,ProcessReceipt=null };
+        await Write("",new(true,[operation]));await Write(".tmp",new(false,[Row()]));
+        using var store=new LaunchQueueStore(_root);var provider=new ForbiddenProvider();
+        await using var queue=new LaunchCoordinator(store,provider,(_,_)=>throw new InvalidOperationException("No authorization expected."),_=>new(true,"Fixture"));
+        await Assert.ThrowsAsync<IOException>(()=>queue.InitializeAsync(default));
+        Assert.False(queue.IsHealthy);
+        File.Move(Primary+".tmp",Path.Combine(_root,"kept-by-fixture.json"));
+
+        await queue.InitializeAsync(default);
+
+        Assert.True(queue.IsHealthy);
+        var saved=Assert.Single((await store.LoadAsync(default)).Operations);
+        Assert.Equal(operation.Intent,saved.Intent);Assert.Equal(0,provider.Calls);
+    }
+    [Fact]
+    public async Task AnInterruptedWriteBehindAValidPrimaryIsNamedAndCanBeSetAsideWithoutLosingItsBytes()
+    {
+        var current=Row();var primary=await Write("",new(true,[current]));var interrupted=await Write(".tmp",new(false,[Row()]));
+        using var store=new LaunchQueueStore(_root);
+        await Assert.ThrowsAsync<IOException>(()=>store.SaveAsync(new(true,[current]),default));
+        Assert.Equal(new LaunchQueueBlocker(LaunchQueueBlockerKind.InterruptedWrite,"launch-queue.json.tmp"),store.RecoveryBlocker);
+
+        string? kept=await store.SetAsideInterruptedWriteAsync(default);
+
+        Assert.NotNull(kept);Assert.StartsWith("launch-queue.json.interrupted-",kept);Assert.Null(store.RecoveryBlocker);
+        Assert.False(File.Exists(Primary+".tmp"));Assert.Equal(interrupted,await File.ReadAllBytesAsync(Path.Combine(_root,kept)));
+        Assert.Equal(primary,await File.ReadAllBytesAsync(Primary));
+        Assert.Null(await store.SetAsideInterruptedWriteAsync(default)); // Nothing left to set aside; nothing else changes.
+        var updated=Row();await store.SaveAsync(new(true,[updated]),default);Assert.Null(store.RecoveryBlocker);
+        Assert.Equal(updated,Assert.Single((await store.LoadAsync(default)).Operations));
+        Assert.Equal(interrupted,await File.ReadAllBytesAsync(Path.Combine(_root,kept)));
+    }
+
+    [Theory]
+    [InlineData("missing")] [InlineData("future")] [InlineData("damaged")] [InlineData("unknownBackup")]
+    public async Task SetAsideRefusesUnlessTheCommittedPrimaryIsReadableAndNothingElseBlocks(string state)
+    {
+        // Without a readable supported primary the interrupted save may be the only evidence of
+        // newer work; moving it would turn a deliberate fail-closed state into a quieter queue.
+        if(state=="future")await Write("",new(true,[Row()]),99);
+        if(state=="damaged"){Directory.CreateDirectory(_root);await File.WriteAllTextAsync(Primary,"damaged");await Write(".bak",new(true,[Row()]));}
+        if(state=="unknownBackup"){await Write("",new(true,[Row()]));await File.WriteAllTextAsync(Primary+".bak","not a declared format");}
+        var interrupted=await Write(".tmp",new(false,[Row()]));
+        var before=Directory.GetFiles(_root).ToDictionary(path=>path,File.ReadAllBytes);
+        using var store=new LaunchQueueStore(_root);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>store.SetAsideInterruptedWriteAsync(default));
+        Assert.Equal(state switch { "future"=>LaunchQueueBlockerKind.UnsupportedFormat,"unknownBackup"=>LaunchQueueBlockerKind.UnreadableBackup,_=>LaunchQueueBlockerKind.OrphanEvidence },
+            store.RecoveryBlocker?.Kind);
+        Assert.Equal(before.Keys.Order(),Directory.GetFiles(_root).Order());
+        foreach(var (path,bytes) in before)Assert.Equal(bytes,await File.ReadAllBytesAsync(path));
+        Assert.Equal(interrupted,await File.ReadAllBytesAsync(Primary+".tmp"));
+    }
+
+    [Theory]
+    [InlineData("orphanTmp",LaunchQueueBlockerKind.OrphanEvidence,"launch-queue.json.tmp")]
+    [InlineData("orphanDamaged",LaunchQueueBlockerKind.OrphanEvidence,"launch-queue.json.damaged")]
+    [InlineData("damagedBackup",LaunchQueueBlockerKind.UnreadableBackup,"launch-queue.json.bak")]
+    [InlineData("damagedPrimary",LaunchQueueBlockerKind.UnreadableQueue,"launch-queue.json")]
+    [InlineData("futurePrimary",LaunchQueueBlockerKind.UnsupportedFormat,"launch-queue.json")]
+    public async Task EveryFailClosedLoadNamesItsKeptFile(string state,LaunchQueueBlockerKind kind,string file)
+    {
+        Directory.CreateDirectory(_root);
+        if(state=="orphanTmp")await Write(".tmp",new(false,[Row()]));
+        if(state=="orphanDamaged")await File.WriteAllTextAsync(Primary+".damaged","damaged");
+        if(state=="damagedBackup")await File.WriteAllTextAsync(Primary+".bak","not json");
+        if(state=="damagedPrimary")await File.WriteAllTextAsync(Primary,"not json");
+        if(state=="futurePrimary")await Write("",new(true,[Row()]),99);
+        using var store=new LaunchQueueStore(_root);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
+        Assert.Equal(new LaunchQueueBlocker(kind,file),store.RecoveryBlocker);
+    }
+
+    [Theory]
+    [InlineData("conflictingDamaged",LaunchQueueBlockerKind.ConflictingDamagedCopy,"launch-queue.json.damaged")]
+    [InlineData("unknownBackup",LaunchQueueBlockerKind.UnreadableBackup,"launch-queue.json.bak")]
+    [InlineData("oversizedBackup",LaunchQueueBlockerKind.UnreadableBackup,"launch-queue.json.bak")]
+    [InlineData("oversizedPrimary",LaunchQueueBlockerKind.UnreadableQueue,"launch-queue.json")]
+    [InlineData("orphanDamaged",LaunchQueueBlockerKind.OrphanEvidence,"launch-queue.json.damaged")]
+    [InlineData("futureBackup",LaunchQueueBlockerKind.UnsupportedFormat,"launch-queue.json.bak")]
+    public async Task EveryFailClosedSaveNamesItsKeptFile(string state,LaunchQueueBlockerKind kind,string file)
+    {
+        Directory.CreateDirectory(_root);byte[] oversized=new byte[1048577];Array.Fill(oversized,(byte)'x');
+        switch(state)
+        {
+            case "conflictingDamaged":await Write(".bak",new(true,[Row()]));await File.WriteAllTextAsync(Primary+".damaged","first");await File.WriteAllTextAsync(Primary,"second");break;
+            case "unknownBackup":await Write("",new(true,[Row()]));await File.WriteAllTextAsync(Primary+".bak","{}");break;
+            case "oversizedBackup":await Write("",new(true,[Row()]));await File.WriteAllBytesAsync(Primary+".bak",oversized);break;
+            case "oversizedPrimary":await Write(".bak",new(true,[Row()]));await File.WriteAllBytesAsync(Primary,oversized);break;
+            case "orphanDamaged":await File.WriteAllTextAsync(Primary+".damaged","damaged");break;
+            case "futureBackup":await Write("",new(true,[Row()]));await Write(".bak",new(true,[Row()]),99);break;
+        }
+        using var store=new LaunchQueueStore(_root);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(new(true,[Row()]),default));
+        Assert.Equal(new LaunchQueueBlocker(kind,file),store.RecoveryBlocker);
+    }
     private sealed class CancelOnQueuedWrite(ILaunchQueueStore inner,CancellationTokenSource stop):ILaunchQueueStore
     {
         public bool Cancelled;

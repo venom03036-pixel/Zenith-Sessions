@@ -151,6 +151,10 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         try
         {
             if(_initialized) return;
+            // A failed startup never started the runner, so nothing else owns these rows or this
+            // fault. Rebuild from disk: an explicit retry must neither append the saved rows a
+            // second time nor inherit the failed attempt's storage fault.
+            _operations.Clear();_unhealthy=false;
             var saved=await _store.LoadAsync(ct).ConfigureAwait(false);ValidateSnapshot(saved);
             foreach(var operation in saved.Operations) _operations.Add(RecoverAfterRestart(operation,_time.GetUtcNow()));
             _paused=true;await PersistAsync(ct).ConfigureAwait(false);_initialized=true;_runner=RunAsync(_stop.Token);

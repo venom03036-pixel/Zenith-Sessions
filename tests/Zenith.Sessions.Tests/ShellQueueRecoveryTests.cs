@@ -50,6 +50,50 @@ public sealed class ShellQueueRecoveryTests : IDisposable
         Assert.Equal(content, await File.ReadAllTextAsync(QueuePath + ".bak"));
     });
 
+    [Fact]
+    public Task InterruptedWriteBehindAValidPrimaryCanBeSetAsideAndTheQueueBecomesReady() => OnUi(async () =>
+    {
+        // A crash between CreateNew and File.Replace leaves launch-queue.json.tmp behind the last
+        // committed queue. Every later start used to stay blocked with a generic message.
+        await CreateProfile(); var at = DateTimeOffset.UtcNow;
+        var queued = new LaunchOperation(new(Guid.NewGuid(), Guid.NewGuid(), 1, 123, 42, 0, at.AddMinutes(-2), 7),
+            LaunchState.Queued, LaunchProblem.None, at, ResourceBudget: new(4 * CapacityPolicy.GiB, 5 * CapacityPolicy.GiB));
+        byte[] primary = JsonSerializer.SerializeToUtf8Bytes(new { Version = 7, Queue = new LaunchQueueSnapshot(true, [queued]) });
+        await File.WriteAllBytesAsync(QueuePath, primary);
+        byte[] interrupted = "{\"Version\":7,\"Queue\":"u8.ToArray(); await File.WriteAllBytesAsync(QueuePath + ".tmp", interrupted);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new NoNativeMonitor());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); Assert.False(shell.QueueReady);
+        Assert.Contains("unavailable", shell.QueueStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("launch-queue.json.tmp", shell.QueueStatus); Assert.True(shell.CanSetAsideInterruptedQueueWrite);
+
+        shell.SetAsideInterruptedQueueWrite.Execute(null); await shell.SetAsideInterruptedQueueWrite.Execution;
+
+        Assert.True(shell.QueueReady, shell.QueueStatus + " / " + shell.Notice); Assert.False(shell.CanSetAsideInterruptedQueueWrite);
+        Assert.False(File.Exists(QueuePath + ".tmp"));
+        string kept = Assert.Single(Directory.GetFiles(_root, "launch-queue.json.interrupted-*"));
+        Assert.Equal(interrupted, await File.ReadAllBytesAsync(kept)); Assert.Contains(Path.GetFileName(kept), shell.Notice);
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (shell.Launches.Count == 0) await Task.Delay(5, stop.Token);
+        var row = Assert.Single(shell.Launches); Assert.Equal(queued.Intent, row.Operation.Intent);
+        Assert.Equal(LaunchState.Blocked, row.Operation.State); Assert.Equal(LaunchProblem.Interrupted, row.Operation.Problem);
+        Assert.Contains("Paused", shell.QueueStatus); Assert.Empty(shell.Sessions);
+        Assert.Equal(primary, await File.ReadAllBytesAsync(QueuePath + ".bak")); // The committed queue rotated normally.
+    });
+
+    [Fact]
+    public Task AnOrphanInterruptedWriteIsNamedButNotOfferedForSetAside() => OnUi(async () =>
+    {
+        await CreateProfile(); Directory.CreateDirectory(_root);
+        byte[] interrupted = "{\"Version\":7,\"Queue\":"u8.ToArray(); await File.WriteAllBytesAsync(QueuePath + ".tmp", interrupted);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new NoNativeMonitor());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); Assert.False(shell.QueueReady);
+        Assert.Contains("launch-queue.json.tmp", shell.QueueStatus); Assert.Contains("Open data folder", shell.QueueStatus);
+        Assert.False(shell.CanSetAsideInterruptedQueueWrite);
+        shell.SetAsideInterruptedQueueWrite.Execute(null); await shell.SetAsideInterruptedQueueWrite.Execution;
+        Assert.False(shell.QueueReady); Assert.Equal(interrupted, await File.ReadAllBytesAsync(QueuePath + ".tmp"));
+        Assert.Empty(Directory.GetFiles(_root, "launch-queue.json.interrupted-*")); Assert.False(File.Exists(QueuePath));
+    });
+
     private async Task<AccountProfile> CreateProfile()
     {
         using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);

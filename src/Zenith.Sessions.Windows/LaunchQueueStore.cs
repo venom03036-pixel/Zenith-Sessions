@@ -4,41 +4,61 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
+/// <summary>Which fail-closed state stopped the last queue load, save or set-aside.</summary>
+public enum LaunchQueueBlockerKind { InterruptedWrite,OrphanEvidence,ConflictingDamagedCopy,UnreadableQueue,UnreadableBackup,UnsupportedFormat }
+/// <summary>A fail-closed queue state and the kept file (a fixed name in the data folder) that causes it.</summary>
+public sealed record LaunchQueueBlocker(LaunchQueueBlockerKind Kind,string FileName);
+
 public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposable
 {
+    private const string FileName="launch-queue.json";
     private readonly SemaphoreSlim _writer=new(1,1);
-    private readonly string _path=Path.Combine(root,"launch-queue.json");
+    private readonly string _path=Path.Combine(root,FileName);
+    private volatile LaunchQueueBlocker? _blocker;
     public string? RecoveryNotice {get;private set;}
+    /// <summary>Names the kept file behind the last failed load or save; null after a success or an unclassified failure.</summary>
+    public LaunchQueueBlocker? RecoveryBlocker=>_blocker;
     private sealed record Envelope(int Version,LaunchQueueSnapshot Queue);
     private sealed class UnsupportedQueueFormatException : Exception { }
     private static readonly JsonSerializerOptions Json=new() { UnmappedMemberHandling=JsonUnmappedMemberHandling.Disallow };
     public async Task<LaunchQueueSnapshot> LoadAsync(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
-        RecoveryNotice=null;
+        RecoveryNotice=null;_blocker=null;
         bool primaryPresent=Exists(_path);
         if(primaryPresent)
         {
-            try {return await ReadAsync(_path,ct).ConfigureAwait(false);}
+            try {return await ReadGenerationAsync("",ct).ConfigureAwait(false);}
             catch(Exception ex) when(Recoverable(ex))
             {
-                if(!Exists(_path+".bak")) throw RecoveryRequired(ex);
+                if(!Exists(_path+".bak")) throw Blocked(LaunchQueueBlockerKind.UnreadableQueue,"",ex);
             }
         }
         if(Exists(_path+".bak"))
         {
             try
             {
-                var recovered=await ReadAsync(_path+".bak",ct).ConfigureAwait(false);
+                var recovered=await ReadGenerationAsync(".bak",ct).ConfigureAwait(false);
                 // Backup intent is historical. Loading never promotes it or resumes activity;
                 // the coordinator also converts active work into explicit startup review.
                 RecoveryNotice="Loaded the verified launch-queue backup. Recovered requests are paused for review; no client was restarted. Original recovery files were preserved.";
                 return recovered with{Paused=true,Operations=recovered.Operations.Select(BackupRowForReview).ToArray()};
             }
-            catch(Exception ex) when(Recoverable(ex)){throw RecoveryRequired(ex);}
+            catch(Exception ex) when(Recoverable(ex)){throw Blocked(LaunchQueueBlockerKind.UnreadableBackup,".bak",ex);}
         }
-        if(primaryPresent || Exists(_path+".tmp") || Exists(_path+".damaged")) throw RecoveryRequired();
+        if(primaryPresent) throw Blocked(LaunchQueueBlockerKind.UnreadableQueue,"");
+        if(Exists(_path+".tmp")) throw Blocked(LaunchQueueBlockerKind.OrphanEvidence,".tmp");
+        if(Exists(_path+".damaged")) throw Blocked(LaunchQueueBlockerKind.OrphanEvidence,".damaged");
         return LaunchQueueSnapshot.Empty;
+    }
+    private InvalidDataException Blocked(LaunchQueueBlockerKind kind,string suffix,Exception? error=null)
+    { _blocker=new(kind,FileName+suffix);return RecoveryRequired(error); }
+    // Unsupported generations keep their own exception; record which kept file needs a compatible version.
+    private async Task<LaunchQueueSnapshot> ReadGenerationAsync(string suffix,CancellationToken ct)
+    {
+        try {return await ReadAsync(_path+suffix,ct).ConfigureAwait(false);}
+        catch(InvalidDataException ex) when(ex.InnerException is UnsupportedQueueFormatException)
+        { _blocker=new(LaunchQueueBlockerKind.UnsupportedFormat,FileName+suffix);throw; }
     }
     // The backup is one generation behind. The lost primary may already have moved a queued or
     // blocked request into native startup, so the backup's copy cannot prove that nothing started.
@@ -53,13 +73,18 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
     }
     private static InvalidDataException RecoveryRequired(Exception? error=null)=>new(
         "The launch queue needs recovery. Existing files were preserved; restore a verified backup or review the interrupted files before launching.",error);
-    private static async Task PreserveDamagedAsync(string path,CancellationToken ct)
+    private async Task PreserveDamagedAsync(string path,CancellationToken ct)
     {
-        byte[] original=await ReadBoundedBytesAsync(path,ct).ConfigureAwait(false);
+        byte[] original;
+        // An oversized original stays in place instead of being copied beyond the decoded bound.
+        try {original=await ReadBoundedBytesAsync(path,ct).ConfigureAwait(false);}
+        catch(InvalidDataException) {_blocker=new(LaunchQueueBlockerKind.UnreadableQueue,FileName);throw;}
         if(Exists(path+".damaged"))
         {
-            byte[] existing=await ReadBoundedBytesAsync(path+".damaged",ct).ConfigureAwait(false);
-            if(!original.AsSpan().SequenceEqual(existing)) throw RecoveryRequired();
+            byte[] existing;
+            try {existing=await ReadBoundedBytesAsync(path+".damaged",ct).ConfigureAwait(false);}
+            catch(InvalidDataException) {_blocker=new(LaunchQueueBlockerKind.ConflictingDamagedCopy,FileName+".damaged");throw;}
+            if(!original.AsSpan().SequenceEqual(existing)) throw Blocked(LaunchQueueBlockerKind.ConflictingDamagedCopy,".damaged");
             return;
         }
         ct.ThrowIfCancellationRequested();
@@ -184,23 +209,21 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
         else if(element.ValueKind==JsonValueKind.Array)
             foreach(var value in element.EnumerateArray())RejectDuplicateProperties(value,ct);
     }
-    public async Task SaveAsync(LaunchQueueSnapshot snapshot,CancellationToken ct)
+    // Caller owns _writer. Classifies the existing generations exactly as a save needs them and
+    // throws, naming the blocker, for any state that must fail closed.
+    private async Task<(bool Valid,bool Damaged)> InspectGenerationsAsync(CancellationToken ct)
     {
-        LaunchCoordinator.ValidateSnapshot(snapshot);await _writer.WaitAsync(ct).ConfigureAwait(false);
-        string temporary=_path+".tmp";bool ownsTemporary=false;
-        try
+        ct.ThrowIfCancellationRequested();bool oldValid=false,oldDamaged=false;
+        bool primary=Exists(_path),hasBackup=Exists(_path+".bak");
+        if(!primary&&!hasBackup&&Exists(_path+".damaged"))throw Blocked(LaunchQueueBlockerKind.OrphanEvidence,".damaged");
+        if(primary)
         {
-            ct.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(root);
-            ct.ThrowIfCancellationRequested();bool oldValid=false,oldDamaged=false;
-            bool primary=Exists(_path),hasBackup=Exists(_path+".bak");
-            if(!primary&&!hasBackup&&Exists(_path+".damaged"))throw RecoveryRequired();
-            if(primary)
-            {
-                try {await ReadAsync(_path,ct).ConfigureAwait(false);oldValid=true;}
-                catch(Exception ex) when(Recoverable(ex)){oldDamaged=true;}
-            }
-            if(hasBackup)
+            try {await ReadGenerationAsync("",ct).ConfigureAwait(false);oldValid=true;}
+            catch(Exception ex) when(Recoverable(ex)){oldDamaged=true;}
+        }
+        if(hasBackup)
+        {
+            try
             {
                 // An unreadable/oversized backup cannot be classified as replaceable current
                 // corruption. Read its bounded bytes outside the recoverable decode filter.
@@ -221,9 +244,33 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
                     if(!oldValid||!supportedBackup)throw RecoveryRequired(ex);
                 }
             }
+            catch(InvalidDataException ex)
+            {
+                _blocker=new(ex.InnerException is UnsupportedQueueFormatException?LaunchQueueBlockerKind.UnsupportedFormat:LaunchQueueBlockerKind.UnreadableBackup,FileName+".bak");
+                throw;
+            }
+        }
+        return (oldValid,oldDamaged);
+    }
+    public async Task SaveAsync(LaunchQueueSnapshot snapshot,CancellationToken ct)
+    {
+        LaunchCoordinator.ValidateSnapshot(snapshot);await _writer.WaitAsync(ct).ConfigureAwait(false);
+        string temporary=_path+".tmp";bool ownsTemporary=false;
+        try
+        {
+            _blocker=null;
+            ct.ThrowIfCancellationRequested();
+            Directory.CreateDirectory(root);
+            var (oldValid,oldDamaged)=await InspectGenerationsAsync(ct).ConfigureAwait(false);
             if(oldDamaged)await PreserveDamagedAsync(_path,ct).ConfigureAwait(false);
             // CreateNew and owned cleanup preserve a preexisting interrupted write. A failed
             // preflight never truncates it, including when the main file is a future format.
+            // Behind a readable primary it is set aside only by an explicit user choice.
+            if(Exists(temporary))
+            {
+                _blocker=new(oldValid?LaunchQueueBlockerKind.InterruptedWrite:LaunchQueueBlockerKind.OrphanEvidence,FileName+".tmp");
+                throw new IOException("An earlier interrupted launch-queue save (launch-queue.json.tmp) was kept. The queue was not saved.");
+            }
             await using(var file=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None,8192,FileOptions.Asynchronous|FileOptions.WriteThrough))
             {
                 ownsTemporary=true;
@@ -240,6 +287,31 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
             try {if(ownsTemporary&&File.Exists(temporary))File.Delete(temporary);}
             finally {_writer.Release();}
         }
+    }
+    /// <summary>
+    /// Renames a kept interrupted save (<c>launch-queue.json.tmp</c>) to a timestamped
+    /// <c>launch-queue.json.interrupted-...</c> file so the committed queue can be saved again.
+    /// Nothing is deleted, overwritten or decoded. The coordinator persists each state before
+    /// acting on it, so an uncommitted save never carries an effect the readable primary lacks.
+    /// Refuses unless the primary is a readable supported generation and no other blocker exists.
+    /// Returns the kept file name, or null when there was no interrupted save to set aside.
+    /// </summary>
+    public async Task<string?> SetAsideInterruptedWriteAsync(CancellationToken ct)
+    {
+        await _writer.WaitAsync(ct).ConfigureAwait(false);
+        try
+        {
+            _blocker=null;
+            var (valid,_)=await InspectGenerationsAsync(ct).ConfigureAwait(false);
+            string temporary=_path+".tmp";
+            if(!Exists(temporary)) return null;
+            if(!valid) throw Blocked(LaunchQueueBlockerKind.OrphanEvidence,".tmp");
+            ct.ThrowIfCancellationRequested();
+            string kept=FileName+".interrupted-"+DateTime.UtcNow.ToString("yyyyMMdd'T'HHmmssfff'Z'",System.Globalization.CultureInfo.InvariantCulture);
+            File.Move(temporary,Path.Combine(root,kept),overwrite:false);
+            return kept;
+        }
+        finally {_writer.Release();}
     }
     private static bool Recoverable(Exception error)=>error is JsonException || error is InvalidDataException {InnerException:not UnsupportedQueueFormatException};
     public void Dispose()=>_writer.Dispose();

@@ -142,7 +142,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private bool _queueExpanded;
     public bool QueueExpanded { get=>_queueExpanded;set=>Set(ref _queueExpanded,value); }
     public string QueueStatus { get=>_queueStatus;private set=>Set(ref _queueStatus,value); }
-    public bool QueueReady { get=>_queueReady;private set {if(Set(ref _queueReady,value)) {if(value) RefreshVisibleQueueStatus();RefreshOverview();}} }
+    public bool QueueReady { get=>_queueReady;private set {if(Set(ref _queueReady,value)) {if(value) RefreshVisibleQueueStatus();Raise(nameof(CanSetAsideInterruptedQueueWrite));RefreshOverview();}} }
+    /// <summary>Offered only while the queue is unavailable because an interrupted save sits behind a readable queue.</summary>
+    public bool CanSetAsideInterruptedQueueWrite=>!QueueReady && _queueStore.RecoveryBlocker is {Kind:LaunchQueueBlockerKind.InterruptedWrite};
     public string QueuePauseLabel=>EffectiveQueuePaused?"Resume queue":"Pause queue";
     private readonly ResourcePressureTracker _pressure=new();
     private CancellationTokenSource? _authorizationStop;
@@ -258,6 +260,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public AsyncCommand QueueSelected { get; }
     public AsyncCommand ToggleQueuePause { get; }
     public AsyncCommand CancelLaunch { get; }
+    public AsyncCommand SetAsideInterruptedQueueWrite { get; }
     public AsyncCommand Refresh { get; }
     public AsyncCommand LinkAccount { get; }
     public AsyncCommand AddRobloxAccount { get; }
@@ -335,6 +338,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         },Fail);
         ToggleQueuePause=new(_=>ToggleQueuePausePresentationAsync(),Fail);
         CancelLaunch=new(async p=> { if(!IsLocked && QueueReady && p is LaunchRow row) await _launchQueue.CancelAsync(row.Id,_lifetime.Token); },Fail);
+        SetAsideInterruptedQueueWrite=new(_=>SetAsideInterruptedQueueWriteAsync(),Fail);
         Refresh = new(async _ => { if(!_ready) throw new AccountLinkException("Resolve the startup error and restart Zenith Sessions before refreshing the library."); await LoadAccountsAsync(_lifetime.Token); await SampleAsync(_lifetime.Token,forcePresentation:true); Notice = "Latest available observations shown. Measurement times are listed."; }, Fail);
         LinkAccount=new(_=>AuthorizeSelectedAsync(false),Fail);
         AddRobloxAccount=new(_=>AddRobloxAccountAsync(),Fail);
@@ -384,7 +388,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 queueRecoveryNotice=_queueStore.RecoveryNotice;
                 if(queueRecoveryNotice is not null)AddEvent(queueRecoveryNotice);
             }
-            catch(Exception ex) when(ex is not OperationCanceledException) {QueueStatus="Launch queue unavailable. Existing queue files were preserved; account profiles remain usable.";_diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());}
+            catch(Exception ex) when(ex is not OperationCanceledException) {ShowQueueBlocker("Launch queue unavailable. Existing queue files were preserved; account profiles remain usable.");_diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());}
             if (IsSample)
             {
                 var initial = await Task.Run(() => _accounts.ReadAsync(new(), _lifetime.Token));
@@ -753,7 +757,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
         await _executableTrust.DisposeAsync();
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
-            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
+            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         await DisposeRecipientBundlesAsync();
         await StopDirectoryFeaturesAsync();
@@ -889,10 +893,54 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             if(_shuttingDown) return;
             QueueReady=_launchQueue.IsHealthy;
-            if(!QueueReady) QueueStatus="Queue stopped after an error. Existing queue files were preserved; restart after resolving storage access.";
+            if(!QueueReady) ShowQueueBlocker("Queue stopped after an error. Existing queue files were preserved; restart after resolving storage access.");
             RefreshOverview();
             Notice="A launch operation needs attention. Check the queue; no uncertain result is reported as running.";
         }));
+    }
+    // Names the kept file that blocks the queue and where to review it. Messages hold only fixed
+    // file names from the data folder, never queue contents or exception text.
+    private void ShowQueueBlocker(string unclassified)
+    {
+        QueueStatus=_queueStore.RecoveryBlocker switch
+        {
+            {Kind:LaunchQueueBlockerKind.InterruptedWrite} b=>$"Launch queue unavailable: an interrupted save left {b.FileName} next to the last completed save. Choose Set aside interrupted save to keep it under a new name and reopen the queue.",
+            {Kind:LaunchQueueBlockerKind.OrphanEvidence} b=>$"Launch queue unavailable: {b.FileName} was found without a readable saved queue. It was kept; review it via More options › Open data folder.",
+            {Kind:LaunchQueueBlockerKind.ConflictingDamagedCopy} b=>$"Launch queue unavailable: launch-queue.json is damaged and differs from the copy already kept as {b.FileName}. Both were kept; review them via More options › Open data folder.",
+            {Kind:LaunchQueueBlockerKind.UnreadableQueue} b=>$"Launch queue unavailable: {b.FileName} could not be read and no usable backup was found. It was kept; review it via More options › Open data folder.",
+            {Kind:LaunchQueueBlockerKind.UnreadableBackup} b=>$"Launch queue unavailable: the backup {b.FileName} could not be read or has an unknown format. It was kept; review it via More options › Open data folder.",
+            {Kind:LaunchQueueBlockerKind.UnsupportedFormat} b=>$"Launch queue unavailable: {b.FileName} was saved by a newer version of Zenith Sessions. It was kept; open it with a compatible version.",
+            _=>unclassified
+        };
+        Raise(nameof(CanSetAsideInterruptedQueueWrite));
+    }
+    // The view confirms first. The store renames (never deletes) the interrupted save only behind a
+    // readable committed queue; startup then reopens that queue paused, with nothing resumed.
+    private async Task SetAsideInterruptedQueueWriteAsync()
+    {
+        if(_shuttingDown || !CanSetAsideInterruptedQueueWrite) return;
+        if(IsLocked) {Notice="Unlock the dashboard before changing launch-queue files.";return;}
+        string? kept;
+        try
+        {
+            kept=await Task.Run(()=>_queueStore.SetAsideInterruptedWriteAsync(_lifetime.Token));
+            await Task.Run(()=>_launchQueue.InitializeAsync(_lifetime.Token));
+        }
+        catch(Exception) when(!_launchQueue.IsHealthy && !_shuttingDown)
+        {
+            ShowQueueBlocker("Launch queue unavailable. Existing queue files were preserved; account profiles remain usable.");
+            throw;
+        }
+        string setAside=kept is null?"No interrupted save was left to set aside.":$"The interrupted save was kept as {kept}.";
+        if(!_launchQueue.IsHealthy)
+        {
+            // A save failed while the queue was already running; only a restart reopens it.
+            QueueStatus=$"{setAside} Restart Zenith Sessions to reopen the launch queue.";Raise(nameof(CanSetAsideInterruptedQueueWrite));
+            Notice=QueueStatus;AddEvent(QueueStatus);return;
+        }
+        QueueReady=true;
+        if(_queueStore.RecoveryNotice is { } recovery) AddEvent(recovery);
+        Notice=$"{setAside} The launch queue reopened paused from its last completed save; nothing resumed automatically.";AddEvent(Notice);
     }
     public async Task ConfirmLaunchClientClosedAsync(Guid id)
     { if(!IsLocked && QueueReady) await _launchQueue.AcknowledgeClientClosedAsync(id,_lifetime.Token); }
