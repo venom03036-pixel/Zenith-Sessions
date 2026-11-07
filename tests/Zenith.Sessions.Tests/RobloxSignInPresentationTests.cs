@@ -271,6 +271,100 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         }
         finally { held.Remove(default); }
     });
+    // A crash leaves its private sign-in folder behind. It was removed only when the next sign-in or handoff browser
+    // was created, so its browser data stayed on disk until then. Startup now removes leftovers no browser holds and
+    // keeps, untouched, any folder that is held, unrecognized, redirected or cannot be removed, and says so.
+    [Fact]
+    public Task StartupRemovesUnheldLeftoverSignInFoldersAndReportsTheOnesItKeeps() => OnUi(async () =>
+    {
+        string browserRoot = Directory.CreateDirectory(Path.Combine(_root, "signin-browser-data")).FullName;
+        string crashed = Leftover(browserRoot, true), held = Leftover(browserRoot, true), lockedFile = Leftover(browserRoot, true), unmarked = Leftover(browserRoot, false);
+        string outside = Directory.CreateDirectory(Path.Combine(_root, "outside")).FullName; File.WriteAllText(Path.Combine(outside, "keep.txt"), "keep");
+        string redirected = Path.Combine(browserRoot, OwnedFolderName());
+        await CreateJunctionAsync(redirected, outside);
+        try
+        {
+            // Stands in for another owner's live lease, and for a browser file still open during removal.
+            using (new FileStream(Path.Combine(held, "owner.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            using (new FileStream(Path.Combine(lockedFile, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+            {
+                await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+                await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+                Assert.False(Directory.Exists(crashed), "Startup left an unheld leftover sign-in folder for the next sign-in to remove.");
+                Assert.True(File.Exists(Path.Combine(held, "EBWebView", "Default", "synthetic")), "Startup removed a folder another owner still holds.");
+                Assert.True(File.Exists(Path.Combine(lockedFile, ".zenith-private-signin")), "A folder startup could not remove lost its ownership marker.");
+                Assert.True(File.Exists(Path.Combine(lockedFile, "owner.lock")), "A folder startup could not remove lost its owner lock.");
+                Assert.True(File.Exists(Path.Combine(unmarked, "EBWebView", "Default", "synthetic")), "Startup removed an unrecognized folder.");
+                Assert.True(Directory.Exists(redirected), "Startup removed a redirected folder.");
+                Assert.True(File.Exists(Path.Combine(outside, "keep.txt")), "Startup followed a redirected folder.");
+                Assert.Contains("4 leftover private sign-in folder(s) in signin-browser-data were kept", shell.CredentialCleanupStatus);
+                Assert.DoesNotContain(_root, shell.CredentialCleanupStatus);
+                Assert.Contains(shell.Events, line => line.Contains("Removed 1 leftover private sign-in folder", StringComparison.Ordinal));
+                Assert.Contains(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
+            }
+        }
+        finally { if (Directory.Exists(redirected)) Directory.Delete(redirected, false); }
+    });
+    [Fact]
+    public Task StartupLeavesARedirectedSignInStorageRootUnchangedAndSaysSo() => OnUi(async () =>
+    {
+        string target = Directory.CreateDirectory(Path.Combine(_root, "elsewhere")).FullName;
+        string inside = Leftover(target, true);
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        await CreateJunctionAsync(browserRoot, target);
+        try
+        {
+            await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+            await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+            Assert.True(File.Exists(Path.Combine(inside, "EBWebView", "Default", "synthetic")), "Startup followed a redirected signin-browser-data folder.");
+            Assert.Contains("could not be checked at startup, so signin-browser-data was left unchanged", shell.CredentialCleanupStatus);
+            Assert.DoesNotContain(_root, shell.CredentialCleanupStatus);
+        }
+        finally { if (Directory.Exists(browserRoot)) Directory.Delete(browserRoot, false); }
+    });
+    [Fact]
+    public void StartupSweepCreatesNothingWhenNoSignInFolderExists()
+    {
+        Assert.Equal(default, SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(Directory.Exists(_root));
+    }
+    [Fact]
+    public void StartupSweepOpensNoMoreFoldersThanAdmissionAndLeavesTheRestForTheNextRun()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
+        Assert.Equal(new SignInSweepResult(8, 2), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.Equal(2, Directory.EnumerateDirectories(browserRoot).Count());
+        Assert.Equal(new SignInSweepResult(2, 0), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(browserRoot));
+    }
+    private static string OwnedFolderName() => Guid.NewGuid().ToString("N") + "-" + Guid.NewGuid().ToString("N");
+    /// <summary>A folder shaped like one a crashed sign-in left: owned name, optional marker and lock, synthetic browser data.</summary>
+    private static string Leftover(string browserRoot, bool marked)
+    {
+        string folder = Directory.CreateDirectory(Path.Combine(browserRoot, OwnedFolderName())).FullName;
+        if (marked)
+        {
+            File.WriteAllText(Path.Combine(folder, ".zenith-private-signin"), "Zenith Sessions private sign-in profile v1");
+            File.WriteAllText(Path.Combine(folder, "owner.lock"), "");
+        }
+        File.WriteAllText(Path.Combine(Directory.CreateDirectory(Path.Combine(folder, "EBWebView", "Default")).FullName, "synthetic"), "test only");
+        return folder;
+    }
+    // A directory junction exercises real redirection without symbolic-link privilege or developer mode.
+    private static async Task CreateJunctionAsync(string alias, string target)
+    {
+        static string Quote(string path) => "'" + path.Replace("'", "''", StringComparison.Ordinal) + "'";
+        string script = "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path " + Quote(alias) + " -Target " + Quote(target) + " | Out-Null";
+        var start = new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32/WindowsPowerShell/v1.0/powershell.exe"))
+            { UseShellExecute = false, CreateNoWindow = true, WindowStyle = System.Diagnostics.ProcessWindowStyle.Hidden };
+        start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-NonInteractive"); start.ArgumentList.Add("-EncodedCommand");
+        start.ArgumentList.Add(Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)));
+        using var process = System.Diagnostics.Process.Start(start)!; using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(15));
+        try { await process.WaitForExitAsync(deadline.Token); Assert.Equal(0, process.ExitCode); }
+        finally { if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(15)); } }
+        Assert.True((File.GetAttributes(alias) & FileAttributes.ReparsePoint) != 0, "The test junction was not created.");
+    }
     [Fact]
     public void CancelledDirectoryAdmissionDoesNotCreatePrivateData()
     {
