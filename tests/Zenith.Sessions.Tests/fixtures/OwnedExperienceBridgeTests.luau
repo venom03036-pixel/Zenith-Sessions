@@ -12,6 +12,12 @@ local recordKey = "u8000000002"
 local goldenIssued = 1794045600
 local goldenMove = [[{"version":1,"operationId":"34567890-3456-3456-3456-34567890abcd","universeId":8000000001,"userId":8000000002,"sourcePlaceId":9000000001,"sourceJobId":"12345678-1234-1234-1234-123456789abc","destinationPlaceId":9000000002,"destinationJobId":"23456789-2345-2345-2345-23456789abcd","issuedUtc":1794045600,"expiresUtc":1794045645}]]
 local goldenStatus = [[{"version":1,"operationId":"34567890-3456-3456-3456-34567890abcd","universeId":8000000001,"userId":8000000002,"sourcePlaceId":9000000001,"sourceJobId":"12345678-1234-1234-1234-123456789abc","destinationPlaceId":null,"destinationJobId":null,"issuedUtc":1794045600,"expiresUtc":1794045645}]]
+-- The receipts the script stores for those two commands at goldenIssued, as JSON with sorted keys: the move's
+-- arrival receipt from the destination and the status receipt from the source. claimId is the fixture's first
+-- generated claim, and the status command has no destination keys because Roblox stores no nil fields.
+-- OwnedExperienceBridgeTests.cs requires RobloxOwnedExperienceBridge to acknowledge both texts.
+local goldenArrivedReceipt = [[{"claimId":"87654321-8765-8765-8765-000000000001","command":{"destinationJobId":"23456789-2345-2345-2345-23456789abcd","destinationPlaceId":9000000002,"expiresUtc":1794045645,"issuedUtc":1794045600,"operationId":"34567890-3456-3456-3456-34567890abcd","sourceJobId":"12345678-1234-1234-1234-123456789abc","sourcePlaceId":9000000001,"universeId":8000000001,"userId":8000000002,"version":1},"observedJobId":"23456789-2345-2345-2345-23456789abcd","observedPlaceId":9000000002,"observedUtc":1794045600,"stage":"arrived"}]]
+local goldenStatusReceipt = [[{"claimId":"87654321-8765-8765-8765-000000000001","command":{"expiresUtc":1794045645,"issuedUtc":1794045600,"operationId":"34567890-3456-3456-3456-34567890abcd","sourceJobId":"12345678-1234-1234-1234-123456789abc","sourcePlaceId":9000000001,"universeId":8000000001,"userId":8000000002,"version":1},"observedJobId":"12345678-1234-1234-1234-123456789abc","observedPlaceId":9000000001,"observedUtc":1794045600,"stage":"atSource"}]]
 local passed = 0
 
 local function check(name, work)
@@ -93,23 +99,42 @@ local function decodeFlatObject(text)
     return result
 end
 
+local function encodeScalar(value)
+    if value == nil then
+        return "null"
+    elseif type(value) == "number" then
+        assert(value % 1 == 0, "the fixture writes only integers")
+        return string.format("%.0f", value)
+    elseif type(value) == "boolean" then
+        return tostring(value)
+    end
+    assert(type(value) == "string" and not string.find(value, '["\\%c]'), "unsupported fixture value")
+    return '"' .. value .. '"'
+end
+
+-- Writes a stored receipt as JSON text with its keys sorted at every level, the form of the receipt goldens.
+local function encodeSorted(value)
+    if type(value) ~= "table" then
+        return encodeScalar(value)
+    end
+    local names = {}
+    for name in pairs(value) do
+        assert(type(name) == "string", "a receipt has only named fields")
+        table.insert(names, name)
+    end
+    table.sort(names)
+    local parts = {}
+    for _, name in ipairs(names) do
+        table.insert(parts, '"' .. name .. '":' .. encodeSorted(value[name]))
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
+end
+
 -- Writes a command as JSON text in RobloxOwnedExperienceBridge.WriteCommand's field order, with a nil
 -- field written as null and any extra fixture fields after it.
 local commandFields = { "version", "operationId", "universeId", "userId", "sourcePlaceId", "sourceJobId",
     "destinationPlaceId", "destinationJobId", "issuedUtc", "expiresUtc" }
 local function encodeCommand(command)
-    local function encode(value)
-        if value == nil then
-            return "null"
-        elseif type(value) == "number" then
-            assert(value % 1 == 0, "the fixture writes only integers")
-            return string.format("%.0f", value)
-        elseif type(value) == "boolean" then
-            return tostring(value)
-        end
-        assert(type(value) == "string" and not string.find(value, '["\\%c]'), "unsupported fixture value")
-        return '"' .. value .. '"'
-    end
     local names = table.clone(commandFields)
     local extras = {}
     for name in pairs(command) do
@@ -123,7 +148,7 @@ local function encodeCommand(command)
     end
     local parts = {}
     for _, name in ipairs(names) do
-        table.insert(parts, '"' .. name .. '":' .. encode(command[name]))
+        table.insert(parts, '"' .. name .. '":' .. encodeScalar(command[name]))
     end
     return "{" .. table.concat(parts, ",") .. "}"
 end
@@ -525,6 +550,20 @@ check("the C# move and status payloads are decoded and accepted", function()
     record = status.receipts[recordKey]
     assert(record ~= nil and record.stage == "atSource", "the script did not accept the C# status payload")
     assert(record.command.destinationPlaceId == nil and record.command.destinationJobId == nil and status.teleports == 0)
+end)
+
+check("the receipts stored for the C# payloads match the receipt goldens the C# reader acknowledges", function()
+    local move = fixture()
+    move.now = goldenIssued
+    move:publish(goldenMove)
+    move:arrive(move.teleport.options.data)
+    local stored = encodeSorted(move.receipts[recordKey])
+    assert(stored == goldenArrivedReceipt, "the arrival receipt differs from goldenArrivedReceipt: " .. stored)
+    local status = fixture()
+    status.now = goldenIssued
+    status:publish(goldenStatus)
+    stored = encodeSorted(status.receipts[recordKey])
+    assert(stored == goldenStatusReceipt, "the status receipt differs from goldenStatusReceipt: " .. stored)
 end)
 
 check("payloads over 1024 bytes are ignored", function()

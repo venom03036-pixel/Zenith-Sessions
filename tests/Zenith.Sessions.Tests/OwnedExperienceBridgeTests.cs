@@ -65,26 +65,11 @@ public sealed class OwnedExperienceBridgeTests
     [Fact]
     public async Task PublishedCommandJsonMatchesTheLuauFixtureGoldens()
     {
-        string fixture;
-        using (var stream = typeof(OwnedExperienceBridgeTests).Assembly.GetManifestResourceStream("OwnedExperienceBridgeTests.luau"))
-        {
-            Assert.True(stream is not null, "The Luau server fixture is not embedded in the test assembly.");
-            using var reader = new StreamReader(stream, Encoding.UTF8);
-            fixture = await reader.ReadToEndAsync();
-        }
-        static string Golden(string fixture, string name)
-        {
-            var match = System.Text.RegularExpressions.Regex.Match(fixture, $@"local {name} = \[\[(.*?)\]\]",
-                System.Text.RegularExpressions.RegexOptions.Singleline);
-            Assert.True(match.Success, $"The Luau server fixture has no {name} payload.");
-            return match.Groups[1].Value;
-        }
-
-        var operation = Guid.Parse("34567890-3456-3456-3456-34567890abcd");
-        var move = new OwnedExperienceCommand(operation, Universe, User, Source, Destination, Start);
-        var status = new OwnedExperienceCommand(operation, Universe, User, Source, null, Start);
-        Assert.Equal(Golden(fixture, "goldenMove"), await PublishedMessage(move, Start));
-        Assert.Equal(Golden(fixture, "goldenStatus"), await PublishedMessage(status, Start));
+        string fixture = await LuauFixture();
+        var move = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, Destination, Start);
+        var status = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, null, Start);
+        Assert.Equal(LuauGolden(fixture, "goldenMove"), await PublishedMessage(move, Start));
+        Assert.Equal(LuauGolden(fixture, "goldenStatus"), await PublishedMessage(status, Start));
 
         // The script ignores any message over 1024 bytes. The widest command it can accept must fit.
         const long widest = 9_007_199_254_740_991;
@@ -94,6 +79,27 @@ public sealed class OwnedExperienceBridgeTests
         var widestMessage = await PublishedMessage(largest, latest);
         Assert.True(Encoding.UTF8.GetByteCount(widestMessage) <= 1024,
             $"The widest command is {Encoding.UTF8.GetByteCount(widestMessage)} bytes, over the script's 1024-byte limit.");
+    }
+
+    // The Luau server fixture runs goldenMove and goldenStatus through the shipped script and requires the
+    // receipts it stores to equal these texts, claimId included. Reading them here closes the loop: a receipt
+    // field renamed or retyped on either side breaks one of the two suites.
+    [Theory]
+    [InlineData("goldenArrivedReceipt", true, OwnedExperienceStage.Arrived)]
+    [InlineData("goldenStatusReceipt", false, OwnedExperienceStage.AtSource)]
+    public async Task ReceiptsTheServerScriptStoresAreAcknowledged(string golden, bool move, OwnedExperienceStage expected)
+    {
+        string receipt = LuauGolden(await LuauFixture(), golden);
+        var command = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, move ? Destination : null, Start);
+        using var bridge = Fixture((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"value\":" + receipt + "}", Encoding.UTF8, "application/json") });
+        });
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.Acknowledged, result.State);
+        Assert.Equal(new(GoldenOperation, Universe, User, expected, move ? Destination : Source, Start), result.Acknowledgement);
     }
 
     [Theory]
@@ -359,8 +365,100 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Throws<ArgumentException>(() => new OwnedExperienceCommand(Guid.NewGuid(), Universe, User, Source, Source, Start));
     }
 
+    // A key Roblox refuses needs the owner to fix it; a Roblox outage only needs time. The two must stay distinct.
+    [Theory]
+    [InlineData(true, HttpStatusCode.Unauthorized, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(true, HttpStatusCode.Forbidden, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(true, HttpStatusCode.InternalServerError, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(true, HttpStatusCode.ServiceUnavailable, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(false, HttpStatusCode.Unauthorized, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(false, HttpStatusCode.Forbidden, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(false, HttpStatusCode.InternalServerError, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(false, HttpStatusCode.ServiceUnavailable, OwnedExperienceBridgeState.Unavailable)]
+    public async Task AuthorizationAndServerErrorsMapToDistinctStates(bool publish, HttpStatusCode status,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        int calls = 0;
+        using var bridge = Fixture((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(status));
+        });
+        var result = publish ? await bridge.PublishAsync(command, default) : await bridge.ReadAsync(command, default);
+        Assert.Equal(expected, result.State);
+        Assert.Null(result.Acknowledgement);
+        Assert.Null(result.RetryUtc);
+        Assert.Equal(1, calls);
+    }
+
+    // A key store that fails, synchronously or later, needs the owner's attention. No request goes out without
+    // a key, the store's error text never reaches the result, and the lane is free for the next call.
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task ThrowingKeyLoaderNeverReachesTheNetwork(bool publish, bool later)
+    {
+        Func<CancellationToken, ValueTask<string?>> broken = later
+            ? async _ => { await Task.Yield(); throw new InvalidOperationException("fixture key store is locked"); }
+            : _ => throw new InvalidOperationException("fixture key store is locked");
+        int calls = 0;
+        using var bridge = new RobloxOwnedExperienceBridge(Universe, broken, broken, new Handler((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }), new Clock());
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var result = publish ? await bridge.PublishAsync(Command(), default) : await bridge.ReadAsync(Command(), default);
+            Assert.Equal(new OwnedExperienceBridgeResult(OwnedExperienceBridgeState.AuthorizationRequired), result);
+        }
+        Assert.Equal(0, calls);
+    }
+
+    // Each request has a five-second deadline. A Roblox endpoint that never answers gives Unavailable and frees
+    // the single lane, instead of holding it until the app closes.
+    [Fact]
+    public async Task UnansweredRequestEndsAsUnavailableAtTheFiveSecondDeadline()
+    {
+        var command = Command();
+        var clock = new Clock();
+        int calls = 0;
+        using var bridge = Fixture(async (_, ct) =>
+        {
+            if (++calls == 1) await Task.Delay(Timeout.Infinite, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }, clock);
+        var unanswered = await bridge.PublishAsync(command, default).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(OwnedExperienceBridgeState.Unavailable, unanswered.State);
+        clock.Now = Start.AddSeconds(1);
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+        Assert.Equal(2, calls);
+    }
+
     private static OwnedExperienceCommand Command(bool join = true)
         => new(Guid.NewGuid(), Universe, User, Source, join ? Destination : null, Start);
+
+    // The operation ID the Luau server fixture uses in its goldens.
+    private static readonly Guid GoldenOperation = Guid.Parse("34567890-3456-3456-3456-34567890abcd");
+
+    private static async Task<string> LuauFixture()
+    {
+        using var stream = typeof(OwnedExperienceBridgeTests).Assembly.GetManifestResourceStream("OwnedExperienceBridgeTests.luau");
+        Assert.True(stream is not null, "The Luau server fixture is not embedded in the test assembly.");
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static string LuauGolden(string fixture, string name)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(fixture, $@"local {name} = \[\[(.*?)\]\]",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(match.Success, $"The Luau server fixture has no {name} payload.");
+        return match.Groups[1].Value;
+    }
 
     private static async Task<string> PublishedMessage(OwnedExperienceCommand command, DateTimeOffset now)
     {
