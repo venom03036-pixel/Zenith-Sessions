@@ -22,10 +22,12 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.AuthorizationLinked => "Roblox sign-in saved after identity verification.",
         ManagerEventKind.AuthorizationChecked => "Saved sign-in re-verified and saved again.",
         ManagerEventKind.HandoffInspected => "Native handoff inspected and cancelled; no client started.",
+        ManagerEventKind.HandoffNotCompleted => "Handoff inspection was closed, busy or timed out; no client started.",
         ManagerEventKind.AuthorizationDisconnected => "Local authorization disconnected.",
         ManagerEventKind.OperationFailed => "An operation failed or needs review.",
         ManagerEventKind.Panic => "Emergency stop requested.",
         ManagerEventKind.ControlsLocked => "Manager controls locked.",
+        ManagerEventKind.ControlsUnlocked => "Manager controls unlocked.",
         ManagerEventKind.Shutdown => "Manager shutdown recorded.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."

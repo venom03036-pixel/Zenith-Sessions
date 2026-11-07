@@ -91,6 +91,41 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("Native handoff inspected and cancelled",shell.BuildVisibleDiagnosticText());
         Assert.Contains("\"AuthorizationChecked\"",shell.BuildDiagnosticReport());
     });
+    [Theory]
+    [InlineData(RobloxHandoffProbeOutcome.Cancelled,"HandoffNotCompleted")]
+    [InlineData(RobloxHandoffProbeOutcome.Busy,"HandoffNotCompleted")]
+    [InlineData(RobloxHandoffProbeOutcome.TimedOut,"HandoffNotCompleted")]
+    [InlineData(RobloxHandoffProbeOutcome.OriginRejected,"OperationFailed")]
+    public Task InspectionThatEndsWithoutAResultIsNotRecordedAsAnError(RobloxHandoffProbeOutcome outcome,string expectedKind)=>OnUi(async()=>
+    {
+        // Closing the private page, another owner holding the lane, or no handoff before the deadline is
+        // inconclusive, not a failure (AGENTS.md: cancellation is not logged as an error). Real rejections stay errors.
+        var probe=new HandoffBrowser();
+        await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe);
+        await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];
+        shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
+        shell.ServerBrowser.UsePreferredPlace(6564161046);
+        shell.RefreshDiagnostics.Execute(null);
+        int errors=shell.DiagnosticRows.Count(row=>row.Level=="Error");long newest=shell.DiagnosticRows[^1].Sequence;
+
+        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        probe.Finish.TrySetResult(new(new(outcome)));await shell.InspectNativeHandoff.Execution;
+        Assert.False(shell.IsLocked);
+        Assert.Equal(ShellViewModel.DescribeHandoffResult(new(outcome),6564161046),shell.HandoffInspectionStatus);
+
+        shell.RefreshDiagnostics.Execute(null);
+        var added=shell.DiagnosticRows.Where(row=>row.Sequence>newest).ToArray();
+        Assert.NotEmpty(added);
+        Assert.Equal(expectedKind,added[^1].Event.Kind.ToString());
+        Assert.Equal(expectedKind=="OperationFailed"?errors+1:errors,shell.DiagnosticRows.Count(row=>row.Level=="Error"));
+        Assert.DoesNotContain(added,row=>row.Event.Kind is ManagerEventKind.AuthorizationLinked or ManagerEventKind.HandoffInspected);
+        if(expectedKind!="OperationFailed")
+        {
+            Assert.Equal("Info",added[^1].Level);
+            Assert.DoesNotContain("fail",added[^1].Description,StringComparison.OrdinalIgnoreCase);
+            Assert.Contains("\"HandoffNotCompleted\"",shell.BuildDiagnosticReport());
+        }
+    });
     [Fact]
     public Task LockFencesLateBrowserInspectionAndKeepsItsStopMessage()=>OnUi(async()=>
     {

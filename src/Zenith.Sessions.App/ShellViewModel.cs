@@ -316,7 +316,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex); } });
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { IsLocked = false; ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
         SaveSettings = new(_ => SavePreferencesAsync(), Fail);
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, Fail);
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, Fail);

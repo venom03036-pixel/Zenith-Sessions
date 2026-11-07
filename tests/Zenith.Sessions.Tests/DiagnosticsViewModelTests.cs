@@ -180,6 +180,23 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         {Assert.DoesNotContain(forbidden,shown.ToString(),StringComparison.Ordinal);Assert.DoesNotContain(forbidden,written,StringComparison.Ordinal);}
     });
     [Fact]
+    public Task LockThenUnlockRecordsBothTransitionsAndAnUnlockWhileUnlockedRecordsNothing()=>OnUi(async ()=>
+    {
+        // A reader of the Diagnostics page, a copied report or manager.jsonl must see when the lock ended,
+        // so events after it are not read as happening while the dashboard was still locked.
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        vm.Unlock.Execute(null);
+        vm.LockDashboard();Assert.True(vm.IsLocked);
+        vm.Unlock.Execute(null);Assert.False(vm.IsLocked);
+        vm.Unlock.Execute(null);
+        vm.RefreshDiagnostics.Execute(null);
+        var transitions=vm.DiagnosticRows.Where(r=>r.Event.Kind.ToString().StartsWith("Controls",StringComparison.Ordinal)).ToArray();
+        Assert.Equal(new[]{"ControlsLocked","ControlsUnlocked"},transitions.Select(r=>r.Event.Kind.ToString()));
+        Assert.True(transitions[1].Sequence>transitions[0].Sequence);
+        Assert.Equal("Manager controls unlocked.",transitions[1].Description);Assert.Equal("Info",transitions[1].Level);
+        Assert.Contains("\"ControlsUnlocked\"",vm.BuildDiagnosticReport());
+    });
+    [Fact]
     public Task ShutdownAndFaultAreJournaledWhenAnOwnerFailsDuringDispose()=>OnUi(async ()=>
     {
         var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor(),signIn:new FailingDisposeSignIn());

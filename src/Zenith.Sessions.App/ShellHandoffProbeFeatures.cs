@@ -42,7 +42,7 @@ public sealed partial class ShellViewModel
             if(!_lifetime.IsCancellationRequested)await LoadAccountsAsync(_lifetime.Token);
             stop.Token.ThrowIfCancellationRequested();if(IsLocked||_shuttingDown)return;
             HandoffInspectionStatus=DescribeHandoffResult(result,place);Notice=HandoffInspectionStatus;
-            _diagnostics.Record(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented?ManagerEventKind.HandoffInspected:ManagerEventKind.OperationFailed);
+            _diagnostics.Record(DiagnosticKindFor(result.Outcome));
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested)
         {
@@ -59,6 +59,14 @@ public sealed partial class ShellViewModel
         }
         finally{_authorizationStop=null;_linkingProfile=null;Raise(nameof(IsAuthorizing));}
     }
+    // A closed page, another owner holding the lane, or no handoff before the deadline is inconclusive,
+    // not a failure: it stays out of the Error count. Rejections and cleanup problems remain errors.
+    private static ManagerEventKind DiagnosticKindFor(RobloxHandoffProbeOutcome outcome)=>outcome switch
+    {
+        RobloxHandoffProbeOutcome.CapturedAndPrevented=>ManagerEventKind.HandoffInspected,
+        RobloxHandoffProbeOutcome.Cancelled or RobloxHandoffProbeOutcome.Busy or RobloxHandoffProbeOutcome.TimedOut=>ManagerEventKind.HandoffNotCompleted,
+        _=>ManagerEventKind.OperationFailed
+    };
     public static string DescribeHandoffResult(RobloxHandoffProbeResult result,long place)=>result.Outcome switch
     {
         RobloxHandoffProbeOutcome.CapturedAndPrevented when result.Shape is { } shape=>$"Place {place}: external handoff captured and cancelled. {shape.FieldCount} fields; known labels: {shape.KnownFields}; {shape.UnknownFieldCount} unknown; {shape.DuplicateFieldCount} duplicates. Page gesture reported: {(result.UserInitiated is true?"yes":result.UserInitiated is false?"no":"unknown")}. No native client, account selection or arrival was verified.",
