@@ -5,13 +5,26 @@
 #>
 
 param(
-    [string]$Version = "2.4.1",
+    # Defaults to the <Version> in src\MacroSuite.App\MacroSuite.App.csproj; an explicit value is also stamped into the binary.
+    [string]$Version = "",
     [switch]$SelfContained = $false
 )
 
 $ErrorActionPreference = "Stop"
 $root = Resolve-Path "$PSScriptRoot\.."
 Set-Location $root
+
+$proj = "$root\src\MacroSuite.App\MacroSuite.App.csproj"
+if (-not $Version) {
+    $projectXml = New-Object System.Xml.XmlDocument
+    $projectXml.Load($proj)
+    $versionNode = $projectXml.SelectSingleNode("/Project/PropertyGroup[not(@Condition)]/Version[not(@Condition) and normalize-space()]")
+    if ($null -eq $versionNode) {
+        Write-Error "Cannot label the package: $proj has no unconditional <Version>. Add one there, or pass -Version."
+        exit 1
+    }
+    $Version = $versionNode.InnerText.Trim()
+}
 
 Write-Host "================================================================" -ForegroundColor Green
 Write-Host "  Packaging Zenith Macros -- PUBLIC SHIPPING RELEASE v$Version  " -ForegroundColor Green
@@ -20,24 +33,32 @@ Write-Host "================================================================" -F
 $distRoot = "$root\dist"
 $packageDirName = if ($SelfContained) { "ZenithMacros-v$Version-Standalone" } else { "ZenithMacros-v$Version" }
 $targetDir = "$distRoot\$packageDirName"
+# Publish into a staging folder so a failed publish leaves the previous package untouched.
+$stagingDir = "$distRoot\.staging-$packageDirName"
 
-if (Test-Path $targetDir) {
-    Write-Host "Cleaning previous output in $targetDir..." -ForegroundColor Gray
-    Remove-Item -Recurse -Force $targetDir
+if (Test-Path $stagingDir) {
+    Remove-Item -Recurse -Force $stagingDir
 }
-New-Item -ItemType Directory -Force -Path $targetDir | Out-Null
+New-Item -ItemType Directory -Force -Path $stagingDir | Out-Null
 
 # 1. Publish with DeveloperMode=false
-$proj = "$root\src\MacroSuite.App\MacroSuite.App.csproj"
 $selfContainedArg = if ($SelfContained) { "--self-contained:true" } else { "--self-contained:false" }
 
 Write-Host "`n[1/4] Publishing application via dotnet publish (DeveloperMode=false)..." -ForegroundColor Cyan
-dotnet publish $proj -c Release -r win-x64 $selfContainedArg -p:DeveloperMode=false -o $targetDir
+dotnet publish $proj -c Release -r win-x64 $selfContainedArg -p:DeveloperMode=false "-p:Version=$Version" -o $stagingDir
+$publishExitCode = $LASTEXITCODE
 
-if ($LASTEXITCODE -ne 0) {
-    Write-Error "Publish failed with exit code $LASTEXITCODE."
-    exit $LASTEXITCODE
+if ($publishExitCode -ne 0) {
+    Remove-Item -Recurse -Force $stagingDir
+    Write-Error "Publish failed with exit code $publishExitCode. Nothing in $targetDir was changed."
+    exit $publishExitCode
 }
+
+if (Test-Path $targetDir) {
+    Write-Host "Replacing previous output in $targetDir..." -ForegroundColor Gray
+    Remove-Item -Recurse -Force $targetDir
+}
+Move-Item -Path $stagingDir -Destination $targetDir
 
 # 2. Add Launcher Batch File
 Write-Host "[2/4] Generating distribution launcher..." -ForegroundColor Cyan
