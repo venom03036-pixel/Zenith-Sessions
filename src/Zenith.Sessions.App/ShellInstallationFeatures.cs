@@ -31,18 +31,28 @@ public sealed record InstallationCandidateRow(ClientInstallationCandidate Candid
         ClientInstallationFileState.Missing => "Registered file missing",
         ClientInstallationFileState.AccessDenied => "Access denied",
         ClientInstallationFileState.SkippedUnsafe => "Path skipped",
+        ClientInstallationFileState.TooLarge => $"Too large to inspect (over {WindowsClientInstallationInventorySource.MaximumExecutableBytes / (1024 * 1024)} MB)",
         _ => "Metadata unavailable"
     };
-    public string Evidence => string.Join(", ", Candidate.Evidence.Select(item => (item.Product != Candidate.Product ? item.Product + " " : "") + item.Source switch
+    public string Evidence => string.Join(", ", Candidate.Evidence.Select(item => (item.Product != Candidate.Product ? item.Product + " " : "") + SourceLabel(item.Source)).Distinct());
+    public string ExecutablePath => Candidate.ExecutablePath;
+    internal static string SourceLabel(ClientInstallationHintSource source) => source switch
     {
         ClientInstallationHintSource.RobloxProtocol => "roblox registration",
         ClientInstallationHintSource.RobloxPlayerProtocol => "roblox-player registration",
         ClientInstallationHintSource.UninstallRegistry => "installation registration",
         ClientInstallationHintSource.VersionDirectory => "version folder",
         _ => "standard location"
-    }).Distinct());
-    public string ExecutablePath => Candidate.ExecutablePath;
-    public string Explanation => Candidate.EvidenceLabel;
+    };
+    // Discovery keeps one issue per (code, product, source); the line names the product and where the hint came from
+    // so two issues with the same code never read as the same unexplained sentence.
+    internal static string IssueLine(ClientInstallationIssue issue)
+    {
+        string origin = issue.Source is { } source ? SourceLabel(source) : "";
+        if (issue.Product is { } product) origin = origin.Length == 0 ? product.ToString() : product + " · " + origin;
+        else if (origin.Length > 0) origin = char.ToUpperInvariant(origin[0]) + origin[1..];
+        return origin.Length == 0 ? issue.Summary : origin + ": " + issue.Summary;
+    }
 }
 
 public sealed partial class ShellViewModel
@@ -90,12 +100,14 @@ public sealed partial class ShellViewModel
                 || snapshot.Candidates.Any(item => !Enum.IsDefined(item.Product) || !Enum.IsDefined(item.FileState)
                     || string.IsNullOrWhiteSpace(item.ExecutablePath) || item.ExecutablePath.Length > WindowsClientInstallationDiscovery.MaximumHintCharacters
                     || item.Evidence.Count > 16 || item.Evidence.Any(evidence => !Enum.IsDefined(evidence.Source) || !Enum.IsDefined(evidence.Product)))
-                || snapshot.Issues.Any(issue => !Enum.IsDefined(issue.Code))
+                || snapshot.Issues.Any(issue => !Enum.IsDefined(issue.Code) || issue.Product is { } product && !Enum.IsDefined(product)
+                    || issue.Source is { } source && !Enum.IsDefined(source))
                 || snapshot.Candidates.Select(item => item.ExecutablePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != snapshot.Candidates.Count)
                 throw new InvalidOperationException("The installation inventory returned inconsistent metadata.");
             foreach (var candidate in snapshot.Candidates)
                 InstallationCandidates.Add(new(candidate with { Evidence = Array.AsReadOnly(candidate.Evidence.ToArray()) }));
-            foreach (var issue in snapshot.Issues) InstallationIssues.Add(issue.Summary);
+            foreach (var issue in snapshot.Issues)
+                if (InstallationCandidateRow.IssueLine(issue) is var line && !InstallationIssues.Contains(line)) InstallationIssues.Add(line);
             InstallationObserved = snapshot.ObservedUtc.ToUniversalTime().ToString("u");
             InstallationStatus = snapshot.Status + " · " + snapshot.Summary;
         }

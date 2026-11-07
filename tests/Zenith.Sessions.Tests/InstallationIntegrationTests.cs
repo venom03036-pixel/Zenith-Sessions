@@ -209,14 +209,58 @@ public sealed partial class ClientWindowIntegrationTests
         await disposing; Assert.Empty(vm.InstallationCandidates); Assert.False(vm.CanRefreshInstallations);
     });
 
+    [Fact]
+    public Task InstallationIssuesNameTheirProductAndSourceAndATooLargeFileSaysSo() => OnUi(async () =>
+    {
+        ClientInstallationSnapshot Snapshot(params ClientInstallationIssue[] issues) => new(DateTimeOffset.UtcNow, ClientInstallationSnapshotStatus.Partial,
+            [new(ClientInstallationProduct.Roblox, "C:\\Synthetic\\RobloxPlayerBeta.exe", "Synthetic Roblox", "0.745.0.7451137", ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.StandardInstallPath, ClientInstallationProduct.Roblox)]),
+             new(ClientInstallationProduct.Roblox, "C:\\Synthetic\\Versions\\version-1\\RobloxPlayerBeta.exe", null, null, ClientInstallationFileState.TooLarge, [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Roblox)])],
+            issues);
+        var discovery = new InstallationProbe
+        {
+            Override = Snapshot(new(ClientInstallationIssueCode.MultipleCandidates, ClientInstallationProduct.Roblox), new(ClientInstallationIssueCode.MultipleCandidates, ClientInstallationProduct.Bloxstrap),
+                new(ClientInstallationIssueCode.LimitReached), new(ClientInstallationIssueCode.LimitReached, ClientInstallationProduct.Roblox),
+                new(ClientInstallationIssueCode.MetadataUnavailable, ClientInstallationProduct.Roblox, ClientInstallationHintSource.VersionDirectory),
+                new(ClientInstallationIssueCode.MetadataUnavailable, ClientInstallationProduct.Roblox, ClientInstallationHintSource.StandardInstallPath),
+                new(ClientInstallationIssueCode.InvalidHint, Source: ClientInstallationHintSource.RobloxProtocol),
+                new(ClientInstallationIssueCode.MultipleCandidates, ClientInstallationProduct.Roblox))
+        };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+
+        // Each line says which product and where it came from; the same line is never shown twice.
+        Assert.Equal(new[]
+        {
+            "Roblox: Multiple executable candidates remain for a product. No version or provider was selected automatically.",
+            "Bloxstrap: Multiple executable candidates remain for a product. No version or provider was selected automatically.",
+            "Discovery reached a bounded query or result limit. Additional candidates may exist.",
+            "Roblox: Discovery reached a bounded query or result limit. Additional candidates may exist.",
+            "Roblox · version folder: Some executable version metadata could not be read. The candidate remains unverified.",
+            "Roblox · standard location: Some executable version metadata could not be read. The candidate remains unverified.",
+            "Roblox registration: An installation hint was malformed, unsupported or oversized. Its raw value was discarded."
+        }, vm.InstallationIssues);
+        Assert.Equal("File found · unverified", vm.InstallationCandidates[0].FileState);
+        Assert.Equal("Too large to inspect (over 256 MB)", vm.InstallationCandidates[1].FileState);
+
+        // An issue naming a product or source that does not exist is inconsistent metadata, not a line to show.
+        discovery.Override = Snapshot(new ClientInstallationIssue(ClientInstallationIssueCode.MultipleCandidates, (ClientInstallationProduct)99));
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Check failed", vm.InstallationObserved); Assert.Empty(vm.InstallationIssues); Assert.Empty(vm.InstallationCandidates);
+        discovery.Override = Snapshot(new ClientInstallationIssue(ClientInstallationIssueCode.InvalidHint, Source: (ClientInstallationHintSource)99));
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Check failed", vm.InstallationObserved); Assert.Empty(vm.InstallationIssues);
+    });
+
     private sealed class InstallationProbe : IClientInstallationDiscovery
     {
         public int Calls; public bool Malformed; public string? ExtraPath; public CancellationToken Token;
         public TaskCompletionSource<ClientInstallationSnapshot>? Gate;
+        public ClientInstallationSnapshot? Override;
         public Task<ClientInstallationSnapshot> DiscoverAsync(CancellationToken ct)
         {
             Calls++; Token = ct;
             if (Gate is not null) return Gate.Task;
+            if (Override is not null) return Task.FromResult(Override);
             var snapshot = Snapshot();
             if (ExtraPath is not null)
                 snapshot = snapshot with { Candidates = [.. snapshot.Candidates, snapshot.Candidates[0] with { ExecutablePath = ExtraPath }] };
