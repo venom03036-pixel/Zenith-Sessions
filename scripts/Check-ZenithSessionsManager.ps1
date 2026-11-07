@@ -88,6 +88,18 @@ try {
     $expectedCases=@('Isolated storage ownership','Packaged brand image','Packaged production window composition','Packaged native SQLite and profile round trip','Library-wide group review and commit','Independent saved group catalog','Atomic settings round trip','Synthetic final handoff and current-grant boundary','Windows protected authorization round trip','Saved session and browser runtime boundaries','Conditional protected-session ownership','Snapshot sign-in create and disconnect','Direct verified account creation','Generation-owned identity recovery cleanup','Capture-only handoff policy boundaries','Native Windows resource sampling','Durable guarded launch queue','Durable unverified process receipt','Synthetic preparation queue and recovery','Synthetic trial consent and reservations','Pinned resource forecasts and candidate admission','Recovered queue generation and no replay','Bounded typed diagnostics journal','Bounded diagnostic session projection','Recent client history metadata round trip','Public game metadata and capacity boundaries','Public game search and destination isolation','Atomic destination favorites round trip','Recipient bundle metadata round trip','Physical client layout planner','Physical content-size planner and invalid-client guard','Portable manager performance round trip','Read-only installation inventory','Selected-file publisher boundary','Process I/O counters and telemetry boundaries','Preview runtime and invalid target boundaries','Controlled targeted input ownership','Read-only Personal macro catalog pipe','Durable shared macro assignments','Public headshot and ordered gallery boundaries','All-observed tiled Windows capture scheduling','Durable credential cleanup')
     if($native.FormatVersion -ne 1 -or $native.DevelopmentSelfCheck -ne $true -or $native.ReleaseReady -ne $false -or $native.Cases.Count -ne $expectedCases.Count -or @($native.Cases.Name | Select-Object -Unique).Count -ne $expectedCases.Count -or @($native.Cases | Where-Object { $_.Passed -ne $true -or $_.Name -notin $expectedCases }).Count -gt 0) { throw 'The published-file evidence is incomplete.' }
     if($native.AssemblySha256 -ne (Get-FileHash -LiteralPath (Join-Path $stage 'Zenith.Sessions.App.dll') -Algorithm SHA256).Hash) { throw 'The published-file result belongs to a different build.' }
+    # The App hash alone cannot identify the build: a Core- or Windows-only change leaves Zenith.Sessions.App.dll byte-identical.
+    # Keep this list in step with DistributionSelfCheck.FirstPartyAssemblies; the identity is SHA-256 of "name:hash`n" lines in this order.
+    $firstParty=@('Zenith.Sessions.App.dll','Zenith.Sessions.Core.dll','Zenith.Sessions.Windows.dll','Zenith.Automation.Input.dll','Zenith.MacroHost.Contracts.dll','Zenith.MacroHost.Windows.dll')
+    if($null -eq $native.FirstPartySha256 -or (@($native.FirstPartySha256.PSObject.Properties.Name | Sort-Object) -join '|') -ne (@($firstParty | Sort-Object) -join '|')) { throw 'The published-file result does not identify every first-party assembly.' }
+    $identityLines=''
+    foreach($name in $firstParty) {
+        $staged=(Get-FileHash -LiteralPath (Join-Path $stage $name) -Algorithm SHA256).Hash
+        if($native.FirstPartySha256.$name -ne $staged) { throw 'The published-file result belongs to a different build.' }
+        $identityLines+=('{0}:{1}' -f $name,$staged)+"`n"
+    }
+    $identity=(Get-FileHash -InputStream ([IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes($identityLines))) -Algorithm SHA256).Hash
+    if($native.FirstPartyIdentitySha256 -ne $identity) { throw 'The published-file result belongs to a different build.' }
 } finally { $check.Dispose() }
 @'
 ZENITH SESSIONS — PERSONAL DEVELOPMENT PREVIEW

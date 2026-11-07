@@ -1,0 +1,93 @@
+using System.IO;
+using System.Security.Cryptography;
+using System.Text;
+using System.Text.RegularExpressions;
+using Xunit;
+using Zenith.Sessions.App;
+using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
+
+namespace Zenith.Sessions.Tests;
+
+// Builds are deterministic: a Core- or Windows-only fix leaves Zenith.Sessions.App.dll byte-identical. The packaged
+// self-check report must therefore identify every first-party assembly it exercises, not the App dll alone.
+public sealed class DistributionIdentityTests : IDisposable
+{
+    private const string App="Zenith.Sessions.App.dll",Core="Zenith.Sessions.Core.dll",MacroHostWindows="Zenith.MacroHost.Windows.dll";
+    private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-identity-"+Guid.NewGuid().ToString("N"));
+    public void Dispose(){if(Directory.Exists(_root))Directory.Delete(_root,true);}
+
+    private Dictionary<string,byte[]> WriteSyntheticAssemblies()
+    {
+        Directory.CreateDirectory(_root);var payloads=new Dictionary<string,byte[]>();
+        foreach(string name in DistributionSelfCheck.FirstPartyAssemblies)
+        {var bytes=Encoding.UTF8.GetBytes("synthetic payload for "+name);File.WriteAllBytes(Path.Combine(_root,name),bytes);payloads.Add(name,bytes);}
+        return payloads;
+    }
+    private static string Sha256(string path){using var stream=File.OpenRead(path);return Convert.ToHexString(SHA256.HashData(stream));}
+
+    [Fact]
+    public async Task FirstPartyIdentityChangesWhenOnlyCoreChanges()
+    {
+        var payloads=WriteSyntheticAssemblies();
+        var before=await DistributionSelfCheck.HashFirstPartyAssembliesAsync(_root,CancellationToken.None);
+        Assert.Equal(DistributionSelfCheck.FirstPartyAssemblies.Order(StringComparer.Ordinal),before.Keys.Order(StringComparer.Ordinal));
+        foreach(var (name,bytes) in payloads)Assert.Equal(Convert.ToHexString(SHA256.HashData(bytes)),before[name]);
+        // The combined value is SHA-256 over "name:hash\n" lines in the fixed order; the manager script recomputes it.
+        string lines=string.Concat(DistributionSelfCheck.FirstPartyAssemblies.Select(name=>name+":"+before[name]+"\n"));
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(lines))),DistributionSelfCheck.CombinedIdentity(before));
+
+        File.WriteAllBytes(Path.Combine(_root,Core),Encoding.UTF8.GetBytes("synthetic payload after a Core-only fix"));
+        var after=await DistributionSelfCheck.HashFirstPartyAssembliesAsync(_root,CancellationToken.None);
+        Assert.Equal(before[App],after[App]);
+        Assert.NotEqual(before[Core],after[Core]);
+        Assert.NotEqual(DistributionSelfCheck.CombinedIdentity(before),DistributionSelfCheck.CombinedIdentity(after));
+    }
+
+    [Fact]
+    public async Task MissingFirstPartyAssemblyIsRejected()
+    {
+        WriteSyntheticAssemblies();File.Delete(Path.Combine(_root,MacroHostWindows));
+        var error=await Assert.ThrowsAsync<InvalidDataException>(()=>DistributionSelfCheck.HashFirstPartyAssembliesAsync(_root,CancellationToken.None));
+        Assert.Contains(MacroHostWindows,error.Message);Assert.DoesNotContain(_root,error.Message);
+        var partial=new Dictionary<string,string>{[App]="00",[Core]="11"};
+        Assert.Throws<InvalidDataException>(()=>DistributionSelfCheck.CombinedIdentity(partial));
+    }
+
+    [Fact]
+    public async Task ReportIdentityHashesTheLoadedFirstPartyAssemblies()
+    {
+        // The test host loads the App, Core and Windows assemblies from its own output folder, like the packaged exe does.
+        _=typeof(AccountProfile);_=typeof(ProtectedCredentialVault);
+        var identity=await DistributionSelfCheck.IdentifyBuildAsync(AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies(),CancellationToken.None);
+        Assert.Equal(Sha256(typeof(DistributionSelfCheck).Assembly.Location),identity.AssemblySha256);
+        Assert.Equal(Sha256(typeof(AccountProfile).Assembly.Location),identity.FirstPartySha256[Core]);
+        Assert.Equal(Sha256(typeof(ProtectedCredentialVault).Assembly.Location),identity.FirstPartySha256["Zenith.Sessions.Windows.dll"]);
+        Assert.Equal(DistributionSelfCheck.FirstPartyAssemblies.Length,identity.FirstPartySha256.Count);
+        Assert.Equal(DistributionSelfCheck.CombinedIdentity(identity.FirstPartySha256),identity.FirstPartyIdentitySha256);
+    }
+
+    [Fact]
+    public async Task ReportIdentityRejectsAFolderOtherThanTheOneTheAssembliesLoadedFrom()
+    {
+        WriteSyntheticAssemblies();
+        var error=await Assert.ThrowsAsync<InvalidDataException>(()=>DistributionSelfCheck.IdentifyBuildAsync(_root,AppDomain.CurrentDomain.GetAssemblies(),CancellationToken.None));
+        Assert.DoesNotContain(_root,error.Message);
+    }
+
+    [Fact]
+    public void ManagerScriptComparesEveryFirstPartyHashWithTheStagedFiles()
+    {
+        using var stream=typeof(DistributionIdentityTests).Assembly.GetManifestResourceStream("Check-ZenithSessionsManager.ps1")!;
+        string script=new StreamReader(stream).ReadToEnd();
+        static string[] Names(string script,string variable)
+        {
+            var list=Regex.Match(script,@"\$"+variable+@"=@\(([^)]*)\)");
+            Assert.True(list.Success,$"The manager script has no ${variable} list.");
+            return Regex.Matches(list.Groups[1].Value,"'([^']+)'").Select(match=>match.Groups[1].Value).ToArray();
+        }
+        Assert.Equal(DistributionSelfCheck.FirstPartyAssemblies,Names(script,"firstParty"));
+        Assert.Subset(Names(script,"required").ToHashSet(StringComparer.Ordinal),DistributionSelfCheck.FirstPartyAssemblies.ToHashSet(StringComparer.Ordinal));
+        Assert.Contains("$native.FirstPartySha256",script);Assert.Contains("$native.FirstPartyIdentitySha256",script);
+    }
+}
