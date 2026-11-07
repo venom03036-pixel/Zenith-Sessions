@@ -75,6 +75,25 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Equal(Source, result.Acknowledgement?.Server);
     }
 
+    // The server script accepts a command when issued <= serverNow + 2, so a Roblox clock up to two
+    // seconds behind the PC stamps a valid receipt earlier than the PC's issued second.
+    [Theory]
+    [InlineData(-2, "atSource")]
+    [InlineData(-1, "atSource")]
+    [InlineData(-1, "received")]
+    [InlineData(-2, "rejected")]
+    [InlineData(2, "atSource")]
+    public async Task ReceiptStampedWithinTheScriptClockAllowanceIsAcknowledged(int offsetSeconds, string wireStage)
+    {
+        var command = Command(join: wireStage != "atSource");
+        var receipt = Receipt(command, wireStage);
+        receipt["value"]!["observedUtc"] = Start.AddSeconds(offsetSeconds).ToUnixTimeSeconds();
+        using var bridge = Fixture((_, _) => Task.FromResult(Json(receipt)));
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.Acknowledged, result.State);
+        Assert.Equal(Start.AddSeconds(offsetSeconds), result.Acknowledgement?.ObservedUtc);
+    }
+
     [Theory]
     [InlineData("universeId", 5_000_000_001)]
     [InlineData("userId", 5_000_000_002)]
@@ -111,7 +130,7 @@ public sealed class OwnedExperienceBridgeTests
             case "wrong place": value["observedPlaceId"] = Source.PlaceId; break;
             case "wrong stage": value["stage"] = "atSource"; break;
             case "future": value["observedUtc"] = Start.AddSeconds(3).ToUnixTimeSeconds(); break;
-            case "expired observation": value["observedUtc"] = Start.AddSeconds(-1).ToUnixTimeSeconds(); break;
+            case "expired observation": value["observedUtc"] = Start.AddSeconds(-3).ToUnixTimeSeconds(); break;
         }
         string json = receipt.ToJsonString();
         if (defect == "duplicate") json = json.Insert(1, "\"value\":null,");

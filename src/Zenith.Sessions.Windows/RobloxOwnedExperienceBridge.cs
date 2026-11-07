@@ -12,6 +12,10 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
     private const string Topic = "ZenithSessionsV1";
     private const string Store = "ZenithSessionsReceiptsV1";
     private const int MaximumResponseBytes = 4096;
+    // Mirrors `issued <= now + 2` in integrations/roblox/ZenithSessionsBridge.server.luau: the server
+    // accepts a command while its clock trails the PC by up to two seconds and stamps the receipt with
+    // its own clock, so a valid receipt can read up to two seconds before IssuedUtc. Keep both in step.
+    private const long ServerClockAllowanceSeconds = 2;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ReadInterval = TimeSpan.FromMilliseconds(500), PublishInterval = TimeSpan.FromSeconds(1);
     private readonly long _universe;
@@ -163,8 +167,9 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
             || Optional(sent, "destinationJobId")?.GetGuid() != command.Destination?.JobId
             || sent.GetProperty("issuedUtc").GetInt64() != command.IssuedUtc.ToUnixTimeSeconds()
             || sent.GetProperty("expiresUtc").GetInt64() != command.ExpiresUtc.ToUnixTimeSeconds()
-            || observed < command.IssuedUtc.ToUnixTimeSeconds() || observed >= command.ExpiresUtc.ToUnixTimeSeconds()
-            || observed > now.ToUnixTimeSeconds() + 2
+            || observed < command.IssuedUtc.ToUnixTimeSeconds() - ServerClockAllowanceSeconds
+            || observed >= command.ExpiresUtc.ToUnixTimeSeconds()
+            || observed > now.ToUnixTimeSeconds() + ServerClockAllowanceSeconds
             || value.GetProperty("observedPlaceId").GetInt64() != server.PlaceId || ReadJob(value, "observedJobId") != server.JobId)
             return new(OwnedExperienceBridgeState.InvalidResponse);
         return new(OwnedExperienceBridgeState.Acknowledged, new(command.OperationId, command.UniverseId, command.UserId,
