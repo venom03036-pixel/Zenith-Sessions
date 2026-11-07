@@ -257,10 +257,9 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         }
     }
 
-    [Fact]
-    public async Task SixteenClientsAreCorrelatedBehindNewerUnownedCandidatesWithinThePassBudget()
+    // Sixteen running clients, each holding its own log, behind 24 newer history logs that no process holds.
+    private (SessionProcessKey[] Keys, Probe Probe) SixteenRunningClients()
     {
-        var clock = new Clock();
         var keys = Enumerable.Range(100, 16).Select(Key).ToArray();
         var expected = new Dictionary<string, SessionProcessKey>();
         var files = Enumerable.Range(0, 24).Select(i => Candidate($"history{i}")).ToList();
@@ -281,6 +280,50 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
             CurrentClient = key => keys.Contains(key),
             HolderFor = path => expected.TryGetValue(path, out var key) ? HeldBy(key) : new(SessionLogCorrelationStatus.Unknown, [])
         };
+        return (keys, probe);
+    }
+
+    [Fact]
+    public async Task SixteenBoundReadersKeepTheirHolderLeaseWhenPassesRunEveryTwoSeconds()
+    {
+        // One read slot per pass goes to a history scout, so each of the 16 bound readers is revisited
+        // only every 5-6 passes. At one pass per 2 s that is 10-12 s between holder re-queries.
+        var clock = new Clock();
+        var (keys, probe) = SixteenRunningClients();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        var desktop = Desktop(keys);
+        long revision = 0;
+        int steady = -1;
+        for (int pass = 0; pass < 80 && steady < 30; pass++)
+        {
+            if (pass != 0) clock.Advance(2000);
+            int queriesBefore = probe.Queries;
+            worker.Offer(desktop, keys[0].HostId);
+            var snapshot = await After(worker, revision); revision = snapshot.Revision;
+            Assert.InRange(probe.Queries - queriesBefore, 0, 4);
+            if (steady < 0)
+            {
+                if (snapshot.Sessions.All(row => row.Batch is not null)) steady = 0;
+                continue;
+            }
+            steady++;
+            Assert.Equal(16, snapshot.Sessions.Count);
+            var lapsed = snapshot.Sessions.Where(row => row.Correlation != SessionLogCorrelationStatus.ResourceHolderObserved
+                    || row.Batch is null || row.LeaseExpiresUtc is not { } expiry || expiry <= snapshot.ObservedUtc
+                    || snapshot.ObservedUtc - row.ObservedUtc > NativeTrialEvidence.MaximumLogAge)
+                .Select(row => $"{row.Process.ProcessId}:{row.Correlation}").ToArray();
+            Assert.True(lapsed.Length == 0,
+                $"Steady pass {steady} at +{(snapshot.ObservedUtc - SyntheticClientLogFixtures.Time).TotalSeconds:0}s: "
+                + $"{lapsed.Length} bound client(s) lost their holder lease or freshness between visits: {string.Join(", ", lapsed)}");
+        }
+        Assert.Equal(30, steady);
+    }
+
+    [Fact]
+    public async Task SixteenClientsAreCorrelatedBehindNewerUnownedCandidatesWithinThePassBudget()
+    {
+        var clock = new Clock();
+        var (keys, probe) = SixteenRunningClients();
         await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
         long revision = 0;
         SessionLogDiscoverySnapshot? complete = null;

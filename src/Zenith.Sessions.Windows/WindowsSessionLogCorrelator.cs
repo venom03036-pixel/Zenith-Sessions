@@ -69,6 +69,13 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         public long ReplayFloorOffset;
     }
 
+    // A holder observation is trusted for this long. Holders are still re-queried on every visit made
+    // 5 s or more after the last query (QueryDue), so the lease never extends without a fresh observation.
+    // With 16 bound readers, one scout slot per pass leaves 3 visits per pass, so each bound reader is
+    // revisited every 5-6 passes: 25 s covers passes of up to about 4 s (10 s lapsed at 2 s passes).
+    // It stays under the 30 s lease cap that SessionEvidenceRegistry and SessionLogProjection enforce;
+    // the 15 s display freshness check there is separate and does not discard facts.
+    private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
     private readonly IClientLogProbe _probe;
@@ -199,7 +206,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             {
                 reader.QueryAt = _clock.GetTimestamp();
                 var result = _probe.QueryHolders(reader.Candidate.Path, ct);
-                reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc.AddSeconds(10);
+                reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc + HolderLease;
                 if (result.Status != SessionLogCorrelationStatus.ResourceHolderObserved)
                 { Reset(reader, result.Status, keepQuery: true); return; }
                 if (result.Holders.Count != 1)
@@ -217,7 +224,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             if (reader.Status != SessionLogCorrelationStatus.ResourceHolderObserved) return;
             var now = _clock.GetUtcNow();
             if (reader.Process is not { } process || reader.QueryAt is not { } queried
-                || _clock.GetElapsedTime(queried) >= TimeSpan.FromSeconds(10) || reader.QueryUtc - now > TimeSpan.FromSeconds(2)
+                || _clock.GetElapsedTime(queried) >= HolderLease || reader.QueryUtc - now > TimeSpan.FromSeconds(2)
                 || reader.LeaseUntil <= now || !input.Processes.Contains(process)
                 || !_probe.IsCurrentClient(process, reader.Candidate.Variant))
             { Reset(reader, SessionLogCorrelationStatus.Unknown, keepQuery: refreshed); return; }
