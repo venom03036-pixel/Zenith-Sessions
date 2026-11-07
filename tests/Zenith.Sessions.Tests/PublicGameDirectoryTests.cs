@@ -218,6 +218,65 @@ public sealed class PublicGameDirectoryTests
     }
 
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GameDetailsCarryVisitsAndPrivateServerFlagWhenListed(bool allowed)
+    {
+        string json = GameJson().Replace("\"isContentRestricted\":false",
+            "\"isContentRestricted\":false,\"visits\":9223372036854775807,\"createVipServersAllowed\":" + (allowed ? "true" : "false"));
+        using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+        using var http = new HttpClient(handler);
+        var game = (await new RobloxPublicDirectory(http).LookupGameAsync(Place, default)).Value!;
+        Assert.Equal(long.MaxValue, game.Visits);
+        Assert.Equal(allowed, game.PrivateServersAllowed);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Fact]
+    public async Task UnlistedVisitsAndPrivateServerFlagStayUnknownInsteadOfZero()
+    {
+        string zero = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false,\"visits\":0");
+        foreach (string json in new[] { GameJson(), zero })
+        {
+            using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+            using var http = new HttpClient(handler);
+            var game = (await new RobloxPublicDirectory(http).LookupGameAsync(Place, default)).Value!;
+            Assert.Equal(json == zero ? 0L : (long?)null, game.Visits);
+            Assert.Null(game.PrivateServersAllowed);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"visits\":-1")]
+    [InlineData("\"visits\":9223372036854775808")]
+    [InlineData("\"visits\":\"5\"")]
+    [InlineData("\"visits\":1.5")]
+    [InlineData("\"visits\":null")]
+    [InlineData("\"createVipServersAllowed\":\"true\"")]
+    [InlineData("\"createVipServersAllowed\":1")]
+    [InlineData("\"createVipServersAllowed\":null")]
+    public async Task MalformedVisitsOrPrivateServerFlagIsAnInvalidListing(string field)
+    {
+        string json = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false," + field);
+        using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxPublicDirectory(http).LookupGameAsync(Place, default);
+        Assert.Equal(PublicDirectoryState.Failure, result.State);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task BatchLookupCarriesVisitsAndPrivateServerFlagPerUniverse()
+    {
+        string listed = Game(11, 110, "Eleven").Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false,\"visits\":42,\"createVipServersAllowed\":true");
+        using var handler = new FakeHandler((_, _) => Task.FromResult(Json("{\"data\":[" + listed + "," + Game(22, 220, "Twenty-two") + "]}")));
+        using var http = new HttpClient(handler);
+        var games = (await new RobloxPublicDirectory(http).LookupGamesAsync([11, 22], default)).Value!;
+        Assert.Equal(42, games[0].Visits); Assert.True(games[0].PrivateServersAllowed);
+        Assert.Null(games[1].Visits); Assert.Null(games[1].PrivateServersAllowed);
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]

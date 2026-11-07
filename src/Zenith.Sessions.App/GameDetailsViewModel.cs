@@ -32,7 +32,10 @@ public sealed class GameDetailsViewModel : Observable, IAsyncDisposable
     public string Title => Game?.Name ?? "Experience details";
     public string Creator => Game is { } game ? $"By {game.CreatorName} · {game.CreatorKind}" : "Public name and creator have not been loaded.";
     public string Identifiers => Game is { } game ? $"Requested place {game.RequestedPlaceId} · universe {game.UniverseId} · root place {game.RootPlaceId}" : "Your requested place and server remain unchanged.";
-    public string Activity => Game is { } game ? $"{game.Playing:N0} players across the experience · listing server limit {game.MaxPlayers:N0}" : "Activity unavailable";
+    // Visits and the private-server flag appear only when Roblox listed them; unknown is omitted, never shown as 0 or "not allowed".
+    public string Activity => Game is { } game ? $"{game.Playing:N0} players across the experience · listing server limit {game.MaxPlayers:N0}"
+        + (game.Visits is { } visits ? $" · {visits:N0} visits" : "")
+        + (game.PrivateServersAllowed is { } allowed ? (allowed ? " · private servers allowed" : " · private servers not allowed") : "") : "Activity unavailable";
     public string Observed => Game is { } game ? "Public metadata retrieved " + game.RetrievedUtc.ToUniversalTime().ToString("u") : "";
     public string Status { get => _status; private set => Set(ref _status, value); }
     public bool IsBusy { get => _busy; private set { if (Set(ref _busy, value)) RefreshAvailability(); } }
@@ -134,7 +137,7 @@ public sealed class GameDetailsViewModel : Observable, IAsyncDisposable
     }
     private bool Fresh(DateTimeOffset time) => time <= _clock.GetUtcNow().AddMinutes(5) && _clock.GetUtcNow() - time <= TimeSpan.FromMinutes(30);
     private bool ValidGame(PublicRobloxGame game, long requested) => game.RequestedPlaceId == requested && game.UniverseId > 0 && game.RootPlaceId > 0
-        && game.CreatorId > 0 && Enum.IsDefined(game.CreatorKind) && game.Playing >= 0 && game.MaxPlayers > 0 && Fresh(game.RetrievedUtc)
+        && game.CreatorId > 0 && Enum.IsDefined(game.CreatorKind) && game.Playing >= 0 && game.MaxPlayers > 0 && (game.Visits is null or >= 0) && Fresh(game.RetrievedUtc)
         && SafeText(game.Name, 256) && SafeText(game.CreatorName, 100);
     private static bool SafeText(string? text, int maximum)
     {

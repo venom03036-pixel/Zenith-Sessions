@@ -72,8 +72,18 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
         JsonElement maximumField = ReadField(item, "maxPlayers");
         if (maximumField.ValueKind != JsonValueKind.Number || !maximumField.TryGetInt32(out int maximum) || maximum <= 0)
             throw new InvalidPublicResponseException();
+        // Optional listing fields: absent stays null (unknown), never 0 or "not allowed"; present but malformed is
+        // invalid. Duplicate names were already rejected for the whole document before parsing.
+        long? visits = null;
+        if (item.TryGetProperty("visits", out JsonElement visitsField))
+            visits = visitsField.ValueKind == JsonValueKind.Number && visitsField.TryGetInt64(out long count) && count >= 0
+                ? count : throw new InvalidPublicResponseException();
+        bool? privateServers = null;
+        if (item.TryGetProperty("createVipServersAllowed", out JsonElement privateField))
+            privateServers = privateField.ValueKind == JsonValueKind.True ? true
+                : privateField.ValueKind == JsonValueKind.False ? false : throw new InvalidPublicResponseException();
         return new PublicRobloxGame(requestedPlaceId, universeId, rootPlaceId, ReadText(item, "name", 256), ReadId(creator, "id"),
-            ReadText(creator, "name", 100), creatorKind, playing, maximum, _clock.GetUtcNow());
+            ReadText(creator, "name", 100), creatorKind, playing, maximum, _clock.GetUtcNow(), visits, privateServers);
     }
 
     /// <summary>Root-place listings for a few universes in one request; restricted or omitted universes are left out, never guessed.</summary>
