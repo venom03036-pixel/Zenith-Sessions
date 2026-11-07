@@ -95,6 +95,31 @@ public sealed partial class ClientPreviewPresentationTests
     });
 
     [Fact]
+    public Task OverviewRosterGrowthKeepsUnchangedTileImagesAndNeverClaimsPreviewsAreOff()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>true,clock:clock);
+        try
+        {
+            vm.ObserveInventory(Inventory(clock,2));await Until(()=>vm.OverviewRows.Count==2);
+            vm.StartOverview(clock.GetUtcNow().AddMinutes(3));var call=await provider.NextAsync();
+            call.Reply.SetResult(Frames(call,clock.GetUtcNow()));await DriveUntil(clock,()=>vm.OverviewRows.All(row=>row.HasImage));
+            var first=vm.OverviewRows[0].Image;var second=vm.OverviewRows[1].Image;
+            // A third client appears: Core releases the previous sources but keeps both exact frames.
+            provider.ReleaseGate=release.Task;vm.ObserveInventory(Inventory(clock,3,2));
+            await DriveUntil(clock,()=>vm.IsReleasing && vm.OverviewRows.Count==3);
+            Assert.Same(first,vm.OverviewRows[0].Image);Assert.Same(second,vm.OverviewRows[1].Image);
+            Assert.Contains("not current",vm.OverviewRows[0].Freshness);
+            Assert.DoesNotContain("Previews are off",vm.RefreshSummary);
+            release.SetResult();await provider.NextReleaseAsync();
+            await DriveUntil(clock,()=>vm.IsRunning);
+            Assert.Same(first,vm.OverviewRows[0].Image);Assert.Same(second,vm.OverviewRows[1].Image);
+        }
+        finally {release.TrySetResult();provider.UnblockAll();}
+    });
+
+    [Fact]
     public Task OverviewReusesFrozenBitmapsWhenAnotherBatchChangesTheSnapshot()=>OnUi(async()=>
     {
         var clock=new Clock();var provider=new PreviewProvider();

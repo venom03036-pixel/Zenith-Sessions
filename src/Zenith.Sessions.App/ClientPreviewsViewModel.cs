@@ -148,7 +148,10 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                 var prepared=new Dictionary<ClientPreviewTarget,(ClientPreviewResult Result,BitmapSource? Image)>();
                 var retained=new HashSet<ClientPreviewTarget>();
                 int converted=0;bool moreImages=false;
-                if(changed && snapshot.Running && _canUse())
+                // While Core releases the previous sources for an overview roster change it keeps the
+                // validated frames of unchanged identities: keep their frozen bitmaps, convert nothing new.
+                bool convert=snapshot.Running;
+                if(changed && (convert || OverviewRosterRelease(snapshot)) && _canUse())
                     foreach(var result in snapshot.Results)
                     {
                         ct.ThrowIfCancellationRequested();BitmapSource? image=null;
@@ -156,12 +159,12 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                         {
                             retained.Add(result.Target);var token=Token(frame);
                             if(_images.TryGetValue(result.Target,out var cached) && cached.Token==token) image=cached.Image;
-                            else if(converted<ClientPreviewLimits.MaximumTargets)
+                            else if(convert && converted<ClientPreviewLimits.MaximumTargets)
                             {
                                 var bitmap=BitmapSource.Create(frame.Width,frame.Height,96,96,PixelFormats.Bgra32,null,frame.Pixels.ToArray(),frame.Stride);
                                 bitmap.Freeze();image=bitmap;converted++;
                             }
-                            else moreImages=true;
+                            else if(convert) moreImages=true;
                         }
                         prepared[result.Target]=(result,image);
                     }
@@ -180,6 +183,7 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                             Status=!snapshot.Running && Volatile.Read(ref _stopReason) is { } reason
                                 ? reason+(snapshot.Stopping?" Releasing capture resources…":"") : snapshot.Explanation;
                             if(epoch!=Volatile.Read(ref _presentationEpoch)) return;
+                            bool rosterRefresh=OverviewRosterRelease(snapshot) && CanRetainOverviewPixels(snapshot);
                             if(snapshot.Mode==ClientPreviewMode.Selected) foreach(var row in Rows)
                             {
                                 prepared.TryGetValue(row.Target,out var value);
@@ -196,14 +200,17 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                                 // Roster replacement temporarily releases Core sources. An absent
                                 // partial-scan tile keeps only its already accepted frozen image;
                                 // it remains excluded from capture and focus throughout cleanup.
+                                // An unchanged capturable tile keeps its image as last-known while
+                                // Core still retains a frame for that exact identity.
                                 else if(CanRetainOverviewPixels(snapshot) && row.HasImage && row.CanRetainLastKnown
                                     && value.Result?.Status is not (ClientPreviewStatus.InvalidClient or ClientPreviewStatus.Minimized or ClientPreviewStatus.Hidden or ClientPreviewStatus.Unsupported or ClientPreviewStatus.Cancelled)
-                                    && (!row.CanCapture || moreImages && value.Result?.Frame is { } waiting && RetainFrame(snapshot,waiting)))
+                                    && (!row.CanCapture || (moreImages || rosterRefresh) && value.Result?.Frame is { } waiting && RetainFrame(snapshot,waiting)))
                                     row.RetainLastKnown(_clock.GetUtcNow());
                                 else row.Clear(!row.CanCapture?row.UnavailableStatus():snapshot.Stopping?"Releasing capture resources…":value.Result?.Explanation??"No captured image is available.");
                                 if(epoch!=Volatile.Read(ref _presentationEpoch) || !ReferenceEquals(snapshot,_coordinator.GetSnapshot())) return;
                             }
                             RefreshSummary=snapshot.Running?"One shared capture lane visits up to four targets per batch. Refresh intervals are measured per tile; no per-client FPS is promised."
+                                :rosterRefresh?"Updating the observed tile roster. Capture resumes after the previous capture sources are released."
                                 :"Previews are off; observed tiles remain listed. Start explicitly to resume.";
                             if(epoch!=Volatile.Read(ref _presentationEpoch)) return;
                             _shown=snapshot;
