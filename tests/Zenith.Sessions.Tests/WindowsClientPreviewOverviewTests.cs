@@ -37,41 +37,99 @@ public sealed class WindowsClientPreviewOverviewTests
     [Theory]
     [InlineData(3)]
     [InlineData(4)]
-    public void SelectedLargeSourcesAreEachAdmittedWithinTwoBatches(int count)
+    public void SelectedOverBudgetRotationRecreatesAtMostOneSourcePerBatchAndEveryRowStillGetsATurn(int count)
     {
-        // Mirrors the selected-mode loop: the same fixed target order every batch, hits reuse the cached
-        // source and misses go through the provider's admission decision before taking ownership.
-        var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(count);
-        PreviewSurfaceSize size = new(2560, 1400); const int allowed = 2;
-        var admitted = new HashSet<ClientPreviewTarget>(); var created = new List<OwnedSource>();
-        for (int batch = 0; batch < 2; batch++)
-            foreach (var target in targets)
-            {
-                if (cache.TryGet(target, out _)) continue;
-                if (!WindowsClientPreviewProvider.Admit(cache, size, default)) continue;
-                var source = new OwnedSource(); created.Add(source);
-                cache.Add(target, size, source); admitted.Add(target);
-                Assert.InRange(cache.Count, 1, allowed);
-            }
-        Assert.All(targets, target => Assert.Contains(target, admitted));
-        Assert.Equal(created.Count - cache.Count, created.Count(source => source.Disposed == 1));
+        // Same fixed selected order every batch; two 2560 x 1400 sources fit the shared budget.
+        var rotation = new ClientPreviewSelectedRotation(); var cache = new ClientPreviewSourceCache<OwnedSource>();
+        var targets = Targets(count); PreviewSurfaceSize large = new(2560, 1400); const int fit = 2;
+        var created = new List<OwnedSource>(); var batches = new List<SelectedBatch>();
+        for (int batch = 0; batch < 8; batch++) batches.Add(RunSelectedBatch(rotation, cache, targets, _ => large, created));
+        // Batch 1 only fills what fits. After that one rotating slot is handed on: one teardown and one
+        // re-creation per batch, never every pinned window's session.
+        Assert.Equal([fit, 1, 1, 1, 1, 1, 1, 1], batches.Select(batch => batch.Created));
+        Assert.Equal([0, 1, 1, 1, 1, 1, 1, 1], batches.Select(batch => batch.Evicted));
+        Assert.All(batches, batch => Assert.Equal(0, batch.CreatedAndEvicted));
+        // fit - 1 windows keep their first capture session (and border) for the whole run.
+        Assert.Equal(fit - 1, created.Take(fit).Count(source => source.DisposeAttempts == 0));
+        AssertEveryTargetCapturedInEachWindow(targets, batches.Skip(1).ToList(), count - fit + 1);
         cache.ReleaseAll(); Assert.All(created, source => Assert.Equal(1, source.Disposed));
+    }
+
+    [Fact]
+    public void SelectedPairThatCannotShareTheBudgetHandsOneSlotOverEachBatch()
+    {
+        var rotation = new ClientPreviewSelectedRotation(); var cache = new ClientPreviewSourceCache<OwnedSource>();
+        var targets = Targets(2); var created = new List<OwnedSource>(); var batches = new List<SelectedBatch>();
+        PreviewSurfaceSize Size(ClientPreviewTarget target) => target == targets[0] ? new(3840, 2160) : new(1920, 1080);
+        for (int batch = 0; batch < 6; batch++) batches.Add(RunSelectedBatch(rotation, cache, targets, Size, created));
+        Assert.Equal([1, 1, 1, 1, 1, 1], batches.Select(batch => batch.Created));
+        Assert.Equal([0, 1, 1, 1, 1, 1], batches.Select(batch => batch.Evicted));
+        // The outgoing holder is captured from its warm source before it hands the slot to the other row.
+        Assert.All(batches.Skip(1), batch => Assert.Equal(2, batch.Captured.Count));
+        cache.ReleaseAll();
     }
 
     [Fact]
     public void SelectedSourcesWithinTheBudgetAreKeptAcrossBatches()
     {
-        var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(2);
-        PreviewSurfaceSize size = new(2560, 1400); var created = new List<OwnedSource>();
-        for (int batch = 0; batch < 3; batch++)
-            foreach (var target in targets)
-            {
-                if (cache.TryGet(target, out _)) continue;
-                Assert.True(WindowsClientPreviewProvider.Admit(cache, size, default));
-                var source = new OwnedSource(); created.Add(source); cache.Add(target, size, source);
-            }
-        Assert.Equal(2, created.Count); Assert.All(created, source => Assert.Equal(0, source.DisposeAttempts));
+        var rotation = new ClientPreviewSelectedRotation(); var cache = new ClientPreviewSourceCache<OwnedSource>();
+        var targets = Targets(2); var created = new List<OwnedSource>(); var batches = new List<SelectedBatch>();
+        for (int batch = 0; batch < 3; batch++) batches.Add(RunSelectedBatch(rotation, cache, targets, _ => new(2560, 1400), created));
+        Assert.Equal([2, 0, 0], batches.Select(batch => batch.Created));
+        Assert.All(created, source => Assert.Equal(0, source.DisposeAttempts));
         cache.ReleaseAll(); Assert.All(created, source => Assert.Equal(1, source.Disposed));
+    }
+
+    [Fact]
+    public void IndividuallyImpossibleSelectedTargetNeitherEvictsNorStallsTheRotation()
+    {
+        var rotation = new ClientPreviewSelectedRotation(); var cache = new ClientPreviewSourceCache<OwnedSource>();
+        var targets = Targets(4); var huge = targets[2]; var created = new List<OwnedSource>(); var batches = new List<SelectedBatch>();
+        PreviewSurfaceSize Size(ClientPreviewTarget target) => target == huge ? new(8192, 8192) : new(2560, 1400);
+        for (int batch = 0; batch < 8; batch++) batches.Add(RunSelectedBatch(rotation, cache, targets, Size, created));
+        Assert.All(batches, batch => Assert.DoesNotContain(huge, batch.Captured));
+        Assert.All(batches.Skip(1), batch => { Assert.Equal(1, batch.Created); Assert.Equal(1, batch.Evicted); });
+        AssertEveryTargetCapturedInEachWindow(targets.Where(target => target != huge).ToArray(), batches.Skip(1).ToList(), 2);
+        cache.ReleaseAll();
+    }
+
+    [Fact]
+    public void SourceThatFailsEveryBatchCannotStarveTheRotatingSlot()
+    {
+        // A small window fits beside two large ones but its source fails to start every batch, so it is
+        // re-admitted each time. That spare-room admission must not use up the waiting large rows' turn.
+        var rotation = new ClientPreviewSelectedRotation(); var cache = new ClientPreviewSourceCache<OwnedSource>();
+        var targets = Targets(4); var failing = targets[3]; var created = new List<OwnedSource>(); var batches = new List<SelectedBatch>();
+        PreviewSurfaceSize Size(ClientPreviewTarget target) => target == failing ? new(320, 180) : new(2560, 1400);
+        Assert.True(ClientPreviewBufferReader.FitsBudget([new(2560, 1400), new(2560, 1400), new(320, 180)]));
+        for (int batch = 0; batch < 8; batch++)
+            batches.Add(RunSelectedBatch(rotation, cache, targets, Size, created, target => target == failing));
+        Assert.All(batches.Skip(1), batch => Assert.Equal(1, batch.Evicted));
+        AssertEveryTargetCapturedInEachWindow(targets.Take(3).ToArray(), batches.Skip(1).ToList(), 2);
+        cache.ReleaseAll();
+    }
+
+    [Fact]
+    public void CandidateAdmissionEvictsOnlyTheGivenSourcesInOrderAndNothingWhenTheyCannotFreeEnough()
+    {
+        var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(4);
+        var sources = Enumerable.Range(0, 3).Select(_ => new OwnedSource()).ToArray();
+        cache.Add(targets[0], new(2560, 1400), sources[0]); cache.Add(targets[1], new(2560, 1400), sources[1]);
+        Assert.True(cache.MakeRoom(new(2560, 1400), [targets[3], targets[1], targets[0]], default));
+        Assert.Equal(0, sources[0].DisposeAttempts); Assert.Equal(1, sources[1].Disposed);
+        cache.Add(targets[2], new(2560, 1400), sources[2]);
+        // A 4K source cannot sit beside either large source: evicting only the first candidate is not enough.
+        Assert.False(cache.MakeRoom(new(3840, 2160), [targets[2]], default));
+        Assert.Equal(0, sources[0].DisposeAttempts); Assert.Equal(0, sources[2].DisposeAttempts); Assert.Equal(2, cache.Count);
+        Assert.False(cache.MakeRoom(new(8192, 8192), [targets[2], targets[0]], default)); Assert.Equal(2, cache.Count);
+        using (var stop = new CancellationTokenSource())
+        {
+            stop.Cancel();
+            Assert.ThrowsAny<OperationCanceledException>(() => cache.MakeRoom(new(3840, 2160), [targets[2], targets[0]], stop.Token));
+            Assert.Equal(2, cache.Count);
+        }
+        Assert.True(cache.MakeRoom(new(3840, 2160), [targets[2], targets[0]], default));
+        Assert.Equal(0, cache.Count); Assert.Equal(1, sources[2].Disposed); Assert.Equal(1, sources[0].Disposed);
     }
 
     [Fact]
@@ -263,6 +321,42 @@ public sealed class WindowsClientPreviewOverviewTests
             calls++; return Task.FromResult(Result(target, ClientPreviewStatus.NoFrame));
         }, new Clock(), default));
         Assert.Equal(0, calls);
+    }
+
+    private sealed record SelectedBatch(int Created, int Evicted, int CreatedAndEvicted, IReadOnlySet<ClientPreviewTarget> Captured);
+
+    /// <summary>
+    /// Mirrors the provider's selected-mode loop: the rotation's visit order, cache hits reuse the source, misses go
+    /// through the rotation's admission decision before taking ownership, and a source that fails to start is dropped.
+    /// </summary>
+    private static SelectedBatch RunSelectedBatch(ClientPreviewSelectedRotation rotation, ClientPreviewSourceCache<OwnedSource> cache,
+        ClientPreviewTarget[] targets, Func<ClientPreviewTarget, PreviewSurfaceSize> sizeOf, List<OwnedSource> created,
+        Func<ClientPreviewTarget, bool>? failsToStart = null)
+    {
+        int first = created.Count; var before = created.ToDictionary(source => source, source => source.Disposed);
+        var failed = new HashSet<OwnedSource>(); var captured = new HashSet<ClientPreviewTarget>();
+        foreach (int index in rotation.BeginBatch(targets, cache))
+        {
+            var target = targets[index];
+            if (cache.TryGet(target, out _)) { captured.Add(target); continue; }
+            var size = sizeOf(target);
+            if (!rotation.Admit(cache, target, size, default)) continue;
+            var source = new OwnedSource(); created.Add(source); cache.Add(target, size, source);
+            if (failsToStart?.Invoke(target) == true) { failed.Add(source); cache.Drop(target); continue; }
+            captured.Add(target);
+        }
+        bool Evicted(OwnedSource source) => source.Disposed > before.GetValueOrDefault(source) && !failed.Contains(source);
+        var fresh = created.Skip(first).ToArray();
+        return new(fresh.Length, created.Count(Evicted), fresh.Count(Evicted), captured);
+    }
+
+    private static void AssertEveryTargetCapturedInEachWindow(ClientPreviewTarget[] targets, IReadOnlyList<SelectedBatch> batches, int window)
+    {
+        Assert.True(batches.Count >= window);
+        for (int start = 0; start + window <= batches.Count; start++)
+            foreach (var target in targets)
+                Assert.True(batches.Skip(start).Take(window).Any(batch => batch.Captured.Contains(target)),
+                    $"Target {target.Window} had no capture turn in batches {start + 1}..{start + window}.");
     }
 
     private static ClientPreviewTarget Target(int id) => new(new(null, id, DateTimeOffset.UnixEpoch.AddSeconds(id).UtcTicks), (nint)id);
