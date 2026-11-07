@@ -56,14 +56,18 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
         Refresh=new(_=>RefreshAsync(),ReportFailure);Use=new(UseChip);ShowAll=new(_=>ToggleShowAll());
     }
 
-    /// <summary>Bind to the account selected in Accounts. Another account cancels and clears; the same one keeps its page.</summary>
-    public void SetAccount(Guid? profileId,long? userId,long? authorizationGeneration,string? accountName)
+    /// <summary>
+    /// Bind to the account selected in Accounts. Another account (or a changed sign-in) cancels and clears and returns true;
+    /// the same one keeps its page and returns false.
+    /// </summary>
+    public bool SetAccount(Guid? profileId,long? userId,long? authorizationGeneration,string? accountName)
     {
         AccountKey? key=profileId is { } id?new(id,userId is >0?userId:null,authorizationGeneration is >0?authorizationGeneration:null):null;
         string name=accountName??"";
-        if(key==_account && string.Equals(name,_accountName,StringComparison.Ordinal)) return;
+        if(key==_account && string.Equals(name,_accountName,StringComparison.Ordinal)) return false;
         _account=key;_accountName=name;
         Invalidate();Raise(nameof(HeaderLabel));
+        return true;
     }
 
     /// <summary>

@@ -59,8 +59,13 @@ public sealed partial class ShellViewModel
     private PublicAccountPageLoader _publicImageLoader=null!;
     private readonly bool _enableAutomaticPublicImages;
     private bool _publicImagesAllowed,_publicImagesSuspended,_publicImageContextVisible;
-    /// <summary>Set by Panic and Lock; cleared only when Join a game is opened again or the account changes there, as favorites resume.</summary>
-    private bool _recentlyPlayedSuspended;
+    /// <summary>
+    /// Set by Panic and Lock: Join a game's public lookups (Roblox favorites, recently played names) and the saved-server list
+    /// stay stopped. Cleared only when Join a game is opened again or another profile is chosen there, never by a reload.
+    /// </summary>
+    private bool _joinGameSourcesSuspended;
+    /// <summary>The last profile selected, on any page or while locked; a reload that selects it again is not a new choice.</summary>
+    private Guid? _joinGameProfile;
     public Task PublicImageOperation=>_publicImageLoader.ActiveOperation;
     /// <summary>A page holds 100 rows; past this many places the remembered names are dropped and asked again when selected.</summary>
     private const int MaximumPreferredGameNames=100;
@@ -176,18 +181,34 @@ public sealed partial class ShellViewModel
         && _clientPreviewWindowVisible && CanUseDirectories();
     private bool CanUseDestinationSearch()=>CanUseDirectories() && IsJoinGame && _clientPreviewWindowVisible;
     /// <summary>
-    /// Join a game opened or the selected account changed: bind Roblox favorites to that account, load once per visit and
-    /// rebuild recently played; a share-link check made with another account's session stops. Leaving cancels them all.
+    /// Join a game opened (<paramref name="opened"/>, from the Tab setter) or the selected account changed: bind Roblox
+    /// favorites to that account, load once per visit and rebuild recently played; a share-link check made with another
+    /// account's session stops. Leaving cancels them all. Only the page opening or another profile chosen there is a user
+    /// action that restarts them after Panic or Lock. An account reload (the global Refresh, the reload after a cancelled
+    /// sign-in or handoff inspection, the one a native trial queues for the next presentation) selects a new row for the same
+    /// profile, after the list's momentary empty selection while it is rebuilt: that restarts nothing.
     /// </summary>
-    private void RefreshJoinGameSources()
+    private void RefreshJoinGameSources(bool opened=false)
     {
         if(RobloxFavorites is null) return;
         var row=SelectedAccount;
-        RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
-        if(IsJoinGame && CanUseDirectories()) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
-        else RobloxFavorites.Cancel();
-        if(IsJoinGame && CanUseDirectories()) {ShareLink.SelectedAccountChanged();_=ShareLink.LoadSavedAsync();} else ShareLink.Cancel();
-        if(IsJoinGame && CanUseDirectories()) _recentlyPlayedSuspended=false; // The same explicit actions that restart favorites and saved servers.
+        bool chosen=opened || row is not null && row.Profile.Id!=_joinGameProfile;
+        if(row is not null) _joinGameProfile=row.Profile.Id; // Also while locked, so a reload after Unlock is not a new choice.
+        if(!IsJoinGame || !CanUseDirectories())
+        {
+            RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
+            RobloxFavorites.Cancel();ShareLink.Cancel();RefreshRecentlyPlayed();return;
+        }
+        if(row is null && !opened) return; // The account list's empty selection while it reloads; the same profile follows.
+        if(chosen) {_joinGameSourcesSuspended=false;RecentlyPlayed?.ForgetLocalRefusals();}
+        // The same profile re-selected keeps its favorites page; a changed sign-in for it drops the old page.
+        bool rebound=RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
+        ShareLink.SelectedAccountChanged();
+        if(!_joinGameSourcesSuspended)
+        {
+            if(chosen || rebound) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
+            if(chosen) _=ShareLink.LoadSavedAsync();
+        }
         RefreshRecentlyPlayed();
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
@@ -204,7 +225,7 @@ public sealed partial class ShellViewModel
     private void RefreshRecentlyPlayed()
     {
         if(RecentlyPlayed is null) return;
-        if(IsJoinGame && CanUseDirectories() && !_recentlyPlayedSuspended) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
+        if(IsJoinGame && CanUseDirectories() && !_joinGameSourcesSuspended) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
         else RecentlyPlayed.Cancel();
     }
     private List<RecentlyPlayedSource> BuildRecentlyPlayedSources()
@@ -369,7 +390,7 @@ public sealed partial class ShellViewModel
         StopPreferredGameLookup();_preferredGameNames.Clear();foreach(var row in Accounts) row.ClearPreferredGameName();
         DestinationSearch.CancelWork(clearInput:true);
         RobloxFavorites.Cancel();
-        _recentlyPlayedSuspended=true;RecentlyPlayed.Cancel();
+        _joinGameSourcesSuspended=true;RecentlyPlayed.Cancel();
         ShareLink.Cancel();
     }
     private async Task StopDirectoryFeaturesAsync()

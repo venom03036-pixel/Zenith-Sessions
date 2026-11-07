@@ -267,11 +267,23 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(offered, (bool)ReportedBinding(row, (string?)action.Attribute("IsEnabled")));
     });
 
+    // With a saved, linked and selected account. Every account reload publishes a new row for the same profile and selects
+    // it again: the reload after Panic or Lock cancels a sign-in or a handoff inspection (for Lock, while still locked), the
+    // global Refresh, and the reload a native trial leaves for the next presentation. None of them is a user action, so none
+    // restarts the public lookups Panic or Lock stopped: no recently played name and no Roblox favorites page.
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public Task PanicOrLockOnJoinGameKeepsRecentlyPlayedStoppedUntilThePageIsOpenedAgain(bool locked) => OnUi(async () =>
     {
+        using (var profiles = new AccountRepository(_root))
+        {
+            await profiles.InitializeAsync(default);
+            var profile = await profiles.SaveAsync(AccountProfile.Create("Synthetic linked profile"), default);
+            using var vault = new ProtectedCredentialVault(_root);
+            await vault.SaveAsync(new(profile.Id, RobloxOAuthIdentity.Provider, 123, 1, "", "synthetic-refresh", DateTimeOffset.UtcNow.AddMinutes(10),
+                "synthetic_player", Issuer: RobloxOAuthIdentity.Issuer, Subject: "123"), default);
+        }
         var monitor = new Monitor();
         var games = new RecentlyPlayedGames();
         var (_, logs, desktop) = ReportedInputs(DateTimeOffset.UtcNow);
@@ -279,6 +291,8 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
             publicDirectory: games, serverDirectory: new SearchServers(), gameDirectory: games);
         await shell.InitializeAsync();
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        Assert.Equal(123, shell.SelectedAccount.KnownUserId);
         var serial = await HoldReportedSamplerAsync(shell);
         // A stopped correlator ignores offers, so every sample, including the 1 Hz loop, presents this synthetic log snapshot.
         var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
@@ -289,29 +303,55 @@ public sealed partial class ClientWindowIntegrationTests
         shell.Refresh.Execute(null); await shell.Refresh.Execution;
         Assert.Equal(ReportedPlace, Assert.Single(shell.Sessions).Log.ReportedPlaceId);
 
-        shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation;
+        shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
         Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
         Assert.Equal(1, games.Lookups(ReportedPlace));
+        Assert.Equal(1, games.FavoriteRequests); Assert.Single(shell.RobloxFavorites.Chips);
+        var selected = shell.SelectedAccount!;
+        // The account reload Panic or Lock leaves behind when it cancels a sign-in or a handoff inspection.
+        var lifetime = (CancellationTokenSource)ReportedField(shell, "_lifetime").GetValue(shell)!;
+        Task ReloadAccountsAsync() => (Task)typeof(ShellViewModel).GetMethod("LoadAccountsAsync", ReportedPrivate)!.Invoke(shell, [lifetime.Token, null, null])!;
 
-        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); shell.Unlock.Execute(null); }
-        else shell.Panic.Execute(null);
-        Assert.Empty(shell.RecentlyPlayed.Chips);
-        // The next desktop sample on the same page: the real sample and presentation path the 1 Hz loop runs.
-        shell.Refresh.Execute(null); await shell.Refresh.Execution; await shell.RecentlyPlayed.ActiveOperation;
+        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); await ReloadAccountsAsync(); shell.Unlock.Execute(null); }
+        else { shell.Panic.Execute(null); await ReloadAccountsAsync(); }
+        Assert.NotSame(selected, shell.SelectedAccount); // The reload selected a new row for the same profile.
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
+        Assert.Empty(shell.RecentlyPlayed.Chips); Assert.Empty(shell.RobloxFavorites.Chips);
+        string stopped = shell.RobloxFavorites.Status;
+        // The global Refresh on the same page: an account reload, then the real sample and presentation path the 1 Hz loop runs.
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
+        // The reload a native trial queues: it starts from the next desktop presentation itself.
+        ReportedField(shell, "_nativeMetadataPending").SetValue(shell, 1);
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        await (Task)ReportedField(shell, "_nativeMetadataRefresh").GetValue(shell)!;
+        await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
         Assert.True(shell.IsJoinGame);
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
         Assert.Empty(shell.RecentlyPlayed.Chips);
         Assert.Equal(1, games.Lookups(ReportedPlace)); // No second lookup without a user action.
+        Assert.Equal(1, games.FavoriteRequests); Assert.Empty(shell.RobloxFavorites.Chips);
+        Assert.Equal(stopped, shell.RobloxFavorites.Status);
 
-        shell.Navigate.Execute("Sessions"); shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation;
+        shell.Navigate.Execute("Sessions"); shell.Navigate.Execute("JoinGame");
+        await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
         Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
         Assert.Equal(2, games.Lookups(ReportedPlace)); // Opening the page again is the explicit action that resumes it.
+        Assert.Equal(2, games.FavoriteRequests); Assert.Single(shell.RobloxFavorites.Chips);
     });
 
-    /// <summary>Counts public place lookups per place; every other public request is unexpected here.</summary>
-    private sealed class RecentlyPlayedGames : IPublicRobloxDirectory, IPublicRobloxGameDirectory
+    /// <summary>Counts public place lookups per place and favorites pages; every other public request is unexpected here.</summary>
+    private sealed class RecentlyPlayedGames : IPublicRobloxDirectory, IPublicRobloxGameDirectory, IPublicRobloxFavoriteGamesDirectory
     {
         private readonly Dictionary<long, int> _lookups = [];
         public int Lookups(long placeId) => _lookups.GetValueOrDefault(placeId);
+        public int FavoriteRequests { get; private set; }
+        public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxFavoriteGame>>> GetFavoriteGamesAsync(long userId, CancellationToken ct)
+        {
+            if (userId != 123) throw new InvalidOperationException("Unexpected synthetic favorites owner");
+            FavoriteRequests++;
+            return Task.FromResult(SearchTest.Ok<IReadOnlyList<PublicRobloxFavoriteGame>>([new PublicRobloxFavoriteGame(201, ReportedPlace, "Synthetic favorite")]));
+        }
         public Task<PublicDirectoryResult<PublicRobloxGame>> LookupGameAsync(long requestedPlaceId, CancellationToken ct)
         {
             _lookups[requestedPlaceId] = Lookups(requestedPlaceId) + 1;

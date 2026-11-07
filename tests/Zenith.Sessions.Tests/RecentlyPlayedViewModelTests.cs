@@ -89,18 +89,39 @@ public sealed class RecentlyPlayedViewModelTests
         Assert.Single(names.Batches);Assert.Single(names.Singles);Assert.Equal(new[]{"Game 101","Named place 2"},vm.Chips.Select(chip=>chip.Name).ToArray());
     });
 
-    // A Deferred without RetryAfter is the shared two-slot gate (or a timeout), not a Roblox cooldown: the run stops so
-    // no refusals pile up, and the places stay unasked so the next update names them.
+    // A Deferred without RetryAfter is the shared two-slot gate or a 15 s timeout, not a Roblox cooldown: the run stops so no
+    // refusals pile up, and its places wait for an explicit trigger. The shell sends one update per desktop presentation
+    // (about every 0.5-1 s), so those updates must never re-ask them, or a slow Roblox would be asked again after every timeout.
     [Fact]
-    public Task LocalBusyNamingStopsTheRunAndLeavesPlacesForTheNextUpdate()=>SearchTest.OnUi(async()=>
+    public Task LocalRefusalIsNotAskedAgainByRepeatedUpdatesUntilAnExplicitTrigger()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var names=new NamesDirectory();names.Deferrals.Enqueue(null);
         await using var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
         RecentlyPlayedSource[] sources=[Source(1,101,1),Source(2,null,2)];
         await vm.UpdateAsync(sources);await vm.ActiveOperation;
         Assert.Single(names.Batches);Assert.Empty(names.Singles);Assert.All(vm.Chips,chip=>Assert.False(chip.HasName));
+        for(int presentation=0;presentation<5;presentation++) {await vm.UpdateAsync(sources);await vm.ActiveOperation;}
+        Assert.Single(names.Batches);Assert.Empty(names.Singles); // One lookup; the run's unasked place waits with it.
+        Assert.Equal(new[]{"Place 1","Place 2"},vm.Chips.Select(chip=>chip.Name).ToArray());
+        vm.ForgetLocalRefusals(); // Join a game opened again, or another account chosen there.
         await vm.UpdateAsync(sources);await vm.ActiveOperation;
         Assert.Equal(2,names.Batches.Count);Assert.Single(names.Singles);Assert.Equal(new[]{"Game 101","Named place 2"},vm.Chips.Select(chip=>chip.Name).ToArray());
+    });
+
+    [Fact]
+    public Task AfterALocalRefusalOnlyANewObservationIsAskedAndANewVisitAsksAgain()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var names=new NamesDirectory();names.Deferrals.Enqueue(null);
+        await using var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
+        RecentlyPlayedSource[] first=[Source(5,null,2)];
+        await vm.UpdateAsync(first);await vm.ActiveOperation;
+        for(int presentation=0;presentation<3;presentation++) {await vm.UpdateAsync(first);await vm.ActiveOperation;}
+        Assert.Equal(new long[]{5},names.Singles.ToArray());
+        RecentlyPlayedSource[] second=[Source(6,null,1),Source(5,null,2)];
+        await vm.UpdateAsync(second);await vm.ActiveOperation; // A new place in the logs is a new observation: only it is asked.
+        Assert.Equal(new long[]{5,6},names.Singles.ToArray());Assert.Equal(new[]{"Named place 6","Place 5"},vm.Chips.Select(chip=>chip.Name).ToArray());
+        vm.Cancel();await vm.UpdateAsync(second);await vm.ActiveOperation; // Leaving and opening the page again is a new visit.
+        Assert.Equal(new long[]{5,6,6,5},names.Singles.ToArray());Assert.All(vm.Chips,chip=>Assert.True(chip.HasName));
     });
 
     [Fact]

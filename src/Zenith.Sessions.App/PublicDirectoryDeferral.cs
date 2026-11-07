@@ -6,7 +6,8 @@ namespace Zenith.Sessions.App;
 /// Tells a Roblox pause from a refusal made on this PC. The public directory sets RetryAfter on every provider pause
 /// (a 429, or a pause that is still running). A Deferred without one was turned down locally: both shared request slots
 /// busy, a timed-out request, a stale picture descriptor or the same picture already downloading. That is not a
-/// cooldown, so a later user action or update may ask again. Nothing is waited for, queued or retried here.
+/// cooldown, so a later user action may ask again; a periodic update (a desktop presentation) must not, or a slow Roblox
+/// would be asked again right after every timeout. Nothing is waited for, queued or retried here.
 /// </summary>
 internal static class PublicDirectoryDeferral
 {

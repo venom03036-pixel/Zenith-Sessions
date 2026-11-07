@@ -126,10 +126,14 @@ name, creator line, playing + rating, accent border and check when it is the cur
 - Rebuilt when Join a game opens and once each time the shell publishes a new session/history snapshot while the page
   is open, after the history rows and log views are both updated (never once per history row); names are fetched only
   for places not already named this visit. No polling or timer is added.
-- Panic and Lock clear the chips and keep Recently played stopped, even after Unlock, until Join a game is opened again
-  or the selected account changes, the same actions that reload Roblox favorites and saved private servers. A desktop
-  sample alone never restarts the name lookups. The favorites row then reads "Stopped. Choose Refresh to load
-  favorites again."
+- A lookup turned down on this PC (both shared request slots busy, or the 15 s request timeout) is not a Roblox
+  cooldown, but the per-presentation rebuild never asks it again: the run ends and its unnamed places wait until Join a
+  game is opened again or another account is chosen there. A place newly seen in the logs is still asked.
+- Panic and Lock clear the chips and keep Recently played and Roblox favorites stopped, even after Unlock, until Join a
+  game is opened again or another account is chosen there; that also reloads saved private servers. An account reload
+  (the global Refresh, the reload after a cancelled sign-in or handoff inspection, the one a native trial queues) selects
+  a new row for the same account and restarts nothing; neither does a desktop sample. The favorites row then reads
+  "Stopped. Choose Refresh to load favorites again."
 
 ### 3.2 Join same game / Join same server
 
