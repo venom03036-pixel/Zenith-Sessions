@@ -1,7 +1,7 @@
 namespace Zenith.Sessions.Core;
 
 /// <summary>How an ended client most likely ended, from the strongest evidence recorded for that exact process.</summary>
-public enum ClientEndCause { Unknown, Crashed, NotResponding, Disconnected, LeftGame, PossibleCrash }
+public enum ClientEndCause { Unknown, Crashed, NotResponding, Disconnected, LeftGame, PossibleCrash, LaunchedElsewhere }
 
 /// <summary>
 /// One read-only look for crash records after a client ended. A fault is Windows' Application Error record naming this
@@ -37,7 +37,8 @@ public static class ClientEndClassifier
         if (entry.FaultCheck?.FaultRecordedUtc is not null) return ClientEndCause.Crashed;
         if (entry.NotRespondingUtc is not null) return ClientEndCause.NotResponding;
         if (entry.DisconnectedUtc is not null)
-            return ClientLogObservation.IsPlayerInitiated(entry.DisconnectReason) ? ClientEndCause.LeftGame : ClientEndCause.Disconnected;
+            return entry.DisconnectReason == ClientLogObservation.AccountLaunchedElsewhereReason ? ClientEndCause.LaunchedElsewhere
+                : ClientLogObservation.IsPlayerInitiated(entry.DisconnectReason) ? ClientEndCause.LeftGame : ClientEndCause.Disconnected;
         return entry.FaultCheck is { CrashDumps: > 0 } ? ClientEndCause.PossibleCrash : ClientEndCause.Unknown;
     }
 }
@@ -58,6 +59,7 @@ public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Pr
     {
         ClientEndCause.Crashed => "Crashed", ClientEndCause.NotResponding => "Not responding",
         ClientEndCause.Disconnected => "Disconnected", ClientEndCause.LeftGame => "Left the game",
+        ClientEndCause.LaunchedElsewhere => "Account launched elsewhere",
         ClientEndCause.PossibleCrash => "Possible crash", _ => "Unknown"
     };
     public bool CanAuthorizeAccountAction => false;

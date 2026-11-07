@@ -17,6 +17,7 @@ public sealed record RecentClientHistoryRow(RecentClientHistoryEntry Entry)
         ClientEndCause.NotResponding => " · it was not responding when last seen",
         ClientEndCause.Disconnected => " · Roblox logged a disconnect" + (Entry.DisconnectReason is { } reason ? $" (reason {reason})" : ""),
         ClientEndCause.LeftGame => $" · Roblox logged the player leaving (reason {Entry.DisconnectReason})",
+        ClientEndCause.LaunchedElsewhere => $" · Roblox logged that the account launched in another client (reason {Entry.DisconnectReason})",
         ClientEndCause.PossibleCrash => " · possible crash: a Roblox crash dump was written as it ended",
         _ => " · cause unknown"
     };

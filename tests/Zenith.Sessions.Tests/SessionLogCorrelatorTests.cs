@@ -221,6 +221,49 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
     }
 
     [Fact]
+    public async Task AOneOffDiscoveryFailureKeepsBoundReadersAndTheReportedDestination()
+    {
+        // Discovery runs before any reader is touched, so its failure must not reset a healthy bound client's log evidence.
+        Write(SyntheticClientLogFixtures.Joining + SyntheticClientLogFixtures.Connected + SyntheticClientLogFixtures.Identity);
+        var key = Key() with { HostId = null }; // SessionLogProjection keys local processes without a host.
+        var clock = new Clock(); var probe = new Probe(Log, key); var desktop = Desktop(key);
+        var projection = new Zenith.Sessions.App.SessionLogProjection();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        void AssertReportedDestination(SessionLogDiscoverySnapshot logs)
+        {
+            projection.Update(desktop.Sessions, logs, clock.GetUtcNow());
+            var view = Assert.Single(projection.Snapshot(clock.GetUtcNow())).Value;
+            Assert.True(view.HasReportedDestination);
+            Assert.Equal(SyntheticClientLogFixtures.Place, view.ReportedPlaceId);
+            Assert.Equal(SyntheticClientLogFixtures.Job, view.ReportedJobId);
+            Assert.Equal(SyntheticClientLogFixtures.Job.ToString("D"), view.CurrentServer);
+        }
+
+        worker.Offer(desktop);
+        var bound = await After(worker);
+        var first = Assert.Single(bound.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, first.Correlation);
+        AssertReportedDestination(bound);
+
+        // Discovery is due again after 5 s and fails once (ERROR_OPERATION_ABORTED surfaces as OperationCanceledException).
+        probe.DiscoverFailure = new OperationCanceledException();
+        clock.Advance(5000); worker.Offer(desktop);
+        var failed = await After(worker, bound.Revision);
+        Assert.Equal(2, probe.Discoveries);
+        var kept = Assert.Single(failed.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, kept.Correlation);
+        Assert.Equal(first.SourceStamp, kept.SourceStamp); // The same reader and cursor; nothing is re-read from the start.
+        AssertReportedDestination(failed);
+
+        // The failed discovery is retried on the next offer rather than after another 5 s.
+        clock.Advance(1000); worker.Offer(desktop);
+        var next = await After(worker, failed.Revision);
+        Assert.Equal(3, probe.Discoveries);
+        Assert.Equal(first.SourceStamp, Assert.Single(next.Sessions).SourceStamp);
+        AssertReportedDestination(next);
+    }
+
+    [Fact]
     public async Task FiveConsecutiveProbeFailuresStillEndTheWorkerAndSurfaceAtDisposal()
     {
         Write(SyntheticClientLogFixtures.Identity);

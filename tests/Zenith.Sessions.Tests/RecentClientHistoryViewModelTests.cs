@@ -165,6 +165,19 @@ public sealed class RecentClientHistoryViewModelTests
         Assert.Single(probe.Checked);
     }
 
+    [Theory]
+    [InlineData(273, "No longer observed · Roblox logged that the account launched in another client (reason 273)")]
+    [InlineData(285, "No longer observed · Roblox logged the player leaving (reason 285)")]
+    [InlineData(277, "No longer observed · Roblox logged a disconnect (reason 277)")]
+    public void OutcomeNamesALaunchElsewhereSeparatelyFromThePlayerLeaving(int reason, string expected)
+    {
+        // Reason 273 is a second launch of the same account ending this client, which the live Sessions label already names.
+        var key = new SessionProcessKey(null, 10001, At.AddMinutes(-1).UtcTicks);
+        var entry = new RecentClientHistoryEntry(Guid.NewGuid(), key, At, At, At.AddSeconds(1),
+            DisconnectedUtc: At, DisconnectReason: reason).Validated(ended: true);
+        Assert.Equal(expected, new RecentClientHistoryRow(entry).Outcome);
+    }
+
     [Fact]
     public async Task AFailingCrashRecordCheckIsReportedOnceAndShutdownCancelsAnInflightCheck()
     {

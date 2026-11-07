@@ -1,3 +1,4 @@
+using System.Runtime.ExceptionServices;
 using System.Threading.Channels;
 using Zenith.Sessions.Core;
 
@@ -55,7 +56,8 @@ internal interface IClientLogProbe : IDisposable
 /// Reconciliation is driven by offers, not a new timer. All paths stay inside this Windows implementation.
 /// RM calls are synchronous: cancellation/deadlines are checked between native calls, not hard interrupts.
 /// DisposeAsync cancels and awaits the actual owner; it never abandons native work or starts replacement workers.
-/// A failed pass is retried by the same owner on a later offer; only consecutive failures end it.
+/// A failed pass is retried by the same owner on a later offer; only consecutive failures end it. A failed discovery
+/// keeps every bound reader and its published facts; only a failure after a reader was touched resets them all.
 /// </summary>
 public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 {
@@ -151,14 +153,17 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 _lastPass = _clock.GetTimestamp();
                 try
                 {
-                    await PassAsync(input, _stop.Token).ConfigureAwait(false);
-                    _consecutiveFailures = 0;
+                    var discoveryFailure = await PassAsync(input, _stop.Token).ConfigureAwait(false);
+                    if (discoveryFailure is null) _consecutiveFailures = 0;
+                    // The pass already kept every reader and published. A failed discovery still counts as a failed
+                    // pass, so a persistent probe fault ends this owner on the fifth in a row and surfaces at DisposeAsync.
+                    else if (++_consecutiveFailures == MaximumConsecutivePassFailures) discoveryFailure.Throw();
                 }
                 catch (Exception) when (!_stop.IsCancellationRequested && _consecutiveFailures < MaximumConsecutivePassFailures - 1)
                 {
-                    // One failed pass (for example ERROR_OPERATION_ABORTED surfacing as OperationCanceledException) is not
-                    // terminal: drop every cursor, mark all rows Unavailable, and rediscover on the next offer, which the
-                    // 1 s pass gate already rate-limits. Repeated failures still end this owner and surface at DisposeAsync.
+                    // A pass that failed after touching a reader is not terminal: drop every cursor, mark all rows
+                    // Unavailable, and rediscover on the next offer, which the 1 s pass gate already rate-limits. A failed
+                    // discovery never reaches here (PassAsync keeps the readers). Repeated failures still end this owner.
                     _consecutiveFailures++;
                     ClearReaders(); _candidates = new(Array.Empty<ClientLogCandidate>(), false); _lastDiscovery = null;
                     Publish(Volatile.Read(ref _latest), [], SessionLogCorrelationStatus.Unavailable);
@@ -174,20 +179,36 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         finally { ClearReaders(); _probe.Dispose(); }
     }
 
-    private async Task PassAsync(Input input, CancellationToken ct)
+    /// <returns>The failure of this pass's discovery, or null when discovery succeeded or was not due.</returns>
+    private async Task<ExceptionDispatchInfo?> PassAsync(Input input, CancellationToken ct)
     {
+        ExceptionDispatchInfo? discoveryFailure = null;
         if (_lastDiscovery is null || _clock.GetElapsedTime(_lastDiscovery.Value) >= TimeSpan.FromSeconds(5))
         {
             _lastDiscovery = _clock.GetTimestamp();
-            _candidates = _probe.Discover(_options.MaximumCandidates, ct);
-            var candidates = _candidates.Files.Take(_options.MaximumCandidates).ToArray();
-            var keep = candidates.Select(c => c.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
-            foreach (var reader in _readers.Values.Where(reader => !keep.Contains(reader.Candidate.Path)
-                && (reader.Log is null || reader.Process is not { } process || !input.Processes.Contains(process))).ToArray())
-                Remove(reader);
-            foreach (var candidate in candidates)
-                if (!_readers.ContainsKey(candidate.Path))
-                    _readers.Add(candidate.Path, new(candidate));
+            ClientLogCandidates? found = null;
+            try { found = _probe.Discover(_options.MaximumCandidates, ct); }
+            catch (Exception failure) when (!ct.IsCancellationRequested)
+            {
+                // Discovery runs before any reader is touched (for example ERROR_OPERATION_ABORTED surfacing as an
+                // OperationCanceledException). Keep every reader, cursor, holder lease and bound row: only discovery is
+                // unavailable, so unbound rows publish Unavailable. It is retried on the next offer (1 s pass gate).
+                discoveryFailure = ExceptionDispatchInfo.Capture(failure);
+                _lastDiscovery = null;
+                _candidates = _candidates with { Unavailable = true };
+            }
+            if (found is not null)
+            {
+                _candidates = found;
+                var candidates = _candidates.Files.Take(_options.MaximumCandidates).ToArray();
+                var keep = candidates.Select(c => c.Path).ToHashSet(StringComparer.OrdinalIgnoreCase);
+                foreach (var reader in _readers.Values.Where(reader => !keep.Contains(reader.Candidate.Path)
+                    && (reader.Log is null || reader.Process is not { } process || !input.Processes.Contains(process))).ToArray())
+                    Remove(reader);
+                foreach (var candidate in candidates)
+                    if (!_readers.ContainsKey(candidate.Path))
+                        _readers.Add(candidate.Path, new(candidate));
+            }
         }
 
         foreach (var reader in _readers.Values)
@@ -238,8 +259,9 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             await ObserveAsync(next, input, ct).ConfigureAwait(false);
         }
         limited |= _liveReaders == _options.MaximumReaders && readers.Any(static reader => reader.Process is not null && reader.Log is null);
-        if (!input.Processes.SequenceEqual(Volatile.Read(ref _latest).Processes)) return;
+        if (!input.Processes.SequenceEqual(Volatile.Read(ref _latest).Processes)) return discoveryFailure;
         Publish(input, readers, _candidates.Unavailable ? SessionLogCorrelationStatus.Unavailable : SessionLogCorrelationStatus.Unknown, limited);
+        return discoveryFailure;
     }
 
     private async Task ObserveAsync(Reader reader, Input input, CancellationToken ct)

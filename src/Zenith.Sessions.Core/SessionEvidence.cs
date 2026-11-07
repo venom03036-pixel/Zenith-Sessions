@@ -24,8 +24,13 @@ public sealed record ClientLogObservation(ClientLogStreamId Stream, long StartOf
 {
     /// <summary>Largest disconnect reason code kept. A longer or non-numeric reason is never stored.</summary>
     public const int MaximumDisconnectReason = 9999;
-    /// <summary>Reason 285 is the player's own leave; 273 is the same account launched elsewhere. Neither is a dropped connection.</summary>
-    public static bool IsPlayerInitiated(int? reason) => reason is 285 or 273;
+    /// <summary>The reason Roblox logs when the same account launched in another client and this one was ended.</summary>
+    public const int AccountLaunchedElsewhereReason = 273;
+    /// <summary>
+    /// Reason 285 is the player's own leave; 273 is the same account launched elsewhere. Neither is a dropped connection,
+    /// but only 285 is this player leaving: name 273 with <see cref="AccountLaunchedElsewhereReason"/> before using this.
+    /// </summary>
+    public static bool IsPlayerInitiated(int? reason) => reason is 285 or AccountLaunchedElsewhereReason;
     public bool PlayerInitiated => IsPlayerInitiated(DisconnectReason);
 }
 

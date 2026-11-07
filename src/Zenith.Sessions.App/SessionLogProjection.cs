@@ -183,7 +183,7 @@ public sealed record SessionLogView(string Correlation, string ReportedUserId, s
     private static string LifecycleText(SessionEvidenceSnapshot evidence)
     {
         string state = evidence.Lifecycle == ObservedSessionLifecycle.Disconnected && evidence.DisconnectReason is { } reason
-            ? $"Disconnected · reason {reason.ToString(CultureInfo.InvariantCulture)} · " + (reason == 273 ? "account launched elsewhere"
+            ? $"Disconnected · reason {reason.ToString(CultureInfo.InvariantCulture)} · " + (reason == ClientLogObservation.AccountLaunchedElsewhereReason ? "account launched elsewhere"
                 : evidence.PlayerInitiatedDisconnect ? "you left" : "connection lost")
             : evidence.Lifecycle.ToString();
         return evidence.HumanCheckObservedUtc is null ? state : state + " · Roblox asked for a human check";

@@ -179,6 +179,9 @@ public sealed class RecentClientHistoryTests
         var disconnected = ended with { DisconnectedUtc = Now, DisconnectReason = 277, FaultCheck = check with { CrashDumps = 1 } };
         Assert.Equal(ClientEndCause.Disconnected, disconnected.EndCause); Assert.Equal("Disconnected", disconnected.Cause);
         Assert.Equal(ClientEndCause.LeftGame, (disconnected with { DisconnectReason = 285 }).EndCause);
+        // Reason 273 is the same account launching in another client, not this player leaving.
+        var elsewhere = disconnected with { DisconnectReason = 273 };
+        Assert.Equal(ClientEndCause.LaunchedElsewhere, elsewhere.EndCause); Assert.Equal("Account launched elsewhere", elsewhere.Cause);
         var hung = disconnected with { NotRespondingUtc = Now };
         Assert.Equal(ClientEndCause.NotResponding, hung.EndCause);
         var crashed = hung with { FaultCheck = check with { FaultRecordedUtc = Now.AddSeconds(1), ExceptionCode = 0xC0000005 } };
