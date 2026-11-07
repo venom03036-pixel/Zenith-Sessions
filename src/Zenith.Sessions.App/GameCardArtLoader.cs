@@ -6,7 +6,9 @@ namespace Zenith.Sessions.App;
 /// <summary>
 /// UI-context owner of card pictures for one search page: one batch descriptor request per visible set, then one
 /// download and one decode at a time. The directory is borrowed. Publication is fenced by run identity, so a late
-/// provider result never reaches a cleared or replaced grid. No retries, timers or polling.
+/// provider result never reaches a cleared or replaced grid. No retries, timers or polling. A refusal made on this PC
+/// (both shared request slots busy, a timeout) is not a Roblox cooldown: the run ends and its cards stay askable, so
+/// the next sort, page or Show more asks again; a Roblox pause or an unavailable picture keeps the placeholder.
 /// </summary>
 public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,Action<Exception> failed):IAsyncDisposable
 {
@@ -58,7 +60,13 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
                 var descriptors=await directory!.GetGameThumbnailsAsync(universes,run.Token);
                 if(!Current(run)) return;
                 if(descriptors.State!=PublicDirectoryState.Success || descriptors.Value is null)
-                {foreach(var row in batch) row.ArtAttempted=true;continue;} // Deferred or unavailable: placeholders, no retry.
+                {
+                    // Turned down on this PC (busy slots, timeout): end the run so no refusals pile up; the cards stay
+                    // askable for the next sort, page or Show more. A Roblox pause or unavailable: placeholders, no retry.
+                    if(PublicDirectoryDeferral.IsLocal(descriptors)) return;
+                    foreach(var row in batch) row.ArtAttempted=true;
+                    continue;
+                }
                 var byUniverse=new Dictionary<long,PublicRobloxGameThumbnail>();
                 foreach(var thumbnail in descriptors.Value) byUniverse.TryAdd(thumbnail.UniverseId,thumbnail);
                 foreach(var row in batch)
@@ -68,6 +76,7 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
                     {row.ArtAttempted=true;continue;}
                     var encoded=await directory.FetchGameThumbnailAsync(thumbnail,run.Token);
                     if(!Current(run)) return;
+                    if(PublicDirectoryDeferral.IsLocal(encoded)) return; // As above: this card and the rest stay askable.
                     row.ArtAttempted=true;
                     if(encoded.State!=PublicDirectoryState.Success || encoded.Value is not { } bytes) continue;
                     ImageSource? pixels;

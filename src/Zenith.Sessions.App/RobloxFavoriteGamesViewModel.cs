@@ -13,8 +13,9 @@ public sealed class RobloxFavoriteChip(PublicRobloxFavoriteGame game)
 
 /// <summary>
 /// UI-context owner of the selected account's public Roblox favorites: one page per visit, loaded once when Join a
-/// game opens or the account changes, asked again only on an explicit refresh. Directory and browser are borrowed;
-/// a page for a previous account or visit is fenced out. No sign-in, retries, timers or cache.
+/// game opens or the account changes, asked again only on an explicit refresh (or, after a local refusal that is not a
+/// Roblox cooldown, on the next open or selection). Directory and browser are borrowed; a page for a previous account
+/// or visit is fenced out. No sign-in, retries, timers or cache.
 /// </summary>
 public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
 {
@@ -104,6 +105,12 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
                 _showAll=false;PublishChips();
                 _status=_all.Count==0?"No public favorites on this profile."
                     :_all.Count.ToString(CultureInfo.InvariantCulture)+" public favorites on Roblox · newest first";
+            }
+            else if(PublicDirectoryDeferral.IsLocal(result))
+            {
+                // Turned down on this PC (shared request slots busy, or a timeout), not a Roblox cooldown: this visit's
+                // page was not loaded, so the next page open, selection or Refresh asks again. Nothing retries by itself.
+                _loaded=null;_status="Favorites not loaded · Roblox lookups were busy or slow. Choose Refresh to try again.";
             }
             else _status=result.State==PublicDirectoryState.Deferred?"Favorites deferred · wait for the Roblox cooldown":"Favorites unavailable";
             Raise(nameof(Status));

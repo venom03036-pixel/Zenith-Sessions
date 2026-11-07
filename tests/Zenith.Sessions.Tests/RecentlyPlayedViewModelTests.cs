@@ -89,6 +89,30 @@ public sealed class RecentlyPlayedViewModelTests
         Assert.Single(names.Batches);Assert.Single(names.Singles);Assert.Equal(new[]{"Game 101","Named place 2"},vm.Chips.Select(chip=>chip.Name).ToArray());
     });
 
+    // A Deferred without RetryAfter is the shared two-slot gate (or a timeout), not a Roblox cooldown: the run stops so
+    // no refusals pile up, and the places stay unasked so the next update names them.
+    [Fact]
+    public Task LocalBusyNamingStopsTheRunAndLeavesPlacesForTheNextUpdate()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var names=new NamesDirectory();names.Deferrals.Enqueue(null);
+        await using var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
+        RecentlyPlayedSource[] sources=[Source(1,101,1),Source(2,null,2)];
+        await vm.UpdateAsync(sources);await vm.ActiveOperation;
+        Assert.Single(names.Batches);Assert.Empty(names.Singles);Assert.All(vm.Chips,chip=>Assert.False(chip.HasName));
+        await vm.UpdateAsync(sources);await vm.ActiveOperation;
+        Assert.Equal(2,names.Batches.Count);Assert.Single(names.Singles);Assert.Equal(new[]{"Game 101","Named place 2"},vm.Chips.Select(chip=>chip.Name).ToArray());
+    });
+
+    [Fact]
+    public Task ProviderPauseIsNotAskedAgainThisVisit()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var names=new NamesDirectory();names.Deferrals.Enqueue(TimeSpan.FromSeconds(30));
+        await using var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
+        RecentlyPlayedSource[] sources=[Source(1,101,1)];
+        await vm.UpdateAsync(sources);await vm.ActiveOperation;await vm.UpdateAsync(sources);await vm.ActiveOperation;
+        Assert.Single(names.Batches);Assert.Equal("Place 1",Assert.Single(vm.Chips).Name); // A Roblox cooldown is never retried automatically.
+    });
+
     [Fact]
     public Task MissingDirectoriesLeavePlaceIds()=>SearchTest.OnUi(async()=>
     {
@@ -100,6 +124,7 @@ public sealed class RecentlyPlayedViewModelTests
     {
         public readonly List<long[]> Batches=[];public readonly List<long> Singles=[];
         public bool Hold,Unknown;public int Active,MaxConcurrent;public CancellationToken LastToken;
+        public readonly Queue<TimeSpan?> Deferrals=new(); // One-shot Deferred answers: null is a local refusal, a value a provider pause.
         public TaskCompletionSource Entered {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Release()=>_release.TrySetResult();
@@ -111,12 +136,14 @@ public sealed class RecentlyPlayedViewModelTests
         public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>> LookupGamesAsync(IReadOnlyList<long> universeIds,CancellationToken ct)
         {
             Batches.Add(universeIds.ToArray());
+            if(Deferrals.TryDequeue(out var pause)) return Task.FromResult(new PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>(PublicDirectoryState.Deferred,null,"synthetic",pause));
             return Track(()=>Unknown?new PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>(PublicDirectoryState.Unknown,null,"synthetic")
                 :SearchTest.Ok<IReadOnlyList<PublicRobloxGame>>(universeIds.Select(id=>new PublicRobloxGame(id-100,id,id-100,"Game "+id,7,"Creator",PublicRobloxCreatorKind.User,1,10,DateTimeOffset.UtcNow)).ToArray()),ct);
         }
         public Task<PublicDirectoryResult<PublicRobloxGame>> LookupGameAsync(long requestedPlaceId,CancellationToken ct)
         {
             Singles.Add(requestedPlaceId);
+            if(Deferrals.TryDequeue(out var pause)) return Task.FromResult(new PublicDirectoryResult<PublicRobloxGame>(PublicDirectoryState.Deferred,null,"synthetic",pause));
             return Track(()=>Unknown?new PublicDirectoryResult<PublicRobloxGame>(PublicDirectoryState.Unknown,null,"synthetic")
                 :SearchTest.Ok(new PublicRobloxGame(requestedPlaceId,requestedPlaceId+1000,requestedPlaceId,"Named place "+requestedPlaceId,7,"Creator",PublicRobloxCreatorKind.User,1,10,DateTimeOffset.UtcNow)),ct);
         }

@@ -298,9 +298,13 @@ internal sealed class SearchDirectory(SearchClock clock):IPublicRobloxDirectory,
     public TaskCompletionSource ArtFetchEntered {get;set;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly TaskCompletionSource _artRelease=new(TaskCreationOptions.RunContinuationsAsynchronously);
     public void ReleaseArtFetch()=>_artRelease.TrySetResult();
+    // One-shot answers, used in order before the synthetic success: a local busy refusal or a provider pause.
+    public readonly Queue<PublicDirectoryResult<IReadOnlyList<PublicRobloxGameThumbnail>>> ArtBatchResponses=new();
+    public readonly Queue<PublicDirectoryResult<EncodedPublicGameIcon>> ArtFetchResponses=new();
     public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxGameThumbnail>>> GetGameThumbnailsAsync(IReadOnlyList<long> universeIds,CancellationToken ct)
     {
         ArtBatches.Add(universeIds.ToArray());
+        if(ArtBatchResponses.TryDequeue(out var answer)) return Task.FromResult(answer);
         IReadOnlyList<PublicRobloxGameThumbnail> items=universeIds.Select(id=>{var state=ArtState?.Invoke(id)??PublicRobloxThumbnailState.Ready;
             return new PublicRobloxGameThumbnail(id,state==PublicRobloxThumbnailState.Ready?new Uri("https://tr.rbxcdn.com/synthetic/"+id+".png"):null,state,clock.Utc);}).ToArray();
         return Task.FromResult(SearchTest.Ok(items));
@@ -309,7 +313,7 @@ internal sealed class SearchDirectory(SearchClock clock):IPublicRobloxDirectory,
     public async Task<PublicDirectoryResult<EncodedPublicGameIcon>> FetchGameThumbnailAsync(PublicRobloxGameThumbnail thumbnail,CancellationToken ct)
     {
         ArtFetches++;ArtToken=ct;int active=++ActiveArtFetches;if(active>MaxConcurrentArtFetches)MaxConcurrentArtFetches=active;ArtFetchEntered.TrySetResult();
-        try {if(HoldArtFetch)await _artRelease.Task;return SearchTest.Ok(new EncodedPublicGameIcon(CardPng,"image/png",clock.Utc));}
+        try {if(HoldArtFetch)await _artRelease.Task;if(ArtFetchResponses.TryDequeue(out var answer))return answer;return SearchTest.Ok(new EncodedPublicGameIcon(CardPng,"image/png",clock.Utc));}
         finally {ActiveArtFetches--;}
     }
     public readonly List<PublicRobloxGameSearchQuery> Queries=[];

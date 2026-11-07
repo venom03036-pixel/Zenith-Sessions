@@ -87,6 +87,41 @@ public sealed class GameCardArtLoaderTests
         Assert.Equal(1,f.Directory.ArtFetches);Assert.Single(f.Directory.ArtBatches);
     });
 
+    // The shared two-slot gate turns a third concurrent lookup down locally (Deferred, no RetryAfter). That is not a
+    // Roblox cooldown: the cards stay askable, so the next sort, page or Show more asks again.
+    [Fact]
+    public Task BusyArtBatchLeavesCardsRetryableOnTheNextTrigger()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();f.Directory.SearchResponse=q=>SearchTest.Ok(f.Directory.Page(q,3));
+        f.Directory.ArtBatchResponses.Enqueue(new(PublicDirectoryState.Deferred,null,"synthetic busy"));
+        f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();await f.Search.ArtOperation;
+        Assert.Single(f.Directory.ArtBatches);Assert.Equal(0,f.Directory.ArtFetches);Assert.All(f.Search.VisibleResults,row=>Assert.False(row.HasArt));
+        f.Search.SelectedSort="Rating";await f.Search.ArtOperation;
+        Assert.Equal(2,f.Directory.ArtBatches.Count);Assert.Equal(3,f.Directory.ArtFetches);Assert.All(f.Search.VisibleResults,row=>Assert.True(row.HasArt));
+    });
+
+    [Fact]
+    public Task BusyPictureDownloadEndsTheRunAndLeavesTheRestRetryable()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();f.Directory.SearchResponse=q=>SearchTest.Ok(f.Directory.Page(q,3));
+        f.Directory.ArtFetchResponses.Enqueue(new(PublicDirectoryState.Deferred,null,"synthetic busy"));
+        f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();await f.Search.ArtOperation;
+        Assert.Equal(1,f.Directory.ArtFetches); // The run stops at the first refusal instead of sending more into a full gate.
+        Assert.All(f.Search.VisibleResults,row=>Assert.False(row.HasArt));
+        f.Search.SelectedSort="Rating";await f.Search.ArtOperation;
+        Assert.Equal(2,f.Directory.ArtBatches.Count);Assert.Equal(4,f.Directory.ArtFetches);Assert.All(f.Search.VisibleResults,row=>Assert.True(row.HasArt));
+    });
+
+    [Fact]
+    public Task ProviderPauseKeepsPlaceholdersWithoutRetries()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();f.Directory.SearchResponse=q=>SearchTest.Ok(f.Directory.Page(q,3));
+        f.Directory.ArtBatchResponses.Enqueue(new(PublicDirectoryState.Deferred,null,"synthetic pause",TimeSpan.FromSeconds(30)));
+        f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();await f.Search.ArtOperation;
+        f.Search.SelectedSort="Rating";await f.Search.ArtOperation; // A Roblox cooldown is never re-asked by a re-sort.
+        Assert.Single(f.Directory.ArtBatches);Assert.Equal(0,f.Directory.ArtFetches);Assert.All(f.Search.VisibleResults,row=>Assert.False(row.HasArt));
+    });
+
     // The running page never reads Active (only tests do), so a finished run must let go of its rows and their
     // decoded pictures on its own; otherwise every search, sort and "Show more" keeps its cards alive until disposal.
     [Fact]

@@ -21,7 +21,9 @@ public sealed class RecentlyPlayedChip(long placeId):Observable
 /// UI-context owner of the recently played chips: places observed in client logs, newest first, at most six. Names come
 /// from one batch request for universes the logs named plus single lookups for the rest, remembered for the visit so no
 /// place is asked twice. Directories and browser are borrowed; a newer update fences the previous naming run. No retries,
-/// timers or polling; the shell calls <see cref="UpdateAsync"/> when it already has a new observation.
+/// timers or polling; the shell calls <see cref="UpdateAsync"/> when it already has a new observation. A refusal made on
+/// this PC (both shared request slots busy, a timeout) is not a Roblox cooldown: the run ends and those places stay
+/// unasked, so the next update names them; a Roblox pause or an unnamed place is not asked again this visit.
 /// </summary>
 public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
 {
@@ -103,6 +105,7 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
                 long[] universes=batched.Select(entry=>entry.Source.UniverseId!.Value).Distinct().Take(PublicRobloxGameBatchLimits.MaximumUniverses).ToArray();
                 var result=await _batch!.LookupGamesAsync(universes,stop.Token);
                 if(!Current(generation,stop)) return;
+                if(PublicDirectoryDeferral.IsLocal(result)) return; // Turned down on this PC: end the run; these places stay unasked.
                 var names=new Dictionary<long,string>();
                 if(result.State==PublicDirectoryState.Success && result.Value is { } games) foreach(var game in games) names[game.UniverseId]=game.Name;
                 foreach(var entry in batched)
@@ -117,6 +120,7 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
                 if(_single is null) {_attempted.Add(entry.Chip.PlaceId);continue;} // No lookup capability: the place ID stays.
                 var result=await _single.LookupGameAsync(entry.Chip.PlaceId,stop.Token);
                 if(!Current(generation,stop)) return;
+                if(PublicDirectoryDeferral.IsLocal(result)) return;
                 _attempted.Add(entry.Chip.PlaceId);
                 if(result.State==PublicDirectoryState.Success && result.Value is { } game) {_names[entry.Chip.PlaceId]=game.Name;entry.Chip.SetName(game.Name);}
             }
