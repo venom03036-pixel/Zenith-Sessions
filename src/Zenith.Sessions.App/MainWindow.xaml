@@ -1577,7 +1577,7 @@
         <StackPanel HorizontalAlignment="Center" VerticalAlignment="Center" Width="420">
           <theme:ThemeAwareLogo Width="48" Height="48" HorizontalAlignment="Left" />
           <TextBlock Text="Controls are locked" Style="{StaticResource PageTitle}" Margin="0,20,0,10" />
-          <TextBlock Text="Account details are hidden. Monitoring continues; automation and reconnect require an explicit restart after unlocking." Style="{StaticResource Muted}" />
+          <TextBlock Text="Account details are hidden. Monitoring continues; automation requires an explicit restart after unlocking." Style="{StaticResource Muted}" />
           <Button Content="Unlock dashboard" Command="{Binding Unlock}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,22,0,0" />
           <Expander Header="Close a running client safely" Margin="0,20,0,0">
             <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
