@@ -1,4 +1,4 @@
--- The verifier prepends the actual server Script as install(game, Instance, os).
+-- The verifier prepends the actual server Script as install(game, Instance, os, task, warn).
 local universe = 8000000001
 local sourcePlace, destinationPlace = 9000000001, 9000000002
 local user = 8000000002
@@ -16,7 +16,10 @@ local function check(name, work)
 end
 
 local function fixture()
-    local state = { now = 2000000000, receipts = {}, teleports = 0, claims = 0, updates = 0 }
+    local state = {
+        now = 2000000000, receipts = {}, teleports = 0, claims = 0, updates = 0,
+        subscribeFailures = 0, waits = {}, warnings = {},
+    }
 
     local function makeServer(placeId, jobId, privateId, studio, installScript)
         local result = {}
@@ -56,6 +59,10 @@ local function fixture()
             },
             MessagingService = { SubscribeAsync = function(_, topic, handler)
                 assert(topic == "ZenithSessionsV1")
+                if state.subscribeFailures > 0 then
+                    state.subscribeFailures = state.subscribeFailures - 1
+                    error("MessagingService is unavailable")
+                end
                 result.message = handler
             end },
             Players = players,
@@ -81,7 +88,10 @@ local function fixture()
             }
         end }
         local fakeClock = { time = function() return state.now end }
-        (installScript or install)(game, instance, fakeClock)
+        -- Roblox's task scheduler and server log: record the requested sleep and message instead of waiting.
+        local fakeTask = { wait = function(seconds) table.insert(state.waits, seconds) end }
+        local function fakeWarn(text) table.insert(state.warnings, text) end
+        (installScript or install)(game, instance, fakeClock, fakeTask, fakeWarn)
         return result
     end
     state.source = makeServer(sourcePlace, sourceJob)
@@ -214,6 +224,23 @@ check("storage failure prevents a move and frees the owner", function()
     state.failWrite = false
     state:send()
     assert(state.teleports == 1)
+end)
+
+check("a failed subscription is retried with capped backoff and later commands are received", function()
+    local state = fixture()
+    assert(#state.waits == 0 and #state.warnings == 0)
+    state.subscribeFailures = 8
+    local server = state.makeServer(sourcePlace, sourceJob)
+    assert(server.message ~= nil and state.subscribeFailures == 0)
+    local expected = { 1, 2, 4, 8, 16, 32, 60, 60 }
+    assert(#state.waits == #expected and #state.warnings == #expected)
+    for index, seconds in ipairs(expected) do
+        assert(state.waits[index] == seconds)
+        assert(string.find(state.warnings[index], "Retrying in " .. seconds .. " s.", 1, true))
+    end
+    state.source = server
+    state:send(nil, true)
+    assert(state.receipts[recordKey].stage == "atSource" and state.receipts[recordKey].observedJobId == sourceJob)
 end)
 
 print(string.format("Passed %d owned-experience server checks.", passed))

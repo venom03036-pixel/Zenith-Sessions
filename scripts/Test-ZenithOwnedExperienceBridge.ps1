@@ -20,9 +20,10 @@ $production = Get-Content -LiteralPath $source -Raw -Encoding UTF8
 $configured = $production.Replace('local universeId = 0', 'local universeId = 8000000001').
     Replace('local allowedPlaces = {}', 'local allowedPlaces = { [9000000001] = true, [9000000002] = true }').
     Replace('local allowedUsers = {}', 'local allowedUsers = { [8000000002] = true }')
+# The standalone luau.exe has no Roblox task scheduler or warn, so the fixture supplies both.
 $program = @(
-    'local function installDisabled(game, Instance, os)', $production, 'end'
-    'local function install(game, Instance, os)', $configured, 'end'
+    'local function installDisabled(game, Instance, os, task, warn)', $production, 'end'
+    'local function install(game, Instance, os, task, warn)', $configured, 'end'
     (Get-Content -LiteralPath $fixture -Raw -Encoding UTF8)
 ) -join [Environment]::NewLine
 

@@ -206,4 +206,17 @@ end
 
 Players.PlayerAdded:Connect(onArrival)
 TeleportService.TeleportInitFailed:Connect(onTeleportFailed)
-MessagingService:SubscribeAsync("ZenithSessionsV1", onMessage)
+
+-- Roblox can throttle or briefly fail SubscribeAsync. Without a subscription this server would ignore every
+-- command for its whole lifetime, so keep retrying with a capped backoff. This is the script's last statement.
+local retryDelay = 1
+while true do
+    local subscribed, failure = pcall(MessagingService.SubscribeAsync, MessagingService, "ZenithSessionsV1", onMessage)
+    if subscribed then
+        break
+    end
+    warn(string.format("Zenith Sessions bridge could not subscribe to commands (%s). Retrying in %d s.",
+        tostring(failure), retryDelay))
+    task.wait(retryDelay)
+    retryDelay = math.min(retryDelay * 2, 60)
+end
