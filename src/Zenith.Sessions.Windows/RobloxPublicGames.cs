@@ -19,6 +19,12 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
         var mapping = await ReadJsonAsync(mappingUri, root =>
         {
             if (root.ValueKind != JsonValueKind.Object) throw new InvalidPublicResponseException();
+            // Roblox answers HTTP 200 with {"universeId": null} when no game uses the place ID (seen for both a
+            // nonexistent and an invalid ID). Only that exact one-field shape means "no such game"; every other
+            // null or extra-field shape stays malformed. Duplicate names were already rejected before parsing.
+            if (root.GetPropertyCount() == 1 && root.TryGetProperty("universeId", out JsonElement universe)
+                && universe.ValueKind == JsonValueKind.Null)
+                return Unknown<PublicUniverseMapping>("No Roblox game uses this place ID. Check the number and try again.");
             if (root.TryGetProperty("placeId", out _)
                 && ReadId(root, "placeId") != requestedPlaceId) throw new InvalidPublicResponseException();
             return Success(new PublicUniverseMapping(ReadId(root, "universeId")), "Public place mapping received.");
