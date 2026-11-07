@@ -58,6 +58,8 @@ public static class RobloxDestinationParser
     public const int MaximumInputLength = 4096;
     // An AppsFlyer ro.blox.com link may carry the Roblox link it opens in one of these fields, tried in this order.
     private static readonly string[] DeferredLinkFields = ["af_dp", "deep_link_value", "af_web_dp"];
+    /// <summary>The app form of a share link, which roblox.com/share redirects to: roblox://navigation/share_links?code=…&amp;type=….</summary>
+    internal const string NativeShareLinkPrefix = "roblox://navigation/share_links?";
 
     // Roblox documents these legacy deep-link parameters at:
     // https://create.roblox.com/docs/production/promotion/deeplinks
@@ -79,7 +81,14 @@ public static class RobloxDestinationParser
         int next = rest.IndexOf('/', 1);
         string page = next < 0 ? rest[1..] : rest[1..next];
         return page.Equals("games", StringComparison.OrdinalIgnoreCase) || page.Equals("share", StringComparison.OrdinalIgnoreCase)
-            || page.Equals("users", StringComparison.OrdinalIgnoreCase) ? rest : path;
+            || page.Equals("share-links", StringComparison.OrdinalIgnoreCase) || page.Equals("users", StringComparison.OrdinalIgnoreCase) ? rest : path;
+    }
+
+    /// <summary>Whether a website page (language prefix already removed) is a share link page: /share, or /share-links where /share redirects.</summary>
+    internal static bool IsSharePage(string route)
+    {
+        string page = route.TrimEnd('/');
+        return page.Equals("/share", StringComparison.OrdinalIgnoreCase) || page.Equals("/share-links", StringComparison.OrdinalIgnoreCase);
     }
 
     private static RobloxDestinationParseResult Parse(string? input, bool unwrapDeferredLink)
@@ -101,11 +110,14 @@ public static class RobloxDestinationParser
             string fields = text[9..];
             // roblox://experiences/start?placeId=... carries the same fields as the documented roblox://placeId=... form.
             if (fields.StartsWith("experiences/start?", StringComparison.OrdinalIgnoreCase)) fields = fields[18..];
+            // The app form of a share link carries an opaque share code, read only by the share link parser.
+            bool share = text.StartsWith(NativeShareLinkPrefix, StringComparison.OrdinalIgnoreCase);
+            if (share) fields = text[NativeShareLinkPrefix.Length..];
             // The documented protocol form puts fields directly after //, not in a URL host.
             if (fields.IndexOfAny(['/', '?', '#', '@', ':']) >= 0)
                 return Invalid("Use the documented roblox://placeId=... or roblox://experiences/start?placeId=... deep-link format.");
             if (!TryQuery(fields, out var nativeQuery)) return InvalidQuery();
-            return ParseFields(nativeQuery, null, true);
+            return share ? OpaqueShareLink() : ParseFields(nativeQuery, null, true);
         }
 
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
@@ -129,7 +141,7 @@ public static class RobloxDestinationParser
         if (uri.Host == "ro.blox.com")
             return unwrapDeferredLink ? ParseDeferredLink(query) : OpaqueShareLink();
         string route = WithoutLanguagePrefix(uri.AbsolutePath);
-        if (route.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase))
+        if (IsSharePage(route))
             return OpaqueShareLink();
         if (route.TrimEnd('/').Equals("/games/start", StringComparison.OrdinalIgnoreCase))
             return ParseFields(query, null, true);
@@ -155,14 +167,25 @@ public static class RobloxDestinationParser
     // The wrapped link is decoded once (by the query reader) and parsed here; it is never fetched, and a wrapper inside it is
     // not unwrapped again. A wrapped link that is foreign, unreadable or unsupported leaves the wrapper an opaque deferred link.
     private static RobloxDestinationParseResult ParseDeferredLink(Dictionary<string, string> query)
+        => TryDeferredLink(query, out _, out var inner) ? inner : OpaqueShareLink();
+
+    /// <summary>
+    /// The one Roblox link an ro.blox.com wrapper's query carries: the first of af_dp, deep_link_value and af_web_dp whose
+    /// value (decoded once by the query reader) parses, without unwrapping again, as a link this parser reads. The share link
+    /// parser reads its code from this same link, so both parsers read the same field of a wrapper.
+    /// </summary>
+    internal static bool TryDeferredLink(Dictionary<string, string> query,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? wrapped,
+        [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out RobloxDestinationParseResult? parsed)
     {
         foreach (string field in DeferredLinkFields)
         {
-            if (!query.TryGetValue(field, out string? wrapped) || wrapped.Length == 0) continue;
-            var inner = Parse(wrapped, unwrapDeferredLink: false);
-            if (inner.Status != RobloxDestinationStatus.Invalid && inner.Kind != RobloxDestinationKind.UnresolvedUnknownLink) return inner;
+            if (!query.TryGetValue(field, out wrapped) || wrapped.Length == 0) continue;
+            parsed = Parse(wrapped, unwrapDeferredLink: false);
+            if (parsed.Status != RobloxDestinationStatus.Invalid && parsed.Kind != RobloxDestinationKind.UnresolvedUnknownLink) return true;
         }
-        return OpaqueShareLink();
+        wrapped = null; parsed = null;
+        return false;
     }
 
     private static RobloxDestinationParseResult ParseFields(Dictionary<string, string> query, long? pathPlaceId, bool isStartLink)

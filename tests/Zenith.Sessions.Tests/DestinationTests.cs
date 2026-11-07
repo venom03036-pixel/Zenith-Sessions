@@ -172,6 +172,11 @@ public sealed class DestinationTests
     [InlineData("https://www.roblox.com/de/users/456/profile?friendshipSourceType=synthetic-sensitive-value", RobloxDestinationKind.UnresolvedFollowUser)]
     [InlineData("https://www.roblox.com/fr/share?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
     [InlineData("https://web.roblox.com/share?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    // The page and app forms Roblox's own share redirect produces are share links too; their codes are discarded here.
+    [InlineData("https://www.roblox.com/share-links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://www.roblox.com/de/share-links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("roblox://navigation/share_links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2Fnavigation%2Fshare_links%3Fcode%3Dsynthetic-sensitive-value%26type%3DServer", RobloxDestinationKind.UnresolvedShareLink)]
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123%3FprivateServerLinkCode%3Dsynthetic-sensitive-value", RobloxDestinationKind.UnresolvedPrivateServer)]
     // A wrapper inside a wrapper is not unwrapped again; a wrapped foreign, unreadable or unsupported link leaves the wrapper opaque.
     [InlineData("https://ro.blox.com/Ebh5?af_dp=https%3A%2F%2Fro.blox.com%2FEbh5%3Faf_dp%3D123", RobloxDestinationKind.UnresolvedShareLink)]

@@ -142,14 +142,22 @@ name, creator line, playing + rating, accent border and check when it is the cur
   `Other`, plus `DeepLinkV2` for `share?code=…&v=v2` links (no type). The query must hold exactly `code` and either
   `type` or `v=v2`; anything else is refused. `ProtectedShareCode` holds the code in a
   pinned char array, redacts `ToString()`, is disposed after use and is never serialized, logged, put in a favorite
-  or bundle, or shown again. `ro.blox.com` deferred links stay unresolved (no code to resolve).
+  or bundle, or shown again. The short `ro.blox.com` form (no link field) stays unresolved: it has no code to resolve.
 - Forms copied from other Roblox surfaces (R-launch-5): the exact hosts `web.roblox.com` and `m.roblox.com`; one
   leading language segment (`/de/`, `/pt-br/`) before `games`, `share` or `users`; `roblox://experiences/start?placeId=…`
   (same fields as `roblox://placeId=…`); `/users/{id}` and `/users/{id}/profile` as a follow-user request (unresolved);
   a bare server (job) ID as "needs its game" (unresolved, never a name search). An `ro.blox.com` link's `af_dp`,
   `deep_link_value` or `af_web_dp` value is decoded once and parsed locally, never fetched and never unwrapped twice;
   if none is a link Zenith reads, the wrapper stays an opaque deferred link. The share parser accepts the same hosts
-  and language prefix; it still does not read share codes out of `ro.blox.com` wrappers.
+  and language prefix.
+- Share links in the forms Roblox itself produces (R-research-1): a recorded `roblox.com/share` request redirects (302)
+  to a long `ro.blox.com` link whose `af_dp` and `deep_link_value` carry `roblox://navigation/share_links?code=…&type=…`
+  and whose `af_web_dp` carries `https://www.roblox.com/share-links?code=…&type=…`, so that long form does carry the
+  code. Both parsers accept the `/share-links` page and the `roblox://navigation/share_links?` app form as share links.
+  For a wrapper, the share parser reads the code from the same field the destination parser reads (decoded once, never
+  fetched), and only when that field is itself a share link on an exact Roblox host or in the app form; a wrapper inside
+  it, a foreign host, plain HTTP or a still-encoded value is refused. The type is read in any letter case (`server` is
+  `Server`), matching how Roblox answers it.
 - The text box is cleared as soon as a share link is recognised.
 
 ### 4.2 Resolution

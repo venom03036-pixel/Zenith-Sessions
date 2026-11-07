@@ -169,15 +169,20 @@ public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, I
 }
 
 /// <summary>
-/// Pure, bounded parsing of https://www.roblox.com/share?code=…&amp;type=… links and of share?code=…&amp;v=v2 links (which
-/// carry no type). The query must hold exactly those two fields. The existing destination parser keeps discarding share
-/// codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
+/// Pure, bounded parsing of share links in the forms Roblox produces: https://www.roblox.com/share?code=…&amp;type=…, the
+/// /share-links page and the app form roblox://navigation/share_links?… that /share redirects to, and share?code=…&amp;v=v2
+/// links (which carry no type). The query must hold exactly those two fields; the type is read in any letter case. An
+/// ro.blox.com wrapper is read through the one share link it carries (see below). The existing destination parser keeps
+/// discarding share codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
 /// </summary>
 /// <remarks>
 /// One definition of a safe roblox.com link: input is first classified by <see cref="RobloxDestinationParser.Parse"/>, so its
 /// readable-input, HTTPS, exact-host, authority, userinfo, port, fragment, escape, path and query rules apply here unchanged,
-/// and so do its web hosts and one language prefix (m.roblox.com/share, roblox.com/de/share).
-/// This parser only narrows that result, by design: ro.blox.com, roblox:// fields, a code on another path (or as shareCode)
+/// and so do its web hosts and one language prefix (m.roblox.com/share, roblox.com/de/share-links).
+/// For an ro.blox.com wrapper this parser reads the same af_dp, deep_link_value or af_web_dp link the destination parser
+/// reads, decoded once and never fetched, and only when that link is itself a share link on an exact Roblox host or in the
+/// app form. A wrapper inside it is not unwrapped again, and the short ro.blox.com form (no such field) stays unresolved.
+/// This parser only narrows that result, by design: other roblox:// fields, a code on another path (or as shareCode)
 /// and any extra query field are not share links it can resolve.
 /// </remarks>
 public static class RobloxShareLinkParser
@@ -189,25 +194,39 @@ public static class RobloxShareLinkParser
     {
         link = null;
         if (input is null || RobloxDestinationParser.Parse(input).Kind != RobloxDestinationKind.UnresolvedShareLink) return false;
-        if (!Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
-            || !RobloxDestinationParser.IsWebHost(uri.Host)) return false;
-        if (!RobloxDestinationParser.WithoutLanguagePrefix(uri.AbsolutePath).TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase)) return false;
-        if (!RobloxDestinationParser.TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2
+        string text = input.Trim();
+        if (Uri.TryCreate(text, UriKind.Absolute, out var wrapper) && wrapper.Scheme == Uri.UriSchemeHttps && wrapper.Host == "ro.blox.com")
+        {
+            if (!RobloxDestinationParser.TryQuery(wrapper.Query.TrimStart('?'), out var wrapperQuery)
+                || !RobloxDestinationParser.TryDeferredLink(wrapperQuery, out string? wrapped, out var inner)
+                || inner.Kind != RobloxDestinationKind.UnresolvedShareLink) return false;
+            text = wrapped.Trim(); // Already classified as a share link; an ro.blox.com link here is refused below.
+        }
+        string fields;
+        if (text.StartsWith(RobloxDestinationParser.NativeShareLinkPrefix, StringComparison.OrdinalIgnoreCase))
+            fields = text[RobloxDestinationParser.NativeShareLinkPrefix.Length..];
+        else if (Uri.TryCreate(text, UriKind.Absolute, out var uri) && uri.Scheme == Uri.UriSchemeHttps && RobloxDestinationParser.IsWebHost(uri.Host)
+            && RobloxDestinationParser.IsSharePage(RobloxDestinationParser.WithoutLanguagePrefix(uri.AbsolutePath)))
+            fields = uri.Query.TrimStart('?');
+        else return false;
+        if (!RobloxDestinationParser.TryQuery(fields, out var query) || query.Count != 2
             || !query.TryGetValue("code", out string? code)) return false;
         if (code.Length is 0 or > MaximumCodeLength || !code.All(char.IsAsciiLetterOrDigit)) return false;
         RobloxShareLinkType kind;
-        if (query.TryGetValue("type", out string? type))
-            kind = type switch
-            {
-                "ExperienceDetails" => RobloxShareLinkType.ExperienceDetails,
-                "Server" => RobloxShareLinkType.Server,
-                "ExperienceInvite" => RobloxShareLinkType.ExperienceInvite,
-                "NotificationExperienceInvite" => RobloxShareLinkType.NotificationExperienceInvite,
-                _ => RobloxShareLinkType.Other
-            };
+        if (query.TryGetValue("type", out string? type)) kind = TypeOf(type);
         else if (query.TryGetValue("v", out string? version) && version.Equals("v2", StringComparison.OrdinalIgnoreCase)) kind = RobloxShareLinkType.DeepLinkV2;
         else return false;
         link = new RobloxShareLink(new ProtectedShareCode(code), kind);
         return true;
+    }
+
+    // Roblox reads the declared type in any letter case ("server" is answered as "Server"); each maps to its canonical kind.
+    private static RobloxShareLinkType TypeOf(string type)
+    {
+        if (type.Equals("ExperienceDetails", StringComparison.OrdinalIgnoreCase)) return RobloxShareLinkType.ExperienceDetails;
+        if (type.Equals("Server", StringComparison.OrdinalIgnoreCase)) return RobloxShareLinkType.Server;
+        if (type.Equals("ExperienceInvite", StringComparison.OrdinalIgnoreCase)) return RobloxShareLinkType.ExperienceInvite;
+        if (type.Equals("NotificationExperienceInvite", StringComparison.OrdinalIgnoreCase)) return RobloxShareLinkType.NotificationExperienceInvite;
+        return RobloxShareLinkType.Other;
     }
 }
