@@ -5,14 +5,14 @@ param(
 $ErrorActionPreference='Stop'
 $sourceRoot=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $ledgerPath=Join-Path $sourceRoot 'docs\zenith-sessions\REQUIREMENTS-LEDGER.md'
-$ledger=Get-Content -LiteralPath $ledgerPath -Raw
+$ledger=Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8
 $promptRoot=Join-Path $env:USERPROFILE 'Downloads'
-$names=@('Roblox_Launcher_Full_Prompt_With_Encrypted_Account_Vault.txt','Roblox_Saved_Accounts_Encrypted_Vault_Addendum.txt','# MASTER PROMPT — COMPLETE PRODUCT.txt')
+$names=@('Roblox_Launcher_Full_Prompt_With_Encrypted_Account_Vault.txt','Roblox_Saved_Accounts_Encrypted_Vault_Addendum.txt',"# MASTER PROMPT $([char]0x2014) COMPLETE PRODUCT.txt")
 $sources=@(foreach($name in $names) {
     $path=Join-Path $promptRoot $name
     if(-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "A required prompt is unavailable: $name. Review cannot claim full source coverage." }
     $hash=(Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash
-    [ordered]@{ Name=$name; Sha256=$hash; MatchesReviewedLedger=$ledger.Contains($hash,[StringComparison]::OrdinalIgnoreCase) }
+    [ordered]@{ Name=$name; Sha256=$hash; MatchesReviewedLedger=($ledger.IndexOf($hash,[StringComparison]::OrdinalIgnoreCase) -ge 0) }
 })
 if(@($sources | Where-Object { -not $_.MatchesReviewedLedger }).Count) {
     throw 'A prompt changed since the ledger review. Read the changed source and reconcile its requirements before continuing the cycle.'
@@ -37,6 +37,6 @@ $record=[ordered]@{
     FullProductAcceptance=$false
     EvidenceRule='This records source/scope review only. It does not execute tests, validate a feature, prove native arrival or close a requirement.'
 }
-try { $record | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $temporary -Encoding utf8; Move-Item -LiteralPath $temporary -Destination $path -Force }
+try { [IO.File]::WriteAllText($temporary,(($record | ConvertTo-Json -Depth 7)+[Environment]::NewLine),(New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath $temporary -Destination $path -Force }
 finally { if(Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 Write-Output "$Phase review: all three prompt fingerprints match; $($selected.Count) scoped requirements recorded. Feature and release acceptance are unchanged."
