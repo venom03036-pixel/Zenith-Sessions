@@ -276,7 +276,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxSessionClient? sessionClient=null,IClientExecutableTrustVerifier? executableTrust=null,IRecipientBundleStore? recipientBundleStore=null,
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
-        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null)
+        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
+        IPublicRobloxClientReleaseDirectory? clientReleases=null)
     {
         DataRoot = root; IsSample = sample; _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _monitor=monitor??new WindowsDesktopMonitor();
@@ -307,7 +308,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeRecipientBundles(recipientBundleStore);
         InitializePerformanceFeatures();
         InitializePerformanceTransfer(performanceTransferStore);
-        InitializeInstallationFeatures(installationDiscovery,executableTrust);
+        InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
         InitializeDiagnosticsFeatures();
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);

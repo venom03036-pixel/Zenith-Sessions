@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 using System.Windows.Threading;
 using System.Xml.Linq;
@@ -250,6 +251,138 @@ public sealed partial class ClientWindowIntegrationTests
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
         Assert.Equal("Check failed", vm.InstallationObserved); Assert.Empty(vm.InstallationIssues);
     });
+
+    private static readonly PublicRobloxClientRelease CurrentRelease = new("0.744.0.7441080", "version-9ac8595712b447a7", DateTimeOffset.UtcNow);
+    private static ClientInstallationSnapshot ReleaseSnapshot(string robloxFolder) => new(DateTimeOffset.UtcNow, ClientInstallationSnapshotStatus.Complete,
+        [new(ClientInstallationProduct.Roblox, "C:\\Synthetic\\Roblox\\Versions\\" + robloxFolder + "\\RobloxPlayerBeta.exe", "Roblox", "0.744.0.35509", ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Roblox)]),
+         new(ClientInstallationProduct.Froststrap, "C:\\Synthetic\\Froststrap.exe", "Synthetic Froststrap", "1.0.0", ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.UninstallRegistry, ClientInstallationProduct.Froststrap)])],
+        []);
+
+    [Fact]
+    public Task RefreshComparesInstalledPlayersWithRobloxsCurrentReleaseAndSaysWhenAnUpdateIsPending() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-117ad38284844374") };
+        var releases = new ReleaseProbe { Result = new(PublicDirectoryState.Success, CurrentRelease, "Public release.") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery, clientReleases: releases);
+        await vm.InitializeAsync(); Assert.Equal(0, releases.Calls);
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+
+        // One request per explicit refresh, under the refresh's own cancellation.
+        Assert.Equal(1, releases.Calls); Assert.True(releases.Token.CanBeCanceled);
+        Assert.Equal(new[] { "Not current", "Not compared" }, vm.InstallationCandidates.Select(row => row.ReleaseStatus));
+        Assert.StartsWith("Update pending:", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.Contains("0.744.0.7441080 (version-9ac8595712b447a7)", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.Contains("Zenith never downloads or installs updates", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+
+        discovery.Override = ReleaseSnapshot("version-9ac8595712b447a7");
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, releases.Calls);
+        Assert.Equal(new[] { "Current release", "Not compared" }, vm.InstallationCandidates.Select(row => row.ReleaseStatus));
+        Assert.StartsWith("Up to date:", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+
+        // Only bootstrapper rows: the release is named but nothing could be compared with it.
+        discovery.Override = ReleaseSnapshot("version-9ac8595712b447a7") with { Candidates = [ReleaseSnapshot("x").Candidates[1]] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Roblox's current release is 0.744.0.7441080 (version-9ac8595712b447a7). No installed Roblox player could be compared with it.", vm.InstallationReleaseStatus);
+
+        // Panic clears the comparison with the list.
+        vm.Panic.Execute(null);
+        Assert.Empty(vm.InstallationCandidates); Assert.Equal("", vm.InstallationReleaseStatus);
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
+    public Task AnUnavailableOrInvalidReleaseStillListsTheInstallations() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-9ac8595712b447a7") };
+        var releases = new ReleaseProbe { Result = new(PublicDirectoryState.Failure, null, "The public Roblox service could not be reached.") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery, clientReleases: releases);
+        await vm.InitializeAsync();
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count); Assert.NotEqual("Check failed", vm.InstallationObserved);
+        Assert.All(vm.InstallationCandidates, row => Assert.Equal("Not checked", row.ReleaseStatus));
+        Assert.Equal("Could not check Roblox's current release. The public Roblox service could not be reached.", vm.InstallationReleaseStatus);
+
+        // A success carrying a release that fails validation is not a release.
+        releases.Result = new(PublicDirectoryState.Success, CurrentRelease with { ClientVersionUpload = "version-..\\x" }, "Public release.");
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count); Assert.All(vm.InstallationCandidates, row => Assert.Equal("Not checked", row.ReleaseStatus));
+        Assert.StartsWith("Could not check Roblox's current release.", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("..", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+
+        // A source that throws is recorded by type and never fails the local list.
+        releases.Result = null; releases.Throw = new HttpRequestException("synthetic secret text");
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count); Assert.NotEqual("Check failed", vm.InstallationObserved);
+        Assert.StartsWith("Could not check Roblox's current release.", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("synthetic secret", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain(vm.Events, text => text.Contains("synthetic secret", StringComparison.Ordinal));
+
+        // An inconsistent local inventory fails before any network request is made.
+        int asked = releases.Calls; releases.Throw = null; releases.Result = new(PublicDirectoryState.Success, CurrentRelease, "Public release.");
+        discovery.Override = null; discovery.Malformed = true;
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Check failed", vm.InstallationObserved); Assert.Equal(asked, releases.Calls); Assert.Equal("", vm.InstallationReleaseStatus);
+    });
+
+    [Fact]
+    public Task LockDuringTheReleaseRequestCancelsItAndPublishesNothing() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-9ac8595712b447a7") };
+        var releases = new ReleaseProbe { Gate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery, clientReleases: releases);
+        await vm.InitializeAsync(); vm.RefreshInstallations.Execute(null);
+        try
+        {
+            for (int wait = 0; wait < 100 && releases.Calls == 0; wait++) await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            Assert.Equal(1, releases.Calls); Assert.True(vm.IsInstallationDiscoveryBusy);
+            vm.LockDashboard();
+            Assert.True(releases.Token.IsCancellationRequested);
+            vm.Unlock.Execute(null);
+        }
+        finally { releases.Gate.TrySetResult(new(PublicDirectoryState.Success, CurrentRelease, "Public release.")); }
+        await vm.RefreshInstallations.Execution;
+        Assert.Empty(vm.InstallationCandidates); Assert.Equal("", vm.InstallationReleaseStatus); Assert.Equal("Not checked", vm.InstallationObserved);
+    });
+
+    [Fact]
+    public Task AnInjectedInstallationDiscoveryWithoutAReleaseSourceAsksNoNetworkService() => OnUi(async () =>
+    {
+        // Tests inject discovery; the app's own public directory must not answer for them, or a refresh would reach Roblox.
+        var discovery = new InstallationProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count);
+        Assert.All(vm.InstallationCandidates, row => Assert.Equal("Not checked", row.ReleaseStatus));
+        Assert.Equal("", vm.InstallationReleaseStatus);
+    });
+
+    [Fact]
+    public void InstallationListShowsTheReleaseComparisonAndItsSummary()
+    {
+        using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
+        var document = XDocument.Load(source!); XNamespace ui = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var list = Assert.Single(document.Descendants(ui + "ListView").Where(item => (string?)item.Attribute("AutomationProperties.Name") == "Unverified installation candidates"));
+        var bindings = list.Descendants(ui + "GridViewColumn").Select(column => (string?)column.Attribute("DisplayMemberBinding")).ToArray();
+        int version = Array.IndexOf(bindings, "{Binding Version}");
+        Assert.True(version >= 0 && version + 1 < bindings.Length && bindings[version + 1] == "{Binding ReleaseStatus}", "The installation list has no release column after Version.");
+        Assert.Single(document.Descendants(ui + "TextBlock").Where(item => (string?)item.Attribute("Text") == "{Binding InstallationReleaseStatus}"));
+        string xaml = document.ToString();
+        Assert.Contains("public version service", xaml, StringComparison.Ordinal);
+    }
+
+    private sealed class ReleaseProbe : IPublicRobloxClientReleaseDirectory
+    {
+        public int Calls; public CancellationToken Token; public Exception? Throw;
+        public PublicDirectoryResult<PublicRobloxClientRelease>? Result;
+        public TaskCompletionSource<PublicDirectoryResult<PublicRobloxClientRelease>>? Gate;
+        public Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        {
+            Calls++; Token = ct;
+            if (Throw is not null) throw Throw;
+            return Gate is not null ? Gate.Task : Task.FromResult(Result!);
+        }
+    }
 
     private sealed class InstallationProbe : IClientInstallationDiscovery
     {
