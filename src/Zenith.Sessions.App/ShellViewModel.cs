@@ -349,8 +349,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeSettingsSearch();
     }
 
+    // Once shutdown has begun the workspace never opens: the window's Loaded event can still arrive late, for example
+    // while a startup-failure message is open, and an initialization started then would run outside DisposeAsync's wait.
     public Task InitializeAsync()
-    { if(!_initializationStarted) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
+    { if(!_initializationStarted && !_shuttingDown) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
     private async Task InitializeCoreAsync()
     {
         try

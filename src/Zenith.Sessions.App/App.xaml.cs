@@ -32,22 +32,37 @@ public partial class App : Application
         if (Options.SelfCheck) { ShutdownMode = ShutdownMode.OnExplicitShutdown; return; }
         // Attached before the workspace exists, so startup, running and exit faults are all recorded by type only.
         var guard=_guard=UnhandledExceptionGuard.Attach(Dispatcher,Options.DataRoot,()=>_shell);
-        try
+        await OpenWorkspaceAsync(()=>
         {
             ThemeManager.Apply(Resources, ThemeCatalog.DefaultId);
             _shell = new ShellViewModel(Options.DataRoot, Options.SampleProfiles, Dispatcher,enableAutomaticPublicImages:!Options.SampleProfiles);
             MainWindow = new MainWindow(_shell); MainWindow.Show();
             Coordinator?.Listen(ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
-        }
+        },()=>_shell,guard.Record,text=>MessageBox.Show(text,"Zenith Sessions"),Shutdown);
+    }
+    /// <summary>
+    /// The visible startup and its failure path, apart from the Application object (one per process) so tests can run both.
+    /// <paramref name="open"/> builds the workspace and shows its window; <paramref name="workspace"/> returns whatever part of
+    /// it exists. A fault is recorded by type only (Rule 10), shown with <paramref name="reportFailure"/> and ends the app with code 2.
+    /// </summary>
+    internal static async Task OpenWorkspaceAsync(Action open,Func<IAsyncDisposable?> workspace,Action<Type> record,Action<string> reportFailure,Action<int> shutdown)
+    {
+        try { open(); }
         catch(Exception ex)
         {
-            guard.Record(ex.GetType());
-            MessageBox.Show($"Zenith Sessions could not open its local workspace ({ex.GetType().Name}). Existing files were preserved. Check the app files and data-folder access, then retry.","Zenith Sessions");
-            if(_shell is not null)
-                try { await _shell.DisposeAsync(); }
-                // Shutdown(2) below must still run; the teardown fault is kept by type next to the startup fault.
-                catch(Exception disposeError) { guard.Record(disposeError.GetType()); }
-            Shutdown(2);
+            record(ex.GetType());
+            // Stop before telling the user: the message box's modal loop runs the shown window's Loaded event, which would
+            // otherwise open the workspace (credential cleanup, queue recovery, monitoring) behind a message that says it did not.
+            // The shell cancels all of its work synchronously when its disposal starts; the rest is awaited after the message.
+            Task stopping=workspace() is {} started ? StopAsync(started) : Task.CompletedTask;
+            reportFailure(StartupFailureMessage(ex.GetType()));
+            try { await stopping; }
+            // Shutdown(2) below must still run; the teardown fault is kept by type next to the startup fault.
+            catch(Exception disposeError) { record(disposeError.GetType()); }
+            shutdown(2);
         }
+        static async Task StopAsync(IAsyncDisposable started)=>await started.DisposeAsync();
     }
+    internal static string StartupFailureMessage(Type error)=>
+        $"Zenith Sessions could not open its local workspace ({error.Name}). Existing files were preserved. Check the app files and data-folder access, then retry.";
 }
