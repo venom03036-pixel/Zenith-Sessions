@@ -119,6 +119,46 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task WriterRecoversAfterTheDiagnosticsFolderIsDeleted()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.Record(ManagerEventKind.Started);
+        await UntilAsync(()=>ReadShared(log).Contains("Started"));
+        // Same effect as the user deleting the folder after "Open logs"; the writer holds no handle between events.
+        await UntilAsync(()=>TryDeleteFolder(folder));
+        diagnostics.Record(ManagerEventKind.ProfileSaved);diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(0,diagnostics.DroppedEvents);
+        Assert.True(File.Exists(log));
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("ProfileSaved",text);Assert.Contains("SettingsSaved",text);
+    }
+
+    [Fact]
+    public async Task WriterRecoversAfterATransientSharingViolation()
+    {
+        string log=Path.Combine(Root,"diagnostics","manager.jsonl");
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.Record(ManagerEventKind.Started);
+        await UntilAsync(()=>ReadShared(log).Contains("Started"));
+        FileStream? blocker=null;
+        // Another program (scanner, indexer, viewer) holds the log and denies writers.
+        await UntilAsync(()=>(blocker=TryOpenDenyingWriters(log)) is not null);
+        using(blocker)
+        {
+            diagnostics.Record(ManagerEventKind.ProfileSaved);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+        }
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("SettingsSaved",text);Assert.DoesNotContain("ProfileSaved",text);
+        Assert.Contains("\"Kind\":\"DroppedEvents\",\"ErrorType\":null,\"Count\":1",text);
+    }
+
+    [Fact]
     public async Task CanceledWriterShutdownIsSharedIdempotentAndPostDisposalRecordsAreIgnored()
     {
         var entered=Signal();
@@ -196,6 +236,35 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         }
     }
     private static TaskCompletionSource<bool> Signal()=>new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        // Bounded wait for the background writer; the disk has no completion event to observe.
+        var deadline=DateTime.UtcNow.AddSeconds(10);
+        while(!condition())
+        {
+            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
+            await Task.Delay(10);
+        }
+    }
+    private static string ReadShared(string path)
+    {
+        try
+        {
+            using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var reader=new StreamReader(stream);return reader.ReadToEnd();
+        }
+        catch(IOException) {return "";}
+    }
+    private static bool TryDeleteFolder(string folder)
+    {
+        try {Directory.Delete(folder,recursive:true);return true;}
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException) {return false;}
+    }
+    private static FileStream? TryOpenDenyingWriters(string path)
+    {
+        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
+        catch(IOException) {return null;}
+    }
     public void Dispose()
     {
         string full=Path.GetFullPath(Root);

@@ -68,6 +68,9 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             return new(_sequence,_sequence,_infoCount,_warningCount,_errorCount,_dropped,_failure,Array.AsReadOnly(entries));
         }
     }
+    private const string WriteFailedText="Diagnostics could not be written. Check the data-folder permissions.";
+    // One writer for the whole session: a disk error costs only the entry being written, never the writer.
+    // A deleted folder, a log held open by another program or a full disk recovers on the next event.
     private async Task WriteAsync(CancellationToken ct)
     {
         ManagerDiagnosticEvent? inFlight=null;
@@ -75,20 +78,17 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         {
             if(_beforeWriter is not null) await _beforeWriter(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(_folder);
             await foreach(var entry in _events.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
                 inFlight=entry;
-                await WriteEntryAsync(new(entry.Utc,entry.Kind.ToString(),entry.ErrorType,entry.Count),ct).ConfigureAwait(false);
+                await TryWriteEntryAsync(new(entry.Utc,entry.Kind.ToString(),entry.ErrorType,entry.Count),countsAsDropped:true,ct).ConfigureAwait(false);
                 inFlight=null;
             }
             long dropped=DroppedEvents;
-            if(dropped>0) await WriteEntryAsync(new(DateTimeOffset.UtcNow,ManagerEventKind.DroppedEvents.ToString(),Count:dropped),ct).ConfigureAwait(false);
+            if(dropped>0) await TryWriteEntryAsync(new(DateTimeOffset.UtcNow,ManagerEventKind.DroppedEvents.ToString(),Count:dropped),countsAsDropped:false,ct).ConfigureAwait(false);
         }
         catch(OperationCanceledException) when(ct.IsCancellationRequested)
         {lock(_gate) _failure="Diagnostics shutdown timed out; some events were not confirmed written.";}
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
-        {lock(_gate) _failure="Diagnostics could not be written. Check the data-folder permissions.";}
         finally
         {
             lock(_gate)
@@ -99,10 +99,29 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             }
         }
     }
+    // An I/O failure is counted here exactly once (the caller then clears its in-flight entry); cancellation propagates.
+    private async Task TryWriteEntryAsync(Entry entry,bool countsAsDropped,CancellationToken ct)
+    {
+        try
+        {
+            await WriteEntryAsync(entry,ct).ConfigureAwait(false);
+            lock(_gate) if(ReferenceEquals(_failure,WriteFailedText)) _failure=null;
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            lock(_gate)
+            {
+                _failure=WriteFailedText;
+                if(countsAsDropped) _dropped++;
+            }
+        }
+    }
     private async Task WriteEntryAsync(Entry entry,CancellationToken ct)
     {
         // Explicitly preserve the established four-property disk format; journal UI fields stay in memory.
         byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(entry);
+        // Recreated per entry so a folder deleted while the app runs (e.g. after "Open logs") is restored; no-op when present.
+        Directory.CreateDirectory(_folder);
         string current=Path.Combine(_folder,"manager.jsonl");
         if(File.Exists(current) && new FileInfo(current).Length+bytes.Length+1>_fileLimit)
         {
