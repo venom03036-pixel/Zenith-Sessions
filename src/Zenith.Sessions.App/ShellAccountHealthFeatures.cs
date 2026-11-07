@@ -7,6 +7,12 @@ public sealed partial class AccountRow
 {
     /// <summary>The cached protected-record summary says this saved sign-in may still be reused.</summary>
     public bool HasLinkedSavedSignIn => _authorizationMetadata?.Health == AuthorizationHealth.Linked;
+    /// <summary>
+    /// The row's button opens Roblox sign-in instead of launching. Decided from the cached protected-record summary
+    /// (no saved sign-in, not Linked, or expired), never from the display wording, so any status text, including
+    /// "Security check required", cannot turn a sign-in into a launch.
+    /// </summary>
+    public bool NeedsSignIn => !HasLinkedSavedSignIn || _signInExpired;
 }
 
 /// <summary>

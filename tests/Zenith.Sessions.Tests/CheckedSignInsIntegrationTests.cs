@@ -41,6 +41,18 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("2 verified", shell.Notice); Assert.Contains("1 needs sign-in", shell.Notice);
         Assert.Contains("1 needs a Roblox security check", shell.Notice); Assert.Contains("1 checked account has no saved sign-in", shell.Notice);
         Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+
+        // The challenged row's button follows its saved sign-in, not its wording: it offers sign-in, and
+        // choosing it opens Roblox sign-in instead of queuing a launch that would fail closed.
+        var challenged = HealthRow(shell, 3);
+        Assert.Equal("Sign in", challenged.PowerLabel);
+        Assert.DoesNotContain("Launch this account's preferred game", challenged.PowerExplanation);
+        client.Replies.Remove(HealthCookie(3)); signIn.Next = HealthCookie(3);
+        shell.AccountPower.Execute(challenged); await shell.AccountPower.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(new[] { ids[3] }, signIn.Snapshot());
+        Assert.DoesNotContain(shell.Launches, launch => launch.Operation.Intent.ProfileId == ids[3]);
+        Assert.Equal("Saved link", HealthRow(shell, 3).Identity); Assert.Equal("Launch", HealthRow(shell, 3).PowerLabel);
+        Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
     [Theory]
@@ -153,7 +165,7 @@ public sealed partial class ClientWindowIntegrationTests
                 shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution;
                 Assert.Equal(1000 + i, HealthRow(shell, i).KnownUserId);
             }
-            client.Clear(); return shell;
+            client.Clear(); signIn.Clear(); return shell;
         }
         catch { await shell.DisposeAsync(); throw; }
     }
@@ -163,8 +175,11 @@ public sealed partial class ClientWindowIntegrationTests
     private sealed class HealthSignIn : IRobloxSessionSignIn
     {
         public string Next = "";
+        private readonly List<Guid> _calls = [];
+        public void Clear() { lock (_calls) _calls.Clear(); }
+        public Guid[] Snapshot() { lock (_calls) return _calls.ToArray(); }
         public Task<RobloxSessionCredential> SignInAsync(Guid id, CancellationToken ct)
-        { ct.ThrowIfCancellationRequested(); return Task.FromResult(new RobloxSessionCredential(Next)); }
+        { ct.ThrowIfCancellationRequested(); lock (_calls) _calls.Add(id); return Task.FromResult(new RobloxSessionCredential(Next)); }
     }
     private sealed class HealthClient : IRobloxSessionClient
     {

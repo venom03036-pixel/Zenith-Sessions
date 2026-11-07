@@ -33,19 +33,27 @@ public sealed partial class AccountRow(AccountProfile profile) : Observable
     public string Notes=>Profile.Notes.Length==0?"No notes added.":Profile.Notes;
     private string _identity="Not linked", _linkedAccount="No official account linked";
     private DateTimeOffset? _expiresUtc;
+    private bool _signInExpired; // The cached summary's expiry has passed (at load or on the clock).
     public string Identity => _identity;
     public string LinkedAccount => _linkedAccount;
-    public void SetAuthorization(string state,string account,DateTimeOffset? expiresUtc=null) { _identity=state; _linkedAccount=account; _expiresUtc=expiresUtc; Raise(nameof(Identity)); Raise(nameof(LinkedAccount)); }
+    /// <summary>Sets the status wording only. The row's button still follows the cached summary (<see cref="NeedsSignIn"/>).</summary>
+    public void SetAuthorization(string state,string account,DateTimeOffset? expiresUtc=null)
+    { _identity=state; _linkedAccount=account; _expiresUtc=expiresUtc; Raise(nameof(Identity)); Raise(nameof(LinkedAccount)); Raise(nameof(PowerLabel)); Raise(nameof(PowerExplanation)); }
     public void SetCachedAuthorization(AuthorizationMetadata metadata)
     {
         if(_publicData is not null && _authorizationMetadata?.VerifiedUserId!=metadata.VerifiedUserId) ClearPublicPresentation();
-        _authorizationMetadata=metadata;
-        string state=metadata.Health!=AuthorizationHealth.Linked?"Sign in required":metadata.ExpiresUtc<=DateTimeOffset.UtcNow?"Expired link":"Saved link";
+        _authorizationMetadata=metadata; _signInExpired=metadata.ExpiresUtc<=DateTimeOffset.UtcNow;
+        string state=metadata.Health!=AuthorizationHealth.Linked?"Sign in required":_signInExpired?"Expired link":"Saved link";
         SetAuthorization(state,$"Last-known linked ID {metadata.VerifiedUserId}. Authorization is checked before use.",metadata.ExpiresUtc);
-        Raise(nameof(Label));Raise(nameof(Initial));Raise(nameof(Username));Raise(nameof(KnownUserId));Raise(nameof(AuthorizationGeneration));Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation));
+        Raise(nameof(Label));Raise(nameof(Initial));Raise(nameof(Username));Raise(nameof(KnownUserId));Raise(nameof(AuthorizationGeneration));
     }
     public void UpdateAuthorizationClock(DateTimeOffset now)
-    { if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity));Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); } }
+    {
+        bool changed=false;
+        if(_authorizationMetadata is { } metadata && !_signInExpired && now>=metadata.ExpiresUtc) { _signInExpired=true; changed=true; }
+        if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity)); changed=true; }
+        if(changed) { Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); }
+    }
     public string Destination => Profile.PreferredPlaceId switch
     {
         6564161046 => "Coloseum sword-fight", 110829983956014 => "Anime Card Clash", 2512643572 => "Bubble Gum Simulator",

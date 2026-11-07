@@ -19,7 +19,7 @@ public sealed partial class AccountRow
         LaunchState.Queued=>"Cancel",LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing=>"Cancel",
         LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.Arrived or LaunchState.ClientStartedUnverified=>"Review",
         LaunchState.Blocked when _launchProblem==LaunchProblem.InsufficientCapacity=>"Cancel",
-        LaunchState.Blocked=>"Details",_=>SignInStatusBusy?"Refresh":KnownUserId is null || Identity is "Sign in required" or "Expired" or "Expired link"?"Sign in":"Launch"
+        LaunchState.Blocked=>"Details",_=>SignInStatusBusy?"Refresh":NeedsSignIn?"Sign in":"Launch"
     };
     public string LaunchStatus=>_launchState switch
     {
@@ -30,7 +30,8 @@ public sealed partial class AccountRow
     public string PowerExplanation=>_launchState is LaunchState.Queued or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing?
         "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):SignInStatusBusy?
         "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
-        "Connect this saved profile through Roblox's sign-in page. Games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
+        "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
+        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
     public void SetPublicPresentation(PublicAccountData value)
     {
         if(value.UserId!=KnownUserId) return;
@@ -146,9 +147,9 @@ public sealed partial class ShellViewModel
                     :"Saved sign-in status reloaded.";
                 return;
             }
-            if(row.KnownUserId is null || row.Identity is "Sign in required" or "Expired" or "Expired link") {await AuthorizeSelectedAsync(false);return;}
+            if(row.NeedsSignIn || row.KnownUserId is not { } userId) {await AuthorizeSelectedAsync(false);return;}
             if(!QueueReady) {Notice="The launch queue is unavailable. Resolve its storage error before requesting a client.";return;}
-            var binding=new LaunchAccountBinding(row.KnownUserId.Value,row.AuthorizationGeneration??0);
+            var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
             var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
             Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
         },Fail);

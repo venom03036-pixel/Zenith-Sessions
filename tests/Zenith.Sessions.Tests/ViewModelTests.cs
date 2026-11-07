@@ -201,6 +201,45 @@ public sealed class ViewModelTests : IDisposable
         row.SetAuthorization("Linked","Verified identity",now.AddSeconds(1)); row.UpdateAuthorizationClock(now);
         Assert.Equal("Linked",row.Identity); row.UpdateAuthorizationClock(now.AddSeconds(2)); Assert.Equal("Expired",row.Identity);
     }
+    // The row button decides between sign-in and launch from the cached saved sign-in, never from display wording.
+    [Theory]
+    [InlineData(AuthorizationHealth.Linked,5,"Launch")]
+    [InlineData(AuthorizationHealth.Linked,-5,"Sign in")]
+    [InlineData(AuthorizationHealth.SignInRequired,5,"Sign in")]
+    [InlineData(AuthorizationHealth.RefreshPending,5,"Sign in")]
+    public void AccountPowerFollowsTheSavedSignInHealthAndExpiry(AuthorizationHealth health,int expiresInMinutes,string expected)
+    {
+        var profile=AccountProfile.Create("A");
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            health,DateTimeOffset.UtcNow.AddMinutes(expiresInMinutes),DateTimeOffset.UtcNow));
+        Assert.Equal(expected,row.PowerLabel); Assert.Equal(expected=="Sign in",row.NeedsSignIn);
+        Assert.Equal(expected=="Launch",row.PowerExplanation.Contains("Launch this account's preferred game",StringComparison.Ordinal));
+    }
+    [Fact]
+    public void ASecurityCheckRowStillOffersSignInAndItsButtonIsRefreshedWhenTheWordingChanges()
+    {
+        var profile=AccountProfile.Create("A");
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            AuthorizationHealth.SignInRequired,DateTimeOffset.UtcNow.AddMinutes(5),DateTimeOffset.UtcNow));
+        var raised=new List<string?>(); row.PropertyChanged+=(_,e)=>raised.Add(e.PropertyName);
+        row.SetAuthorization("Security check required","Roblox asked for a human security check.");
+        Assert.Equal("Sign in",row.PowerLabel); Assert.True(row.NeedsSignIn);
+        Assert.DoesNotContain("Launch this account's preferred game",row.PowerExplanation);
+        Assert.Contains(nameof(AccountRow.PowerLabel),raised); Assert.Contains(nameof(AccountRow.PowerExplanation),raised);
+    }
+    [Fact]
+    public void ALinkedRowOffersSignInOnceItsSavedSignInExpiresOnTheClock()
+    {
+        var profile=AccountProfile.Create("A"); var now=DateTimeOffset.UtcNow;
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            AuthorizationHealth.Linked,now.AddMinutes(1),now));
+        Assert.Equal("Launch",row.PowerLabel);
+        row.UpdateAuthorizationClock(now.AddMinutes(2));
+        Assert.Equal("Expired",row.Identity); Assert.Equal("Sign in",row.PowerLabel); Assert.True(row.NeedsSignIn);
+    }
     [Fact]
     public void AccountRowUsesLastLinkedIdentityInsteadOfAPossiblyIncorrectEnteredUsername()
     {
