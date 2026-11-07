@@ -629,6 +629,7 @@ public class SettingsViewModelTests
     {
         var vault = new InMemorySecretVault();
         var vm = CreateVm(vault, new AIVisionRouter(vault));
+        string originalRecord = vm.RecordHotkey;
         vm.BeginHotkeyCapture("panic");
         vm.PanicHotkeyDisplay.Should().Be("Press a key…");
         vm.CompleteHotkeyCapture("ESC").Should().BeTrue();
@@ -638,7 +639,7 @@ public class SettingsViewModelTests
         vm.CompleteHotkeyCapture("Shift+9").Should().BeTrue();
         vm.BeginHotkeyCapture("record");
         vm.CompleteHotkeyCapture("Shift+9").Should().BeTrue();
-        vm.RecordHotkey.Should().Be("F2");
+        vm.RecordHotkey.Should().Be(originalRecord, "Record must keep its own bind when the key belongs to Panic Stop");
         vm.PanicHotkey.Should().Be("Shift+9");
     }
 
@@ -648,15 +649,19 @@ public class SettingsViewModelTests
         var vault = new InMemorySecretVault();
         var router = new AIVisionRouter(vault);
         var vm = CreateVm(vault, router);
+        // F8 is the Stop default (CAP-01-04), so use a key no default bind owns.
+        new[] { vm.RecordHotkey, vm.StopHotkey, vm.PlayHotkey, vm.PauseHotkey, vm.PanicHotkey,
+                vm.MiniToolbarClickThroughHotkey, vm.AutoClickerHotkey }
+            .Should().NotContain("F7", "the captured key must be free under the default binds");
 
         vm.BeginHotkeyCapture("record");
         vm.HotkeyCaptureTarget.Should().Be("record");
         vm.RecordHotkeyDisplay.Should().Be("Press a key…");
 
-        vm.CompleteHotkeyCapture("F8").Should().BeTrue();
-        vm.RecordHotkey.Should().Be("F8");
+        vm.CompleteHotkeyCapture("F7").Should().BeTrue();
+        vm.RecordHotkey.Should().Be("F7");
         vm.HotkeyCaptureTarget.Should().BeEmpty();
-        vm.RecordHotkeyDisplay.Should().Be("F8");
+        vm.RecordHotkeyDisplay.Should().Be("F7");
     }
 
     [Fact]
@@ -675,15 +680,34 @@ public class SettingsViewModelTests
     [Fact]
     public void TransportHotkey_EmptyValueFallsBackToDefault()
     {
+        // Transport controls are always bound (defaults F6/F8/F4/F5). An empty saved value is
+        // repaired to the default on load, and clearing a bind at runtime is refused.
+        var paths = IsolatedPaths();
+        Directory.CreateDirectory(paths.ConfigDirectory);
+        File.WriteAllText(Path.Combine(paths.ConfigDirectory, "settings.json"),
+            """{"recordHotkey":"   ","stopHotkey":"","playHotkey":"F4","pauseHotkey":"F5"}""");
         var vault = new InMemorySecretVault();
-        var router = new AIVisionRouter(vault);
-        var vm = CreateVm(vault, router);
 
+        var vm = new SettingsViewModel(vault, new AIVisionRouter(vault), paths: paths);
+        vm.RecordHotkey.Should().Be("F6");
+        vm.StopHotkey.Should().Be("F8");
+        vm.RecordHotkeyDisplay.Should().Be("F6");
+        var reloaded = new SettingsViewModel(vault, new AIVisionRouter(vault), paths: paths);
+        new[] { reloaded.RecordHotkey, reloaded.StopHotkey }.Should().Equal("F6", "F8");
+
+        var changed = new List<string>();
+        vm.RecordHotkeyChanged += changed.Add;
+        vm.StopHotkeyChanged += changed.Add;
+        string savedBefore = File.ReadAllText(Path.Combine(paths.ConfigDirectory, "settings.json"));
         vm.RecordHotkey = "   ";
-        vm.RecordHotkey.Should().BeEmpty();
-        vm.RecordHotkeyDisplay.Should().Be("—");
         vm.StopHotkey = "";
-        vm.StopHotkey.Should().BeEmpty();
+
+        vm.RecordHotkey.Should().Be("F6");
+        vm.RecordHotkeyDisplay.Should().Be("F6");
+        vm.StopHotkey.Should().Be("F8");
+        vm.PersistenceStatus.Should().Be("Choose a valid shortcut. The previous shortcut was kept.");
+        changed.Should().BeEmpty();
+        File.ReadAllText(Path.Combine(paths.ConfigDirectory, "settings.json")).Should().Be(savedBefore);
     }
 
     [Fact]
@@ -732,10 +756,17 @@ public class SettingsViewModelTests
             (string?)element.Attribute("IsChecked") == "{Binding MiniModeWhileRecording}");
 
         var shortcutButtons = categories[4].Descendants(wpf + "Button").ToArray();
-        shortcutButtons.Select(button => (string?)button.Attribute("CommandParameter"))
+        var captureButtons = shortcutButtons.Where(button =>
+            (string?)button.Attribute("Command") == "{Binding BeginHotkeyCaptureCommand}").ToArray();
+        captureButtons.Select(button => (string?)button.Attribute("CommandParameter"))
             .Should().Equal("record", "stop", "play", "pause", "panic", "mini-click-through");
-        shortcutButtons.Should().OnlyContain(button =>
-            (string?)button.Attribute("Command") == "{Binding BeginHotkeyCaptureCommand}");
+        // The only other Shortcuts button is the explicit transport reset; its label names the real defaults.
+        var vault = new InMemorySecretVault();
+        var defaults = CreateVm(vault, new AIVisionRouter(vault));
+        string defaultLabel = $"{defaults.RecordHotkey} / {defaults.StopHotkey} / {defaults.PlayHotkey} / {defaults.PauseHotkey}";
+        shortcutButtons.Except(captureButtons).Should().ContainSingle().Which.Should().Match<XElement>(button =>
+            (string?)button.Attribute("Command") == "{Binding ResetTransportDefaultsCommand}"
+            && (string?)button.Attribute("Content") == "Reset transport shortcuts to " + defaultLabel);
         categories[5].Descendants(wpf + "PasswordBox").Should().ContainSingle();
 
         string mainXamlPath = Path.Combine(repoRoot, "src", "MacroSuite.App", "MainWindow.xaml");
