@@ -192,7 +192,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public ObservableCollection<AccountRow> Accounts { get; } = [];
     public ObservableCollection<SessionRow> Sessions { get; } = [];
     private SessionRow? _selectedSession;
-    public SessionRow? SelectedSession { get => _selectedSession; set { if (Set(ref _selectedSession,value)) { Raise(nameof(HasSelectedSession)); Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates));RefreshTelemetryPresentation(); } } }
+    public SessionRow? SelectedSession { get => _selectedSession; set { if (Set(ref _selectedSession,value)) { Raise(nameof(HasSelectedSession)); Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates));FollowSelectedSessionInHistory(value);RefreshTelemetryPresentation(); } } }
     public bool HasSelectedSession => SelectedSession is not null;
     public ObservableCollection<LaunchRow> Launches { get; }=[];
     public IReadOnlyList<GroupFilter> Groups { get; private set; } = [GroupFilter.All];
@@ -682,7 +682,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
                 ? log : SessionLogView.Unknown);
         if (IsJoinGame) RefreshRecentlyPlayed();
-        if (SelectedSession is not null && !Sessions.Contains(SelectedSession)) SelectedSession = null;
+        // Releases a departed row; in History its retained series stays viewable as an ended, last-known choice.
+        PresentHistoryChoices();
         if(clientRowsChanged) NotifyClientSelection();
         RefreshTelemetryPresentation();
         _presentationFaulted=false;
