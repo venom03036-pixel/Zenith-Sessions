@@ -255,7 +255,10 @@ internal sealed class TargetedMacroPlayer(TargetedInputRun input) : IInputPlayer
             if (state.State == TargetedInputRunState.Faulted)
             {
                 lock (_sync) _rejected = true;
-                throw new TargetedMacroHoldCleanupFailure();
+                // Only a fault that still owns submitted holds needs explicit recovery. A fault whose
+                // releases all went out (for example after the window moved) is an input rejection.
+                if (TargetedMacroRun.HoldsNeedRecovery(state))
+                    throw new TargetedMacroHoldCleanupFailure();
             }
         }
     }

@@ -351,6 +351,62 @@ public sealed partial class TargetedMacroExecutionTests
         }
     }
 
+    // The first ordinary check passes; every later one sees the window moved or resized.
+    // Cleanup checks ignore geometry, as the transport contract requires.
+    private static Func<TargetedInputTarget, bool, TargetedInputValidation> GeometryChangesAfterFirstInput()
+    {
+        int ordinary = 0;
+        return (_, cleanup) => cleanup || Interlocked.Increment(ref ordinary) == 1
+            ? TargetedInputValidation.Current
+            : TargetedInputValidation.GeometryChanged;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task TargetChangeFaultQuarantinesTheLeaseOnlyWhenItsHoldReleaseFails(bool rejectCleanup)
+    {
+        var f = new Fixture();
+        f.Transport.Validation = GeometryChangesAfterFirstInput();
+        f.Transport.RejectCleanup = rejectCleanup;
+        var run = Start(f, Plan(Key(65, "Down"), new DelayStep(TimeSpan.FromMilliseconds(20)), Key(65, "Up")));
+        try
+        {
+            var result = await run.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            if (rejectCleanup)
+            {
+                // The press may still be held, so the lease stays quarantined until explicit retry.
+                Assert.Equal(TargetedMacroResultStatus.CleanupFailed, result.Status);
+                Assert.Equal(TargetedInputRunState.Faulted, result.Snapshot.Input.State);
+                Assert.Equal(1, result.Snapshot.Input.SubmittedHolds);
+                Assert.Null(f.Input.TryOpen(f.A, TargetedInputPurpose.OwnedWindowDiagnostic).Run);
+                Assert.Equal(TargetedInputKind.KeyDown, Assert.Single(f.Transport.Commands).Signal.Kind);
+                return;
+            }
+
+            Assert.Equal(TargetedMacroResultStatus.Faulted, result.Status);
+            Assert.Equal(TargetedMacroProblem.InputRejected, result.Problem);
+            Assert.Equal(TargetedMacroState.Faulted, result.Snapshot.State);
+            Assert.Equal(TargetedInputRunState.Stopped, result.Snapshot.Input.State);
+            Assert.Equal(0, result.Snapshot.Input.SubmittedHolds);
+            Assert.DoesNotContain("Cleanup failed", result.Snapshot.Explanation);
+            Assert.Collection(f.Transport.Commands,
+                pressed => { Assert.False(pressed.Cleanup); Assert.Equal(TargetedInputKind.KeyDown, pressed.Signal.Kind); },
+                released => { Assert.True(released.Cleanup); Assert.Equal(TargetedInputKind.KeyUp, released.Signal.Kind); });
+            f.Transport.Validation = null;
+            // Nothing was left to release, so the window lease is free and the runner admits the next run.
+            Assert.Equal(TargetedMacroResultStatus.Completed, (await Start(f, Plan(Key())).Completion.WaitAsync(TimeSpan.FromSeconds(5))).Status);
+        }
+        finally
+        {
+            f.Transport.Validation = null;
+            f.Transport.RejectCleanup = false;
+            if (run.Completion.IsCompleted && run.GetSnapshot().Input.State != TargetedInputRunState.Stopped)
+                Assert.Equal(TargetedInputRunState.Stopped, (await run.RetryCleanupAsync()).Input.State);
+            await f.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task LegacySynchronousClearRetainsLeaseAndTheNextEventAwaitsItsActualRelease()
     {
@@ -481,6 +537,8 @@ public sealed partial class TargetedMacroExecutionTests
         private readonly HashSet<TargetedInputTarget> _registered = new();
         private readonly List<TargetedInputCommand> _commands = [];
         public Func<TargetedInputCommand, Task>? Before;
+        // Test-only answer for a registered target: (target, cleanup) => validation.
+        public Func<TargetedInputTarget, bool, TargetedInputValidation>? Validation;
         public bool RejectCleanup;
         public int Validations;
         public IReadOnlyList<TargetedInputCommand> Commands
@@ -508,7 +566,9 @@ public sealed partial class TargetedMacroExecutionTests
         {
             Interlocked.Increment(ref Validations);
             lock (_sync)
-                return ValueTask.FromResult(_registered.Contains(target) ? TargetedInputValidation.Current : TargetedInputValidation.Unavailable);
+                if (!_registered.Contains(target))
+                    return ValueTask.FromResult(TargetedInputValidation.Unavailable);
+            return ValueTask.FromResult(Volatile.Read(ref Validation) is { } validation ? validation(target, cleanup) : TargetedInputValidation.Current);
         }
 
         public async ValueTask<TargetedInputSubmission> SubmitAsync(TargetedInputCommand command, Func<bool> admit, CancellationToken ct)
