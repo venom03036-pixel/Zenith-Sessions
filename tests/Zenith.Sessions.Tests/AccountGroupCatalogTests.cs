@@ -244,6 +244,19 @@ public sealed class AccountGroupCatalogTests : IDisposable
     }
 
     [Fact]
+    public async Task MetadataImportKeepsGivenOrderAndExistingGroupsAndRejectsRepeatedNamesBeforeWriting()
+    {
+        using var repository=await Open();await Create(repository,"Kept","#ABCDEF");
+        string before=await CatalogState();
+        await Assert.ThrowsAsync<ArgumentException>(()=>repository.ImportMetadataAsync([new("Twice",null,0),new("TWICE","#123456",1)],[Profile("Not added")],default));
+        Assert.Equal(before,await CatalogState());Assert.Equal(0,(await repository.ReadAsync(new(),default)).Total);
+        Assert.Equal(2,await repository.ImportMetadataAsync([new("Zeta","#ff0000",0),new("kept",null,1),new("Alpha",null,2)],[Profile("Member","Alpha")],default));
+        var page=await repository.ReadGroupCatalogAsync(new(),default);
+        Assert.Equal(new(string,string?)[]{("Kept","#ABCDEF"),("Zeta","#FF0000"),("Alpha",null)},page.Items.Select(item=>(item.Name,item.ColorHex)).ToArray());
+        Assert.Equal("Alpha",Assert.Single((await repository.ReadAsync(new(),default)).Items).Group);
+    }
+
+    [Fact]
     public async Task RevisionOrOrderExhaustionRollsBackRatherThanWrapping()
     {
         using var repository=await Open();var group=await Create(repository,"Saved");long revision=await Revision(repository);
