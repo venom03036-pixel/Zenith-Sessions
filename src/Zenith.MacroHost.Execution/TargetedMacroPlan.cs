@@ -32,6 +32,9 @@ public sealed class TargetedMacroPlanException(TargetedMacroPlanProblem problem)
 })
 {
     public TargetedMacroPlanProblem Problem { get; } = problem;
+
+    /// <summary>Type of an unexpected error the compiler refused as InvalidDocument. Type only; never shown.</summary>
+    internal Type? Fault { get; init; }
 }
 
 [Flags]
@@ -155,9 +158,11 @@ public sealed class TargetedMacroPlan
         {
             throw;
         }
-        catch (Exception)
+        catch (Exception error)
         {
-            throw Bad(TargetedMacroPlanProblem.InvalidDocument);
+            // Still a whole-document refusal. Keep the error's type so the preparer can report
+            // a compiler bug apart from a damaged document.
+            throw new TargetedMacroPlanException(TargetedMacroPlanProblem.InvalidDocument) { Fault = error.GetType() };
         }
     }
 

@@ -90,7 +90,8 @@ public sealed partial class MacroEditorViewModel : ISavedMacroDocumentSource, IA
             }
         }
         catch (OperationCanceledException) { return new(SavedMacroDocumentReadStatus.Cancelled); }
-        catch (Exception) { return new(SavedMacroDocumentReadStatus.Unavailable); }
+        // Still a fixed Unavailable read; only the error type reaches the preparer's fault callback.
+        catch (Exception error) { return SavedMacroDocumentReadResult.Faulted(error.GetType()); }
         finally
         {
             stop.Dispose();

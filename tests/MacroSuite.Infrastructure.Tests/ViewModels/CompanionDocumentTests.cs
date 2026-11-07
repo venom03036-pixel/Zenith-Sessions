@@ -152,6 +152,28 @@ public partial class MacroEditorViewModelTests
     });
 
     [Theory]
+    [InlineData("missing")]
+    [InlineData("corrupt")]
+    public Task CompanionDocument_UnreadableBodyReportsOnlyItsErrorTypeToThePreparer(string change) => CompanionOnUi(async () =>
+    {
+        using var folder = new RoutingTempFolder(); var model = ReceiptMacro();
+        using var documents = new ReceiptDocuments(folder.Library, model); using var vm = CreateCompanionEditor(folder.Library, documents);
+        var reference = await SavedReference(vm);
+        string path = documents.GetLibraryPath(model.Id);
+        if (change == "missing") File.Delete(path);
+        else File.WriteAllText(path, "private corrupt fixture body");
+        var expected = Record.Exception(() => documents.Inner.Load(path));
+        expected.Should().NotBeNull();
+        var faults = new List<Type>();
+        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments, faults.Add);
+        var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
+        result.Status.Should().Be(SavedMacroPreparationStatus.Unavailable);
+        faults.Should().Equal(expected!.GetType());
+        string reported = string.Join(",", faults.Select(type => type.FullName)) + result;
+        reported.Should().NotContain("private").And.NotContain(path).And.NotContain(folder.Root);
+    });
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public Task CompanionDocument_FailedSaveRetainsMetadataButNeverAssumesOldCiphertextSurvived(bool committed) => CompanionOnUi(async () =>
