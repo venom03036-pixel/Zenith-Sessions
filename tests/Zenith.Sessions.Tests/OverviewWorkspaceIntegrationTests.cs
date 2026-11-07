@@ -69,6 +69,50 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         Assert.DoesNotContain("Opening",shell.QueueStatus);Assert.Equal(1,shell.Overview.QueuedRequests);Assert.StartsWith("Queue paused",shell.Overview.QueueCaption);
     });
     [Fact]
+    public Task FooterCountsCapacityWaitingRowsApartFromBlocksThatNeedAction()=>OnUi(async()=>
+    {
+        await using var shell=Create(new Monitor());
+        var waiting=OverviewWorkspaceProjectionTests.Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity};
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[waiting]));await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        typeof(ShellViewModel).GetProperty(nameof(ShellViewModel.QueueReady))!.SetValue(shell,true);
+        Assert.Contains("0 queued · 1 waiting for capacity · ",shell.QueueStatus);Assert.Contains(" · 0 blocked · ",shell.QueueStatus);
+        Assert.Equal(0,shell.Overview.QueuedRequests);
+        Assert.Contains("1 waiting for capacity",shell.Overview.QueueSummary);Assert.Contains(" · 0 blocked · ",shell.Overview.QueueSummary);
+    });
+    [Fact]
+    public Task QueuePausedByRepeatedRefusalsSaysWhyOnceAndKeepsTheFooterCounts()=>OnUi(async()=>
+    {
+        await using var shell=Create(new Monitor());
+        var queued=OverviewWorkspaceProjectionTests.Operation(LaunchState.Queued);
+        string reason=LaunchDescriptions.ExplainPause(LaunchQueuePauseReason.RepeatedRefusals);
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[queued]) {PauseReason=LaunchQueuePauseReason.RepeatedRefusals});
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        typeof(ShellViewModel).GetProperty(nameof(ShellViewModel.QueueReady))!.SetValue(shell,true);
+        Assert.Equal(reason,shell.Notice);Assert.Single(shell.Events,line=>line.EndsWith(reason,StringComparison.Ordinal));
+        Assert.Contains("refused",reason);Assert.Contains("stay queued",reason);
+        Assert.StartsWith("Paused · 1 queued",shell.QueueStatus);Assert.Equal("Resume queue",shell.QueuePauseLabel);
+        // A later save with the same reason does not repeat the event; a resume clears it for next time.
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[queued]) {PauseReason=LaunchQueuePauseReason.RepeatedRefusals});
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Single(shell.Events,line=>line.EndsWith(reason,StringComparison.Ordinal));
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(false,[queued]));await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[queued]) {PauseReason=LaunchQueuePauseReason.RepeatedRefusals});
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2,shell.Events.Count(line=>line.EndsWith(reason,StringComparison.Ordinal)));
+    });
+    [Fact]
+    public Task RefusalBackoffPacingIsNamedAsALongerWaitAfterARefusedStart()=>OnUi(async()=>
+    {
+        await using var shell=Create(new Monitor());
+        var queue=Field<LaunchCoordinator>(shell,"_launchQueue");
+        typeof(LaunchCoordinator).GetMethod("BeginPacing",BindingFlags.NonPublic|BindingFlags.Instance)!
+            .Invoke(queue,[Guid.NewGuid(),TimeSpan.FromSeconds(4.5),LaunchPacingReason.RefusalBackoff]);
+        typeof(ShellViewModel).GetMethod("RefreshLaunchEvidence",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(shell,null);
+        Assert.StartsWith("Waiting 5 s before the next start because the last start was refused.",shell.LaunchPacingStatus);
+        Assert.Contains("up to 1 minute",shell.LaunchPacingStatus);
+        await Task.CompletedTask;
+    });
+    [Fact]
     public Task PanicFencesOldQueueCallbacksAndSupersedesAnActuallyAwaitedResume()=>OnUi(async()=>
     {
         await using var shell=Create(new Monitor());await shell.InitializeAsync();await Until(()=>shell.Overview.QueuedRequests==0);

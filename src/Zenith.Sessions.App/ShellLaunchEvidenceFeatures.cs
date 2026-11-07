@@ -36,11 +36,26 @@ public sealed class LaunchEvidenceRow(LaunchOperation operation) : Observable
         _=>"Account and arrival remain unverified"
     };
     public string Explanation=>View?.Explanation??"No evidence is available for this request.";
+    // Each presentation tick re-measures the process, so the view record changes every second.
+    // Raise only the texts whose source fields changed; each text lists the view fields it reads.
     public void Update(LaunchOperation value,NativeTrialEvidenceView view)
     {
-        bool changed=Operation!=value||View!=view;if(!changed)return;
+        var before=View;bool operationChanged=Operation!=value,viewChanged=before!=view;
+        if(!operationChanged&&!viewChanged)return;
         Operation=value;View=view;
-        foreach(var name in new[]{nameof(Label),nameof(View),nameof(ExpectedPlayer),nameof(RequestedPlace),nameof(RequestedServer),nameof(ProcessSummary),nameof(ObservationTime),nameof(ReportedPlayer),nameof(ReportedPlace),nameof(ReportedServer),nameof(LastKnown),nameof(Comparison),nameof(Explanation)})Raise(name);
+        if(operationChanged)Raise(nameof(Label));
+        if(!viewChanged)return;
+        Raise(nameof(View));
+        if(before?.ExpectedUserId!=view.ExpectedUserId)Raise(nameof(ExpectedPlayer));
+        if(before?.RequestedPlaceId!=view.RequestedPlaceId)Raise(nameof(RequestedPlace));
+        if(!string.Equals(before?.RequestedJobId,view.RequestedJobId,StringComparison.Ordinal))Raise(nameof(RequestedServer));
+        if(before?.ProcessReceipt!=view.ProcessReceipt||before?.Presence!=view.Presence)Raise(nameof(ProcessSummary));
+        if(before?.ProcessMeasurementUtc!=view.ProcessMeasurementUtc)Raise(nameof(ObservationTime));
+        if(before?.ReportedUser!=view.ReportedUser)Raise(nameof(ReportedPlayer));
+        if(before?.ReportedDestination!=view.ReportedDestination){Raise(nameof(ReportedPlace));Raise(nameof(ReportedServer));}
+        if(before?.LastKnownUser!=view.LastKnownUser||before?.LastKnownDestination!=view.LastKnownDestination)Raise(nameof(LastKnown));
+        if(before?.Outcome!=view.Outcome)Raise(nameof(Comparison));
+        if(!string.Equals(before?.Explanation,view.Explanation,StringComparison.Ordinal))Raise(nameof(Explanation));
     }
     private static string User(NativeTrialReportedUser? value)=>value?.UserId is { } id?$"{id} · {Status(value.Status)} · {At(value.ObservedUtc)}":"Unknown · current player not established";
     private static string At(DateTimeOffset? value)=>value?.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss",CultureInfo.InvariantCulture)??"not observed";
@@ -116,21 +131,27 @@ public sealed partial class ShellViewModel
         });
         ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,Fail);
     }
-    private void RefreshLaunchEvidence()
+    private void RefreshLaunchEvidence()=>RefreshLaunchEvidenceWith(null);
+    // The sample tick passes the log snapshot it already took; other callers take their own.
+    private void RefreshLaunchEvidenceWith(IReadOnlyList<SessionEvidenceSnapshot>? logs)
     {
         if(IsLocked||_shuttingDown)
         {LaunchEvidenceRows.Clear();SelectedLaunchEvidence=null;ClearSelectedNativeDiagnostics();LaunchPacingStatus="Controls locked or stopping. Monitoring does not grant launch permission.";Raise(nameof(HasLaunchEvidence));return;}
         var now=DateTimeOffset.UtcNow;var queue=Volatile.Read(ref _latestQueue);var desktop=Volatile.Read(ref _latestDesktop);
-        var logs=_logProjection.EvidenceSnapshot(now);
+        logs??=_logProjection.EvidenceSnapshot(now);
         var candidates=queue.Operations.Where(row=>row.Intent.UserId>0&&(row.Intent.HasExplicitDestination||row.ProcessReceipt is not null))
             .OrderByDescending(row=>row.Intent.OperationId==_preferredEvidenceOperation).ThenByDescending(row=>row.UpdatedUtc).Take(MaximumLaunchEvidenceRows).ToArray();
-        var ids=candidates.Select(row=>row.Intent.OperationId).ToHashSet();
+        var candidateIds=new Guid[candidates.Length];for(int index=0;index<candidates.Length;index++)candidateIds[index]=candidates[index].Intent.OperationId;
+        var ids=candidateIds.ToHashSet();
         for(int index=LaunchEvidenceRows.Count-1;index>=0;index--)if(!ids.Contains(LaunchEvidenceRows[index].Id))LaunchEvidenceRows.RemoveAt(index);
         var rows=LaunchEvidenceRows.ToDictionary(row=>row.Id);
-        foreach(var operation in candidates)
+        // One projection per tick: the queue and process inventory are read once, not once per row.
+        var views=NativeTrialEvidence.ProjectMany(queue,candidateIds,desktop,logs,now);
+        for(int index=0;index<candidates.Length;index++)
         {
+            var operation=candidates[index];
             if(!rows.TryGetValue(operation.Intent.OperationId,out var row)){row=new(operation);LaunchEvidenceRows.Add(row);}
-            row.Update(operation,NativeTrialEvidence.Project(queue,operation.Intent.OperationId,desktop,logs,now));
+            row.Update(operation,views[index]);
         }
         var selected=_preferredEvidenceOperation is { } id?LaunchEvidenceRows.FirstOrDefault(row=>row.Id==id):null;
         if(selected is not null)SelectedLaunchEvidence=selected;
@@ -140,6 +161,7 @@ public sealed partial class ShellViewModel
         var pacing=_launchQueue.ReadPacing();
         LaunchPacingStatus=pacing.Ready?"No startup pacing delay. Fresh resources, provider eligibility and explicit permission are still required."
             :pacing.Reason==LaunchPacingReason.ClockUnavailable?"Launch timing is unavailable. Starts are held; preserve existing clients and restart the manager before retrying."
+            :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start was refused. Each refusal in a row doubles the wait, up to 1 minute."
             :$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s for "+(pacing.Reason==LaunchPacingReason.StartupStabilization?"startup stabilization":"launch spacing")+". Already started clients remain open.";
         Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));
     }

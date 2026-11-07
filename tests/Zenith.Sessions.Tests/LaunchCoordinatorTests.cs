@@ -55,6 +55,35 @@ public sealed class LaunchCoordinatorTests
         Volatile.Write(ref allowed,true);queue.Signal();await WaitFor(()=>store.Last.Operations.Any(o=>o.State==LaunchState.Arrived));Assert.Single(provider.Started);
     }
     [Fact]
+    public async Task CapacityHoldDoesNotRewriteAnUnchangedBlockedRowOnEachSignal()
+    {
+        // The Shell signals the queue after every monitor sample. A request that is still
+        // waiting for headroom must not be re-saved (fsync + backup rotation) or re-published.
+        var store=new MemoryStore();var provider=new SyntheticProvider();bool allowed=false;int admissions=0,saves=0,changes=0;
+        store.BeforeSave=(_,_)=>{Interlocked.Increment(ref saves);return Task.CompletedTask;};
+        await using var queue=Create(store,provider,admission:_=>{Interlocked.Increment(ref admissions);return new(Volatile.Read(ref allowed),"Synthetic resource hold");});
+        queue.Changed+=_=>Interlocked.Increment(ref changes);
+        await queue.InitializeAsync(default);
+        await queue.EnqueueAsync(Profile(),default,new(123,1));await queue.SetPausedAsync(false,default);
+        await WaitFor(()=>store.Last.Operations.Any(o=>o.Problem==LaunchProblem.InsufficientCapacity));
+        await queue.WaitForActiveCleanupAsync(default);
+        int savesBefore=Volatile.Read(ref saves),changesBefore=Volatile.Read(ref changes);
+        var blocked=Assert.Single(store.Last.Operations);
+        Assert.Equal(LaunchState.Blocked,blocked.State);
+        for(int i=0;i<3;i++)
+        {
+            int seen=Volatile.Read(ref admissions);queue.Signal();
+            await WaitFor(()=>Volatile.Read(ref admissions)>seen);
+            await queue.WaitForActiveCleanupAsync(default);
+        }
+        Assert.Equal(savesBefore,Volatile.Read(ref saves));
+        Assert.Equal(changesBefore,Volatile.Read(ref changes));
+        Assert.Equal(blocked.UpdatedUtc,Assert.Single(store.Last.Operations).UpdatedUtc);
+        Assert.Empty(provider.Started);
+        Volatile.Write(ref allowed,true);queue.Signal();
+        await WaitFor(()=>store.Last.Operations.Any(o=>o.State==LaunchState.Arrived));Assert.Single(provider.Started);
+    }
+    [Fact]
     public async Task WrongAccountCannotBecomeAnArrivedClient()
     {
         var store=new MemoryStore();var provider=new SyntheticProvider { WrongIdentity=true };await using var queue=Create(store,provider);await queue.InitializeAsync(default);
@@ -320,7 +349,8 @@ public sealed class LaunchCoordinatorTests
         }
         store.BeforeSave=null;
         await using var recovered=Create(store,provider);await recovered.InitializeAsync(default);
-        Assert.True(store.Last.Paused);Assert.Equal(LaunchState.ReviewRequired,Assert.Single(store.Last.Operations).State);Assert.Empty(provider.Started);
+        var recoveredRow=Assert.Single(store.Last.Operations);
+        Assert.True(store.Last.Paused);Assert.Equal(LaunchState.Blocked,recoveredRow.State);Assert.Equal(LaunchProblem.Interrupted,recoveredRow.Problem);Assert.Empty(provider.Started);
     }
     [Theory]
     [InlineData(false)]

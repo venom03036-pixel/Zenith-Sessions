@@ -22,9 +22,15 @@ public sealed record LaunchProcessReceipt(int ProcessId,long ProcessStartUtcTick
 }
 public sealed record LaunchOperation(LaunchIntent Intent,LaunchState State,LaunchProblem Problem,DateTimeOffset UpdatedUtc,
     LaunchProcessReceipt? ProcessReceipt=null,LaunchResourceBudget? ResourceBudget=null);
+/// <summary>Why the queue paused itself. None covers a user pause, Panic and a restart.</summary>
+public enum LaunchQueuePauseReason { None,RepeatedRefusals }
 public sealed record LaunchQueueSnapshot(bool Paused,IReadOnlyList<LaunchOperation> Operations)
 {
     public static LaunchQueueSnapshot Empty { get; }=new(true,[]);
+    // Published with each saved snapshot but never written to the queue file: the v7 format stays
+    // readable by earlier builds, and a restart always pauses and recovers never-started rows anyway.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public LaunchQueuePauseReason PauseReason { get; init; }
 }
 public sealed record LaunchAdmission(bool Allowed,string Explanation);
 public sealed class LaunchQueueException(string message) : Exception(message);
@@ -85,7 +91,15 @@ public static class LaunchDescriptions
         LaunchProblem.ClientClosureAcknowledged=>"You confirmed the possible client is closed. Its historical receipt is retained; current Windows observations remain separate.",
         _=>""
     };
+    public static string ExplainPause(LaunchQueuePauseReason reason)=>reason switch
+    {
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row were refused before any client started. The remaining requests stay queued. Wait a few minutes, check the saved sign-ins, then resume.",
+        _=>""
+    };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
+    /// <summary>A request held only for resource headroom. The runner re-selects it beside Queued rows and
+    /// starts it on its own once admission allows; every other Blocked row needs the user first.</summary>
+    public static bool AwaitsCapacity(LaunchOperation operation)=>operation.State==LaunchState.Blocked && operation.Problem==LaunchProblem.InsufficientCapacity;
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
@@ -134,10 +148,11 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         TimeProvider? time=null,TimeSpan? startupDeadline=null,TimeSpan? stabilization=null,TimeSpan? stagger=null,TimeSpan? preparationDeadline=null,
         Func<IReadOnlyList<LaunchOperation>,IReadOnlySet<Guid>>? observedReservations=null,
         Func<LaunchIntent,LaunchResourceBudget>? budgetResolver=null,
-        Func<LaunchOperation,IReadOnlyList<LaunchOperation>,LaunchAdmission>? candidateAdmission=null)
+        Func<LaunchOperation,IReadOnlyList<LaunchOperation>,LaunchAdmission>? candidateAdmission=null,
+        Func<TimeSpan>? refusalJitter=null)
     {
         _store=store;_provider=provider;_validate=validate;_admit=admit;_time=time??TimeProvider.System;_observedReservations=observedReservations;
-        _budgetResolver=budgetResolver;_candidateAdmission=candidateAdmission;
+        _budgetResolver=budgetResolver;_candidateAdmission=candidateAdmission;_refusalJitter=refusalJitter??RandomRefusalJitter;
         _startupDeadline=startupDeadline??TimeSpan.FromSeconds(90);_stabilization=stabilization??TimeSpan.FromSeconds(20);_stagger=stagger??TimeSpan.FromSeconds(2);
         _preparationDeadline=preparationDeadline??TimeSpan.FromMinutes(4);
         if(_startupDeadline<=TimeSpan.Zero || _stabilization<TimeSpan.Zero || _stagger<TimeSpan.Zero || _preparationDeadline<=TimeSpan.Zero)
@@ -151,15 +166,37 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         try
         {
             if(_initialized) return;
+            // A failed startup never started the runner, so nothing else owns these rows or this
+            // fault. Rebuild from disk: an explicit retry must neither append the saved rows a
+            // second time nor inherit the failed attempt's storage fault.
+            _operations.Clear();_unhealthy=false;
             var saved=await _store.LoadAsync(ct).ConfigureAwait(false);ValidateSnapshot(saved);
-            foreach(var operation in saved.Operations)
-                _operations.Add(LaunchDescriptions.Terminal(operation.State)?operation:
-                    operation.State==LaunchState.Preparing || operation.State==LaunchState.Blocked&&operation.Problem==LaunchProblem.PreparationInterrupted
-                        ?operation with { State=LaunchState.Blocked,Problem=LaunchProblem.PreparationInterrupted,UpdatedUtc=_time.GetUtcNow() }
-                        :operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted,UpdatedUtc=_time.GetUtcNow() });
-            _paused=true;await PersistAsync(ct).ConfigureAwait(false);_initialized=true;_runner=RunAsync(_stop.Token);
+            foreach(var operation in saved.Operations) _operations.Add(RecoverAfterRestart(operation,_time.GetUtcNow()));
+            _paused=true;_pauseReason=LaunchQueuePauseReason.None;await PersistAsync(ct).ConfigureAwait(false);_initialized=true;_runner=RunAsync(_stop.Token);
         }
         finally {_serial.Release();}
+    }
+    // Nothing resumes automatically. Only a phase that may have reached native startup becomes
+    // a reserving possible client that needs closure review.
+    private static LaunchOperation RecoverAfterRestart(LaunchOperation operation,DateTimeOffset now)
+    {
+        if(LaunchDescriptions.Terminal(operation.State)) return operation;
+        if(operation.State==LaunchState.Preparing || operation.State==LaunchState.Blocked&&operation.Problem==LaunchProblem.PreparationInterrupted)
+            return operation with { State=LaunchState.Blocked,Problem=LaunchProblem.PreparationInterrupted,UpdatedUtc=now };
+        // Queued and Blocked are saved before any validation, preparation or provider call and
+        // can never carry a receipt, so such a row never started a client. Keep it cancellable,
+        // non-reserving and never auto-selected. A backup generation, which a lost primary may
+        // have moved on, reaches here as ReviewRequired from the store instead.
+        if(operation.State is LaunchState.Queued or LaunchState.Blocked)
+            return operation with { State=LaunchState.Blocked,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
+        // A started client with its exact PID/creation receipt and pinned budget is already a
+        // reserving, reviewable possible client. Keep it as saved so the same fresh exact
+        // observation that clears the single-start barrier within a session can reconcile it
+        // after a restart too (CAP-14-03). This establishes no account or arrival, and the
+        // queue still restarts paused. Uncertain and legacy unbudgeted rows still need review.
+        if(operation is {State:LaunchState.ClientStartedUnverified,ProcessReceipt.IsValid:true,ResourceBudget.IsValid:true})
+            return operation;
+        return operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
     }
     public Task<LaunchOperation> EnqueueAsync(AccountProfile profile,CancellationToken ct,LaunchAccountBinding? binding=null,
         RobloxRequestedDestination? requestedDestination=null)=>EnqueueOwnedAsync(profile,ct,binding,requestedDestination,false);
@@ -190,10 +227,13 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             TrimHistory();
             if(trial)_trialOperations[intent.OperationId]=generation;
-            int index=_operations.Count;_operations.Add(operation);await PersistAsync(ct).ConfigureAwait(false);
-            // A stop is immediate even while queue storage owns the serial lane. A storage adapter
-            // may complete a write despite cancellation, so durably fence the just-created intent
-            // before releasing the lane or waking a dispatcher. Existing queued work is preserved.
+            // Once the row is added, own its write through durable completion (as EnqueueBatchAsync
+            // does). A caller stop during the write is a user stop, not a storage fault: cancelling
+            // the save would leave memory ahead of disk and mark the whole queue unhealthy.
+            int index=_operations.Count;_operations.Add(operation);await PersistAsync(CancellationToken.None).ConfigureAwait(false);
+            // A stop is immediate even while queue storage owns the serial lane, so durably fence
+            // the just-created intent before releasing the lane or waking a dispatcher. Existing
+            // queued work is preserved.
             if(generation!=Interlocked.Read(ref _generation) || ct.IsCancellationRequested || _stop.IsCancellationRequested)
             {
                 operation=operation with { State=LaunchState.Cancelled,Problem=LaunchProblem.None,UpdatedUtc=_time.GetUtcNow() };
@@ -221,7 +261,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         // Cancel first, before waiting for disk I/O or the queue lock.
         Interlocked.Increment(ref _generation);CancelActive();
         await _serial.WaitAsync(ct).ConfigureAwait(false);
-        try { RequireHealthy();_paused=true;await PersistAsync(ct).ConfigureAwait(false);Signal(); }
+        try { RequireHealthy();_pauseReason=LaunchQueuePauseReason.None;_paused=true;await PersistAsync(ct).ConfigureAwait(false);Signal(); }
         finally {_serial.Release();}
     }
     /// <summary>An explicit resume cannot overtake a stop issued after this call began.</summary>
@@ -233,7 +273,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         {
             RequireHealthy();ct.ThrowIfCancellationRequested();
             if(generation!=Interlocked.Read(ref _generation)) return false;
-            _paused=false;
+            _pauseReason=LaunchQueuePauseReason.None;_paused=false;
             // Panic does not wait for this owner. Close its check/write race before any await;
             // no queue runner can enter the serial boundary until the stop is restored.
             if(generation!=Interlocked.Read(ref _generation)) {_paused=true;return false;}
@@ -247,7 +287,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         finally {_serial.Release();}
     }
     public void SignalPanic()
-    { Interlocked.Increment(ref _generation);_paused=true;CancelActive();Signal(); }
+    { Interlocked.Increment(ref _generation);_pauseReason=LaunchQueuePauseReason.None;_paused=true;CancelActive();Signal(); }
     public async Task InvalidateAuthorizationAsync(Guid profileId,CancellationToken ct)
     {
         if(profileId==Guid.Empty) throw new ArgumentException("A saved profile is required.");
@@ -337,7 +377,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(_paused || _unhealthy || !ReadPacing().Ready || HasUnreconciledStart()) return;
             var policy=Volatile.Read(ref _performance);
             if(policy is not null) {stabilization=TimeSpan.FromMilliseconds(policy.StabilizationMs);stagger=TimeSpan.FromMilliseconds(policy.StaggerMs);}
-            chosen=_operations.Where(o=>o.State==LaunchState.Queued || o.State==LaunchState.Blocked && o.Problem==LaunchProblem.InsufficientCapacity)
+            chosen=_operations.Where(o=>o.State==LaunchState.Queued || LaunchDescriptions.AwaitsCapacity(o))
                 .OrderByDescending(o=>o.Intent.Priority+Math.Max(0,(_time.GetUtcNow()-o.Intent.RequestedUtc).TotalMinutes)
                     +(policy is {MainAccountProfileId:{ } main} && main==o.Intent.ProfileId?policy.MainAccountPriorityBoost:0))
                 .ThenBy(o=>o.Intent.RequestedUtc).ThenBy(o=>o.Intent.OperationId).FirstOrDefault();
@@ -348,7 +388,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(chosen is null)return;
             // A cheap fresh preflight is not a reservation. Preparing remains excluded from
             // NeedsReservation while a user-owned page may wait; reserve only at Launching.
-            if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed) { await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);return; }
+            // A row already waiting for headroom keeps its saved state: the Shell signals after every
+            // monitor sample, and re-saving an unchanged hold would fsync and republish once a second.
+            if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)
+            {
+                if(!LaunchDescriptions.AwaitsCapacity(chosen))
+                    await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);
+                return;
+            }
             if(_paused || generation!=Interlocked.Read(ref _generation)) return;
             _activeStop=CancellationTokenSource.CreateLinkedTokenSource(ct);
             _activeCompletion=new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -412,7 +459,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
                 &&ReadPacing().Ready,()=>AdmissionForStart(reserved,chosen.Intent.OperationId));
         }
         using var closeBoundary=boundary;
-        ProviderLaunchResult? result=null;LaunchProblem problem=LaunchProblem.None;bool unverifiedPacing=false;
+        ProviderLaunchResult? result=null;LaunchProblem problem=LaunchProblem.None;bool unverifiedPacing=false,refusalPacing=false;
         try
         {
             _activeStop!.Token.ThrowIfCancellationRequested();
@@ -435,11 +482,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             else if(result?.Status==ProviderLaunchStatus.RejectedBeforeStart)
             {
                 bool processClaim=result.ProcessId is not null || result.ProcessStartUtcTicks is not null;
+                // A refusal before any client started lengthens the next gap; a second in a row pauses.
+                if(!processClaim) {RecordRefusalOwned(chosen.Intent.OperationId,stagger);refusalPacing=true;}
                 await UpdateAsync(chosen,processClaim?LaunchState.Uncertain:LaunchState.Failed,
                     processClaim?LaunchProblem.ProviderFailure:LaunchProblem.StartupRejected,CancellationToken.None).ConfigureAwait(false);
             }
             else if(result?.Status==ProviderLaunchStatus.ClientStartedUnverified)
             {
+                ForgetRefusalsOwned();
                 if(hasReceipt)
                 {
                     BeginPacing(chosen.Intent.OperationId,stabilization>=stagger?stabilization:stagger,
@@ -450,7 +500,10 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
                     hasReceipt?LaunchProblem.ClientStartedUnverified:LaunchProblem.ArrivalUnverified,CancellationToken.None).ConfigureAwait(false);
             }
             else if(hasReceipt && MatchesRequestedArrival(chosen.Intent,result))
+            {
+                ForgetRefusalsOwned();
                 await UpdateAsync(chosen,LaunchState.Stabilizing,LaunchProblem.None,CancellationToken.None).ConfigureAwait(false);
+            }
             else await UpdateAsync(chosen,LaunchState.Uncertain,LaunchProblem.ArrivalUnverified,CancellationToken.None).ConfigureAwait(false);
         }
         finally {_serial.Release();}
@@ -480,7 +533,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             await CompleteArrivalAsync(chosen,generation,arrivalOwner,confirmed,problem).ConfigureAwait(false);
             if(!await DrainAsync(_validationWork,ct).ConfigureAwait(false)) return;
         }
-        EndActive();if(!unverifiedPacing)BeginPacing(chosen.Intent.OperationId,stagger,LaunchPacingReason.BetweenStarts);Signal();
+        EndActive();if(!unverifiedPacing&&!refusalPacing)BeginPacing(chosen.Intent.OperationId,stagger,LaunchPacingReason.BetweenStarts);Signal();
     }
     private async Task CompleteArrivalAsync(LaunchOperation operation,long generation,CancellationTokenSource owner,
         bool confirmed,LaunchProblem problem)
@@ -574,7 +627,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     private async Task PersistAsync(CancellationToken ct,bool notify=true)
     {
         long stopGeneration=Interlocked.Read(ref _generation);
-        var snapshot=new LaunchQueueSnapshot(_paused,_operations.ToArray());
+        var snapshot=Snapshot();
         try
         {
             await _store.SaveAsync(snapshot,ct).ConfigureAwait(false);
@@ -586,7 +639,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     private void PublishWhileCurrent(Func<bool> stopped)
     {
         if(Changed is not { } handlers || stopped()) return;
-        var snapshot=new LaunchQueueSnapshot(_paused,_operations.ToArray());
+        var snapshot=Snapshot();
         try
         {
             foreach(Action<LaunchQueueSnapshot> observer in handlers.GetInvocationList())
@@ -597,6 +650,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         }
         catch(Exception ex) {_unhealthy=true;_paused=true;CancelActive();Faulted?.Invoke(ex);throw;}
     }
+    private LaunchQueueSnapshot Snapshot()=>new(_paused,_operations.ToArray()) { PauseReason=_paused?_pauseReason:LaunchQueuePauseReason.None };
     private void RequireHealthy()
     { if(!_initialized || _unhealthy || _stop.IsCancellationRequested) throw new LaunchQueueException("The launch queue needs recovery or has stopped. Existing queue files were preserved."); }
     private void TrimHistory()

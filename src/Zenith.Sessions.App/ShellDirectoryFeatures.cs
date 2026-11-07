@@ -244,32 +244,41 @@ public sealed partial class ShellViewModel
         // Freeze advisory occupancy with the same recipient/target snapshot. It never reserves
         // seats, authenticates accounts or changes the existing native-provider admission guards.
         var capacityAdvice=ServerBrowser.AssessRequestedCapacity(target,snapshot.Count);
-        int queued=0,blocked=0,skipped=0;var ownedRequests=new List<Guid>();
-        try
+        int queued=0,blocked=0,skipped=0;
+        if(!ct.IsCancellationRequested && epoch==_directoryGeneration && CanUseDirectories())
         {
-        foreach(var recipient in snapshot)
-        {
-            if(ct.IsCancellationRequested||epoch!=_directoryGeneration || !CanUseDirectories()) break;
-            try
+            // One review and one durable queue write for the whole frozen snapshot. The review is
+            // fenced by the queue's stop generation (Panic) and the caller's token; the queue owns
+            // the write to completion and cancels the accepted subset itself if a stop races it.
+            LaunchBatchReview review;
+            try{review=_launchQueue.CaptureBatchReview(target,snapshot);}
+            catch(ArgumentException error)
             {
-                var operation=await _launchQueue.EnqueueAsync(recipient.Profile,ct,recipient.Binding,target);
-                ownedRequests.Add(operation.Intent.OperationId);
-                if(ct.IsCancellationRequested||epoch!=_directoryGeneration)
-                {
-                    if(!LaunchDescriptions.Terminal(operation.State)) await _launchQueue.CancelAsync(operation.Intent.OperationId,CancellationToken.None);
-                    break;
-                }
-                if(operation.State==LaunchState.Blocked) blocked++;else if(LaunchDescriptions.Terminal(operation.State)) skipped++;else queued++;
+                _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+                return $"Place {target.PlaceId} destination requests: one or more selected accounts could not be reviewed. Review the accounts and try again. No request was made.";
             }
-            catch(LaunchQueueException) {skipped++;}
-        }
-        }
-        finally
-        {
-            if(ct.IsCancellationRequested||epoch!=_directoryGeneration)
-                foreach(Guid request in ownedRequests)
-                    try{await _launchQueue.CancelAsync(request,CancellationToken.None);}
-                    catch(Exception error){_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());}
+            IReadOnlyList<LaunchBatchRow> rows;
+            // A stopped or unhealthy queue rejects the whole review before anything is written.
+            try{rows=await _launchQueue.EnqueueBatchAsync(review,ct);}
+            catch(LaunchQueueException){rows=[];}
+            // The queue does not know the page's directory epoch. Leaving the page or locking
+            // after the commit withdraws the rows this command created; rows the queue already
+            // cancelled for a stop are left alone.
+            bool withdrawn=ct.IsCancellationRequested||epoch!=_directoryGeneration;
+            foreach(var row in rows)
+            {
+                if(row is not {Disposition:LaunchBatchDisposition.Recorded,Operation:{ } operation}) continue;
+                if(withdrawn)
+                {
+                    if(!LaunchDescriptions.Terminal(operation.State))
+                        try{await _launchQueue.CancelAsync(operation.Intent.OperationId,CancellationToken.None);}
+                        catch(Exception error){_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());}
+                }
+                else if(operation.State==LaunchState.Blocked) blocked++;
+                else if(!LaunchDescriptions.Terminal(operation.State)) queued++;
+            }
+            // Already pending, queue full, unavailable forecast, cancelled by a stop or withdrawn.
+            skipped=snapshot.Count-queued-blocked;
         }
         QueueExpanded=true;
         return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable. No arrival is assumed. {capacityAdvice.Explanation}";

@@ -42,6 +42,41 @@ public sealed partial class DirectoryIntegrationTests
         vm.LockDashboard(); Assert.Contains("locked", vm.RequestedCapacitySummary);
     });
 
+    [Fact]
+    public Task BundleCapacityAdviceCountsTheSelectedBundleNotCheckedAccounts() => OnUi(async () =>
+    {
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), new PublicDirectory(), new CapacityServers());
+        await vm.InitializeAsync();
+        foreach (string label in new[] { "First", "Second", "Third" }) await vm.SaveAccountAsync(AccountProfile.Create(label));
+        foreach (var row in vm.Accounts) row.IsChecked = true;
+        await vm.RecipientBundles.SaveCheckedAsync("Trio");
+        var trio = Assert.IsType<RecipientBundle>(vm.RecipientBundles.SelectedBundle);
+        foreach (var row in vm.Accounts) row.IsChecked = false;
+        vm.SelectedAccount = vm.Accounts[0];
+        vm.ServerBrowser.UsePreferredPlace(6564161046);
+        vm.ServerBrowser.Browse.Execute(null); await vm.ServerBrowser.Browse.Execution;
+        vm.ServerBrowser.SelectedServer = Assert.Single(vm.ServerBrowser.Servers);
+        vm.ServerBrowser.UseServer.Execute(null);
+        Assert.True(vm.RecipientBundles.CanQueueSelected);
+
+        // Checked/selected-account advice and bundle advice each name the recipients they would queue.
+        Assert.Contains("2 open slots for 1 recipients", vm.RequestedCapacitySummary);
+        Assert.Contains("2 open slots for 3 recipients", vm.BundleCapacitySummary);
+        Assert.Contains("exceeds", vm.BundleCapacitySummary);
+        Assert.Contains("Trio", vm.BundleCapacitySummary);
+
+        // Selecting a different bundle (or none) refreshes the advice without any account or server change.
+        vm.RecipientBundles.SelectedBundle = null;
+        Assert.DoesNotContain("3 recipients", vm.BundleCapacitySummary);
+        Assert.Contains("Select a saved bundle", vm.BundleCapacitySummary);
+        vm.RecipientBundles.SelectedBundle = trio;
+        Assert.Contains("2 open slots for 3 recipients", vm.BundleCapacitySummary);
+
+        vm.LockDashboard();
+        Assert.Contains("locked", vm.BundleCapacitySummary);
+        Assert.DoesNotContain("3 recipients", vm.BundleCapacitySummary);
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

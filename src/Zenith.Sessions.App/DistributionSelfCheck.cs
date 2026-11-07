@@ -545,8 +545,10 @@ internal static class DistributionSelfCheck
                     (_,_)=>throw new InvalidDataException("Recovered intent must not request authorization."),_=>new(false,"Synthetic review only"));
                 await restoredQueue.InitializeAsync(ct);var recoveryReviewed=await recoveryStore.LoadAsync(ct);
                 byte[] recoveryRetainedBackup=await File.ReadAllBytesAsync(recoveryPrimary+".bak",ct);
-                if(!recoveryReviewed.Paused||recoveryReviewed.Operations.Single().State!=LaunchState.ReviewRequired
-                    ||recoveryReviewed.Operations[0].ProcessReceipt!=recoveryOperation.ProcessReceipt||recoveryReviewed.Operations[0].ResourceBudget!=recoveryOperation.ResourceBudget
+                // A receipted, budgeted started client stays that reviewable started client after
+                // restart (CAP-14-03), so only an exact fresh observation can reconcile it.
+                if(!recoveryReviewed.Paused||recoveryReviewed.Operations.Single()!=recoveryOperation
+                    ||!LaunchDescriptions.HasUnresolvedReservation(recoveryReviewed.Operations[0])
                     ||!recoveryBackup.AsSpan().SequenceEqual(recoveryRetainedBackup))
                     throw new InvalidDataException("Recovered receipt or forecast lost its review boundary.");
             }

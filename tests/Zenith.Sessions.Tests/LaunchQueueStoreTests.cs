@@ -21,13 +21,25 @@ public sealed class LaunchQueueStoreTests : IDisposable
         Assert.DoesNotContain("AccessToken",json);Assert.DoesNotContain("RefreshToken",json);Assert.DoesNotContain("password",json);
     }
     [Fact]
+    public async Task RefusalPauseReasonIsPublishedButNotWrittenSoTheSavedFormatIsUnchanged()
+    {
+        using var store=new LaunchQueueStore(_root);var snapshot=Fixture() with {PauseReason=LaunchQueuePauseReason.RepeatedRefusals};
+        await store.SaveAsync(snapshot,default);
+        string json=await File.ReadAllTextAsync(Path.Combine(_root,"launch-queue.json"));
+        Assert.DoesNotContain("PauseReason",json);Assert.Contains("\"Version\":7",json);
+        using var reopened=new LaunchQueueStore(_root);var read=await reopened.LoadAsync(default);
+        Assert.True(read.Paused);Assert.Equal(LaunchQueuePauseReason.None,read.PauseReason);Assert.Equal(snapshot.Operations,read.Operations);
+    }
+    [Fact]
     public async Task CorruptOriginalIsPreservedAndRecoveredSnapshotDoesNotEraseTheLastValidCopy()
     {
         using var store=new LaunchQueueStore(_root);var first=Fixture();await store.SaveAsync(first,default);await store.SaveAsync(new(false,first.Operations),default);
         string path=Path.Combine(_root,"launch-queue.json");await File.WriteAllTextAsync(path,"corrupt original");
         var recovered=await store.LoadAsync(default);Assert.True(recovered.Paused);Assert.Equal("corrupt original",await File.ReadAllTextAsync(path));
         await store.SaveAsync(recovered,default);Assert.Equal("corrupt original",await File.ReadAllTextAsync(path+".damaged"));
-        Assert.Equal(first.Operations,(await store.LoadAsync(default)).Operations);
+        // A backup is one generation behind, so its queued request returns as a possible client for review.
+        var forReview=first.Operations.Select(o=>o with {State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted}).ToArray();
+        Assert.Equal(forReview,recovered.Operations);Assert.Equal(forReview,(await store.LoadAsync(default)).Operations);
     }
     [Fact]
     public async Task UnknownFormatAndCorruptQueueCannotPretendToBeEmpty()

@@ -58,8 +58,12 @@ public sealed partial class ShellViewModel
     private void RefreshVisibleQueueStatus()
     {
         if(!QueueReady || _overviewQueue is not { } snapshot) return;
+        // Capacity waits start by themselves once headroom returns, so they are not "blocked". The segment
+        // appears only when non-zero: the footer is capped at 420 px and the usual line already uses ~372 px.
+        int waiting=snapshot.Operations.Count(LaunchDescriptions.AwaitsCapacity);
         QueueStatus=$"{(EffectiveQueuePaused?"Paused":"Active")} · {snapshot.Operations.Count(row=>row.State==LaunchState.Queued)} queued"
+            +(waiting>0?$" · {waiting} waiting for capacity":"")
             +$" · {snapshot.Operations.Count(row=>row.State is LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing)} preparing/dispatching"
-            +$" · {snapshot.Operations.Count(row=>row.State==LaunchState.Blocked)} blocked · {snapshot.Operations.Count(LaunchRow.IsReviewable)} need review";
+            +$" · {snapshot.Operations.Count(row=>row.State==LaunchState.Blocked && !LaunchDescriptions.AwaitsCapacity(row))} blocked · {snapshot.Operations.Count(LaunchRow.IsReviewable)} need review";
     }
 }

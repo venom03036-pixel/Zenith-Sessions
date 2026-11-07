@@ -26,7 +26,10 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         {
             await reopened.InitializeAsync();await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             var row=Assert.Single(reopened.Launches);Assert.Equal("Renamed sample",row.Label);
-            Assert.Equal(LaunchState.ReviewRequired,row.Operation.State);Assert.Equal("Review required",Assert.Single(reopened.Accounts).LaunchStatus);
+            // A never-started request is recovered as a cancellable non-reserving row, not a possible client.
+            Assert.Equal(LaunchState.Blocked,row.Operation.State);Assert.Equal(LaunchProblem.Interrupted,row.Operation.Problem);
+            Assert.Equal("Review request",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
+            Assert.Equal("Blocked",Assert.Single(reopened.Accounts).LaunchStatus);
         }
     });
     [Fact]
@@ -102,6 +105,49 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
             else {vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;}
         }
     });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task QueueingCheckedAccountsOrABundleCommitsOneQueueWrite(bool bundle)=>OnUi(async () =>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers());
+        await vm.InitializeAsync();
+        foreach(string label in new[]{"First","Second","Third"}) await vm.SaveAccountAsync(AccountProfile.Create(label));
+        foreach(var row in vm.Accounts) row.IsChecked=true;
+        if(bundle) await vm.RecipientBundles.SaveCheckedAsync("Saved trio");
+        vm.ServerBrowser.UsePreferredPlace(42);
+        if(bundle) Assert.True(vm.RecipientBundles.CanQueueSelected);
+        await QueueAsync();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(3,vm.Launches.Count);
+        Assert.All(vm.Launches,row=>{Assert.Equal(42,row.Operation.Intent.PlaceId);Assert.Equal(LaunchState.Blocked,row.Operation.State);});
+        Assert.Contains("0 queued, 3 blocked, 0 already pending or unavailable",Summary());
+        // Every queue save moves the previous generation to .bak, so one batch write leaves the
+        // empty startup generation there; per-account writes would leave a partly filled queue.
+        Assert.Empty(await ReadQueueBackupAsync());
+
+        // Accounts that already have pending work are reported without another queue write.
+        await QueueAsync();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(3,vm.Launches.Count);
+        Assert.Contains("0 queued, 0 blocked, 3 already pending or unavailable",Summary());
+        Assert.Empty(await ReadQueueBackupAsync());
+
+        async Task QueueAsync()
+        {
+            if(bundle) await vm.RecipientBundles.QueueSelectedAsync();
+            else {vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;}
+        }
+        string Summary()=>bundle?vm.RecipientBundles.Status:vm.Notice;
+    });
+    private async Task<IReadOnlyList<LaunchOperation>> ReadQueueBackupAsync()
+    {
+        string copy=Path.Combine(_root,"queue-backup-check-"+Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(copy);
+        File.Copy(Path.Combine(_root,"launch-queue.json.bak"),Path.Combine(copy,"launch-queue.json"));
+        using var store=new LaunchQueueStore(copy);
+        return (await store.LoadAsync(CancellationToken.None)).Operations;
+    }
     [Fact]
     public Task DiscardingDraftReenablesTheLastExplicitRequest()=>OnUi(async () =>
     {

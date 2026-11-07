@@ -65,7 +65,8 @@ public sealed class LaunchBatchQueueTests
             await using var reopened = Queue(reopenedStore, provider);
             await reopened.InitializeAsync(default);
             Assert.True(reopenedStore.Last.Paused);
-            Assert.All(reopenedStore.Last.Operations, row => Assert.Equal(LaunchState.ReviewRequired, row.State));
+            Assert.All(reopenedStore.Last.Operations, row =>
+            { Assert.Equal(LaunchState.Blocked, row.State); Assert.Equal(LaunchProblem.Interrupted, row.Problem); });
             Assert.Empty(provider.Calls);
         }
         finally { Directory.Delete(root, recursive: true); }

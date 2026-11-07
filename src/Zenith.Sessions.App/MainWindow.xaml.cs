@@ -171,6 +171,12 @@ public partial class MainWindow : Window
     }
     private async void ExitManager(object sender, RoutedEventArgs e) => await RequestExitAsync();
     private void OpenDataFolder(object sender, RoutedEventArgs e) => _vm.OpenFolder.Execute(null);
+    private void SetAsideInterruptedQueueWrite(object sender, RoutedEventArgs e)
+    {
+        if(!_vm.CanSetAsideInterruptedQueueWrite) return;
+        if(MessageBox.Show(this,"An interrupted save (launch-queue.json.tmp) is blocking the launch queue. Rename it to a kept launch-queue.json.interrupted file and reopen the queue from its last completed save? Nothing is deleted. Requests reopen paused for review and no client is started.","Set aside interrupted save",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
+            _vm.SetAsideInterruptedQueueWrite.Execute(null);
+    }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)
     {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex);}}
     private void CopyDiagnosticReport(object sender,RoutedEventArgs e)

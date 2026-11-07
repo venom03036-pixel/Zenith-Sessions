@@ -1,3 +1,5 @@
+using System.Runtime.InteropServices;
+
 namespace Zenith.Sessions.Core;
 
 public enum NativeTrialProcessPresence { Unavailable, NoReceipt, InvalidReceipt, Incomplete, Stale, NotObserved, PidReused, Ambiguous, Observed }
@@ -29,20 +31,52 @@ public static class NativeTrialEvidence
 
     public static NativeTrialEvidenceView Project(LaunchQueueSnapshot queue, Guid operationId, DesktopSnapshot? desktop,
         IReadOnlyList<SessionEvidenceSnapshot> evidence, DateTimeOffset now)
+        => ProjectMany(queue, [operationId], desktop, evidence, now)[0];
+
+    /// <summary>
+    /// Projects several trials from one set of snapshots. Each result equals <see cref="Project"/> for that id,
+    /// duplicates included. The queue and process inventory are read once per call instead of once per id.
+    /// </summary>
+    public static IReadOnlyList<NativeTrialEvidenceView> ProjectMany(LaunchQueueSnapshot queue, IReadOnlyList<Guid> operationIds, DesktopSnapshot? desktop,
+        IReadOnlyList<SessionEvidenceSnapshot> evidence, DateTimeOffset now)
     {
-        ArgumentNullException.ThrowIfNull(queue); ArgumentNullException.ThrowIfNull(evidence);
+        ArgumentNullException.ThrowIfNull(queue); ArgumentNullException.ThrowIfNull(operationIds); ArgumentNullException.ThrowIfNull(evidence);
         if (queue.Operations is null) throw new ArgumentException("A bounded launch queue is required.");
-        int operationCount = queue.Operations.Count, logCount = evidence.Count, rowCount = desktop?.Sessions?.Count ?? 0;
-        if (operationCount is < 0 or > MaximumOperations || logCount is < 0 or > MaximumLogViews || rowCount is < 0 or > MaximumObservations || now == default)
+        int operationCount = queue.Operations.Count, logCount = evidence.Count, rowCount = desktop?.Sessions?.Count ?? 0, idCount = operationIds.Count;
+        if (operationCount is < 0 or > MaximumOperations || logCount is < 0 or > MaximumLogViews || rowCount is < 0 or > MaximumObservations
+            || idCount is < 0 or > MaximumOperations || now == default)
             throw new ArgumentException("Trial feedback requires bounded queue, process and diagnostic snapshots and a current time.");
-        LaunchOperation? selected = null; int selections = 0; var operations = new LaunchOperation[operationCount];
+        // One slot per distinct requested id; repeated ids share the same selection count.
+        var ids = new Guid[idCount]; var slots = new Dictionary<Guid, int>(idCount);
+        for (int index = 0; index < idCount; index++) { ids[index] = operationIds[index]; slots.TryAdd(ids[index], slots.Count); }
+        var selected = new LaunchOperation?[slots.Count]; var selections = new int[slots.Count]; var operations = new LaunchOperation[operationCount];
         for (int index = 0; index < operationCount; index++)
         {
             var item = queue.Operations[index];
             if (item?.Intent is null) throw new ArgumentException("The queue contains an invalid operation.");
             operations[index] = item;
-            if (item.Intent.OperationId == operationId) { selected = item; selections++; }
+            if (slots.TryGetValue(item.Intent.OperationId, out int slot)) { selected[slot] = item; selections[slot]++; }
         }
+        // Count valid queue receipts only for the process instances a selected trial claims.
+        var receipts = new Dictionary<(int ProcessId, long StartTicks), int>();
+        for (int slot = 0; slot < selected.Length; slot++)
+            if (selections[slot] == 1 && selected[slot]?.ProcessReceipt is { IsValid: true } claimed) receipts.TryAdd((claimed.ProcessId, claimed.ProcessStartUtcTicks), 0);
+        if (receipts.Count > 0)
+            for (int index = 0; index < operationCount; index++)
+                if (operations[index].ProcessReceipt is { IsValid: true } sibling && receipts.TryGetValue((sibling.ProcessId, sibling.ProcessStartUtcTicks), out int count))
+                    receipts[(sibling.ProcessId, sibling.ProcessStartUtcTicks)] = count + 1;
+        ProcessInventory? inventory = null; var views = new NativeTrialEvidenceView[idCount];
+        for (int index = 0; index < idCount; index++)
+        {
+            int slot = slots[ids[index]];
+            views[index] = ProjectSelected(ids[index], selected[slot], selections[slot], receipts, desktop, rowCount, ref inventory, evidence, logCount, now);
+        }
+        return views;
+    }
+
+    private static NativeTrialEvidenceView ProjectSelected(Guid operationId, LaunchOperation? selected, int selections, Dictionary<(int ProcessId, long StartTicks), int> receipts,
+        DesktopSnapshot? desktop, int rowCount, ref ProcessInventory? inventory, IReadOnlyList<SessionEvidenceSnapshot> evidence, int logCount, DateTimeOffset now)
+    {
         if (operationId == Guid.Empty || selections != 1 || selected is null)
             return Empty(operationId, selections > 1 ? NativeTrialProcessPresence.Ambiguous : NativeTrialProcessPresence.Unavailable,
                 "The selected trial is unavailable or ambiguous in the current queue. No account, process or arrival is established.");
@@ -60,14 +94,8 @@ public static class NativeTrialEvidence
         if (receipt is not null)
         {
             if (!receipt.IsValid || receipt.RecordedUtc > now) presence = NativeTrialProcessPresence.InvalidReceipt;
-            else
-            {
-                int receipts = 0;
-                for (int index = 0; index < operationCount; index++)
-                    if (operations[index].ProcessReceipt is { IsValid: true } sibling && sibling.ProcessId == receipt.ProcessId
-                        && sibling.ProcessStartUtcTicks == receipt.ProcessStartUtcTicks) receipts++;
-                presence = receipts != 1 ? NativeTrialProcessPresence.Ambiguous : Presence(desktop, rowCount, receipt, now, out measuredAt);
-            }
+            else presence = receipts[(receipt.ProcessId, receipt.ProcessStartUtcTicks)] != 1 ? NativeTrialProcessPresence.Ambiguous
+                : (inventory ??= new(desktop, rowCount, now)).Presence(receipt, out measuredAt);
         }
         var view = Empty(operationId, presence, Explanation(presence)) with
         { ExpectedUserId = user, RequestedPlaceId = place, RequestedJobId = job, ProcessReceipt = receipt, ProcessObservedUtc = inventoryAt, ProcessMeasurementUtc = measuredAt };
@@ -138,29 +166,39 @@ public static class NativeTrialEvidence
                 : "Reported values are unverified diagnostics. Even matching IDs and an observed process do not prove account selection or arrival." };
     }
 
-    private static NativeTrialProcessPresence Presence(DesktopSnapshot? desktop, int count, LaunchProcessReceipt receipt, DateTimeOffset now, out DateTimeOffset? measured)
+    /// <summary>One scan of a process inventory, shared by every receipt projected from the same snapshot.</summary>
+    private sealed class ProcessInventory
     {
-        measured = null;
-        if (desktop is null || desktop.Sessions is null) return NativeTrialProcessPresence.Unavailable;
-        if (desktop.Problem is not null || !desktop.ProcessInventoryComplete || desktop.ProcessRevision <= 0 || desktop.ProcessObservedUtc is null)
-            return NativeTrialProcessPresence.Incomplete;
-        if (!Fresh(desktop.ProcessObservedUtc.Value, now, MaximumProcessAge)) return NativeTrialProcessPresence.Stale;
-        int pids = 0; SessionObservation? found = null; bool invalid = false;
-        var seen = new HashSet<int>();
-        for (int index = 0; index < count; index++)
+        private readonly NativeTrialProcessPresence? _unusable; private readonly bool _invalid;
+        private readonly Dictionary<int, (int Count, SessionObservation Row)> _rows = [];
+        public ProcessInventory(DesktopSnapshot? desktop, int count, DateTimeOffset now)
         {
-            var row = desktop.Sessions[index];
-            if (row is null || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0 || row.Problem is not null || row.ObservedUtc == default
-                || row.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks || row.ObservedUtc > desktop.ProcessObservedUtc || !Fresh(row.ObservedUtc, now, MaximumProcessAge)) invalid = true;
-            if (row is null) continue;
-            if (!seen.Add(row.ProcessId)) invalid = true;
-            if (row.ProcessId == receipt.ProcessId) { pids++; found = row; }
+            if (desktop is null || desktop.Sessions is null) { _unusable = NativeTrialProcessPresence.Unavailable; return; }
+            if (desktop.Problem is not null || !desktop.ProcessInventoryComplete || desktop.ProcessRevision <= 0 || desktop.ProcessObservedUtc is null)
+            { _unusable = NativeTrialProcessPresence.Incomplete; return; }
+            if (!Fresh(desktop.ProcessObservedUtc.Value, now, MaximumProcessAge)) { _unusable = NativeTrialProcessPresence.Stale; return; }
+            for (int index = 0; index < count; index++)
+            {
+                var row = desktop.Sessions[index];
+                if (row is null || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0 || row.Problem is not null || row.ObservedUtc == default
+                    || row.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks || row.ObservedUtc > desktop.ProcessObservedUtc || !Fresh(row.ObservedUtc, now, MaximumProcessAge)) _invalid = true;
+                if (row is null) continue;
+                // A repeated PID makes the whole inventory incomplete; for the receipt's own PID it is ambiguous.
+                ref var entry = ref CollectionsMarshal.GetValueRefOrAddDefault(_rows, row.ProcessId, out bool repeated);
+                if (repeated) _invalid = true;
+                entry = (entry.Count + 1, row);
+            }
         }
-        if (pids > 1) return NativeTrialProcessPresence.Ambiguous;
-        if (invalid) return NativeTrialProcessPresence.Incomplete;
-        if (found is null) return NativeTrialProcessPresence.NotObserved;
-        measured = found.ObservedUtc;
-        return found.ProcessStartUtcTicks == receipt.ProcessStartUtcTicks ? NativeTrialProcessPresence.Observed : NativeTrialProcessPresence.PidReused;
+        public NativeTrialProcessPresence Presence(LaunchProcessReceipt receipt, out DateTimeOffset? measured)
+        {
+            measured = null;
+            if (_unusable is { } unusable) return unusable;
+            if (!_rows.TryGetValue(receipt.ProcessId, out var match)) return _invalid ? NativeTrialProcessPresence.Incomplete : NativeTrialProcessPresence.NotObserved;
+            if (match.Count > 1) return NativeTrialProcessPresence.Ambiguous;
+            if (_invalid) return NativeTrialProcessPresence.Incomplete;
+            measured = match.Row.ObservedUtc;
+            return match.Row.ProcessStartUtcTicks == receipt.ProcessStartUtcTicks ? NativeTrialProcessPresence.Observed : NativeTrialProcessPresence.PidReused;
+        }
     }
     private static NativeTrialReportedUser LatestUser(SessionEvidenceSnapshot facts, LaunchProcessReceipt receipt, DateTimeOffset now, bool canRememberCurrent)
     {

@@ -297,9 +297,57 @@ public sealed class NativeTrialEvidenceTests
         Assert.Throws<ArgumentException>(() => Project(operation, Desktop(Row()), facts.Append(Facts()).ToArray()));
     }
 
+    [Fact]
+    public void ProjectManyMatchesProjectPerOperation()
+    {
+        var observed = Operation();
+        var shared = Operation() with { ProcessReceipt = new(700002, Start, Now.AddMinutes(-5)) };
+        var sharedSibling = shared with { Intent = shared.Intent with { OperationId = Guid.NewGuid(), ProfileId = Guid.NewGuid() } };
+        var duplicated = Operation() with { ProcessReceipt = null };
+        var invalid = Operation(); invalid = invalid with { Intent = invalid.Intent with { RequestedJobId = "synthetic-not-a-job" }, ProcessReceipt = new(700004, Start, Now.AddMinutes(-5)) };
+        var reused = Operation() with { ProcessReceipt = new(700003, Start + 1, Now.AddMinutes(-5)) };
+        var noReceipt = Operation() with { ProcessReceipt = null };
+        var queue = new LaunchQueueSnapshot(false, [observed, shared, sharedSibling, duplicated, duplicated, invalid, reused, noReceipt]);
+        var desktop = Desktop(Row(), Row() with { ProcessId = 700002 }, Row() with { ProcessId = 700003 });
+        SessionEvidenceSnapshot[] facts = [Facts()];
+        Guid[] ids = [observed.Intent.OperationId, shared.Intent.OperationId, sharedSibling.Intent.OperationId, duplicated.Intent.OperationId,
+            invalid.Intent.OperationId, reused.Intent.OperationId, noReceipt.Intent.OperationId, Guid.Empty, Guid.NewGuid(), observed.Intent.OperationId];
+        var views = NativeTrialEvidence.ProjectMany(queue, ids, desktop, facts, Now);
+        Assert.Equal(ids.Length, views.Count);
+        for (int index = 0; index < ids.Length; index++) Assert.Equal(NativeTrialEvidence.Project(queue, ids[index], desktop, facts, Now), views[index]);
+        Assert.Equal(NativeTrialProcessPresence.Observed, views[0].Presence); Assert.Equal(NativeTrialEvidenceOutcome.ReportedMatchUnverified, views[0].Outcome);
+        Assert.Equal(NativeTrialProcessPresence.Ambiguous, views[1].Presence); Assert.Equal(NativeTrialProcessPresence.Ambiguous, views[2].Presence);
+        Assert.Equal(NativeTrialProcessPresence.Ambiguous, views[3].Presence); Assert.Null(views[3].ExpectedUserId);
+        Assert.Null(views[4].RequestedJobId); Assert.Equal(NativeTrialProcessPresence.Unavailable, views[4].Presence); Assert.Same(invalid.ProcessReceipt, views[4].ProcessReceipt);
+        Assert.Equal(NativeTrialProcessPresence.PidReused, views[5].Presence); Assert.Equal(NativeTrialProcessPresence.NoReceipt, views[6].Presence);
+        Assert.Equal(NativeTrialProcessPresence.Unavailable, views[7].Presence); Assert.Equal(NativeTrialProcessPresence.Unavailable, views[8].Presence);
+        Assert.Equal(views[0], views[9]); foreach (var view in views) NoAuthority(view);
+        Assert.Throws<ArgumentException>(() => NativeTrialEvidence.ProjectMany(queue, new Guid[NativeTrialEvidence.MaximumOperations + 1], desktop, facts, Now));
+    }
+
+    [Fact]
+    public void ProjectManyReadsEachQueueAndProcessRowOnceForEveryRequestedTrial()
+    {
+        // Mechanical cost check: one batch reads each shared snapshot row once, not once per requested trial.
+        var operations = Enumerable.Range(0, 64).Select(i => Operation() with { ProcessReceipt = new(800000 + i, Start, Now.AddMinutes(-5)) }).ToArray();
+        var rows = operations.Select(operation => Row() with { ProcessId = operation.ProcessReceipt!.ProcessId }).ToArray();
+        var queueRows = new CountingIndexed<LaunchOperation>(operations); var processRows = new CountingIndexed<SessionObservation>(rows);
+        var ids = operations.Take(32).Select(operation => operation.Intent.OperationId).ToArray();
+        var views = NativeTrialEvidence.ProjectMany(new(false, queueRows), ids, Desktop() with { Sessions = processRows }, [], Now);
+        Assert.Equal(32, views.Count); Assert.All(views, view => Assert.Equal(NativeTrialProcessPresence.Observed, view.Presence));
+        Assert.Equal(operations.Length, queueRows.Reads); Assert.Equal(rows.Length, processRows.Reads);
+    }
+
     private sealed class IndexedOnly<T>(IReadOnlyList<T> items) : IReadOnlyList<T>
     {
         public int Count => items.Count; public T this[int index] => items[index];
+        public IEnumerator<T> GetEnumerator() => throw new InvalidOperationException("Unbounded enumeration is forbidden in this fixture.");
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+    private sealed class CountingIndexed<T>(IReadOnlyList<T> items) : IReadOnlyList<T>
+    {
+        public int Reads { get; private set; }
+        public int Count => items.Count; public T this[int index] { get { Reads++; return items[index]; } }
         public IEnumerator<T> GetEnumerator() => throw new InvalidOperationException("Unbounded enumeration is forbidden in this fixture.");
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
