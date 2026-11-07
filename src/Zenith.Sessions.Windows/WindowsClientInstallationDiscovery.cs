@@ -32,7 +32,7 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
     {
         var candidates=new Dictionary<string,(ClientInstallationProduct Product,ClientInstallationFileMetadata Metadata,List<ClientInstallationEvidence> Evidence)>(StringComparer.OrdinalIgnoreCase);
         var inspected=new Dictionary<string,ClientInstallationFileMetadata>(StringComparer.OrdinalIgnoreCase);
-        var issues=new List<ClientInstallationIssue>();var roots=new List<(ClientInstallationProduct Product,string Root)>();
+        var issues=new List<ClientInstallationIssue>();var roots=new List<(ClientInstallationProduct Product,string Root,ClientInstallationHintSource Source)>();
         var protocolPaths=new List<string>();bool partial=false;int successfulQueries=0;
         void Issue(ClientInstallationIssueCode code,ClientInstallationProduct? product=null,ClientInstallationHintSource? source=null)
         {
@@ -68,7 +68,7 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
         {
             if(local!.Contains("\\Packages\\",StringComparison.OrdinalIgnoreCase) || local.Contains("\\LocalCache\\",StringComparison.OrdinalIgnoreCase))
                 Issue(ClientInstallationIssueCode.EnvironmentRedirected);
-            foreach(var product in Enum.GetValues<ClientInstallationProduct>()) roots.Add((product,Path.Combine(local!,product.ToString())));
+            foreach(var product in Enum.GetValues<ClientInstallationProduct>()) roots.Add((product,Path.Combine(local!,product.ToString()),ClientInstallationHintSource.StandardInstallPath));
         }
         foreach(var hint in Enum.GetValues<ClientInstallationRegistryHint>())
         {
@@ -88,14 +88,15 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
                 var product=hint switch {ClientInstallationRegistryHint.BloxstrapInstallLocation=>ClientInstallationProduct.Bloxstrap,
                     ClientInstallationRegistryHint.FishstrapInstallLocation=>ClientInstallationProduct.Fishstrap,_=>ClientInstallationProduct.Froststrap};
                 if(!TryNormalizeDirectory(value,out var root)) {Issue(ClientInstallationIssueCode.InvalidHint,product,ClientInstallationHintSource.UninstallRegistry);continue;}
-                if(!roots.Any(known=>known.Product==product && string.Equals(known.Root,root,StringComparison.OrdinalIgnoreCase))) roots.Add((product,root!));
+                // A registered root that equals the default stays a standard location; any other registered root is labelled by the registration that named it.
+                if(!roots.Any(known=>known.Product==product && string.Equals(known.Root,root,StringComparison.OrdinalIgnoreCase))) roots.Add((product,root!,ClientInstallationHintSource.UninstallRegistry));
                 Probe(Path.Combine(root!,product+".exe"),new(ClientInstallationHintSource.UninstallRegistry,product),retainMissing:true);
             }
         }
         if(protocolPaths.Distinct(StringComparer.OrdinalIgnoreCase).Skip(1).Any()) Issue(ClientInstallationIssueCode.ConflictingProtocols);
         foreach(var root in roots)
         {
-            ct.ThrowIfCancellationRequested();var evidence=new ClientInstallationEvidence(ClientInstallationHintSource.StandardInstallPath,root.Product);
+            ct.ThrowIfCancellationRequested();var evidence=new ClientInstallationEvidence(root.Source,root.Product);
             if(root.Product!=ClientInstallationProduct.Roblox) Probe(Path.Combine(root.Root,root.Product+".exe"),evidence);
             foreach(string executable in RobloxNativePlayerFiles.InventoryNames) Probe(Path.Combine(root.Root,"Roblox","Player",executable),evidence);
             if(root.Product==ClientInstallationProduct.Roblox) foreach(string executable in RobloxNativePlayerFiles.InventoryNames) Probe(Path.Combine(root.Root,"Player",executable),evidence);

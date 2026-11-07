@@ -58,6 +58,24 @@ public sealed class ClientInstallationDiscoveryTests
         Assert.False(result.HasConflicts);Assert.Equal(ClientInstallationSnapshotStatus.Complete,result.Status);
     }
     [Fact]
+    public async Task RegistryInstallLocationOutsideTheStandardRootIsNotLabelledAStandardLocation()
+    {
+        const string custom=@"D:\Custom\Bloxstrap\Bloxstrap.exe",player=@"D:\Custom\Bloxstrap\Roblox\Player\RobloxPlayerBeta.exe";
+        var source=new FakeSource();source.Registry[ClientInstallationRegistryHint.BloxstrapInstallLocation]=@"D:\Custom\Bloxstrap";
+        source.Files[custom]=new(ClientInstallationFileState.PresentUnverified,"Bloxstrap","2.10.0.0");
+        source.Files[player]=new(ClientInstallationFileState.PresentUnverified,"Roblox","0.700.0.7000000");
+        var result=await new WindowsClientInstallationDiscovery(source).DiscoverAsync(default);
+        var customRows=result.Candidates.Where(candidate=>candidate.ExecutablePath.StartsWith(@"D:\Custom\",StringComparison.OrdinalIgnoreCase)).ToArray();
+        Assert.Equal(new[]{custom,player},customRows.Select(candidate=>candidate.ExecutablePath).Order(StringComparer.OrdinalIgnoreCase));
+        Assert.All(customRows,candidate=>
+        {
+            Assert.DoesNotContain(candidate.Evidence,e=>e.Source==ClientInstallationHintSource.StandardInstallPath);
+            Assert.Contains(candidate.Evidence,e=>e.Source==ClientInstallationHintSource.UninstallRegistry && e.Product==ClientInstallationProduct.Bloxstrap);
+        });
+        Assert.Single(customRows.Single(candidate=>candidate.ExecutablePath==custom).Evidence);
+        Assert.Equal(1,source.Inspected.Count(path=>string.Equals(path,custom,StringComparison.OrdinalIgnoreCase)));
+    }
+    [Fact]
     public async Task ConflictingProtocolTargetsAndAllClientVersionsRemainVisibleWithoutAutomaticSelection()
     {
         string first=Path.Combine(Local,"Roblox","Versions","version-old","RobloxPlayerBeta.exe");
