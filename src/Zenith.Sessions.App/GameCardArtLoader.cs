@@ -14,9 +14,11 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
     private Run? _current;
     private bool _disposed;
 
-    /// <summary>Every tracked picture task; completes once all started runs have finished or been fenced out.</summary>
-    public Task Active
-    {get {_runs.RemoveAll(run=>run.Task.IsCompleted);return _runs.Count==0?Task.CompletedTask:Task.WhenAll(_runs.Select(run=>run.Task));}}
+    /// <summary>
+    /// Every tracked picture task; completes once all started runs have finished or been fenced out. Only unfinished
+    /// runs are tracked: each run removes itself when it finishes, so finished rows and pictures are never retained here.
+    /// </summary>
+    public Task Active=>_runs.Count==0?Task.CompletedTask:Task.WhenAll(_runs.Select(run=>run.Task));
 
     /// <summary>
     /// Queue pictures for rows that have none. Rows join the run of this generation; another generation replaces
@@ -83,6 +85,7 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
         {
             run.Finished=true;
             if(ReferenceEquals(_current,run)) _current=null;
+            _runs.Remove(run); // UI context, like every other access; the run's rows and pictures belong to the page now.
             run.Stop.Dispose();
         }
     }

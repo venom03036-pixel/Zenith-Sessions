@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Windows.Media.Imaging;
 using Xunit;
 using Zenith.Sessions.App;
@@ -85,4 +86,29 @@ public sealed class GameCardArtLoaderTests
         f.Search.SelectedSort="Rating";await f.Search.ArtOperation; // Re-sorting never re-requests attempted pictures.
         Assert.Equal(1,f.Directory.ArtFetches);Assert.Single(f.Directory.ArtBatches);
     });
+
+    // The running page never reads Active (only tests do), so a finished run must let go of its rows and their
+    // decoded pictures on its own; otherwise every search, sort and "Show more" keeps its cards alive until disposal.
+    [Fact]
+    public Task FinishedRunsReleaseTheirRowsWithoutAnyoneReadingActive()=>SearchTest.OnUi(async()=>
+    {
+        var directory=new SearchDirectory(new SearchClock());
+        await using var loader=new GameCardArtLoader(directory,_=>{});
+        var rows=new List<WeakReference>();
+        for(long generation=1;generation<=3;generation++)
+        {
+            var started=Start(loader,generation);await started.Work;rows.Add(started.Row);
+            Assert.True(started.Work.IsCompletedSuccessfully);
+        }
+        Assert.Equal(3,directory.ArtFetches);
+        GC.Collect();GC.WaitForPendingFinalizers();GC.Collect();
+        Assert.All(rows,row=>Assert.False(row.IsAlive,"A finished picture run still holds its card row (and decoded picture) alive."));
+    });
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static (Task Work,WeakReference Row) Start(GameCardArtLoader loader,long generation)
+    {
+        var row=new PublicGameSearchRow(new PublicRobloxGameSearchResult(1000+generation,2000+generation,"Game "+generation));
+        return (loader.LoadAsync([row],generation),new WeakReference(row));
+    }
 }
