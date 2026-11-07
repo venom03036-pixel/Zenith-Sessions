@@ -308,6 +308,48 @@ public sealed class MouseCompressionEngineTests
             .Which.X.Should().Be(500);
     }
 
+    [Theory]
+    [InlineData(MouseSamplingMode.DistanceAndTime)]
+    [InlineData(MouseSamplingMode.PathInterpolation)]
+    public void Reset_WithClearedReusedList_ProducesSameOutputAsFreshEngine(MouseSamplingMode mode)
+    {
+        // MacroSuite.Benchmarks reuses one engine and one output list per operation
+        // (Reset + Clear) so MemoryDiagnoser measures only Process and Flush. That is only
+        // valid while a reset engine behaves exactly like a newly constructed one.
+        var options = new CompressionOptions { SamplingMode = mode };
+        // A zig-zag stroke with more turns than MaxViaPoints, a click, then a straight stroke.
+        var events = new List<InputEvent>();
+        int x = 100, y = 200;
+        long t = 0;
+        for (int i = 0; i < 40; i++)
+        {
+            x += 3;
+            y += (i / 5) % 2 == 0 ? 3 : -3;
+            t += 4;
+            events.Add(Move(x, y, t));
+        }
+        events.Add(LeftDown(x, y, t + 200));
+        for (int i = 0; i < 20; i++) events.Add(Move(x - (i * 5), y, t + 400 + (i * 4)));
+
+        var fresh = new MouseCompressionEngine(options);
+        var expected = Run(fresh, events.ToArray());
+
+        var reused = new MouseCompressionEngine(options);
+        var output = new List<InputEvent>(events.Count);
+        foreach (var ev in events) reused.Process(in ev, output);
+        reused.Flush(output);
+        reused.Process(Move(900, 900, 5_000), output); // leave held, unflushed state behind too
+
+        reused.Reset();
+        output.Clear();
+        foreach (var ev in events) reused.Process(in ev, output);
+        reused.Flush(output);
+
+        output.Should().Equal(expected);
+        reused.ProcessedCount.Should().Be(fresh.ProcessedCount);
+        reused.SuppressedCount.Should().Be(fresh.SuppressedCount);
+    }
+
     // -----------------------------------------------------------------------
     // Options validation
     // -----------------------------------------------------------------------
