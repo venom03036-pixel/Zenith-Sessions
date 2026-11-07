@@ -4,7 +4,9 @@ namespace MacroSuite.App.ViewModels;
 
 public sealed partial class SettingsViewModel
 {
-    private int _shortcutDefaultsVersion = 2;
+    // Records which generation of shortcut defaults wrote settings.json. Nothing branches on it yet;
+    // a file without the key loads as 0 so a future migration can tell it predates this generation.
+    private int _shortcutDefaultsVersion = TransportHotkeyDefaults.Version;
     public Func<bool>? CanChangeHotkeys { get; set; }
     public Func<IReadOnlyDictionary<string, string>, bool>? TryApplyHotkeys { get; set; }
     private string _shortcutAvailability = "Shortcuts are checked when the main window opens.";
@@ -35,10 +37,15 @@ public sealed partial class SettingsViewModel
             PersistenceStatus = "Finish the current operation before resetting shortcuts.";
             return;
         }
-        var defaults = new Dictionary<string, string> { ["record"] = "F6", ["stop"] = "F8", ["play"] = "F4", ["pause"] = "F5" };
+        var defaults = new Dictionary<string, string>
+        {
+            ["record"] = TransportHotkeyDefaults.Record, ["stop"] = TransportHotkeyDefaults.Stop,
+            ["play"] = TransportHotkeyDefaults.Play, ["pause"] = TransportHotkeyDefaults.Pause,
+        };
         if (TryApplyHotkeys?.Invoke(defaults) == false) return;
-        _shortcutDefaultsVersion = 2;
-        _recordHotkey = "F6"; _stopHotkey = "F8"; _playHotkey = "F4"; _pauseHotkey = "F5";
+        _shortcutDefaultsVersion = TransportHotkeyDefaults.Version;
+        _recordHotkey = TransportHotkeyDefaults.Record; _stopHotkey = TransportHotkeyDefaults.Stop;
+        _playHotkey = TransportHotkeyDefaults.Play; _pauseHotkey = TransportHotkeyDefaults.Pause;
         foreach (string property in new[] { nameof(RecordHotkey), nameof(StopHotkey), nameof(PlayHotkey), nameof(PauseHotkey),
             nameof(RecordHotkeyDisplay), nameof(StopHotkeyDisplay), nameof(PlayHotkeyDisplay), nameof(PauseHotkeyDisplay) }) OnPropertyChanged(property);
         // Publish after all values have changed, so observers never see a half-applied reset.

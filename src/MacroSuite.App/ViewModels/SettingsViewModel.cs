@@ -82,13 +82,13 @@ public sealed partial class SettingsViewModel : ObservableObject
     }
 
     private bool _alwaysOnTop;
-    private string _recordHotkey = "F6";
-    private string _stopHotkey = "F8";
-    private string _playHotkey = "F4";
-    private string _pauseHotkey = "F5";
-    private string _panicHotkey = "F12";
-    private string _autoClickerHotkey = "F1";
-    private string _miniToolbarClickThroughHotkey = "Ctrl+Alt+F10";
+    private string _recordHotkey = TransportHotkeyDefaults.Record;
+    private string _stopHotkey = TransportHotkeyDefaults.Stop;
+    private string _playHotkey = TransportHotkeyDefaults.Play;
+    private string _pauseHotkey = TransportHotkeyDefaults.Pause;
+    private string _panicHotkey = TransportHotkeyDefaults.Panic;
+    private string _autoClickerHotkey = TransportHotkeyDefaults.AutoClicker;
+    private string _miniToolbarClickThroughHotkey = TransportHotkeyDefaults.MiniClickThrough;
     private bool _autoSizeActionEditor = true;
     private bool _miniModeWhileRecording = true;
     private bool _miniToolbarClickThrough;
@@ -806,10 +806,10 @@ public sealed partial class SettingsViewModel : ObservableObject
         int detectedMax = _displayInfoService.GetMaxMonitorRefreshRate();
         _maxTargetFps = Math.Max(165, detectedMax);
 
-        string rec = NormalizeBind(_recordHotkey, "F6");
-        string stop = NormalizeBind(_stopHotkey, "F8");
-        string play = NormalizeBind(_playHotkey, "F4");
-        string pause = NormalizeBind(_pauseHotkey, "F5");
+        string rec = NormalizeBind(_recordHotkey, TransportHotkeyDefaults.Record);
+        string stop = NormalizeBind(_stopHotkey, TransportHotkeyDefaults.Stop);
+        string play = NormalizeBind(_playHotkey, TransportHotkeyDefaults.Play);
+        string pause = NormalizeBind(_pauseHotkey, TransportHotkeyDefaults.Pause);
         bool repaired = rec != _recordHotkey || stop != _stopHotkey || play != _playHotkey || pause != _pauseHotkey;
         _recordHotkey = rec;
         _stopHotkey = stop;
@@ -1143,18 +1143,18 @@ public sealed partial class SettingsViewModel : ObservableObject
             _imageScanBudgetEnabled = !root.TryGetProperty("imageScanBudgetEnabled", out var scanBudget)
                 || scanBudget.ValueKind != JsonValueKind.False;
             if (root.TryGetProperty("alwaysOnTop", out var aot)) _alwaysOnTop = aot.GetBoolean();
-            if (root.TryGetProperty("recordHotkey", out var rh)) _recordHotkey = rh.GetString() ?? "F6";
-            if (root.TryGetProperty("stopHotkey", out var sh)) _stopHotkey = sh.GetString() ?? "F8";
+            if (root.TryGetProperty("recordHotkey", out var rh)) _recordHotkey = rh.GetString() ?? TransportHotkeyDefaults.Record;
+            if (root.TryGetProperty("stopHotkey", out var sh)) _stopHotkey = sh.GetString() ?? TransportHotkeyDefaults.Stop;
             if (root.TryGetProperty("allowGdiFallback", out var gdi)) _allowGdiFallback = gdi.GetBoolean();
             if (root.TryGetProperty("targetFps", out var fps)) _targetFps = fps.GetInt32();
-            if (root.TryGetProperty("playHotkey", out var ph)) _playHotkey = ph.GetString() ?? "F4";
-            if (root.TryGetProperty("pauseHotkey", out var pah)) _pauseHotkey = pah.GetString() ?? "F5";
+            if (root.TryGetProperty("playHotkey", out var ph)) _playHotkey = ph.GetString() ?? TransportHotkeyDefaults.Play;
+            if (root.TryGetProperty("pauseHotkey", out var pah)) _pauseHotkey = pah.GetString() ?? TransportHotkeyDefaults.Pause;
             if (root.TryGetProperty("autoClickerHotkey", out var ach) && ach.ValueKind == JsonValueKind.String)
             {
                 string bind = ach.GetString()?.Trim() ?? string.Empty;
                 if (bind.Length == 0 || HotkeyCodec.TryParse(bind, out _, out _)) _autoClickerHotkey = bind;
             }
-            _miniToolbarClickThroughHotkey = "Ctrl+Alt+F10";
+            _miniToolbarClickThroughHotkey = TransportHotkeyDefaults.MiniClickThrough;
             if (root.TryGetProperty("miniToolbarClickThroughHotkey", out var miniClickThroughHotkey)
                 && miniClickThroughHotkey.ValueKind == JsonValueKind.String
                 && HotkeyCodec.TryParse(miniClickThroughHotkey.GetString(), out _, out _))
@@ -1232,7 +1232,7 @@ public sealed partial class SettingsViewModel : ObservableObject
             {
                 // Six choices ensure one is free of the five application transport binds.
                 string[] transports = [_recordHotkey, _stopHotkey, _playHotkey, _pauseHotkey, _autoClickerHotkey];
-                string[] candidates = ["F12", "Ctrl+Shift+F12", "Ctrl+Alt+Shift+F12", "Alt+Shift+F11", "Ctrl+Alt+Shift+F11", "Ctrl+Shift+F11"];
+                string[] candidates = [TransportHotkeyDefaults.Panic, "Ctrl+Shift+F12", "Ctrl+Alt+Shift+F12", "Alt+Shift+F11", "Ctrl+Alt+Shift+F11", "Ctrl+Shift+F11"];
                 _panicHotkey = candidates.First(candidate => transports.All(bind => !HotkeyCodec.AreEqual(bind, candidate)));
             }
         }
