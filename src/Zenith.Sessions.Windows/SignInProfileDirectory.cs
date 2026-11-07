@@ -19,6 +19,9 @@ public sealed class SignInProfileDirectory
     // Leftover folders one admission or sweep may open; each removal is itself bounded by Remove's file budget.
     private const int RecoveryBudget = 8;
     private const string NeedsReview = "Private sign-in cleanup needs review before another browser can open.";
+    // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
+    // reserved, including from the UI thread, so it is memory only; the value is unused.
+    private static readonly ConcurrentDictionary<string, byte> ReviewPending = new(StringComparer.OrdinalIgnoreCase);
     private FileStream? _lease;
     public string Path { get; }
     private SignInProfileDirectory(string path, FileStream? lease = null)
@@ -34,7 +37,18 @@ public sealed class SignInProfileDirectory
     public static bool HasLiveOwner(string dataRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
-        return HeldLeases.TryGetValue(System.IO.Path.Combine(System.IO.Path.GetFullPath(dataRoot), "signin-browser-data"), out int held) && held > 0;
+        return HeldLeases.TryGetValue(BrowserRootOf(dataRoot), out int held) && held > 0;
+    }
+
+    /// <summary>
+    /// True while the last admission or sweep under <paramref name="dataRoot"/> was stopped by leftover data it could not
+    /// recover (unrecognized, redirected or unremovable), so the next <see cref="Create"/> would refuse as well. Memory
+    /// only, like <see cref="HasLiveOwner"/>; a clean admission or sweep clears it, and every start begins with a sweep.
+    /// </summary>
+    public static bool LeftoverNeedsReview(string dataRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        return ReviewPending.ContainsKey(BrowserRootOf(dataRoot));
     }
 
     public static SignInProfileDirectory Create(string dataRoot, Guid profileId, CancellationToken ct)
@@ -47,25 +61,33 @@ public sealed class SignInProfileDirectory
         Admission.Wait(ct);
         try
         {
-            // Reject links in existing ancestors before creating anything below the app's data root.
-            AssertAncestors(root);
             string browserRoot = System.IO.Path.Combine(root, "signin-browser-data");
-            var directory = Directory.CreateDirectory(browserRoot);
-            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Browser sign-in storage is redirected.");
-            var acl = new DirectorySecurity();
-            acl.SetAccessRuleProtection(true, false);
-            var inheritance = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
-            foreach (var sid in new[] { WindowsIdentity.GetCurrent().User!, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
-                acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
-            directory.SetAccessControl(acl);
-            // Admission needs a clean root, so the first leftover it cannot recover stops it.
-            int prior = 0;
-            foreach (string old in Directory.EnumerateDirectories(browserRoot))
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                if (++prior > RecoveryBudget) throw new IOException(NeedsReview);
-                RecoverLeftover(old, ct);
+                // Reject links in existing ancestors before creating anything below the app's data root.
+                AssertAncestors(root);
+                var directory = Directory.CreateDirectory(browserRoot);
+                if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Browser sign-in storage is redirected.");
+                var acl = new DirectorySecurity();
+                acl.SetAccessRuleProtection(true, false);
+                var inheritance = InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit;
+                foreach (var sid in new[] { WindowsIdentity.GetCurrent().User!, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null), new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null) })
+                    acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl, inheritance, PropagationFlags.None, AccessControlType.Allow));
+                directory.SetAccessControl(acl);
+                // Admission needs a clean root, so the first leftover it cannot recover stops it.
+                int prior = 0;
+                foreach (string old in Directory.EnumerateDirectories(browserRoot))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    if (++prior > RecoveryBudget) throw new IOException(NeedsReview);
+                    RecoverLeftover(old, ct);
+                }
             }
+            // What stopped admission stays on disk until someone reviews it. Remember it so the handoff checks refuse
+            // before reserving a grant; a folder another owner holds is only busy and a cancel changes nothing.
+            catch (Exception ex) when (ex is (IOException or UnauthorizedAccessException) and not SignInDirectoryInUseException)
+            { ReviewPending.TryAdd(browserRoot, 0); throw; }
+            ReviewPending.TryRemove(browserRoot, out _);
             string path = System.IO.Path.Combine(browserRoot, profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
             ct.ThrowIfCancellationRequested();
             Directory.CreateDirectory(path);
@@ -80,7 +102,8 @@ public sealed class SignInProfileDirectory
     /// that no browser holds, with the same name, marker, lease and redirection checks as <see cref="Create"/>, and
     /// creates nothing. Unlike admission it keeps going past a folder it must preserve: a folder that is held,
     /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. A redirected storage root
-    /// is refused as a whole with an <see cref="IOException"/>. Meant for startup, under the single-instance lock.
+    /// is refused as a whole with an <see cref="IOException"/>. Either way, data the next admission would also refuse
+    /// is reported by <see cref="LeftoverNeedsReview"/>. Meant for startup, under the single-instance lock.
     /// </summary>
     public static SignInSweepResult SweepOwned(string dataRoot, CancellationToken ct)
     {
@@ -93,19 +116,26 @@ public sealed class SignInProfileDirectory
         Admission.Wait(ct);
         try
         {
-            if (!Directory.Exists(browserRoot)) return default;
+            if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); return default; }
             AssertAncestors(browserRoot);
-            int removed = 0, kept = 0;
+            int removed = 0, kept = 0; bool review = false;
             foreach (string old in Directory.EnumerateDirectories(browserRoot))
             {
                 ct.ThrowIfCancellationRequested();
                 // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
                 if (removed + kept >= RecoveryBudget) { kept++; continue; }
                 try { RecoverLeftover(old, ct); removed++; }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
+                // A held folder is busy and frees itself; anything else waits for review.
+                catch (SignInDirectoryInUseException) { kept++; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; review = true; }
             }
+            // Admission also refuses when more folders remain than one admission may open.
+            if (review || kept > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
             return new(removed, kept);
         }
+        // A redirected or unreadable root refuses every admission too.
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        { ReviewPending.TryAdd(browserRoot, 0); throw; }
         finally { Admission.Release(); }
     }
 
@@ -170,6 +200,7 @@ public sealed class SignInProfileDirectory
         finally { HeldLeases.AddOrUpdate(LeaseRoot(Path), 0, static (_, held) => held - 1); }
     }
     private static string LeaseRoot(string path) => System.IO.Path.GetDirectoryName(path)!;
+    private static string BrowserRootOf(string dataRoot) => System.IO.Path.Combine(System.IO.Path.GetFullPath(dataRoot), "signin-browser-data");
     private static FileStream OpenLease(string path)
     {
         try { return new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }

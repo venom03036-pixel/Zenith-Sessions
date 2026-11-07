@@ -31,8 +31,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     internal OwnedRobloxHandoffProbe(string dataRoot,Dispatcher dispatcher,TimeProvider time):this(dataRoot,dispatcher)=>_time=time;
 
     /// <summary>
-    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched,
-    /// Busy while this or another owner holds a private folder, Cancelled after disposal. Memory only.
+    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched or while
+    /// leftover sign-in data kept by the startup sweep or any admission waits for review, Busy while this or another
+    /// owner holds a private folder, Cancelled after disposal. Memory only.
     /// </summary>
     public RobloxHandoffProbeOutcome? Refusal
     {
@@ -44,6 +45,8 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
                 if(_blocked)return RobloxHandoffProbeOutcome.CleanupFailed;
                 if(_owner is not null)return RobloxHandoffProbeOutcome.Busy;
             }
+            // That leftover survives restarts and stops every owner's admission, including a fresh probe's first one.
+            if(SignInProfileDirectory.LeftoverNeedsReview(dataRoot))return RobloxHandoffProbeOutcome.CleanupFailed;
             return SignInProfileDirectory.HasLiveOwner(dataRoot)?RobloxHandoffProbeOutcome.Busy:null;
         }
     }

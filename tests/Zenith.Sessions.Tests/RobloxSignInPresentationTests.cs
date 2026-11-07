@@ -338,6 +338,47 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Equal(new SignInSweepResult(2, 0), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.Empty(Directory.EnumerateFileSystemEntries(browserRoot));
     }
+    [Fact]
+    public void LeftoverKeptForReviewIsRememberedUntilAnAdmissionOrSweepFindsTheRootClean()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        string held = Leftover(browserRoot, true);
+        // A folder another owner still holds is busy, not a folder to review.
+        using (new FileStream(Path.Combine(held, "owner.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+            Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        string unmarked = Leftover(browserRoot, false);
+        Assert.Equal(new SignInSweepResult(1, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root + "-other"));
+        // Admission reaches the same folder and keeps the reminder.
+        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        // Reviewed by hand while running: the next admission finds the root clean and clears it.
+        Directory.Delete(unmarked, true);
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        next.Remove(default);
+        // Admission alone also remembers a leftover it cannot recover, and a clean sweep clears it.
+        unmarked = Leftover(browserRoot, false);
+        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        Directory.Delete(unmarked, true);
+        Assert.Equal(default, SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+    }
+    [Fact]
+    public void SweepRemembersReviewOnlyWhenMoreFoldersRemainThanOneAdmissionMayOpen()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
+        // The two folders left for the next run are recoverable and within one admission's budget.
+        Assert.Equal(new SignInSweepResult(8, 2), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        for (int i = 0; i < 15; i++) Leftover(browserRoot, true);
+        Assert.Equal(new SignInSweepResult(8, 9), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+    }
     private static string OwnedFolderName() => Guid.NewGuid().ToString("N") + "-" + Guid.NewGuid().ToString("N");
     /// <summary>A folder shaped like one a crashed sign-in left: owned name, optional marker and lock, synthetic browser data.</summary>
     private static string Leftover(string browserRoot, bool marked)

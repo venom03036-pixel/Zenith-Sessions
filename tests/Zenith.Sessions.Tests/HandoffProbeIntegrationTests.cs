@@ -138,6 +138,42 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.True(Directory.Exists(foreign),"Unrecognized data was not preserved for review.");
         // Later checks are refused before the caller reserves another account's grant.
         Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,probe.Refusal);
+        // The folder blocks every owner's admission, so the separate native capture refuses too instead of reserving first.
+        await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,Dispatcher.CurrentDispatcher);
+        Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,native.Refusal);
+    });
+    [Fact]
+    public Task LeftoverKeptForReviewAtStartupRefusesTheFirstChecksBeforeAnyGrantIsReserved()=>OnUi(async()=>
+    {
+        // An owned name holding browser data but no marker: older builds left exactly this, and it stays blocked for review.
+        string leftover=Path.Combine(_root,"signin-browser-data",Guid.NewGuid().ToString("N")+"-"+Guid.NewGuid().ToString("N"));
+        string data=Path.Combine(Directory.CreateDirectory(Path.Combine(leftover,"EBWebView")).FullName,"synthetic");File.WriteAllText(data,"test only");
+        // Every start sweeps before the library is ready; it keeps this folder.
+        Assert.Equal(new SignInSweepResult(0,1),SignInProfileDirectory.SweepOwned(_root,default));
+        using var repository=new AccountRepository(_root);await repository.InitializeAsync(default);
+        using var vault=new ProtectedCredentialVault(_root);
+        var inspected=await repository.SaveAsync(AccountProfile.Create("Inspected alias"),default);
+        var prepared=await repository.SaveAsync(AccountProfile.Create("Prepared alias"),default);
+        foreach(var (profile,user) in new[]{(inspected,456L),(prepared,457L)})
+            await vault.SaveAsync(new(profile.Id,RobloxSessionIdentity.Provider,user,1,"","",DateTimeOffset.MaxValue,"old_player",AuthorizationHealth.Linked,
+                RobloxSessionIdentity.Issuer,user.ToString(CultureInfo.InvariantCulture),"synthetic-probe-original"),default);
+        await using var service=new RobloxSessionLinkService(repository,vault,new HandoffIdentity(),new HandoffSignIn());
+        // Fresh owners, as after every restart: neither has latched anything in memory yet.
+        await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
+        await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,Dispatcher.CurrentDispatcher);
+        var inspection=await service.InspectHandoffAsync(inspected.Id,42,probe,default);
+        await AssertStillLinked(inspected.Id);Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,inspection.Outcome);
+        var preparation=await service.PrepareNativeHandoffAsync(
+            new(Guid.NewGuid(),prepared.Id,prepared.Revision,457,1818,0,DateTimeOffset.UtcNow,1,HasExplicitDestination:true),native,default);
+        await AssertStillLinked(prepared.Id);
+        // CleanupFailed, so the configured native provider still stops until restart; no capture was attempted.
+        Assert.Equal(NativeHandoffPreparationStatus.CleanupFailed,preparation.Status);Assert.Null(preparation.BrowserFacts);
+        Assert.True(File.Exists(data),"Leftover data kept for review was removed.");
+        async Task AssertStillLinked(Guid id)
+        {
+            var saved=(await vault.ReadAsync(id,default))!;
+            Assert.Equal(AuthorizationHealth.Linked,saved.Health);Assert.Equal(1,saved.Generation);
+        }
     });
     [Fact]
     public Task RefusedInspectionKeepsTheSavedSignInAndALatchedProbeDisablesTheButton()=>OnUi(async()=>
