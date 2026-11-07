@@ -190,10 +190,13 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             ct.ThrowIfCancellationRequested();
             TrimHistory();
             if(trial)_trialOperations[intent.OperationId]=generation;
-            int index=_operations.Count;_operations.Add(operation);await PersistAsync(ct).ConfigureAwait(false);
-            // A stop is immediate even while queue storage owns the serial lane. A storage adapter
-            // may complete a write despite cancellation, so durably fence the just-created intent
-            // before releasing the lane or waking a dispatcher. Existing queued work is preserved.
+            // Once the row is added, own its write through durable completion (as EnqueueBatchAsync
+            // does). A caller stop during the write is a user stop, not a storage fault: cancelling
+            // the save would leave memory ahead of disk and mark the whole queue unhealthy.
+            int index=_operations.Count;_operations.Add(operation);await PersistAsync(CancellationToken.None).ConfigureAwait(false);
+            // A stop is immediate even while queue storage owns the serial lane, so durably fence
+            // the just-created intent before releasing the lane or waking a dispatcher. Existing
+            // queued work is preserved.
             if(generation!=Interlocked.Read(ref _generation) || ct.IsCancellationRequested || _stop.IsCancellationRequested)
             {
                 operation=operation with { State=LaunchState.Cancelled,Problem=LaunchProblem.None,UpdatedUtc=_time.GetUtcNow() };

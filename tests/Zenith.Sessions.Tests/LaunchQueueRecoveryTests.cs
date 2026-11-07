@@ -276,6 +276,34 @@ public sealed class LaunchQueueRecoveryTests : IDisposable
         }
         finally{if(File.Exists(Primary+".tmp"))File.SetAttributes(Primary+".tmp",FileAttributes.Normal);}
     }
+    [Fact]
+    public async Task CallerCancellationDuringARealQueueStoreWriteKeepsTheQueueHealthyAndDurablyCancelsTheIntent()
+    {
+        // "Stop bundle work", Panic/Lock or a stale trial review can cancel the caller's token
+        // while the real store owns the just-added row's write. That is a user stop, not a
+        // storage fault: the queue stays usable and the new intent is durably cancelled.
+        using var store=new LaunchQueueStore(_root);using var stop=new CancellationTokenSource();
+        var cancelling=new CancelOnQueuedWrite(store,stop);var provider=new ForbiddenProvider();
+        await using var queue=new LaunchCoordinator(cancelling,provider,(_,_)=>throw new InvalidOperationException("No authorization expected."),_=>new(true,"Fixture"));
+        await queue.InitializeAsync(default);
+        var profile=AccountProfile.Create("Synthetic") with { Revision=1,RobloxUserId=123,PreferredPlaceId=6564161046 };
+
+        var row=await queue.EnqueueAsync(profile,stop.Token,new(123,1));
+
+        Assert.True(cancelling.Cancelled);Assert.Equal(LaunchState.Cancelled,row.State);Assert.True(queue.IsHealthy);
+        using var reopened=new LaunchQueueStore(_root);var saved=Assert.Single((await reopened.LoadAsync(default)).Operations);
+        Assert.Equal(row.Intent,saved.Intent);Assert.Equal(LaunchState.Cancelled,saved.State);Assert.Equal(0,provider.Calls);
+    }
+    private sealed class CancelOnQueuedWrite(ILaunchQueueStore inner,CancellationTokenSource stop):ILaunchQueueStore
+    {
+        public bool Cancelled;
+        public Task<LaunchQueueSnapshot> LoadAsync(CancellationToken ct)=>inner.LoadAsync(ct);
+        public Task SaveAsync(LaunchQueueSnapshot snapshot,CancellationToken ct)
+        {
+            if(!Cancelled&&snapshot.Operations.Any(o=>o.State==LaunchState.Queued)){Cancelled=true;stop.Cancel();}
+            return inner.SaveAsync(snapshot,ct);
+        }
+    }
     private sealed class CleanupFailureRows(string temporary,LaunchOperation operation):IReadOnlyList<LaunchOperation>
     {
         public bool Triggered;
