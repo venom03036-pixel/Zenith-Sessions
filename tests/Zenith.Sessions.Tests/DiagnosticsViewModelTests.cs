@@ -170,12 +170,41 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         finally {File.SetAttributes(report,FileAttributes.Normal);}
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
         Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(folder,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
+        // The notice wrapper is not journaled: the row and the activity line keep the cause, so a denied target stays distinguishable.
+        Assert.Contains("Operation failed (UnauthorizedAccessException).",vm.Events[0]);
+        Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
         // A chosen folder that no longer exists is named as such, still without its path, and is not recreated.
         string gone=Path.Combine(_root,"gone");
         vm.ExportDiagnostics.Execute(Path.Combine(gone,"report.json"));await vm.ExportDiagnostics.Execution;
         Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(gone,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(gone));
+        Assert.Contains("Operation failed (DirectoryNotFoundException).",vm.Events[0]);
+        Assert.Equal("IOException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
     });
+    [Fact]
+    public Task AnExportThatFailsAsLockLandsIsJournaledByItsCauseNotItsWrapper()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        try
+        {
+            using var removal=new StagedReportRemoval(folder);
+            // The write has already failed, but its continuation waits for this UI step, so Lock lands first.
+            vm.ExportDiagnostics.Execute(report);removal.Wait();vm.Lock.Execute(null);await vm.ExportDiagnostics.Execution;
+        }
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        // The late branch kept the lock message and recorded the failure without a notice.
+        Assert.StartsWith("Controls locked",vm.Notice);Assert.DoesNotContain("chosen folder",vm.ErrorNotice);
+        vm.Unlock.Execute(null);
+        Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
+    });
+    private static string? LatestFailureType(ShellViewModel vm,ManagerSubsystem subsystem)
+    {
+        vm.RefreshDiagnostics.Execute(null);
+        return vm.DiagnosticRows.Where(row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==subsystem)
+            .MaxBy(row=>row.Event.Sequence)?.Event.ErrorType;
+    }
     [Fact]
     public Task FailureRowsCopyAndReportNameWhichSubsystemFailed()=>OnUi(async ()=>
     {

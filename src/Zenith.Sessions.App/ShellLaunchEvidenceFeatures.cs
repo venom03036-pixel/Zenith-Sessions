@@ -228,7 +228,7 @@ public sealed partial class ShellViewModel
         {
             // A late disk/path failure remains observable without replacing a newer stop/lock
             // message. The actual write task has completed; no worker or temp file is abandoned.
-            _diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Launch,FailureType(error));
         }
         finally{if(ReferenceEquals(_launchEvidenceExportStop,stop))_launchEvidenceExportStop=null;}
     }

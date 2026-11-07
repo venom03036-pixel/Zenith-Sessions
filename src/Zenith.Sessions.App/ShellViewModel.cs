@@ -1047,12 +1047,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public void Fail(Exception exception,ManagerSubsystem subsystem,string message)
     {
         ShowError(message);
-        AddEvent($"Operation failed ({exception.GetType().Name}).");
-        _diagnostics.RecordFailure(subsystem,exception.GetType());
+        Type type=FailureType(exception);
+        AddEvent($"Operation failed ({type.Name}).");
+        _diagnostics.RecordFailure(subsystem,type);
         // After a startup failure or monitor fault no sample loop refreshes diagnostics, so the
         // failure itself updates the status and, when the tab is open, the visible rows.
         RefreshDiagnosticsView();
     }
+    // A chosen-report failure is recorded by its cause, so a denied, held or missing target stays distinguishable in Diagnostics.
+    private static Type FailureType(Exception exception)=>exception is ReportFileException report?report.CauseType:exception.GetType();
     // Raised even when the text is unchanged, so the footer's live region announces a repeated failure again.
     private void ShowError(string message) { _errorNotice=message; Raise(nameof(ErrorNotice)); Raise(nameof(HasErrorNotice)); }
     private void ClearError() { if(_errorNotice.Length>0) ShowError(""); }

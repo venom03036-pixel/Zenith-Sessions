@@ -110,7 +110,7 @@ public sealed partial class ShellViewModel
         catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
         {
             // A late disk/path failure stays observable as a typed event without replacing the stop or lock message.
-            _diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,FailureType(error));
         }
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }

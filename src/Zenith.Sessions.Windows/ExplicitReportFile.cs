@@ -58,4 +58,11 @@ public static class ExplicitReportFile
 /// <summary>A chosen report could not be written. The message never contains a path; the cause stays as the inner exception.</summary>
 public sealed class ReportFileException(Exception cause) : IOException(cause is DirectoryNotFoundException
     ? "The chosen folder is no longer available. Choose an existing folder, then retry. Existing files were kept."
-    : "The report could not be saved in the chosen folder. Close programs using that file, check that folder's permissions, then retry. Existing files were kept.",cause);
+    : "The report could not be saved in the chosen folder. Close programs using that file, check that folder's permissions, then retry. Existing files were kept.",cause)
+{
+    /// <summary>
+    /// The type to record in Diagnostics. This wrapper only rewords the notice, so recording it would turn a denied target
+    /// (<see cref="UnauthorizedAccessException"/>) or a path failure (<see cref="Win32Exception"/>) into a plain IOException.
+    /// </summary>
+    public Type CauseType {get;}=(cause??throw new ArgumentNullException(nameof(cause))).GetType();
+}
