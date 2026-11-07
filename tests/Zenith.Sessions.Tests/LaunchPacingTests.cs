@@ -120,6 +120,46 @@ public sealed class LaunchPacingTests
     }
 
     [Fact]
+    public void RepeatedRefusalPauseTextNamesNoSingleCauseAndSaysWhatAResumeDoes()
+    {
+        // The native provider answers Rejected for a busy provider, a changed request, an untrusted
+        // client, a closed trial page or a local fault too, so the pause cannot blame the sign-ins.
+        string text = LaunchDescriptions.ExplainPause(LaunchQueuePauseReason.RepeatedRefusals);
+        Assert.DoesNotContain("check the saved sign-ins", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("two starts in a row ended before any client started", text);
+        Assert.Contains("stay queued", text);
+        Assert.Contains("details in the launch queue", text);
+        Assert.Contains("sign-in, client trust, resources", text);
+        Assert.Contains("Until a client starts or 10 minutes pass, one more such start pauses the queue again.", text);
+    }
+
+    [Fact]
+    public async Task AnExplicitResumeKeepsTheRefusalStreakSoOneMoreRefusalPausesAgain()
+    {
+        // Decision: Resume is permission to continue, not proof the cause is gone. Only a started
+        // client, or 10 minutes without another refusal, ends the streak.
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock) { Refusals = 3 };
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2, jitter: Jitter(0)); await queue.InitializeAsync(default);
+        var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
+        var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 70 }, default, Binding, Destination);
+        var third = await queue.EnqueueAsync(Profile("Third") with { Priority = 50 }, default, Binding, Destination);
+        var fourth = await queue.EnqueueAsync(Profile("Fourth") with { Priority = 30 }, default, Binding, Destination);
+        await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, first).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        clock.Advance(TimeSpan.FromSeconds(4)); queue.Signal();
+        await Until(() => Row(store, second).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.RepeatedRefusals, store.Last.PauseReason);
+        Assert.Equal(TimeSpan.FromSeconds(8), queue.ReadPacing().Remaining);
+        Assert.True(await queue.TryResumeAsync(default)); Assert.False(store.Last.Paused);
+        clock.Advance(TimeSpan.FromSeconds(8)); queue.Signal();
+        await Until(() => Row(store, third).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+        // The third refusal in a row pauses again at once and keeps doubling the gap.
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchQueuePauseReason.RepeatedRefusals, store.Last.PauseReason);
+        Assert.Equal(TimeSpan.FromSeconds(16), queue.ReadPacing().Remaining); Assert.Equal(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason);
+        Assert.Equal(LaunchState.Queued, Row(store, fourth).State); Assert.Equal(3, provider.Starts.Count);
+    }
+
+    [Fact]
     public async Task RefusedPreparationsBackOffAndPauseLikeRefusedStarts()
     {
         var store = new Store(); var clock = new Clock(); var provider = new PreparingProvider(clock) { PreparationRefusals = 2 };

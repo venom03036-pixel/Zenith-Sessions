@@ -93,7 +93,9 @@ public static class LaunchDescriptions
     };
     public static string ExplainPause(LaunchQueuePauseReason reason)=>reason switch
     {
-        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row were refused before any client started. The remaining requests stay queued. Wait a few minutes, check the saved sign-ins, then resume.",
+        // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
+        // untrusted client and a closed trial page, so the queue cannot name one cause.
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's details in the launch queue (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
@@ -482,7 +484,8 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             else if(result?.Status==ProviderLaunchStatus.RejectedBeforeStart)
             {
                 bool processClaim=result.ProcessId is not null || result.ProcessStartUtcTicks is not null;
-                // A refusal before any client started lengthens the next gap; a second in a row pauses.
+                // Any rejection with no process claim counts, whatever its cause (provider refusal or a
+                // local boundary denial): it lengthens the next gap, and a second in a row pauses.
                 if(!processClaim) {RecordRefusalOwned(chosen.Intent.OperationId,stagger);refusalPacing=true;}
                 await UpdateAsync(chosen,processClaim?LaunchState.Uncertain:LaunchState.Failed,
                     processClaim?LaunchProblem.ProviderFailure:LaunchProblem.StartupRejected,CancellationToken.None).ConfigureAwait(false);

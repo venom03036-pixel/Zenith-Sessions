@@ -11,11 +11,14 @@ public sealed partial class LaunchCoordinator
     private static readonly TimeSpan MaximumPacingStabilization = TimeSpan.FromMinutes(2), MaximumPacingStagger = TimeSpan.FromSeconds(30);
     private PacingGate? _pacing;
     private int _pacingClockFailed;
-    // Refusal backoff. A provider's explicit refusal before any client started (StartupRejected, or a
+    // Refusal backoff. A provider's Rejected answer before any client started (StartupRejected, or a
     // provider-reported PreparationRejected) doubles the next gap per refusal in a row, up to 60 s,
-    // with up to ±1 s of jitter so retries do not line up. Starting a client resets it; so does a
-    // refusal that arrives 10 minutes after the previous one. Memory-only like the gate itself: no
-    // timer, no persisted deadline. The existing presentation cadence re-signals the queue.
+    // with up to ±1 s of jitter so retries do not line up. The answer does not say why: the native
+    // provider also rejects for local faults, busy, trust and cancel outcomes, so the pause text names
+    // no single cause. Starting a client resets it; so does a refusal that arrives 10 minutes after
+    // the previous one. An explicit resume does not: it is permission to continue, not proof the
+    // cause is gone. Memory-only like the gate itself: no timer, no persisted deadline. The existing
+    // presentation cadence re-signals the queue.
     private static readonly TimeSpan RefusalGapCap = TimeSpan.FromSeconds(60), RefusalJitterBound = TimeSpan.FromSeconds(1),
         RefusalMemory = TimeSpan.FromMinutes(10);
     private const int RefusalsBeforePause = 2, MaximumCountedRefusals = 16;
