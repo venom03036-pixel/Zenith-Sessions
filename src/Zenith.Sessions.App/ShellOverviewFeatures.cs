@@ -33,7 +33,7 @@ public sealed partial class ShellViewModel
         if(_dispatcher is null) return;
         Overview=OverviewWorkspaceProjection.Create(new(_ready && !_libraryUnavailable,AccountCount,_overviewLibraryLoadedUtc,
             _overviewDesktop,_overviewMonitorStopped,QueueReady,_overviewQueue,_overviewQueueObservedUtc,EffectiveQueuePaused,IsLocked,
-            _lastPressure.Held,_overviewForecastsKnown,_overviewMemorySlots,_overviewForecastObservedUtc),DateTimeOffset.UtcNow);
+            Volatile.Read(ref _lastPressure).Held,_overviewForecastsKnown,_overviewMemorySlots,_overviewForecastObservedUtc),DateTimeOffset.UtcNow);
     }
     private void HoldQueuePresentation()
     {

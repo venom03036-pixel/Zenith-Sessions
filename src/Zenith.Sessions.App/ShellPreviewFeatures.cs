@@ -59,7 +59,7 @@ public sealed partial class ShellViewModel
         var now=DateTimeOffset.UtcNow;
         return snapshot is not null && snapshot.Resources.IsValid && snapshot.Resources.ObservedUtc!=default
             && snapshot.Resources.ObservedUtc-now<=ClientPreviewLimits.MaximumFutureSkew
-            && now-snapshot.Resources.ObservedUtc<=TimeSpan.FromSeconds(3) && !_lastPressure.Held;
+            && now-snapshot.Resources.ObservedUtc<=TimeSpan.FromSeconds(3) && !Volatile.Read(ref _lastPressure).Held;
     }
     private void SetClientPreviewMode(bool previews)=>SetSessionPresentation(previews,false);
     private void SetSessionPresentation(bool previews,bool history)

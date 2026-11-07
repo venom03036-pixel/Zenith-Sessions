@@ -15,6 +15,7 @@ public sealed partial class ShellViewModel
     private ManagerPerformancePolicy _activePerformance=new ManagerPerformanceSettings().Resolve();
     private readonly SemaphoreSlim _sampleSerial=new(1,1);
     private ResourceSnapshot? _pressureObserved;
+    // Written by the serialized sampler on the pool; dispatcher readers use Volatile.Read.
     private PressureDecision _lastPressure=new(true,"Waiting for resource observations.");
     private long? _presentationAt;
     public IReadOnlyList<PerformanceProfileChoice> PerformanceProfiles {get;}=Enum.GetValues<ManagerPerformanceProfile>()
