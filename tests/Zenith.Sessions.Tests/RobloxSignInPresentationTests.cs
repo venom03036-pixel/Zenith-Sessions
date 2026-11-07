@@ -126,6 +126,76 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         var failed = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
         Assert.Contains("Close Zenith Sessions", failed.Message);
     });
+    // Owner-level tests: the real OwnedRobloxSignIn admits its folder, then waits behind a gated UI thread. Every
+    // case ends before Show or WebView2 initialization, so no browser, network, account or runtime is needed.
+    [Fact]
+    public async Task SignInCancelledBeforeItsWindowOpensRemovesItsFolderAndLeavesNoLatch()
+    {
+        await using var ui = await GatedUiThread.StartAsync();
+        await using var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher);
+        using var stop = new CancellationTokenSource();
+        var running = signIn.SignInAsync(Guid.NewGuid(), stop.Token);
+        string folder = await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        var second = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        Assert.Contains("already open", second.Message);
+        stop.Cancel(); ui.Release();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.False(Directory.Exists(folder), "A cancelled sign-in left its private folder behind.");
+        Assert.False(signIn.CleanupPending);
+        // Not latched: the next attempt reaches folder admission, where unrecognized data stops it before any browser.
+        Directory.CreateDirectory(Path.Combine(_root, "signin-browser-data", "unknown"));
+        var admitted = await Assert.ThrowsAsync<IOException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        Assert.Contains("needs review", admitted.Message);
+    }
+    [Fact]
+    public async Task SignInWhoseFolderCannotBeRemovedRefusesTheNextAttemptAndKeepsTheFolderForRecovery()
+    {
+        await using var ui = await GatedUiThread.StartAsync();
+        var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher);
+        using var stop = new CancellationTokenSource();
+        var running = signIn.SignInAsync(Guid.NewGuid(), stop.Token);
+        string folder = await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        string cache = Directory.CreateDirectory(Path.Combine(folder, "cache")).FullName;
+        using (new FileStream(Path.Combine(cache, "held"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None))
+        {
+            stop.Cancel(); ui.Release();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
+            await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(signIn.CleanupPending, "A failed folder cleanup did not latch the sign-in owner.");
+            var refused = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+            Assert.Contains("did not finish cleanup", refused.Message);
+            await signIn.DisposeAsync();
+        }
+        Assert.True(File.Exists(Path.Combine(folder, ".zenith-private-signin")), "The retained folder lost its ownership marker.");
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(Directory.Exists(folder), "The next admission did not recover the retained folder.");
+        next.Remove(default);
+    }
+    [Fact]
+    public async Task SignInWhoseUiThreadHasStoppedRemovesTheFolderItAdmitted()
+    {
+        var ui = await GatedUiThread.StartAsync(); await ui.DisposeAsync();
+        await using var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher);
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => signIn.SignInAsync(Guid.NewGuid(), default).WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Empty(Directory.EnumerateFileSystemEntries(Path.Combine(_root, "signin-browser-data")));
+        Assert.False(signIn.CleanupPending);
+    }
+    [Fact]
+    public async Task SignInDeadlineIsReportedAsATimeoutAndRemovesItsFolder()
+    {
+        await using var ui = await GatedUiThread.StartAsync();
+        var deadline = new ManualDeadline();
+        await using var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher, deadline);
+        var running = signIn.SignInAsync(Guid.NewGuid(), default);
+        string folder = await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        Assert.Equal(TimeSpan.FromMinutes(15), deadline.Requested);
+        await deadline.FireAsync(); ui.Release();
+        // A plain cancellation here left the shell still asking the user to finish signing in after the window closed.
+        var expired = await Assert.ThrowsAsync<AccountLinkException>(() => running.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Contains("timed out after 15 minutes", expired.Message);
+        Assert.False(Directory.Exists(folder), "An expired sign-in left its private folder behind.");
+        Assert.False(signIn.CleanupPending);
+    }
     [Fact]
     public void CancelledDirectoryAdmissionDoesNotCreatePrivateData()
     {

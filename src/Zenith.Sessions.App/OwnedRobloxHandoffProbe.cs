@@ -17,6 +17,8 @@ namespace Zenith.Sessions.App;
 /// <summary>Shared private-browser owner. Inspection and candidate preparation both cancel every external request.</summary>
 public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatcher) : IRobloxHandoffProbe
 {
+    private static readonly TimeSpan InspectionDeadline=TimeSpan.FromMinutes(3);
+    private readonly TimeProvider _time=TimeProvider.System;
     private readonly object _state=new();
     private readonly CancellationTokenSource _lifetime=new();
     private TaskCompletionSource? _owner;
@@ -24,6 +26,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     private SignInProfileDirectory? _retainedDirectory;
     private bool _blocked,_disposed;
     private Task? _dispose;
+
+    /// <summary>Tests fire the unchanged 3-minute deadline through <paramref name="time"/> instead of waiting for it.</summary>
+    internal OwnedRobloxHandoffProbe(string dataRoot,Dispatcher dispatcher,TimeProvider time):this(dataRoot,dispatcher)=>_time=time;
 
     public async Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential,CancellationToken ct)
     {
@@ -42,21 +47,21 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         ArgumentNullException.ThrowIfNull(credential);ct.ThrowIfCancellationRequested();
         if(context is null)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.ContextRejected));
         try{context.Validated();}catch(ArgumentException){return Task.FromResult(Capture(RobloxHandoffProbeOutcome.ContextRejected));}
-        TaskCompletionSource owner;CancellationTokenSource stop;
+        TaskCompletionSource owner;CancellationTokenSource deadline,stop;
         lock(_state)
         {
             ObjectDisposedException.ThrowIf(_disposed,this);
             if(_owner is not null)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.Busy));
             if(_blocked)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.CleanupFailed));
             owner=new(TaskCreationOptions.RunContinuationsAsynchronously);_owner=owner;
-            stop=CancellationTokenSource.CreateLinkedTokenSource(ct,_lifetime.Token);
+            deadline=new(InspectionDeadline,_time);
+            stop=CancellationTokenSource.CreateLinkedTokenSource(ct,_lifetime.Token,deadline.Token);
         }
-        stop.CancelAfter(TimeSpan.FromMinutes(3));
-        return RunOwnedAsync(context,credential,stop,owner,ct,native);
+        return RunOwnedAsync(context,credential,deadline,stop,owner,ct,native);
     }
 
     private async Task<OwnedCapture> RunOwnedAsync(RobloxHandoffProbeContext context,RobloxSessionCredential credential,
-        CancellationTokenSource stop,TaskCompletionSource owner,CancellationToken caller,NativeHandoffContext? native)
+        CancellationTokenSource deadline,CancellationTokenSource stop,TaskCompletionSource owner,CancellationToken caller,NativeHandoffContext? native)
     {
         SignInProfileDirectory? directory=null;bool browserStarted=false;OwnedCapture? result=null;
         try
@@ -82,7 +87,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             }
             if(result?.Outcome==RobloxHandoffProbeOutcome.Cancelled&&stop.IsCancellationRequested&&!caller.IsCancellationRequested&&!_lifetime.IsCancellationRequested)
             {result.Dispose();result=Capture(RobloxHandoffProbeOutcome.TimedOut);}
-            stop.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;}owner.TrySetResult();
+            stop.Dispose();deadline.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;}owner.TrySetResult();
         }
         return result??Capture(RobloxHandoffProbeOutcome.Failed);
     }

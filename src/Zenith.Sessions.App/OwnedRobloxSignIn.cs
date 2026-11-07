@@ -19,6 +19,8 @@ namespace Zenith.Sessions.App;
 public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : IRobloxSessionSignIn, IAsyncDisposable
 {
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
+    private readonly TimeProvider _time = TimeProvider.System;
     private readonly object _state = new();
     private int _active;
     // Guarded by _state. Set while a sign-in folder is not confirmed removed. A cleanup still waiting
@@ -27,6 +29,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     private bool _cleanupFailed;
     private SignInProfileDirectory? _incompleteDirectory;
     private Task _cleanup = Task.CompletedTask;
+
+    /// <summary>Tests fire the unchanged 15-minute deadline through <paramref name="time"/> instead of waiting for it.</summary>
+    internal OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher, TimeProvider time) : this(dataRoot, dispatcher) => _time = time;
 
     public async Task<RobloxSessionCredential> SignInAsync(Guid profileId, CancellationToken ct)
     {
@@ -39,20 +44,27 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                 if (_cleanupFailed) throw new AccountLinkException(_cleanup.IsCompleted
                     ? "The previous sign-in browser did not finish cleanup. Close Zenith Sessions before trying again; its private data was preserved for cleanup."
                     : "The previous sign-in browser is still closing. Try again in a few seconds; its private data is removed once it closes.");
-            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            timeout.CancelAfter(TimeSpan.FromMinutes(15));
-            var directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false);
-            bool started = false;
-            try { return await dispatcher.InvokeAsync(() => { started = true; return RunAsync(directory, timeout.Token); }, DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
-            finally
+            using var deadline = new CancellationTokenSource(SignInDeadline, _time);
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
+            try
             {
-                if (!started)
+                var directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false);
+                bool started = false;
+                try { return await dispatcher.InvokeAsync(() => { started = true; return RunAsync(directory, timeout.Token); }, DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
+                finally
                 {
-                    try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)).ConfigureAwait(false); }
-                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
-                    { lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
+                    if (!started)
+                    {
+                        try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)).ConfigureAwait(false); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
+                        { lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
+                    }
                 }
             }
+            // Only the deadline, not the caller, ended this sign-in. A bare cancellation closed the window but left the
+            // shell's link prompt asking the user to finish signing in there (or reported a cancel nobody chose).
+            catch (OperationCanceledException) when (deadline.IsCancellationRequested && !ct.IsCancellationRequested)
+            { throw new AccountLinkException("Roblox sign-in timed out after 15 minutes. Nothing was saved; existing saved accounts were preserved. Start sign-in again when you are ready."); }
         }
         finally { Volatile.Write(ref _active, 0); }
     }

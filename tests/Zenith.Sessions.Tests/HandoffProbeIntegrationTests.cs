@@ -105,6 +105,61 @@ public sealed partial class ClientWindowIntegrationTests
         }
         finally{held.Remove(default);}
     });
+    // Owner-level tests: the real probe admits its folder, then waits behind a gated UI thread. Every case ends
+    // before any window or WebView2 environment exists, so no browser, network, account or runtime is needed.
+    [Fact]
+    public async Task ProbeWaitingForItsWindowIsBusyThenCancelsAndRemovesItsFolder()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        await using var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher);
+        using var credential=new RobloxSessionCredential("synthetic-only");using var stop=new CancellationTokenSource();
+        var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,stop.Token);
+        string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        using(var busy=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default))
+            Assert.Equal(RobloxHandoffProbeOutcome.Busy,busy.Result.Outcome);
+        stop.Cancel();ui.Release();
+        using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(RobloxHandoffProbeOutcome.Cancelled,result.Result.Outcome);
+        Assert.False(Directory.Exists(folder),"A cancelled inspection left its private folder behind.");
+    }
+    [Fact]
+    public async Task ProbeWhoseFolderCannotBeRemovedStaysBlockedAndKeepsTheFolderForRecovery()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher);
+        using var credential=new RobloxSessionCredential("synthetic-only");using var stop=new CancellationTokenSource();
+        var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,stop.Token);
+        string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        string cache=Directory.CreateDirectory(Path.Combine(folder,"cache")).FullName;
+        using(new FileStream(Path.Combine(cache,"held"),FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None))
+        {
+            stop.Cancel();ui.Release();
+            using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
+            using var latched=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,latched.Result.Outcome);
+            await probe.DisposeAsync();
+        }
+        Assert.True(File.Exists(Path.Combine(folder,".zenith-private-signin")),"The retained folder lost its ownership marker.");
+        var next=SignInProfileDirectory.Create(_root,Guid.NewGuid(),default);
+        Assert.False(Directory.Exists(folder),"The next admission did not recover the retained folder.");
+        next.Remove(default);
+    }
+    [Fact]
+    public async Task ProbeDeadlineIsReportedAsTimedOutAndRemovesItsFolder()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        var deadline=new ManualDeadline();
+        await using var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher,deadline);
+        using var credential=new RobloxSessionCredential("synthetic-only");
+        var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
+        string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+        Assert.Equal(TimeSpan.FromMinutes(3),deadline.Requested);
+        await deadline.FireAsync();ui.Release();
+        using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(RobloxHandoffProbeOutcome.TimedOut,result.Result.Outcome);
+        Assert.False(Directory.Exists(folder),"An expired inspection left its private folder behind.");
+    }
     [Fact]
     public Task RemovingTheInspectedProfileWaitsForItsActualBrowserOwner()=>OnUi(async()=>
     {
