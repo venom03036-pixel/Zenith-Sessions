@@ -130,6 +130,23 @@ public sealed class ViewModelTests : IDisposable
         Assert.Equal(2,vm.Accounts.Select(a=>a.Profile.Id).Distinct().Count());
     });
     [Fact]
+    public Task SecondRemovalWhileTheFirstIsPendingDoesNotReportAConflict()=>CheckAsync(async vm=>
+    {
+        await vm.SaveAccountAsync(AccountProfile.Create("Alt"));
+        var row=vm.SelectedAccount!;
+        var first=vm.DeleteAccountsAsync([row]); var second=vm.DeleteAccountsAsync([row]);
+        Assert.True(vm.IsRemovalPending(row)); Assert.Contains("already being removed",vm.Notice);
+        await first;
+        Assert.Null(await Record.ExceptionAsync(()=>second));
+        Assert.DoesNotContain("changed elsewhere",vm.Notice); Assert.Contains("Removed 1 profile",vm.Notice);
+        Assert.DoesNotContain(vm.Accounts,a=>a.Profile.Id==row.Profile.Id);
+        // The in-flight mark is released once the removal finishes, so a later removal is not refused.
+        Assert.False(vm.IsRemovalPending(row));
+        // A removal that faults (here the stale row no longer matches the library) also releases its mark.
+        Assert.NotNull(await Record.ExceptionAsync(()=>vm.DeleteAccountsAsync([row])));
+        Assert.False(vm.IsRemovalPending(row));
+    });
+    [Fact]
     public Task LegacyMetadataDoesNotAcquireAClaimedVerifiedIdentity()=>CheckAsync(async vm=>
     {
         string path=Path.Combine(_root,"legacy.json");

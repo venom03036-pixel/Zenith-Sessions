@@ -161,6 +161,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     internal Task AccountQuery=>_queryTask;
     private Task? _disposeTask;
     private readonly HashSet<Task> _profileOperations=[];
+    /// <summary>Profile ids whose removal is queued or running; touched only on the UI thread.</summary>
+    private readonly HashSet<Guid> _pendingProfileRemovals=[];
     private readonly SemaphoreSlim _profileSerial=new(1,1);
     private bool _shuttingDown,_settingsNeedRepair,_libraryUnavailable;
     private Guid? _selectAfterReload;
@@ -577,7 +579,31 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
     }
-    public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)=>OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows));
+    /// <summary>True while a removal of this row's profile is queued or running. UI-thread state, like <see cref="_profileOperations"/>.</summary>
+    public bool IsRemovalPending(AccountRow row)=>_pendingProfileRemovals.Contains(row.Profile.Id);
+    /// <summary>Shows why a removal is refused and returns true when any of these rows is already being removed.</summary>
+    public bool ReportPendingRemoval(IReadOnlyList<AccountRow> rows)
+    {
+        if(!rows.Any(IsRemovalPending)) return false;
+        Notice=rows.Count==1?"That profile is already being removed. Wait for the removal to finish."
+            :"Some checked profiles are already being removed. Wait for that removal to finish, then check the remaining profiles again.";
+        return true;
+    }
+    /// <summary>Removes the rows' profiles. A second request for a profile whose removal is still queued or running is refused with a notice,
+    /// so it cannot repeat the queue stop and authorization invalidation and then fail as a stale-revision conflict.</summary>
+    public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)
+    {
+        if(ReportPendingRemoval(rows)) return Task.CompletedTask;
+        var ids=rows.Select(r=>r.Profile.Id).Distinct().ToArray();
+        foreach(var id in ids) _pendingProfileRemovals.Add(id);
+        return RemoveOwnedProfilesAsync(ids,rows);
+    }
+    private async Task RemoveOwnedProfilesAsync(Guid[] ids,IReadOnlyList<AccountRow> rows)
+    {
+        // Released on every path (completed, faulted, cancelled or refused before it started) so the profile can be removed again later.
+        try { await OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows)); }
+        finally { foreach(var id in ids) _pendingProfileRemovals.Remove(id); }
+    }
     private async Task DeleteAccountsCoreAsync(IReadOnlyList<AccountRow> rows)
     {
         string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a profile was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
