@@ -55,8 +55,17 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         await using var h = new Harness(); var candidate = Candidate() with { ExecutablePath = @"C:\Synthetic\" + name };
         bool direct = RobloxNativePlayerFiles.IsDirectPlayer(candidate.ExecutablePath);
         Assert.Equal(name is "RobloxPlayerBeta.exe" or "RobloxPlayer.exe", direct);
+        // The shell asks CanSelect before revoking trial permission; it must agree with Configure exactly.
+        Assert.Equal(direct, WindowsConfiguredNativeLaunchProvider.CanSelect(candidate));
         if (direct) h.Slot.Configure(candidate); else Assert.Throws<ArgumentException>(() => h.Slot.Configure(candidate));
         Assert.Equal(direct, h.Slot.Selected); Assert.Empty(h.Created);
+    }
+
+    [Fact]
+    public void CanSelectIsFalseForNoSelectionAndTrueForAnAcceptedNativePlayer()
+    {
+        Assert.False(WindowsConfiguredNativeLaunchProvider.CanSelect(null));
+        Assert.True(WindowsConfiguredNativeLaunchProvider.CanSelect(Candidate()));
     }
 
     [Theory]
@@ -96,6 +105,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
             "unknown-evidence" => candidate with { Evidence = [new((ClientInstallationHintSource)999, ClientInstallationProduct.Roblox)] },
             _ => candidate with { ProductName = "invalid\nmetadata" }
         };
+        Assert.False(WindowsConfiguredNativeLaunchProvider.CanSelect(candidate));
         Assert.Throws<ArgumentException>(() => h.Slot.Configure(candidate));
         Assert.False(h.Slot.Selected); Assert.False(h.Slot.IsBusy); Assert.True(h.Slot.CleanupHealthy); Assert.Empty(h.Created);
     }

@@ -96,9 +96,11 @@ public sealed partial class ShellViewModel
         // A cleared selection (Refresh, Cancel check, Panic or Lock) is not a rejected row;
         // only a row that is still selected may be described as unsupported.
         var selection=SelectedInstallation?.Candidate;
-        var eligible=selection is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null;
+        // The provider's own acceptance rule, not a looser copy: the launcher and bootstrapper-managed
+        // players are present Roblox rows that Configure would reject, so they are never eligible.
+        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)?selection:null;
         // Revoke trial permission (and pause the queue) only when the trial installation can
-        // actually change: off a selected native file, or onto a present native row. Moving
+        // actually change: off a selected native file, or onto a row the provider accepts. Moving
         // between rows that can never be the trial installation only updates the status text.
         bool interrupted=false;
         if(_nativeLaunch.Selected||eligible is not null)

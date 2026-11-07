@@ -48,6 +48,17 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     }
     public bool IsBusy { get { lock (_gate) return _active is not null; } }
 
+    /// <summary>
+    /// True when <see cref="Configure"/> would accept this candidate as the trial installation. It runs the
+    /// same check (direct-player filename, Roblox-only evidence, safe full path, readable metadata), so a
+    /// caller can tell an inspect-only row (the launcher, a bootstrapper-managed player) from a real change.
+    /// </summary>
+    public static bool CanSelect(ClientInstallationCandidate? candidate)
+    {
+        if (candidate is null) return false;
+        try { CopySelection(candidate); return true; }
+        catch (ArgumentException) { return false; }
+    }
     public void Configure(ClientInstallationCandidate? candidate)
     {
         var selected = candidate is null ? null : CopySelection(candidate); Owner? active;

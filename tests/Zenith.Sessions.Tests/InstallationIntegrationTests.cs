@@ -67,6 +67,52 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task SelectingTheLauncherOrABootstrapperManagedPlayerRowDoesNotPauseTheQueue() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); Assert.True(vm.QueueReady);
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        await ResumeQueueForInstallationTestAsync(vm);
+        var native = vm.InstallationCandidates[0];
+        // Discovery lists RobloxPlayerLauncher.exe in every native version folder, and a player under a
+        // bootstrapper's folder carries that bootstrapper as evidence. Both are present Roblox rows the
+        // provider never accepts as the trial installation.
+        InstallationCandidateRow launcher = new(native.Candidate with { ExecutablePath = "C:\\Synthetic\\RobloxPlayerLauncher.exe" });
+        InstallationCandidateRow managed = new(native.Candidate with
+        {
+            ExecutablePath = "C:\\Synthetic\\Bloxstrap\\Versions\\version-x\\RobloxPlayerBeta.exe",
+            Evidence = [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Bloxstrap)]
+        });
+        vm.InstallationCandidates.Add(launcher); vm.InstallationCandidates.Add(managed);
+        Assert.Equal(ClientInstallationProduct.Roblox, launcher.Candidate.Product); Assert.Equal(ClientInstallationFileState.PresentUnverified, launcher.Candidate.FileState);
+        Assert.Equal(ClientInstallationProduct.Bloxstrap, managed.ManagedBy);
+
+        // Nothing native is selected, so inspecting either row cannot change the trial installation.
+        vm.SelectedInstallation = launcher;
+        Assert.False(InstallationTestQueuePaused(vm), "Selecting the launcher row must not pause the launch queue.");
+        Assert.Contains("not supported", vm.NativeTrialStatus);
+        vm.SelectedInstallation = managed;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.False(InstallationTestQueuePaused(vm), "Selecting a bootstrapper-managed player row must not pause the launch queue.");
+        Assert.Equal("Pause queue", vm.QueuePauseLabel); Assert.Contains("managed by Bloxstrap", vm.NativeTrialStatus);
+
+        // Moving off a selected native row onto either one still revokes the trial installation.
+        foreach (var unsupported in new[] { launcher, managed })
+        {
+            vm.SelectedInstallation = native;
+            Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Native file selected", vm.NativeTrialStatus);
+            await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+            await ResumeQueueForInstallationTestAsync(vm);
+            vm.SelectedInstallation = unsupported;
+            Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("not supported", vm.NativeTrialStatus);
+            await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+            await ResumeQueueForInstallationTestAsync(vm);
+        }
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
     public void ProductionInstallationCopyStatesThatANativeRowBecomesTheTrialInstallation()
     {
         using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
