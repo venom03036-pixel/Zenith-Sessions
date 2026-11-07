@@ -95,6 +95,47 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         using var parsed=JsonDocument.Parse(await File.ReadAllTextAsync(report));Assert.Equal("Zenith Sessions Personal",parsed.RootElement.GetProperty("Product").GetString());
         Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
     });
+    [Fact]
+    public Task StartupFailureDoesNotLeaveDiagnosticsStartingOrClaimALiveView()=>OnUi(async ()=>
+    {
+        Directory.CreateDirectory(Data);await File.WriteAllTextAsync(Path.Combine(Data,"settings.json"),"damaged settings");
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        Assert.Equal("Startup needs attention",vm.SaveStatus);
+        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("startup needs attention",vm.DiagnosticsStatus);
+        vm.Navigate.Execute("Diagnostics");
+        Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
+        long newest=vm.DiagnosticRows.Select(r=>r.Sequence).DefaultIfEmpty().Max();
+        // No monitor loop pushes this view, so a later failure must show without pressing Refresh.
+        vm.Fail(new IOException("x"));
+        Assert.Contains(vm.DiagnosticRows,r=>r.Sequence>newest && r.Level=="Error");
+    });
+    [Fact]
+    public Task MonitorFaultOnFirstSampleDoesNotFreezeDiagnosticsStatus()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new FaultingMonitor());await vm.InitializeAsync();
+        var until=DateTime.UtcNow.AddSeconds(3);
+        while(!vm.Events.Any(e=>e.Contains("Operation failed (InvalidOperationException)",StringComparison.Ordinal)))
+        {if(DateTime.UtcNow>until) throw new TimeoutException("The monitor fault was not reported.");await Task.Delay(20);}
+        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("monitoring stopped",vm.DiagnosticsStatus);
+        vm.Navigate.Execute("Diagnostics");
+        Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
+    });
+    [Fact]
+    public Task AHealthyMonitorKeepsTheLiveDiagnosticsWording()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        var until=DateTime.UtcNow.AddSeconds(3);
+        while(vm.DiagnosticsStatus=="Diagnostics starting")
+        {if(DateTime.UtcNow>until) throw new TimeoutException("The first sample did not update the diagnostics status.");await Task.Delay(20);}
+        Assert.StartsWith("Diagnostics active",vm.DiagnosticsStatus);Assert.DoesNotContain("refreshed",vm.DiagnosticsStatus);
+        vm.Navigate.Execute("Diagnostics");Assert.StartsWith("Live view",vm.DiagnosticViewStatus);
+    });
+    private sealed class FaultingMonitor : IDesktopMonitor
+    {
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)=>Task.FromException<DesktopSnapshot>(new InvalidOperationException("synthetic sampler fault"));
+        public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
+        public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
+    }
     private sealed class SyntheticMonitor : IDesktopMonitor
     {
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)=>Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]));

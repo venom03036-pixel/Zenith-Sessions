@@ -35,7 +35,11 @@ public sealed partial class ShellViewModel
     public string DiagnosticErrors=>$"Errors {_diagnosticSnapshot?.ErrorCount??0}";
     public string DiagnosticWarnings=>$"Warnings {_diagnosticSnapshot?.WarningCount??0}";
     public string DiagnosticInformation=>$"Info {_diagnosticSnapshot?.InfoCount??0}";
-    public string DiagnosticViewStatus=>$"{(DiagnosticsPaused?"Paused view":"Live view")} · {DiagnosticRows.Count} shown · newest 512 events retained · session totals above";
+    public string DiagnosticViewStatus=>$"{(DiagnosticsPaused?"Paused view":DiagnosticsLive?"Live view":"Updates when refreshed")} · {DiagnosticRows.Count} shown · newest 512 events retained · session totals above";
+    // Live means the owned monitor loop is still pushing this view. After a startup failure or a
+    // monitor fault, only tab switches, explicit refreshes and later failures update it.
+    private bool DiagnosticsLive=>!_monitorTask.IsCompleted && !_overviewMonitorStopped;
+    private bool _diagnosticsLiveShown;
     public string DiagnosticStorageStatus=>_diagnosticSnapshot?.Failure??
         $"Disk log skips: {_diagnosticSnapshot?.DroppedEvents??0}. Logs rotate across three bounded files. Clear view keeps those files.";
     public Command PauseDiagnostics {get;private set;}=null!;
@@ -87,9 +91,23 @@ public sealed partial class ShellViewModel
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
     private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
+    private void RefreshDiagnosticsStatus()
+    {
+        bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
+        string? stopped=live?null:_overviewMonitorStopped?"monitoring stopped":_libraryUnavailable?"startup needs attention":null;
+        // A disk-writer failure always wins so the header agrees with the storage footer.
+        DiagnosticsStatus=_diagnostics.Failure??(stopped is not null
+            ? $"{(dropped>0?$"Diagnostics busy: {dropped} routine events skipped":"Diagnostics recording")} · {stopped} · view updates when refreshed"
+            : !live?"Diagnostics starting"
+            : dropped>0?$"Diagnostics busy: {dropped} routine events skipped.":"Diagnostics active · bounded to three log files");
+        // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
+        if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
+    }
     private void RefreshDiagnosticsView(bool explicitRequest=false)
     {
-        if(_shuttingDown || IsLocked || DiagnosticsPaused || (!explicitRequest && !IsDiagnostics)) return;
+        if(_shuttingDown) return;
+        RefreshDiagnosticsStatus();
+        if(IsLocked || DiagnosticsPaused || (!explicitRequest && !IsDiagnostics)) return;
         var snapshot=_diagnostics.GetSnapshot();
         bool rowsChanged=_diagnosticSnapshot?.LatestSequence!=snapshot.LatestSequence;
         _diagnosticSnapshot=snapshot;

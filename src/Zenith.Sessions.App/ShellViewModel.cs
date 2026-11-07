@@ -621,7 +621,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             Capacity=(projection.ForecastsKnown?capacity.Explanation+" ":"")+projection.Explanation;
             RefreshNativeTrialFeatures();
             PressureNotice=pressure.Explanation;RecordOverviewSample(snapshot,capacity,projection);
-            DiagnosticsStatus=_diagnostics.Failure??(_diagnostics.DroppedEvents>0?$"Diagnostics busy: {_diagnostics.DroppedEvents} routine events skipped.":"Diagnostics active · bounded to three log files");
             RefreshDiagnosticsView();
             RefreshDestinationCapacity();
             foreach(var account in Accounts) account.UpdateAuthorizationClock(DateTimeOffset.UtcNow);
@@ -725,6 +724,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.";
         AddEvent($"Operation failed ({exception.GetType().Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
+        // After a startup failure or monitor fault no sample loop refreshes diagnostics, so the
+        // failure itself updates the status and, when the tab is open, the visible rows.
+        RefreshDiagnosticsView();
     }
     public void Inform(string message) => Notice = message;
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
