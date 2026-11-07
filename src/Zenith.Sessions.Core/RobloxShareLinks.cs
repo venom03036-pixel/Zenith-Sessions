@@ -80,21 +80,29 @@ public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid
 /// <summary>
 /// What a share link resolved to. Public place/universe IDs only, plus the owned private server code when the link was
 /// a server invitation. Resolution proves neither access nor arrival. ToString never shows a code.
+/// A replacement session cookie Roblox sent with the answer travels separately: it is unverified, never shown, and
+/// belongs to whoever takes it; disposing the resolution disposes it if nobody did.
 /// </summary>
 public sealed class RobloxShareLinkResolution(RobloxShareLinkOutcome outcome, long? placeId = null, long? universeId = null,
-    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null) : IDisposable
+    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null, RobloxSessionCredential? rotatedCredential = null) : IDisposable
 {
+    private RobloxSessionCredential? _rotatedCredential = rotatedCredential;
     public RobloxShareLinkOutcome Outcome { get; } = outcome;
     public long? PlaceId { get; } = placeId;
     public long? UniverseId { get; } = universeId;
     public long? OwnerUserId { get; } = ownerUserId;
     public ProtectedPrivateServerCode? PrivateServerCode { get; } = privateServerCode;
+    /// <summary>Moves the unverified replacement session (if any) to the caller, who must dispose it. Later calls return null.</summary>
+    public RobloxSessionCredential? TakeRotatedCredential() => Interlocked.Exchange(ref _rotatedCredential, null);
     public override string ToString() => "Share link resolution { Outcome = " + Outcome + ", Place = "
         + (PlaceId?.ToString(CultureInfo.InvariantCulture) ?? "none") + ", Code = [redacted] }";
-    public void Dispose() => PrivateServerCode?.Dispose();
+    public void Dispose() { PrivateServerCode?.Dispose(); TakeRotatedCredential()?.Dispose(); }
 }
 
-/// <summary>One signed-in resolve request. The credential is borrowed for the call and never retained or logged.</summary>
+/// <summary>
+/// One signed-in resolve request. The credential is borrowed for the call and never retained or logged. A replacement
+/// session cookie Roblox sends during the call is handed back on the resolution, never saved here.
+/// </summary>
 public interface IRobloxShareLinkClient
 {
     Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, CancellationToken ct);

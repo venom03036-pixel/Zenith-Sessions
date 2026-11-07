@@ -6,9 +6,12 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
 {
     /// <summary>
     /// One owned operation: read the saved session, resolve, dispose the credential. No sign-in window opens and no
-    /// client is launched. The vault is written only when Roblox refuses the saved session (SignInRequired): that exact
-    /// record is marked as needing sign-in, like an interrupted saved-session check, so the account row and launch
-    /// eligibility agree with this answer. Provider failures become outcomes, never forwarded text.
+    /// client is launched. The vault is written in two cases only. When Roblox replaced the session while answering, the
+    /// replacement is kept the way a sign-in is: only after it verifies as the same player, at the next generation, and
+    /// only if the record that was sent is still the saved one. When Roblox refuses the saved session (SignInRequired)
+    /// and no verified replacement was kept, that exact record is marked as needing sign-in, like an interrupted
+    /// saved-session check, so the account row and launch eligibility agree with this answer. Provider failures become
+    /// outcomes, never forwarded text, and the replacement never leaves this service.
     /// </summary>
     public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId, RobloxShareLink link, CancellationToken ct)
     {
@@ -35,10 +38,45 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
                 catch (OperationCanceledException) { Ensure(operation); return new(RobloxShareLinkOutcome.Cancelled); }
                 catch (Exception) { Ensure(operation); return new(RobloxShareLinkOutcome.Unavailable); } // A transport exception may quote a code: never forward it.
             }
-            if (resolution?.Outcome == RobloxShareLinkOutcome.SignInRequired) await FenceRejectedSessionAsync(operation, record).ConfigureAwait(false);
-            return resolution!;
+            if (resolution is null) return new(RobloxShareLinkOutcome.Unavailable);
+            try
+            {
+                using (var rotated = resolution.TakeRotatedCredential())
+                    if (rotated is not null) await KeepRotatedSessionAsync(operation, record, rotated).ConfigureAwait(false);
+                // A kept replacement changed the record, so this conditional fence then writes nothing.
+                if (resolution.Outcome == RobloxShareLinkOutcome.SignInRequired) await FenceRejectedSessionAsync(operation, record).ConfigureAwait(false);
+            }
+            catch { resolution.Dispose(); throw; } // Only cancellation reaches here; the answer's codes are zeroed with it.
+            return resolution;
         }
         finally { Complete(operation); }
+    }
+
+    /// <summary>
+    /// Roblox sent a replacement session cookie with its answer, so the saved one may stop working. Keep it through the
+    /// same verify-and-save path as a sign-in: the identity check must name the same player as the record that was sent,
+    /// the record must still be that one with no other write reserved, and the commit is conditional on that snapshot at
+    /// the next generation. Any other result leaves the saved record as it was; an interrupted commit is fenced to only
+    /// this operation's own write, like an interrupted sign-in. The share-link answer stands either way and no failure
+    /// text is forwarded (it could quote protected paths).
+    /// </summary>
+    private async Task KeepRotatedSessionAsync(Operation operation, AuthorizationRecord sent, RobloxSessionCredential candidate)
+    {
+        bool kept = false;
+        try
+        {
+            var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
+            if (snapshot.Record != sent || snapshot.HighestAllocated != sent.Generation || snapshot.LastCommitted != sent.Generation) return;
+            await VerifyAndSave(operation, candidate, sent, writeSnapshot: snapshot).ConfigureAwait(false);
+            kept = true;
+        }
+        catch (OperationCanceledException) { Ensure(operation); }
+        catch (Exception) { /* Mismatch, refusal, network or storage: nothing was kept. The conditional write cannot replace a newer grant. */ }
+        finally
+        {
+            // A fence failure is not forwarded either: the record is then the verified replacement or the original.
+            if (!kept && operation.FinalMutationIssued) await FenceFailedSessionMutationAsync(operation.ProfileId, operation.FinalMutationId).ConfigureAwait(false);
+        }
     }
 
     /// <summary>

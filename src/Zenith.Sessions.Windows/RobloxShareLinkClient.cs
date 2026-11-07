@@ -11,7 +11,8 @@ namespace Zenith.Sessions.Windows;
 /// One explicit signed-in resolve request for a roblox.com/share link: exact endpoint, no redirects, no cookie jar,
 /// one CSRF handshake retry and a 64 KiB body cap. The response shape is observed web-client behaviour, not a
 /// documented contract; anything unexpected is Unavailable, never a guess. The request body and the response buffer
-/// carry codes, so both are zeroed after use. A rotated session cookie in the response is ignored, never saved.
+/// carry codes, so both are zeroed after use. A replacement session cookie in either handshake response is read with
+/// the identity check's own parser and handed back on the resolution, unverified; this client never saves it.
 /// </summary>
 public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
 {
@@ -19,15 +20,17 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     private const int MaximumBodyBytes = 65536;
     private readonly HttpClient _http;
     private readonly TimeSpan _timeout;
+    private readonly TimeProvider _time;
 
     public RobloxShareLinkClient(TimeSpan? timeout = null) : this(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }, timeout) { }
     // Injected transports are for controlled tests; production uses the constructor above.
-    public RobloxShareLinkClient(HttpMessageHandler handler, TimeSpan? timeout = null)
+    public RobloxShareLinkClient(HttpMessageHandler handler, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
         if (handler is HttpClientHandler native) { native.AllowAutoRedirect = false; native.UseCookies = false; }
         if (handler is SocketsHttpHandler sockets) { sockets.AllowAutoRedirect = false; sockets.UseCookies = false; }
         _timeout = timeout ?? TimeSpan.FromSeconds(20);
+        _time = timeProvider ?? TimeProvider.System;
         if (_timeout <= TimeSpan.Zero || _timeout > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(timeout));
         _http = new(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
@@ -38,25 +41,50 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
         if (link.Type == RobloxShareLinkType.Other) return new(RobloxShareLinkOutcome.Invalid);
         string typeName = link.Type == RobloxShareLinkType.Server ? "Server" : "ExperienceDetails";
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); stop.CancelAfter(_timeout);
+        // Owned here until it moves onto the returned resolution; any other exit disposes it.
+        RobloxSessionCredential? rotated = null;
         try
         {
             string? csrf = null;
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 using var response = await SendAsync(link, typeName, credential, csrf, stop.Token).ConfigureAwait(false);
-                if (response.RequestMessage?.RequestUri is { } actual && actual != Endpoint) return new(RobloxShareLinkOutcome.Unavailable);
+                if (response.RequestMessage?.RequestUri is { } actual && actual != Endpoint) return Answer(new(RobloxShareLinkOutcome.Unavailable));
+                rotated = Newest(rotated, response, credential);
                 if (response.StatusCode == HttpStatusCode.Forbidden && csrf is null && response.Headers.TryGetValues("x-csrf-token", out var tokens)
                     && tokens.FirstOrDefault() is { Length: > 0 and <= 256 } token)
                 { csrf = token; continue; } // The documented handshake: repeat once with the issued token, then stop.
-                if (response.StatusCode == HttpStatusCode.Unauthorized) return new(RobloxShareLinkOutcome.SignInRequired);
-                if (response.StatusCode != HttpStatusCode.OK) return new(RobloxShareLinkOutcome.Unavailable);
-                return await ParseAsync(response, link.Type, stop.Token).ConfigureAwait(false);
+                if (response.StatusCode == HttpStatusCode.Unauthorized) return Answer(new(RobloxShareLinkOutcome.SignInRequired));
+                if (response.StatusCode != HttpStatusCode.OK) return Answer(new(RobloxShareLinkOutcome.Unavailable));
+                return Answer(await ParseAsync(response, link.Type, stop.Token).ConfigureAwait(false));
             }
-            return new(RobloxShareLinkOutcome.Unavailable);
+            return Answer(new(RobloxShareLinkOutcome.Unavailable));
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return new(RobloxShareLinkOutcome.Unavailable); }
-        catch (HttpRequestException) { return new(RobloxShareLinkOutcome.Unavailable); }
-        catch (IOException) { return new(RobloxShareLinkOutcome.Unavailable); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        catch (HttpRequestException) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        catch (IOException) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        finally { rotated?.Dispose(); }
+
+        // Moves the candidate onto the answer, whatever the answer is: Roblox may already have replaced the session.
+        RobloxShareLinkResolution Answer(RobloxShareLinkResolution resolution)
+        {
+            if (rotated is not { } candidate) return resolution;
+            rotated = null;
+            return new(resolution.Outcome, resolution.PlaceId, resolution.UniverseId, resolution.OwnerUserId, resolution.PrivateServerCode, candidate);
+        }
+    }
+
+    /// <summary>
+    /// The newest session cookie wins, as in a browser's cookie store: a response without one keeps the earlier
+    /// candidate, and an unusable one (foreign domain, deletion, unreadable lifetime) leaves none to keep.
+    /// </summary>
+    private RobloxSessionCredential? Newest(RobloxSessionCredential? earlier, HttpResponseMessage response, RobloxSessionCredential original)
+    {
+        RobloxSessionCredential? next;
+        try { next = RobloxSessionClient.Rotation(response, original, _time.GetUtcNow()); }
+        catch (RobloxSessionException) { earlier?.Dispose(); return null; }
+        if (next is null) return earlier;
+        earlier?.Dispose(); return next;
     }
 
     private async Task<HttpResponseMessage> SendAsync(RobloxShareLink link, string typeName, RobloxSessionCredential credential, string? csrf, CancellationToken ct)

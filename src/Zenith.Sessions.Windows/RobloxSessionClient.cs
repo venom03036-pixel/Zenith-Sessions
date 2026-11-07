@@ -76,7 +76,13 @@ public sealed class RobloxSessionClient : IRobloxSessionClient, IDisposable
         response.Headers.TryGetValues("Set-Cookie", out var headers)
         && headers.Any(header => header.Contains("ROBLOSECURITY", StringComparison.OrdinalIgnoreCase));
 
-    private static RobloxSessionCredential? Rotation(HttpResponseMessage response, RobloxSessionCredential original, DateTimeOffset now)
+    /// <summary>
+    /// The one replacement .ROBLOSECURITY a signed-in response may set, as an unverified disposable candidate; null when
+    /// there is none or it repeats the original. Shared with the share-link client so every signed-in request reads a
+    /// rotation the same way. A foreign domain, a duplicate, a deletion or an unreadable lifetime throws
+    /// RobloxSessionException (InvalidResponse or InvalidSession) without the header text.
+    /// </summary>
+    internal static RobloxSessionCredential? Rotation(HttpResponseMessage response, RobloxSessionCredential original, DateTimeOffset now)
     {
         if (!response.Headers.TryGetValues("Set-Cookie", out var headers)) return null;
         RobloxSessionCredential? candidate = null; int count = 0, sessionCookies = 0;
