@@ -46,8 +46,12 @@ public interface IRobloxSessionClient
 {
     Task<RobloxSessionValidation> ValidateAsync(RobloxSessionCredential credential, CancellationToken ct);
 }
-/// <summary>Saved metadata and verified website identity only; never native launch or arrival proof.</summary>
-public sealed record AddedRobloxAccount(Guid ProfileId, LinkedIdentity Identity);
+/// <summary>
+/// Saved metadata and verified website identity only; never native launch or arrival proof.
+/// Refreshed means the verified player already had a saved Roblox session on ProfileId, so that
+/// row's saved sign-in was replaced and no profile was created.
+/// </summary>
+public sealed record AddedRobloxAccount(Guid ProfileId, LinkedIdentity Identity, bool Refreshed = false);
 public interface IRobloxSessionLinkService : IAsyncDisposable
 {
     Task<AddedRobloxAccount> AddAsync(CancellationToken ct);
