@@ -19,6 +19,12 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
         var mapping = await ReadJsonAsync(mappingUri, root =>
         {
             if (root.ValueKind != JsonValueKind.Object) throw new InvalidPublicResponseException();
+            // Roblox answers HTTP 200 with {"universeId": null} when no game uses the place ID (seen for both a
+            // nonexistent and an invalid ID). Only that exact one-field shape means "no such game"; every other
+            // null or extra-field shape stays malformed. Duplicate names were already rejected before parsing.
+            if (root.GetPropertyCount() == 1 && root.TryGetProperty("universeId", out JsonElement universe)
+                && universe.ValueKind == JsonValueKind.Null)
+                return Unknown<PublicUniverseMapping>("No Roblox game uses this place ID. Check the number and try again.");
             if (root.TryGetProperty("placeId", out _)
                 && ReadId(root, "placeId") != requestedPlaceId) throw new InvalidPublicResponseException();
             return Success(new PublicUniverseMapping(ReadId(root, "universeId")), "Public place mapping received.");
@@ -72,8 +78,18 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
         JsonElement maximumField = ReadField(item, "maxPlayers");
         if (maximumField.ValueKind != JsonValueKind.Number || !maximumField.TryGetInt32(out int maximum) || maximum <= 0)
             throw new InvalidPublicResponseException();
+        // Optional listing fields: absent stays null (unknown), never 0 or "not allowed"; present but malformed is
+        // invalid. Duplicate names were already rejected for the whole document before parsing.
+        long? visits = null;
+        if (item.TryGetProperty("visits", out JsonElement visitsField))
+            visits = visitsField.ValueKind == JsonValueKind.Number && visitsField.TryGetInt64(out long count) && count >= 0
+                ? count : throw new InvalidPublicResponseException();
+        bool? privateServers = null;
+        if (item.TryGetProperty("createVipServersAllowed", out JsonElement privateField))
+            privateServers = privateField.ValueKind == JsonValueKind.True ? true
+                : privateField.ValueKind == JsonValueKind.False ? false : throw new InvalidPublicResponseException();
         return new PublicRobloxGame(requestedPlaceId, universeId, rootPlaceId, ReadText(item, "name", 256), ReadId(creator, "id"),
-            ReadText(creator, "name", 100), creatorKind, playing, maximum, _clock.GetUtcNow());
+            ReadText(creator, "name", 100), creatorKind, playing, maximum, _clock.GetUtcNow(), visits, privateServers);
     }
 
     /// <summary>Root-place listings for a few universes in one request; restricted or omitted universes are left out, never guessed.</summary>

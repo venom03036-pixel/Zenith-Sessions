@@ -29,6 +29,32 @@ public sealed class PublicDirectoryTests
     public void UserIdParsingRejectsMalformedAndOversizedInput(string? input) => Assert.False(PublicRobloxUserId.TryParse(input, out _));
 
     [Fact]
+    public void AnonymousDirectoryClientFollowsTheSameSystemProxyPolicyAsServerBrowsing()
+    {
+        // On a proxy-only network, game search, pictures and headshots must reach Roblox the same way
+        // server browsing, sign-in checks and share links already do: through the Windows system proxy.
+        using var directory = RobloxPublicDirectory.CreateAnonymousHandler();
+        using var servers = RobloxServerDirectory.CreatePublicHandler();
+
+        Assert.True(servers.UseProxy, "Server browsing should use the system proxy.");
+        Assert.Null(servers.Proxy);
+        Assert.True(directory.UseProxy, "The public directory bypasses the system proxy that server browsing uses.");
+        Assert.Null(directory.Proxy);
+        Assert.Equal(servers.UseProxy, directory.UseProxy);
+
+        // Using the proxy must not loosen the anonymous guarantees.
+        Assert.False(directory.AllowAutoRedirect);
+        Assert.False(directory.UseCookies);
+        Assert.Null(directory.Credentials);
+        Assert.False(directory.PreAuthenticate);
+        Assert.Null(directory.DefaultProxyCredentials);
+        Assert.Equal(RobloxPublicDirectory.MaximumConcurrentRequests, directory.MaxConnectionsPerServer);
+        Assert.Equal(32, directory.MaxResponseHeadersLength);
+        Assert.Equal(TimeSpan.FromSeconds(10), directory.ConnectTimeout);
+        Assert.Equal(TimeSpan.FromMinutes(5), directory.PooledConnectionLifetime);
+    }
+
+    [Fact]
     public async Task IdentityUsesInt64AndIsExplicitlyPublicInformation()
     {
         const long id = long.MaxValue;
@@ -145,6 +171,34 @@ public sealed class PublicDirectoryTests
         Assert.Equal(1, handler.Calls);
         clock.Advance(TimeSpan.FromSeconds(91));
         Assert.Equal(PublicDirectoryState.Deferred, (await directory.LookupUserAsync(44, CancellationToken.None)).State);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Theory]
+    [InlineData("5", "50", 50)]
+    [InlineData("90", "10", 90)]
+    [InlineData(null, "50", 50)]
+    [InlineData("5", "soon", 5)]
+    public async Task RateLimitPauseUsesTheLongerOfRetryAfterAndTheWindowReset(string? retryAfter, string reset, int expectedSeconds)
+    {
+        var clock = new FakeTime();
+        using var handler = new FakeHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            if (retryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+            response.Headers.TryAddWithoutValidation("x-ratelimit-remaining", "0");
+            response.Headers.TryAddWithoutValidation("x-ratelimit-reset", reset);
+            return Task.FromResult(response);
+        });
+        using var http = new HttpClient(handler);
+        var directory = new RobloxPublicDirectory(http, clock);
+        TimeSpan expected = TimeSpan.FromSeconds(expectedSeconds);
+        Assert.Equal(expected, (await directory.LookupUserAsync(42, default)).RetryAfter);
+        clock.Advance(expected - TimeSpan.FromSeconds(1));
+        Assert.Equal(TimeSpan.FromSeconds(1), (await directory.LookupUserAsync(43, default)).RetryAfter);
+        Assert.Equal(1, handler.Calls);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await directory.LookupUserAsync(44, default);
         Assert.Equal(2, handler.Calls);
     }
 

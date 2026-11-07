@@ -34,10 +34,27 @@ public sealed class GameDetailsViewModelTests
     }
 
     [Theory]
+    [InlineData(4_200_000L, true, "private servers allowed")]
+    [InlineData(0L, false, "private servers not allowed")]
+    [InlineData(null, null, null)]
+    public async Task ActivityShowsListedVisitsAndPrivateServerFlagAndOmitsUnknownOnes(long? visits, bool? allowed, string? privateText)
+    {
+        var clock = new Clock(); var directory = new Games(clock);
+        directory.Game = directory.Game with { Visits = visits, PrivateServersAllowed = allowed };
+        await using var browser = new ServerBrowserViewModel(new Servers(), clock: clock);
+        await using var vm = new GameDetailsViewModel(directory, browser, () => true, clock: clock);
+        browser.UsePreferredPlace(Place); await vm.LoadAsync();
+        Assert.StartsWith($"{3_000_000_000L:N0} players across the experience · listing server limit {20:N0}", vm.Activity);
+        if (visits is { } count) Assert.Contains($" · {count:N0} visits", vm.Activity); else Assert.DoesNotContain("visits", vm.Activity);
+        if (privateText is null) Assert.DoesNotContain("private servers", vm.Activity); else Assert.EndsWith(" · " + privateText, vm.Activity);
+    }
+
+    [Theory]
     [InlineData("place")]
     [InlineData("universe")]
     [InlineData("creator")]
     [InlineData("playing")]
+    [InlineData("visits")]
     [InlineData("max")]
     [InlineData("name")]
     [InlineData("surrogate")]
@@ -52,6 +69,7 @@ public sealed class GameDetailsViewModelTests
             "universe" => game with { UniverseId = 0 },
             "creator" => game with { CreatorKind = (PublicRobloxCreatorKind)999 },
             "playing" => game with { Playing = -1 },
+            "visits" => game with { Visits = -1 },
             "max" => game with { MaxPlayers = 0 },
             "name" => game with { Name = "Spoof\u202eTitle" },
             "surrogate" => game with { CreatorName = "\ud800" },

@@ -81,6 +81,14 @@ public sealed class PublicGameDirectoryTests
     [InlineData("{\"universeId\":42,\"\\uD800\":1}")]
     [InlineData("{\"universeId\":42} {}")]
     [InlineData("untrusted-game-response-marker")]
+    // Only a body whose single field is a null universeId means "no such game"; any other null shape stays malformed.
+    [InlineData("{\"universeId\":null,\"universeId\":null}")]
+    [InlineData("{\"universeId\":null,\"placeId\":9007199254740993}")]
+    [InlineData("{\"universeId\":null,\"extra\":1}")]
+    [InlineData("{\"placeId\":null}")]
+    [InlineData("{\"universeid\":null}")]
+    [InlineData("{\"universeId\":false}")]
+    [InlineData("null")]
     public async Task MalformedMappingFailsBeforeGameRequest(string json)
     {
         using var handler = new FakeHandler((_, _) => Task.FromResult(Json(json)));
@@ -89,6 +97,28 @@ public sealed class PublicGameDirectoryTests
         Assert.Equal(PublicDirectoryState.Failure, result.State);
         Assert.Null(result.Value);
         Assert.DoesNotContain("untrusted-game-response-marker", result.Message);
+        Assert.Equal(1, handler.Calls);
+    }
+
+    // Roblox answers HTTP 200 with {"universeId": null} for a place ID that no game uses (captured for both a
+    // nonexistent and an invalid ID). That is a definite "no such game", not a broken response.
+    [Theory]
+    [InlineData("{\"universeId\":null}")]
+    [InlineData("{\n  \"universeId\": null\n}")]
+    public async Task PlaceIdThatNoGameUsesIsUnknownWithoutGameRequest(string json)
+    {
+        using var handler = new FakeHandler((request, _) =>
+        {
+            AssertAnonymous(request, "application/json");
+            Assert.Equal($"https://apis.roblox.com/universes/v1/places/{Place}/universe", request.RequestUri!.AbsoluteUri);
+            return Task.FromResult(Json(json));
+        });
+        using var http = new HttpClient(handler);
+        var result = await new RobloxPublicDirectory(http).LookupGameAsync(Place, default);
+        Assert.Equal(PublicDirectoryState.Unknown, result.State);
+        Assert.Null(result.Value);
+        Assert.Null(result.RetryAfter);
+        Assert.Equal("No Roblox game uses this place ID. Check the number and try again.", result.Message);
         Assert.Equal(1, handler.Calls);
     }
 
@@ -215,6 +245,65 @@ public sealed class PublicGameDirectoryTests
         using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
         using var http = new HttpClient(handler);
         Assert.Equal(0, (await new RobloxPublicDirectory(http).LookupGameAsync(Place, default)).Value!.Playing);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task GameDetailsCarryVisitsAndPrivateServerFlagWhenListed(bool allowed)
+    {
+        string json = GameJson().Replace("\"isContentRestricted\":false",
+            "\"isContentRestricted\":false,\"visits\":9223372036854775807,\"createVipServersAllowed\":" + (allowed ? "true" : "false"));
+        using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+        using var http = new HttpClient(handler);
+        var game = (await new RobloxPublicDirectory(http).LookupGameAsync(Place, default)).Value!;
+        Assert.Equal(long.MaxValue, game.Visits);
+        Assert.Equal(allowed, game.PrivateServersAllowed);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Fact]
+    public async Task UnlistedVisitsAndPrivateServerFlagStayUnknownInsteadOfZero()
+    {
+        string zero = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false,\"visits\":0");
+        foreach (string json in new[] { GameJson(), zero })
+        {
+            using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+            using var http = new HttpClient(handler);
+            var game = (await new RobloxPublicDirectory(http).LookupGameAsync(Place, default)).Value!;
+            Assert.Equal(json == zero ? 0L : (long?)null, game.Visits);
+            Assert.Null(game.PrivateServersAllowed);
+        }
+    }
+
+    [Theory]
+    [InlineData("\"visits\":-1")]
+    [InlineData("\"visits\":9223372036854775808")]
+    [InlineData("\"visits\":\"5\"")]
+    [InlineData("\"visits\":1.5")]
+    [InlineData("\"visits\":null")]
+    [InlineData("\"createVipServersAllowed\":\"true\"")]
+    [InlineData("\"createVipServersAllowed\":1")]
+    [InlineData("\"createVipServersAllowed\":null")]
+    public async Task MalformedVisitsOrPrivateServerFlagIsAnInvalidListing(string field)
+    {
+        string json = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false," + field);
+        using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxPublicDirectory(http).LookupGameAsync(Place, default);
+        Assert.Equal(PublicDirectoryState.Failure, result.State);
+        Assert.Null(result.Value);
+    }
+
+    [Fact]
+    public async Task BatchLookupCarriesVisitsAndPrivateServerFlagPerUniverse()
+    {
+        string listed = Game(11, 110, "Eleven").Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false,\"visits\":42,\"createVipServersAllowed\":true");
+        using var handler = new FakeHandler((_, _) => Task.FromResult(Json("{\"data\":[" + listed + "," + Game(22, 220, "Twenty-two") + "]}")));
+        using var http = new HttpClient(handler);
+        var games = (await new RobloxPublicDirectory(http).LookupGamesAsync([11, 22], default)).Value!;
+        Assert.Equal(42, games[0].Visits); Assert.True(games[0].PrivateServersAllowed);
+        Assert.Null(games[1].Visits); Assert.Null(games[1].PrivateServersAllowed);
     }
 
     [Theory]

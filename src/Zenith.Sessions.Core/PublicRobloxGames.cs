@@ -6,10 +6,13 @@ public enum PublicRobloxCreatorKind { User, Group }
 /// A public, point-in-time game observation. RequestedPlaceId remains the requested target even when
 /// it is a subplace; RootPlaceId is descriptive metadata and must never replace that target.
 /// Playing is the universe-wide public count, not a particular server's occupancy or admission limit.
+/// Visits and PrivateServersAllowed are null when the listing omits them: unknown is never shown as 0 or "no".
+/// PrivateServersAllowed only says whether the experience offers private servers; it grants no access to one.
 /// </summary>
 public sealed record PublicRobloxGame(long RequestedPlaceId, long UniverseId, long RootPlaceId,
     string Name, long CreatorId, string CreatorName, PublicRobloxCreatorKind CreatorKind,
-    long Playing, int MaxPlayers, DateTimeOffset RetrievedUtc)
+    long Playing, int MaxPlayers, DateTimeOffset RetrievedUtc,
+    long? Visits = null, bool? PrivateServersAllowed = null)
 {
     public string EvidenceLabel => "Public game information";
 }
