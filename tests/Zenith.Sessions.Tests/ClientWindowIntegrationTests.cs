@@ -69,7 +69,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         {
             vm.Sessions[0].IsChecked = true; vm.TileGap = "-1";
             vm.ArrangeClients.Execute(null); await vm.ArrangeClients.Execution;
-            Assert.Equal(0, monitor.Arrangements); Assert.Contains("Gap", vm.Notice);
+            Assert.Equal(0, monitor.Arrangements); Assert.Contains("Gap", vm.ClientWindowStatus);
             vm.TileGap = "12"; vm.TileColumns = "2"; vm.TileMinimumWidth = "480";
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
             Assert.Equal("Settings saved", vm.SaveStatus);
@@ -83,6 +83,24 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         }
         await using var reopened = await Ready(new Monitor());
         Assert.Equal("12", reopened.TileGap); Assert.Equal("2", reopened.TileColumns); Assert.Equal("480", reopened.TileMinimumWidth);
+    });
+
+    [Fact]
+    public Task InvalidTileDraftIsReportedInlineWithoutRecordingAnOperationFailure() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var vm = await Ready(monitor);
+        vm.Sessions[0].IsChecked = true; vm.TileGap = "70";
+        vm.ArrangeClients.Execute(null); await vm.ArrangeClients.Execution;
+        Assert.Equal(0, monitor.Arrangements);
+        Assert.Contains("Gap must be between 0 and 64", vm.ClientWindowStatus);
+        Assert.DoesNotContain("could not finish", vm.ClientWindowStatus);
+        Assert.DoesNotContain(vm.Events, e => e.Contains("Operation failed"));
+        vm.TileGap = "8"; vm.TileColumns = "abc";
+        vm.ArrangeClients.Execute(null); await vm.ArrangeClients.Execution;
+        Assert.Equal(0, monitor.Arrangements);
+        Assert.Contains("Enter a whole number for columns", vm.ClientWindowStatus);
+        Assert.DoesNotContain(vm.Events, e => e.Contains("Operation failed"));
     });
 
     [Fact]

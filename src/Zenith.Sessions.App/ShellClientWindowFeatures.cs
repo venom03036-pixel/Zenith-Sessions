@@ -230,7 +230,10 @@ public sealed partial class ShellViewModel
         if (!CanArrangeClients || _monitor is not IClientWindowArranger windows
             || SelectedClientDisplay is not { } display || !ClientDisplays.Contains(display))
         { ClientWindowStatus = "Refresh monitors and check clients, or select one client, before arranging."; return; }
-        var options = ReadClientLayoutDraft().Tile!;
+        // A bad Layout preferences value is a typing mistake, not an operation failure: show it inline, like resizing.
+        ClientWindowTileOptions options;
+        try { options = ReadClientLayoutDraft().Tile!; }
+        catch (ArgumentException error) { ClientWindowStatus = error.Message; return; }
         // Recipient identities and geometry preferences are immutable for this operation.
         var selected = PinClientWindowSelection();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
