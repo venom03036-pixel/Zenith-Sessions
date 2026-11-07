@@ -91,15 +91,22 @@ public sealed partial class ShellViewModel
     {Interlocked.Increment(ref _nativeReviewVersion);Interlocked.Exchange(ref _nativeTrialReview,null);_nativeReviewStop?.Cancel();}
     private void ConfigureNativeTrialInstallation()
     {
-        InvalidateNativeTrialReview();
-        Interlocked.Increment(ref _nativeTrialEpoch);
-        _launchQueue.SignalPanic();
         // A cleared selection (Refresh, Cancel check, Panic or Lock) is not a rejected row;
         // only a row that is still selected may be described as unsupported.
         var selection=SelectedInstallation?.Candidate;
+        var eligible=selection is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null;
+        // Revoke trial permission (and pause the queue) only when the trial installation can
+        // actually change: off a selected native file, or onto a present native row. Moving
+        // between rows that can never be the trial installation only updates the status text.
+        if(_nativeLaunch.Selected||eligible is not null)
+        {
+            InvalidateNativeTrialReview();
+            Interlocked.Increment(ref _nativeTrialEpoch);
+            _launchQueue.SignalPanic();
+        }
         try
         {
-            _nativeLaunch.Configure(selection is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null);
+            _nativeLaunch.Configure(eligible);
             NativeTrialStatus=_nativeLaunch.Selected?"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified."
                 :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation;
         }

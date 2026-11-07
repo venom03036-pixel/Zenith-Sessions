@@ -1,3 +1,5 @@
+using System.IO;
+using System.Reflection;
 using System.Windows.Threading;
 using Xunit;
 using Zenith.Sessions.App;
@@ -22,6 +24,75 @@ public sealed partial class ClientWindowIntegrationTests
         vm.SelectedInstallation = vm.InstallationCandidates[1];
         Assert.Equal("C:\\Synthetic\\Froststrap.exe", vm.SelectedInstallation.ExecutablePath);
     });
+
+    [Fact]
+    public Task SelectingBetweenUnsupportedInstallationRowsDoesNotPauseTheQueue() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); Assert.True(vm.QueueReady);
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        await ResumeQueueForInstallationTestAsync(vm);
+        InstallationCandidateRow bloxstrap = new(new(ClientInstallationProduct.Bloxstrap, "C:\\Synthetic\\Bloxstrap.exe", "Synthetic Bloxstrap", "2.0.0",
+            ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.UninstallRegistry, ClientInstallationProduct.Bloxstrap)]));
+        InstallationCandidateRow missingRoblox = new(vm.InstallationCandidates[0].Candidate with { ExecutablePath = "C:\\Synthetic\\Missing\\RobloxPlayerBeta.exe", FileState = ClientInstallationFileState.Missing });
+        vm.InstallationCandidates.Add(bloxstrap); vm.InstallationCandidates.Add(missingRoblox);
+
+        // Froststrap -> Bloxstrap -> a missing Roblox file: none can become the trial installation.
+        vm.SelectedInstallation = vm.InstallationCandidates[1];
+        vm.SelectedInstallation = bloxstrap;
+        vm.SelectedInstallation = missingRoblox;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.False(InstallationTestQueuePaused(vm), "Selecting only unsupported rows must not pause the launch queue.");
+        Assert.Equal("Pause queue", vm.QueuePauseLabel); Assert.Contains("not supported", vm.NativeTrialStatus);
+
+        // Refresh and Cancel check clear an unsupported selection without touching the queue.
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution; Assert.Null(vm.SelectedInstallation);
+        vm.SelectedInstallation = vm.InstallationCandidates[1]; vm.CancelInstallationDiscovery.Execute(null); Assert.Null(vm.SelectedInstallation);
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.False(InstallationTestQueuePaused(vm)); Assert.Equal("Pause queue", vm.QueuePauseLabel);
+
+        // A real trial-installation change still revokes: onto a present native row, and off it again.
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        vm.SelectedInstallation = vm.InstallationCandidates[0];
+        Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Native file selected", vm.NativeTrialStatus);
+        await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+        await ResumeQueueForInstallationTestAsync(vm);
+        vm.SelectedInstallation = vm.InstallationCandidates[1];
+        Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("not supported", vm.NativeTrialStatus);
+        await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
+    public void ProductionInstallationCopyStatesThatANativeRowBecomesTheTrialInstallation()
+    {
+        using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
+        string xaml = new StreamReader(source!).ReadToEnd();
+        Assert.DoesNotContain("No candidate is chosen as your launch provider", xaml, StringComparison.Ordinal);
+        Assert.Contains("makes it the installation for an explicit trial in Join a game; changing that row stops any trial and pauses the queue", xaml, StringComparison.Ordinal);
+    }
+
+    private static async Task ResumeQueueForInstallationTestAsync(ShellViewModel vm)
+    {
+        vm.ToggleQueuePause.Execute(null); await vm.ToggleQueuePause.Execution;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.False(InstallationTestQueuePaused(vm)); Assert.Equal("Pause queue", vm.QueuePauseLabel);
+    }
+
+    private static async Task WaitForQueuePauseLabelAsync(ShellViewModel vm, string expected)
+    {
+        // The queue publishes its stopped state through a background dispatcher item.
+        for (int wait = 0; wait < 100 && vm.QueuePauseLabel != expected; wait++) { await Task.Delay(50); await Dispatcher.Yield(DispatcherPriority.ApplicationIdle); }
+        Assert.Equal(expected, vm.QueuePauseLabel);
+    }
+
+    private static bool InstallationTestQueuePaused(ShellViewModel vm)
+    {
+        const BindingFlags flags = BindingFlags.Instance | BindingFlags.NonPublic;
+        var queue = typeof(ShellViewModel).GetField("_launchQueue", flags)!.GetValue(vm)!;
+        return (bool)queue.GetType().GetField("_paused", flags)!.GetValue(queue)!;
+    }
 
     [Fact]
     public Task CancelledInstallationReadCannotPublishAfterUnlockOrQueueAnotherRead() => OnUi(async () =>
