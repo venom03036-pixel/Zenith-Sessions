@@ -41,9 +41,10 @@ public sealed class SignInProfileDirectory
     }
 
     /// <summary>
-    /// True while the last admission or sweep under <paramref name="dataRoot"/> was stopped by leftover data it could not
-    /// recover (unrecognized, redirected or unremovable), so the next <see cref="Create"/> would refuse as well. Memory
-    /// only, like <see cref="HasLiveOwner"/>; a clean admission or sweep clears it, and every start begins with a sweep.
+    /// True while the last admission or sweep under <paramref name="dataRoot"/> kept leftover data it must not open or
+    /// remove (see <see cref="SignInDirectoryNeedsReviewException"/>), so the next <see cref="Create"/> would refuse as
+    /// well. Other storage failures are not remembered: they say nothing about leftover data and may clear on retry.
+    /// Memory only, like <see cref="HasLiveOwner"/>; a clean admission or sweep clears it, and every start begins with a sweep.
     /// </summary>
     public static bool LeftoverNeedsReview(string dataRoot)
     {
@@ -79,14 +80,15 @@ public sealed class SignInProfileDirectory
                 foreach (string old in Directory.EnumerateDirectories(browserRoot))
                 {
                     ct.ThrowIfCancellationRequested();
-                    if (++prior > RecoveryBudget) throw new IOException(NeedsReview);
+                    if (++prior > RecoveryBudget) throw new SignInDirectoryNeedsReviewException(NeedsReview);
                     RecoverLeftover(old, ct);
                 }
             }
-            // What stopped admission stays on disk until someone reviews it. Remember it so the handoff checks refuse
-            // before reserving a grant; a folder another owner holds is only busy and a cancel changes nothing.
-            catch (Exception ex) when (ex is (IOException or UnauthorizedAccessException) and not SignInDirectoryInUseException)
-            { ReviewPending.TryAdd(browserRoot, 0); throw; }
+            // Leftover data that stopped admission stays on disk until someone reviews it. Remember it so the handoff
+            // checks refuse before reserving a grant. Nothing else is remembered: a folder another owner holds is only
+            // busy, a cancel changes nothing, and remote, redirected, unwritable or full storage, or a file another
+            // program still has open, is a storage problem the next attempt may not have.
+            catch (SignInDirectoryNeedsReviewException) { ReviewPending.TryAdd(browserRoot, 0); throw; }
             ReviewPending.TryRemove(browserRoot, out _);
             string path = System.IO.Path.Combine(browserRoot, profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
             ct.ThrowIfCancellationRequested();
@@ -101,9 +103,10 @@ public sealed class SignInProfileDirectory
     /// Removes leftover sign-in folders under <paramref name="dataRoot"/> (left by a crash or an interrupted cleanup)
     /// that no browser holds, with the same name, marker, lease and redirection checks as <see cref="Create"/>, and
     /// creates nothing. Unlike admission it keeps going past a folder it must preserve: a folder that is held,
-    /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. A redirected storage root
-    /// is refused as a whole with an <see cref="IOException"/>. Either way, data the next admission would also refuse
-    /// is reported by <see cref="LeftoverNeedsReview"/>. Meant for startup, under the single-instance lock.
+    /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. Only leftover data that needs
+    /// review, which the next admission would also refuse, is reported by <see cref="LeftoverNeedsReview"/>. A redirected
+    /// or unreadable storage root is refused as a whole with an <see cref="IOException"/>; like every other storage
+    /// failure it is not remembered for review. Meant for startup, under the single-instance lock.
     /// </summary>
     public static SignInSweepResult SweepOwned(string dataRoot, CancellationToken ct)
     {
@@ -117,6 +120,7 @@ public sealed class SignInProfileDirectory
         try
         {
             if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); return default; }
+            // A redirected or unreadable root is a storage problem, not leftover data, so it is not remembered for review.
             AssertAncestors(browserRoot);
             int removed = 0, kept = 0; bool review = false;
             foreach (string old in Directory.EnumerateDirectories(browserRoot))
@@ -125,17 +129,16 @@ public sealed class SignInProfileDirectory
                 // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
                 if (removed + kept >= RecoveryBudget) { kept++; continue; }
                 try { RecoverLeftover(old, ct); removed++; }
-                // A held folder is busy and frees itself; anything else waits for review.
+                // A held folder is busy and frees itself, and a storage error (such as a file another program still has
+                // open) may clear on the next attempt; only data that needs review waits for someone to look at it.
                 catch (SignInDirectoryInUseException) { kept++; }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; review = true; }
+                catch (SignInDirectoryNeedsReviewException) { kept++; review = true; }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
             }
             // Admission also refuses when more folders remain than one admission may open.
             if (review || kept > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
             return new(removed, kept);
         }
-        // A redirected or unreadable root refuses every admission too.
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        { ReviewPending.TryAdd(browserRoot, 0); throw; }
         finally { Admission.Release(); }
     }
 
@@ -146,8 +149,8 @@ public sealed class SignInProfileDirectory
     // when its marker is incomplete or its lock is missing.
     private static void RecoverLeftover(string old, CancellationToken ct)
     {
-        if (!OwnedName(System.IO.Path.GetFileName(old))) throw new IOException(NeedsReview);
-        if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new IOException("Private sign-in cleanup found redirected storage.");
+        if (!OwnedName(System.IO.Path.GetFileName(old))) throw new SignInDirectoryNeedsReviewException(NeedsReview);
+        if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
         bool ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
         if (!ownershipFilesOnly) AssertMarker(old);
         // FileShare.None still rejects a live owner; a missing lock is recreated and held until the folder is gone.
@@ -169,13 +172,13 @@ public sealed class SignInProfileDirectory
         {
             ct.ThrowIfCancellationRequested();
             string current = pending.Pop();
-            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new IOException("Sign-in cleanup found a redirected directory; its files were preserved.");
+            if ((File.GetAttributes(current) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Sign-in cleanup found a redirected directory; its files were preserved.");
             foreach (string entry in Directory.EnumerateFileSystemEntries(current))
             {
                 ct.ThrowIfCancellationRequested();
-                if (++entries > 30000) throw new IOException("Sign-in cleanup exceeded its file budget; its directory was preserved.");
+                if (++entries > 30000) throw new SignInDirectoryNeedsReviewException("Sign-in cleanup exceeded its file budget; its directory was preserved.");
                 FileAttributes attributes = File.GetAttributes(entry);
-                if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Sign-in cleanup found redirected data; its files were preserved.");
+                if ((attributes & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Sign-in cleanup found redirected data; its files were preserved.");
                 if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
             }
         }
@@ -237,11 +240,11 @@ public sealed class SignInProfileDirectory
         && Guid.TryParseExact(name[..32], "N", out _) && Guid.TryParseExact(name[33..], "N", out _);
     private static void AssertMarker(string path)
     {
-        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new IOException("Private sign-in cleanup found redirected storage.");
+        if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
         string marker = System.IO.Path.Combine(path, Marker);
         var info = new FileInfo(marker);
         if (!info.Exists || info.Length > 100 || (info.Attributes & FileAttributes.ReparsePoint) != 0 || File.ReadAllText(marker) != MarkerContents)
-            throw new IOException("Private sign-in cleanup found unrecognized data; it was preserved for review.");
+            throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found unrecognized data; it was preserved for review.");
     }
 }
 
@@ -250,3 +253,13 @@ public readonly record struct SignInSweepResult(int Removed, int Kept);
 
 /// <summary>Another private browser (an open sign-in, or one still closing) holds its sign-in folder. Nothing was opened or removed.</summary>
 public sealed class SignInDirectoryInUseException() : IOException("Another private browser still owns its sign-in folder. Wait for it to close, then try again.");
+
+/// <summary>
+/// Leftover sign-in data that admission or cleanup must not open or remove: a folder that is not one of this component's,
+/// one without a valid marker, one that is redirected or holds redirected data or more entries than cleanup may inspect,
+/// or more leftover folders than one admission may open. It stays on disk untouched until someone reviews it, so retrying
+/// alone cannot clear it. Every other storage failure (remote or redirected storage, permissions, a full disk, a file
+/// another program still has open) stays a plain <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/>.
+/// The message is fixed text: no path.
+/// </summary>
+public sealed class SignInDirectoryNeedsReviewException(string message) : IOException(message);

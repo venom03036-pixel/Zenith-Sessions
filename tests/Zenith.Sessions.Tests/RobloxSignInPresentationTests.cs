@@ -1,4 +1,6 @@
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -91,7 +93,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         var old = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default); old.Remove(default);
         string unknown=Path.Combine(_root,"signin-browser-data","unknown"); Directory.CreateDirectory(unknown);
         File.WriteAllText(Path.Combine(unknown,"keep.txt"),"keep");
-        Assert.Throws<IOException>(()=>SignInProfileDirectory.Create(_root,Guid.NewGuid(),default)); Assert.True(File.Exists(Path.Combine(unknown,"keep.txt")));
+        Assert.Throws<SignInDirectoryNeedsReviewException>(()=>SignInProfileDirectory.Create(_root,Guid.NewGuid(),default)); Assert.True(File.Exists(Path.Combine(unknown,"keep.txt")));
     }
     [Fact]
     public void FailedCleanupKeepsOwnershipMarkersAndRecoversAfterRelease()
@@ -128,7 +130,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
         Assert.False(Directory.Exists(empty)); Assert.False(Directory.Exists(shortMarker)); next.Remove(default);
         string unmarked = OwnedName(); Directory.CreateDirectory(unmarked); File.WriteAllText(Path.Combine(unmarked, "keep.txt"), "keep");
-        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
         Assert.True(File.Exists(Path.Combine(unmarked, "keep.txt")));
     }
     [Fact]
@@ -352,7 +354,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
         Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root + "-other"));
         // Admission reaches the same folder and keeps the reminder.
-        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
         // Reviewed by hand while running: the next admission finds the root clean and clears it.
         Directory.Delete(unmarked, true);
@@ -361,7 +363,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         next.Remove(default);
         // Admission alone also remembers a leftover it cannot recover, and a clean sweep clears it.
         unmarked = Leftover(browserRoot, false);
-        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
         Directory.Delete(unmarked, true);
         Assert.Equal(default, SignInProfileDirectory.SweepOwned(_root, default));
@@ -379,6 +381,75 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Equal(new SignInSweepResult(8, 9), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
     }
+    // Only leftover data that admission must not open is remembered for review. A leftover file another program (an
+    // antivirus scan, or a browser a crash left running) still had open was remembered too, so every handoff check said
+    // cleanup failed and native launch stopped until restart, although the next attempt could succeed.
+    [Fact]
+    public void OnlyLeftoverDataAdmissionMustNotOpenIsRememberedForReview()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        string foreign = Directory.CreateDirectory(Path.Combine(browserRoot, "not-ours")).FullName;
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Directory.Delete(foreign);
+        string unmarked = Leftover(browserRoot, false);
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Directory.Delete(unmarked, true);
+        for (int i = 0; i < 9; i++) Leftover(browserRoot, true);
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        // The folder past the budget is recoverable: the next clean run removes it and clears the reminder.
+        Assert.Equal(new SignInSweepResult(1, 0), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        string busy = Leftover(browserRoot, true);
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var refused = Assert.ThrowsAny<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+            Assert.IsNotType<SignInDirectoryNeedsReviewException>(refused); Assert.IsNotType<SignInDirectoryInUseException>(refused);
+            Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root), "Admission remembered a file still open as data to review.");
+            Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+            Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root), "The sweep remembered a file still open as data to review.");
+            Assert.True(File.Exists(Path.Combine(busy, ".zenith-private-signin")), "A folder cleanup could not finish lost its ownership marker.");
+        }
+        // Once the other program lets go, the next admission removes the leftover.
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(Directory.Exists(busy));
+        next.Remove(default);
+    }
+    // A remote, redirected or unwritable data folder, or a leftover file another program still has open, says nothing
+    // about leftover folders to review. Each said "a leftover folder ... was not recognized or could not be removed" and
+    // was remembered for review, and a real permissions problem lost the advice it needed.
+    [Fact]
+    public Task SignInBlockedByStorageRatherThanLeftoverDataAsksForUsableStorageAndLatchesNothing() => OnUi(async () =>
+    {
+        string real = Directory.CreateDirectory(Path.Combine(_root, "real")).FullName, alias = Path.Combine(_root, "alias");
+        await CreateJunctionAsync(alias, real);
+        var denied = Directory.CreateDirectory(Path.Combine(_root, "denied"));
+        var deny = new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!, FileSystemRights.CreateDirectories, AccessControlType.Deny);
+        var acl = denied.GetAccessControl(); acl.AddAccessRule(deny); denied.SetAccessControl(acl);
+        string busyRoot = Path.Combine(_root, "busy"), busy = Leftover(Path.Combine(busyRoot, "signin-browser-data"), true);
+        try
+        {
+            using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+                foreach (string dataRoot in new[] { @"\\zenith-test.invalid\share\data", Path.Combine(alias, "data"), denied.FullName, busyRoot })
+                {
+                    await using var signIn = new OwnedRobloxSignIn(dataRoot, Dispatcher.CurrentDispatcher);
+                    var refused = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+                    Assert.Contains("storage could not be prepared", refused.Message);
+                    Assert.Contains("permission", refused.Message);
+                    Assert.DoesNotContain("leftover", refused.Message, StringComparison.OrdinalIgnoreCase);
+                    Assert.DoesNotContain(_root, refused.Message);
+                    Assert.False(signIn.CleanupPending, "A refusal that created nothing latched the sign-in owner.");
+                    Assert.False(SignInProfileDirectory.LeftoverNeedsReview(dataRoot), "A storage failure was remembered as leftover data to review.");
+                }
+            Assert.Empty(Directory.EnumerateFileSystemEntries(real));
+            Assert.False(Directory.Exists(Path.Combine(denied.FullName, "signin-browser-data")));
+        }
+        finally
+        {
+            acl.RemoveAccessRuleSpecific(deny); denied.SetAccessControl(acl);
+            if (Directory.Exists(alias)) Directory.Delete(alias, false);
+        }
+    });
     private static string OwnedFolderName() => Guid.NewGuid().ToString("N") + "-" + Guid.NewGuid().ToString("N");
     /// <summary>A folder shaped like one a crashed sign-in left: owned name, optional marker and lock, synthetic browser data.</summary>
     private static string Leftover(string browserRoot, bool marked)

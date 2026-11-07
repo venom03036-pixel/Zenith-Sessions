@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -207,6 +209,35 @@ public sealed partial class ClientWindowIntegrationTests
         // The folder blocks every owner's admission, so the separate native capture refuses too instead of reserving first.
         await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,Dispatcher.CurrentDispatcher);
         Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,native.Refusal);
+    });
+    [Fact]
+    public Task StorageFailureOutsideLeftoverDataIsNotLatchedAsACleanupFailure()=>OnUi(async()=>
+    {
+        // Remote or unwritable storage says nothing about leftover data. It latched CleanupFailed: the status said cleanup did
+        // not finish and to restart, which cannot fix the data folder, and native launch stopped until restart.
+        var denied=Directory.CreateDirectory(Path.Combine(_root,"denied"));
+        var deny=new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!,FileSystemRights.CreateDirectories,AccessControlType.Deny);
+        var acl=denied.GetAccessControl();acl.AddAccessRule(deny);denied.SetAccessControl(acl);
+        try
+        {
+            foreach(string dataRoot in new[]{@"\\zenith-test.invalid\share\data",denied.FullName})
+            {
+                await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(dataRoot,Dispatcher.CurrentDispatcher);
+                using var credential=new RobloxSessionCredential("synthetic-only");
+                using(var result=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default))
+                {
+                    Assert.Equal(RobloxHandoffProbeOutcome.BrowserUnavailable,result.Result.Outcome);
+                    string status=ShellViewModel.DescribeHandoffResult(result.Result,42);
+                    Assert.Contains("data folder",status);Assert.DoesNotContain("cleanup",status,StringComparison.OrdinalIgnoreCase);
+                }
+                // Nothing is latched: a check may start once storage is fixed, and native launch is not stopped.
+                Assert.Null(probe.Refusal);
+                await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(dataRoot,Dispatcher.CurrentDispatcher);
+                Assert.Null(native.Refusal);
+            }
+            Assert.False(Directory.Exists(Path.Combine(denied.FullName,"signin-browser-data")));
+        }
+        finally{acl.RemoveAccessRuleSpecific(deny);denied.SetAccessControl(acl);}
     });
     [Fact]
     public Task LeftoverKeptForReviewAtStartupRefusesTheFirstChecksBeforeAnyGrantIsReserved()=>OnUi(async()=>

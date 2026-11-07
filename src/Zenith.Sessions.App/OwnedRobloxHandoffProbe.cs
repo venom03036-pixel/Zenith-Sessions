@@ -88,9 +88,11 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         try
         {
             try{directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);}
-            // Unrecognized, redirected or unremovable leftover data persists until someone reviews it. Latch so
-            // later checks are refused before any account's grant is reserved, instead of blaming WebView2 each time.
-            catch(Exception error)when(error is (IOException or UnauthorizedAccessException) and not SignInDirectoryInUseException)
+            // Leftover data kept for review persists until someone reviews it. Latch so later checks are refused
+            // before any account's grant is reserved, instead of blaming WebView2 each time. Any other storage failure
+            // (remote, redirected, unwritable or full storage, or a file another program has open) is not this probe's
+            // cleanup: it falls through to BrowserUnavailable below, latches nothing and leaves native launch usable.
+            catch(SignInDirectoryNeedsReviewException)
             {lock(_state)_blocked=true;result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);return result;}
             result=await dispatcher.InvokeAsync(()=>
             {
