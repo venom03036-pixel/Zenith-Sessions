@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 using Xunit;
 
 namespace Zenith.Sessions.Tests;
@@ -87,6 +88,22 @@ public sealed partial class ClientWindowIntegrationTests
         using var invalid=await probe.InspectAsync(new(Guid.Empty,456,1,42),credential,default);
         Assert.Equal(RobloxHandoffProbeOutcome.ContextRejected,invalid.Result.Outcome);
         Assert.False(Directory.Exists(Path.Combine(_root,"signin-browser-data")));
+    });
+    [Fact]
+    public Task InspectionBlockedByAnotherOwnersHeldFolderIsNotReportedAsMissingWebView2()=>OnUi(async()=>
+    {
+        // Stands in for a sign-in whose browser is still closing: its folder lease is held by another owner.
+        var held=SignInProfileDirectory.Create(_root,Guid.NewGuid(),default);
+        try
+        {
+            await using var probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
+            using var credential=new RobloxSessionCredential("synthetic-only");
+            using var result=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
+            // Busy, not CleanupFailed: this inspection created nothing, so it must not poison a native launch owner either.
+            Assert.Equal(RobloxHandoffProbeOutcome.Busy,result.Result.Outcome);
+            Assert.True(Directory.Exists(held.Path),"Another owner's held sign-in folder was removed.");
+        }
+        finally{held.Remove(default);}
     });
     [Fact]
     public Task RemovingTheInspectedProfileWaitsForItsActualBrowserOwner()=>OnUi(async()=>

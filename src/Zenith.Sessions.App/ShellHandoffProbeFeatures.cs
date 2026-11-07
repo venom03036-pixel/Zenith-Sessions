@@ -67,7 +67,7 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.AuthorizationChanged=>"The account's saved authorization changed during inspection. The old result was discarded; no client was started.",
         RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying.",
         RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser is unavailable or its required launch-cancellation guard could not be installed. Check WebView2 Runtime; no page handoff was allowed.",
-        RobloxHandoffProbeOutcome.Busy=>"Another account operation is in progress. Finish or cancel it before inspecting a handoff.",
+        RobloxHandoffProbeOutcome.Busy=>"Another account operation or private browser window is still open or closing. Finish or cancel it, then retry the inspection; no page was opened.",
         RobloxHandoffProbeOutcome.ContextRejected=>"The game page changed or was not the approved game-only destination. No handoff was accepted. Renew sign-in if required, then retry with the intended game.",
         RobloxHandoffProbeOutcome.OriginRejected=>"The request did not report the expected official Roblox page origin. It was cancelled and no client was started.",
         RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"The page requested an unexpected external application. The request was cancelled and no client was started.",

@@ -18,9 +18,15 @@ namespace Zenith.Sessions.App;
 /// <summary>One visible, app-owned private Roblox sign-in. Only an explicit Save reads its own cookie manager.</summary>
 public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : IRobloxSessionSignIn, IAsyncDisposable
 {
+    private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
+    private readonly object _state = new();
     private int _active;
+    // Guarded by _state. Set while a sign-in folder is not confirmed removed. A cleanup still waiting
+    // for its browser to exit clears it when that same tracked task removes the folder; a failed
+    // cleanup keeps it, and the folder's lease, until disposal.
     private bool _cleanupFailed;
     private SignInProfileDirectory? _incompleteDirectory;
+    private Task _cleanup = Task.CompletedTask;
 
     public async Task<RobloxSessionCredential> SignInAsync(Guid profileId, CancellationToken ct)
     {
@@ -29,7 +35,10 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             throw new AccountLinkException("A Roblox sign-in window is already open.");
         try
         {
-            if (_cleanupFailed) throw new AccountLinkException("The previous sign-in browser did not finish cleanup. Close Zenith Sessions before trying again; its private data was preserved for cleanup.");
+            lock (_state)
+                if (_cleanupFailed) throw new AccountLinkException(_cleanup.IsCompleted
+                    ? "The previous sign-in browser did not finish cleanup. Close Zenith Sessions before trying again; its private data was preserved for cleanup."
+                    : "The previous sign-in browser is still closing. Try again in a few seconds; its private data is removed once it closes.");
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromMinutes(15));
             var directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false);
@@ -41,7 +50,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                 {
                     try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)).ConfigureAwait(false); }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
-                    { _cleanupFailed = true; _incompleteDirectory = directory; }
+                    { lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
                 }
             }
         }
@@ -84,7 +93,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         window.Closing += close; save.Click += saveClick; cancel.Click += cancelClick;
         using var registration = ct.Register(() => { completion.TrySetCanceled(ct); dispatcher.BeginInvoke(HidePending, DispatcherPriority.Send); });
         RobloxSessionCredential? accepted = null;
-        Exception? cleanupProblem = null;
+        bool cleaned = false;
         try
         {
             ct.ThrowIfCancellationRequested();
@@ -130,34 +139,31 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             HidePending();
             save.IsEnabled = false;
             if (saveTask is not null) await saveTask;
+            bool cookieProblem = false;
             if (controllerReady)
             {
-                var core = browser.CoreWebView2;
-                core.NavigationStarting -= NavigationStarting; core.NewWindowRequested -= NewWindowRequested;
-                core.DownloadStarting -= DownloadStarting; core.PermissionRequested -= PermissionRequested; core.ProcessFailed -= ProcessFailed;
-                try { core.CookieManager.DeleteAllCookies(); }
-                catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { cleanupProblem = ex; }
+                // A controller whose browser process failed can reject event removal as well as cookie
+                // deletion. Neither stops removal of the whole folder once the browser's exit is confirmed.
+                try
+                {
+                    var core = browser.CoreWebView2;
+                    core.NavigationStarting -= NavigationStarting; core.NewWindowRequested -= NewWindowRequested;
+                    core.DownloadStarting -= DownloadStarting; core.PermissionRequested -= PermissionRequested; core.ProcessFailed -= ProcessFailed;
+                    core.CookieManager.DeleteAllCookies();
+                }
+                catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { cookieProblem = true; }
             }
             browser.Dispose();
             closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close();
-            if (controllerReady)
-            {
-                try { await browserExited.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
-                catch (TimeoutException ex) { cleanupProblem ??= ex; }
-            }
-            if (environment is not null) environment.BrowserProcessExited -= exited;
-            if (cleanupProblem is null)
-            {
-                try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException) { cleanupProblem = ex; }
-            }
-            if (cleanupProblem is not null)
-            {
-                _cleanupFailed = true; _incompleteDirectory = directory; accepted?.Dispose();
-            }
+            // The cleanup stays tracked past this observation: a late browser exit still removes the folder and clears the latch.
+            cleaned = await SettleCleanupAsync(FinishCleanupAsync(browserExited.Task, controllerReady, cookieProblem, directory,
+                () => { if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
+            if (!cleaned) accepted?.Dispose();
             if (completion.Task.IsCompletedSuccessfully && !ReferenceEquals(accepted, completion.Task.Result)) completion.Task.Result.Dispose();
         }
-        if (cleanupProblem is not null) throw new AccountLinkException("The private sign-in browser did not finish cleanup. This sign-in was not saved. Close Zenith Sessions before trying again; private files were preserved for cleanup.");
+        if (!cleaned) throw new AccountLinkException(CleanupFailedUntilRestart
+            ? "The private sign-in browser did not finish cleanup. This sign-in was not saved. Close Zenith Sessions before trying again; private files were preserved for cleanup."
+            : "The private sign-in browser is still closing. This sign-in was not saved. Try again in a few seconds; its private data is removed once it closes.");
         return accepted ?? throw new AccountLinkException("No Roblox sign-in was selected.");
 
         async Task ReadExplicitlyAsync()
@@ -185,5 +191,58 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         void PermissionRequested(object? _, CoreWebView2PermissionRequestedEventArgs e) { e.State = CoreWebView2PermissionState.Deny; }
         void ProcessFailed(object? _, CoreWebView2ProcessFailedEventArgs e) { completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved.")); }
     }
-    public ValueTask DisposeAsync() { _incompleteDirectory?.ReleaseOwnership(); _incompleteDirectory = null; return ValueTask.CompletedTask; }
+    internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
+    internal Task CleanupSettled { get { lock (_state) return _cleanup; } }
+    private bool CleanupFailedUntilRestart { get { lock (_state) return _cleanupFailed && _cleanup.IsCompleted; } }
+
+    /// <summary>Removes the private folder after the browser's real exit, even when cookie deletion failed:
+    /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.</summary>
+    internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach)
+    {
+        try
+        {
+            if (awaitBrowserExit) await browserExited;
+            if (priorProblem && !awaitBrowserExit) throw new IOException("Private sign-in cleanup needs review; its files were preserved.");
+            using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            await Task.Run(() => directory.Remove(deadline.Token));
+        }
+        finally { detach(); }
+    }
+
+    /// <summary>Watches a tracked folder cleanup for a bounded time. A cleanup still waiting for its browser stays
+    /// owned past the observation, and the latch clears only when that same task later removes the folder.</summary>
+    internal async Task<bool> SettleCleanupAsync(Task cleanup, SignInProfileDirectory directory, TimeSpan observation)
+    {
+        var tracked = ClearLatchWhenRemovedAsync(cleanup, directory);
+        lock (_state) _cleanup = tracked;
+        try { await cleanup.WaitAsync(observation); return true; }
+        catch (Exception)
+        {
+            // A timeout or failed removal keeps this folder's lease and refuses new sign-ins until the folder is gone.
+            lock (_state)
+            {
+                if (cleanup.IsCompletedSuccessfully) return true;
+                _cleanupFailed = true; _incompleteDirectory = directory;
+            }
+            return false;
+        }
+    }
+    private async Task ClearLatchWhenRemovedAsync(Task cleanup, SignInProfileDirectory directory)
+    {
+        // A failed cleanup stays latched; SettleCleanupAsync observed and reported that same failure.
+        await cleanup.ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing);
+        if (!cleanup.IsCompletedSuccessfully) return;
+        lock (_state)
+            if (ReferenceEquals(_incompleteDirectory, directory)) { _incompleteDirectory = null; _cleanupFailed = false; }
+    }
+
+    /// <summary>Joins the tracked cleanup before releasing a retained lease. Remove disposes the lease itself, and
+    /// releasing it mid-removal would let another owner recover a folder that is still being deleted.</summary>
+    public async ValueTask DisposeAsync()
+    {
+        Task cleanup; lock (_state) cleanup = _cleanup;
+        await cleanup.ConfigureAwait(false);
+        SignInProfileDirectory? retained; lock (_state) { retained = _incompleteDirectory; _incompleteDirectory = null; }
+        retained?.ReleaseOwnership();
+    }
 }

@@ -45,7 +45,7 @@ public sealed class SignInProfileDirectory
             bool ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
             if (!ownershipFilesOnly) AssertMarker(old);
             // FileShare.None still rejects a live owner; a missing lock is recreated and held until the folder is gone.
-            var recovered = new SignInProfileDirectory(old, new FileStream(System.IO.Path.Combine(old, OwnerLock), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None));
+            var recovered = new SignInProfileDirectory(old, OpenLease(old));
             try { if (ownershipFilesOnly) recovered.DeleteOwnershipFiles(); else recovered.Remove(ct); }
             finally { recovered.ReleaseOwnership(); }
         }
@@ -93,6 +93,13 @@ public sealed class SignInProfileDirectory
         DeleteOwnershipFiles();
     }
     public void ReleaseOwnership() { _lease?.Dispose(); _lease = null; }
+    private static FileStream OpenLease(string path)
+    {
+        try { return new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
+        // A sharing violation means another browser owner still holds this folder, not that storage or WebView2 is broken.
+        catch (IOException ex) when (ex.HResult == SharingViolation) { throw new SignInDirectoryInUseException(); }
+    }
+    private const int SharingViolation = unchecked((int)0x80070020);
     // The lock goes before the marker, so an interruption here leaves a marked or empty folder; Create recovers both.
     private void DeleteOwnershipFiles()
     {
@@ -129,3 +136,6 @@ public sealed class SignInProfileDirectory
             throw new IOException("Private sign-in cleanup found unrecognized data; it was preserved for review.");
     }
 }
+
+/// <summary>Another private browser (an open sign-in, or one still closing) holds its sign-in folder. Nothing was opened or removed.</summary>
+public sealed class SignInDirectoryInUseException() : IOException("Another private browser still owns its sign-in folder. Wait for it to close, then try again.");

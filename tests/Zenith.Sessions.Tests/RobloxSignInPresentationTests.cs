@@ -33,7 +33,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     public void OwnedPrivateDirectoryRejectsAnActiveOwnerAndCanBeReusedAfterCleanup()
     {
         var id = Guid.NewGuid(); var first = SignInProfileDirectory.Create(_root, id, default);
-        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, id, default));
+        Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, id, default));
         Assert.StartsWith(Path.GetFullPath(_root), first.Path);
         Directory.CreateDirectory(Path.Combine(first.Path, "cache")); File.WriteAllText(Path.Combine(first.Path, "cache", "synthetic"), "test only");
         first.Remove(default); Assert.False(Directory.Exists(first.Path));
@@ -66,7 +66,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
             Assert.ThrowsAny<IOException>(() => d.Remove(default));
             Assert.True(File.Exists(Path.Combine(d.Path, ".zenith-private-signin")), "A failed cleanup deleted the ownership marker.");
             Assert.True(File.Exists(Path.Combine(d.Path, "owner.lock")), "A failed cleanup deleted the owner lock.");
-            Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+            Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
         }
         d.ReleaseOwnership();
         var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
@@ -93,6 +93,39 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
         Assert.True(File.Exists(Path.Combine(unmarked, "keep.txt")));
     }
+    [Fact]
+    public Task SignInCleanupRemovesFolderAfterConfirmedExitDespiteCookieFailureAndClearsLatchOnLateExit() => OnUi(async () =>
+    {
+        // The sign-in's own root holds unrecognized data, so an attempt admitted past the latch stops
+        // at folder admission with that IOException instead of opening a browser.
+        string admissionRoot = Path.Combine(_root, "admission");
+        Directory.CreateDirectory(Path.Combine(admissionRoot, "signin-browser-data", "unknown"));
+        await using var signIn = new OwnedRobloxSignIn(admissionRoot, Dispatcher.CurrentDispatcher);
+        // (i) Cookie deletion failed, but the browser's exit was confirmed: removing the folder deletes those cookies too.
+        var deleted = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.True(await signIn.SettleCleanupAsync(OwnedRobloxSignIn.FinishCleanupAsync(Task.CompletedTask, true, true, deleted, () => { }), deleted, TimeSpan.FromSeconds(5)),
+            "A confirmed browser exit after a cookie-delete failure skipped folder removal.");
+        Assert.False(Directory.Exists(deleted.Path)); Assert.False(signIn.CleanupPending);
+        // (ii) The exit arrives after the observation window: refused while pending, admitted once that same task removes the folder.
+        var late = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        var exit = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously); bool detached = false;
+        Assert.False(await signIn.SettleCleanupAsync(OwnedRobloxSignIn.FinishCleanupAsync(exit.Task, true, false, late, () => detached = true), late, TimeSpan.Zero));
+        Assert.True(signIn.CleanupPending); Assert.True(Directory.Exists(late.Path)); Assert.False(detached);
+        var pending = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        Assert.Contains("still closing", pending.Message);
+        exit.SetResult(); await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(signIn.CleanupPending, "A late confirmed cleanup did not clear the sign-in latch.");
+        Assert.False(Directory.Exists(late.Path)); Assert.True(detached);
+        var admitted = await Assert.ThrowsAsync<IOException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        Assert.Contains("needs review", admitted.Message);
+        // (iii) No exit was awaited after an earlier problem: the folder is preserved and the latch stays until restart.
+        var kept = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(await signIn.SettleCleanupAsync(OwnedRobloxSignIn.FinishCleanupAsync(Task.CompletedTask, false, true, kept, () => { }), kept, TimeSpan.FromSeconds(5)));
+        await signIn.CleanupSettled;
+        Assert.True(signIn.CleanupPending); Assert.True(Directory.Exists(kept.Path));
+        var failed = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        Assert.Contains("Close Zenith Sessions", failed.Message);
+    });
     [Fact]
     public void CancelledDirectoryAdmissionDoesNotCreatePrivateData()
     {

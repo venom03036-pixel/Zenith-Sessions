@@ -69,6 +69,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             },DispatcherPriority.Normal,CancellationToken.None).Task.Unwrap().ConfigureAwait(false);
         }
         catch(OperationCanceledException){result=Capture(RobloxHandoffProbeOutcome.Cancelled);}
+        // Another owner's folder (for example a sign-in browser still closing) is busy, not a missing
+        // runtime. This attempt created and cleaned nothing, so it is not this probe's cleanup failure.
+        catch(SignInDirectoryInUseException){result=Capture(RobloxHandoffProbeOutcome.Busy);}
         catch(Exception){result=Capture(RobloxHandoffProbeOutcome.BrowserUnavailable);}
         finally
         {
