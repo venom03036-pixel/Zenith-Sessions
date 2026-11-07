@@ -85,6 +85,7 @@ public sealed class SessionRow(SessionObservation observation) : Observable
     public void UpdateLog(SessionLogView value) { if (_log != value) { _log = value; Raise(nameof(Log)); } }
     public SessionObservation Observation { get; private set; } = observation;
     public string InstanceKey => Observation.InstanceKey;
+    public SessionProcessKey ProcessKey => Observation.ProcessKey;
     public string ProcessLabel => Observation.ProcessLabel;
     public string Status => Observation.Status;
     public string MemoryDisplay => Observation.Problem is null ? Observation.MemoryDisplay : "Unavailable";
@@ -672,14 +673,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             ? $"Process inventory sampled {at.LocalDateTime:T} · complete scan. Account identity remains unverified."
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
         // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
-        bool clientRowsChanged=false;
-        for (int i = Sessions.Count - 1; i >= 0; i--) if (!snapshot.Sessions.Any(s => s.InstanceKey == Sessions[i].InstanceKey))
-        { Sessions[i].PropertyChanged-=SessionSelectionChanged; Sessions.RemoveAt(i);clientRowsChanged=true; }
-        foreach (var session in snapshot.Sessions)
-        {
-            int index = -1; for (int i = 0; i < Sessions.Count; i++) if (Sessions[i].InstanceKey == session.InstanceKey) { index = i; break; }
-            if (index < 0) { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;Sessions.Add(row);clientRowsChanged=true; } else Sessions[index].Update(session);
-        }
+        bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
         _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
         RefreshLaunchEvidence();
         RecentClients.Observe(snapshot,_logProjection.EvidenceSnapshot(now),now);
@@ -693,6 +687,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RefreshTelemetryPresentation();
         _presentationFaulted=false;
     }
+    // Dispatcher-thread only; created once so each presentation reuses its scratch sets and delegates.
+    private SessionRowReconciler? _sessionRows;
+    private SessionRow CreateSessionRow(SessionObservation session)
+    { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;return row; }
+    private void ReleaseSessionRow(SessionRow row)=>row.PropertyChanged-=SessionSelectionChanged;
     private void ReportPresentationFault(Exception exception)
     {
         // Every fault reaches diagnostics (type only, Rule 10); the notice and event are latched until a presentation completes.

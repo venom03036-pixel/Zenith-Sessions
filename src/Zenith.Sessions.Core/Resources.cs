@@ -86,6 +86,8 @@ public sealed record SessionObservation(int ProcessId, long ProcessStartUtcTicks
     ProcessIoRates? IoRates = null)
 {
     public string InstanceKey => $"{ProcessId}:{ProcessStartUtcTicks}";
+    /// <summary>The same identity as <see cref="InstanceKey"/> without building a string; use it for matching.</summary>
+    public SessionProcessKey ProcessKey => new(null, ProcessId, ProcessStartUtcTicks);
     public string ProcessLabel => $"PID {ProcessId}";
     public string Status => Problem is not null ? "Observation unavailable" : Minimized ? "Minimized" : Visible ? "Open · account unverified" : "No visible window";
     public string MemoryDisplay => $"{WorkingSetBytes / (double)CapacityPolicy.GiB:0.00} GiB";
