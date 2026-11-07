@@ -640,20 +640,7 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,true));
 
             stage="Recipient bundle metadata round trip";
-            using(var bundles=new RecipientBundleStore(root))
-            {
-                var prior=await bundles.LoadAsync(ct);
-                if(prior.Bundles.Count!=0)throw new InvalidDataException("The owned self-check bundle store contains other records.");
-                var bundle=await bundles.SaveAsync(new(FixtureId,"Synthetic account bundle",[FixtureId,SessionFixtureId]),ct);
-                var renamed=await bundles.RenameAsync(bundle.Id,bundle.Revision,bundle.ChangeId,"Synthetic renamed bundle",ct);
-                var restored=(await bundles.LoadAsync(ct)).Bundles.Single();
-                var missing=restored.ResolveRecipients(new HashSet<Guid>{FixtureId});
-                if(restored.Id!=FixtureId||!restored.ProfileIds.SequenceEqual(new[]{FixtureId,SessionFixtureId})
-                    ||!missing.RequiresReview||missing.AuthorizesLaunch||missing.MissingProfileIds.Single()!=SessionFixtureId)
-                    throw new InvalidDataException("Bundle metadata acquired authority or lost recipient references.");
-                await bundles.DeleteAsync(renamed.Id,renamed.Revision,renamed.ChangeId,ct);
-                if((await bundles.LoadAsync(ct)).Bundles.Count!=0)throw new InvalidDataException("Bundle deletion failed.");
-            }
+            await PackagedRecipientBundleCheck.VerifyAsync(root,FixtureId,SessionFixtureId,ct);
             cases.Add(new(stage,true));
 
             stage="Physical client layout planner";
