@@ -14,12 +14,22 @@ internal static class Program
                 "Usage: --source-root <Personal source directory> --output <report directory> [--native-report <own-window report.json>]\n" +
                 "Reads bounded Windows metadata and runs controlled Core boundary checks.\n" +
                 "Does not send native input, capture screens, launch games or read credentials.\n" +
-                "Exit codes: 0 gates passed; 2 harness/configuration failure; 3 release gate blocked; 130 cancelled.");
+                "Exit codes: 0 gates passed; 2 harness/configuration failure or 60 s time limit; 3 release gate blocked; 130 cancelled with Ctrl+C.");
             return 0;
         }
-        using var lifetime = new CancellationTokenSource(TimeSpan.FromSeconds(60));
-        ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; lifetime.Cancel(); };
+        using var userCancel = new CancellationTokenSource();
+        using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        ConsoleCancelEventHandler cancel = (_, e) => { e.Cancel = true; userCancel.Cancel(); };
         Console.CancelKeyPress += cancel;
+        try { return await RunAsync(args, userCancel.Token, deadline.Token); }
+        finally { Console.CancelKeyPress -= cancel; }
+    }
+
+    /// <summary>Runs one inspection. The caller owns both tokens: <paramref name="userCancel"/> is Ctrl+C and
+    /// <paramref name="deadline"/> is the overall time limit.</summary>
+    internal static async Task<int> RunAsync(string[] args, CancellationToken userCancel, CancellationToken deadline)
+    {
+        using var lifetime = CancellationTokenSource.CreateLinkedTokenSource(userCancel, deadline);
         try
         {
             var options = Parse(args);
@@ -42,11 +52,20 @@ internal static class Program
             if (tests.Any(t => !t.Passed)) return 2;
             return gate.CanProceed ? 0 : 3;
         }
-        catch (OperationCanceledException) when (lifetime.IsCancellationRequested)
+        catch (OperationCanceledException) when (userCancel.IsCancellationRequested)
         { Console.Error.WriteLine("Capability inspection cancelled; no release gate was approved."); return 130; }
+        catch (OperationCanceledException)
+        {
+            // The 60 s deadline or BoundaryProbe's own 10 s limit; neither is a user cancellation.
+            Console.Error.WriteLine("Capability inspection timed out; no release gate was approved."); return 2;
+        }
+        catch (InvalidDataException ex)
+        {
+            // Raised with harness-authored text, e.g. a missing audited source file or a stale --native-report.
+            Console.Error.WriteLine($"Capability inspection failed: {ex.Message} No release gate was approved."); return 2;
+        }
         catch (Exception ex) when (ex is ArgumentException or IOException or InvalidOperationException or UnauthorizedAccessException or JsonException)
         { Console.Error.WriteLine($"Capability inspection failed ({ex.GetType().Name}); no release gate was approved. Check source/output paths and permissions."); return 2; }
-        finally { Console.CancelKeyPress -= cancel; }
     }
 
     private static (string SourceRoot, string Output, string? NativeReport) Parse(string[] args)

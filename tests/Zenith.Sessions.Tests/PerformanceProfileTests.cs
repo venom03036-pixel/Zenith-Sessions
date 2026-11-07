@@ -42,6 +42,19 @@ public sealed class PerformanceProfileTests
     }
 
     [Fact]
+    public void PendingCapabilitiesSeparateUnavailableClientCpuPoliciesFromTheExistingPriorityControl()
+    {
+        foreach (var profile in Enum.GetValues<ManagerPerformanceProfile>())
+        {
+            string pending = new ManagerPerformanceSettings(Profile: profile).Resolve().PendingCapabilities;
+            Assert.DoesNotContain("client CPU/render", pending, StringComparison.Ordinal);
+            Assert.Contains("client CPU cap/affinity", pending, StringComparison.Ordinal);
+            Assert.Contains("Sessions", pending, StringComparison.Ordinal);
+            Assert.Contains("Client CPU priority", pending, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void AllFiveProfilesHaveDistinctIdentityAndCustomUsesExplicitValues()
     {
         var policies = Enum.GetValues<ManagerPerformanceProfile>().Select(profile => new ManagerPerformanceSettings(

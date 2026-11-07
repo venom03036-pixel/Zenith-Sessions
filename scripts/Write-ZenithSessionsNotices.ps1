@@ -1,9 +1,9 @@
-param([Parameter(Mandatory=$true)][string]$Destination)
+﻿param([Parameter(Mandatory=$true)][string]$Destination)
 $ErrorActionPreference='Stop'
 $root=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
 $destinationPath=[IO.Path]::GetFullPath($Destination)
 if([IO.Path]::GetDirectoryName($destinationPath) -ne (Join-Path $root 'artifacts') -or [IO.Path]::GetFileName($destinationPath) -notin @('sessions-manager-stage','sessions-manager-candidate','sessions-manager-review')){throw 'Notices may only be written to a fixed companion staging folder.'}
-$assets=Get-Content -LiteralPath (Join-Path $root 'src\Zenith.Sessions.App\obj\project.assets.json') -Raw|ConvertFrom-Json
+$assets=Get-Content -LiteralPath (Join-Path $root 'src\Zenith.Sessions.App\obj\project.assets.json') -Raw -Encoding UTF8|ConvertFrom-Json
 $packages=@();$lines=[Collections.Generic.List[string]]::new()
 $lines.Add('ZENITH SESSIONS — THIRD-PARTY NOTICES')
 $lines.Add('Production NuGet dependencies and the Windows SDK runtime projection. The Microsoft Windows Desktop Runtime is required separately and is not bundled.')
@@ -30,9 +30,9 @@ foreach($entry in @($assets.libraries.PSObject.Properties|Where-Object{$_.Value.
         if($text -ne 'LICENSE.txt' -or ($entry.Name -notlike 'SQLite/*' -and $entry.Name -ne 'Microsoft.Web.WebView2/1.0.3800.47')){throw 'An unreviewed file-based dependency license requires review.'}
         if($entry.Name -eq 'Microsoft.Web.WebView2/1.0.3800.47') {
             if((Get-FileHash -LiteralPath (Join-Path $packageRoot 'LICENSE.txt') -Algorithm SHA256).Hash -ne '0AF8F1B807512AAE39C2AC1AA4D0CAE65CABECB6FD554B8439A5162A0D6ECA55' -or (Get-FileHash -LiteralPath (Join-Path $packageRoot 'NOTICE.txt') -Algorithm SHA256).Hash -ne '106423785C5B7EBA0A8E61D1837F2132E9C828E20AD530F565D981C1DF60DD90') { throw 'The reviewed WebView2 SDK terms or third-party notice changed.' }
-            $lines.Add((Get-Content -LiteralPath (Join-Path $packageRoot 'NOTICE.txt') -Raw))
+            $lines.Add((Get-Content -LiteralPath (Join-Path $packageRoot 'NOTICE.txt') -Raw -Encoding UTF8))
         }
-        $text=Get-Content -LiteralPath (Join-Path $packageRoot 'LICENSE.txt') -Raw
+        $text=Get-Content -LiteralPath (Join-Path $packageRoot 'LICENSE.txt') -Raw -Encoding UTF8
     } elseif($text -notin @('MIT','Apache-2.0')){throw ('An unreviewed dependency license requires review: '+$entry.Name)}
     $item=[ordered]@{Package=$entry.Name;License=$license.InnerText;Copyright=if($copyright){$copyright.InnerText}else{''};Repository=if($repository){$repository.url}else{''}}
     $packages+=$item
@@ -66,7 +66,9 @@ $lines.Add('Copyright Microsoft Corporation. All rights reserved. Windows SDK te
 $lines.Add('Source terms: https://aka.ms/WinSDKLicenseURL; authorized runtime list: https://learn.microsoft.com/en-us/legal/windows-sdk/redist#microsoftwindowssdknetref')
 $lines.Add('This is a local development candidate. External distribution requires satisfying the SDK downstream agreement terms; bundling notices alone does not establish that agreement.')
 $lines.Add('');$lines.Add('The complete MIT and Apache-2.0 texts follow. Package-specific copyright notices above remain applicable.')
-$lines.Add((Get-Content -LiteralPath (Join-Path $root 'docs\licensing\Microsoft-MIT.txt') -Raw))
-$lines.Add((Get-Content -LiteralPath (Join-Path $root 'docs\licensing\Apache-2.0.txt') -Raw))
+$lines.Add((Get-Content -LiteralPath (Join-Path $root 'docs\licensing\Microsoft-MIT.txt') -Raw -Encoding UTF8))
+$lines.Add((Get-Content -LiteralPath (Join-Path $root 'docs\licensing\Apache-2.0.txt') -Raw -Encoding UTF8))
 [IO.File]::WriteAllLines((Join-Path $destinationPath 'THIRD-PARTY-NOTICES.txt'),$lines,[Text.UTF8Encoding]::new($false))
-[ordered]@{FormatVersion=2;GeneratedUtc=[DateTimeOffset]::UtcNow.ToString('O');Packages=$packages}|ConvertTo-Json -Depth 6|Set-Content -LiteralPath (Join-Path $destinationPath 'dependency-notices.json') -Encoding UTF8
+# Set-Content -Encoding UTF8 adds a byte-order mark under Windows PowerShell 5.1 only; both notice files are BOM-free UTF-8.
+$noticesJson=[ordered]@{FormatVersion=2;GeneratedUtc=[DateTimeOffset]::UtcNow.ToString('O');Packages=$packages}|ConvertTo-Json -Depth 6
+[IO.File]::WriteAllText((Join-Path $destinationPath 'dependency-notices.json'),$noticesJson+[Environment]::NewLine,[Text.UTF8Encoding]::new($false))

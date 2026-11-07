@@ -49,6 +49,9 @@ public static class Reports
         "src/Zenith.MacroHost.Execution/TargetedMacroPlan.cs",
         "src/Zenith.MacroHost.Execution/TargetedMacroPlayer.cs",
         "src/Zenith.MacroHost.Execution/TargetedMacroRunner.cs",
+        // The companion backend and preview capture the independent-runs and occluded-image-checks reasons describe.
+        "src/Zenith.MacroHost.Execution/CompanionMacroOperations.cs",
+        "src/Zenith.Sessions.Windows/WindowsClientPreviewProvider.cs",
         "tools/Zenith.Sessions.NativeProbe/Program.cs",
         "tools/Zenith.Sessions.NativeProbe/Program.MacroExecution.cs",
         "tools/Zenith.Sessions.NativeProbe/Infrastructure/OwnedWindowMessageExecutor.cs",

@@ -49,13 +49,7 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         if (owner != session.ProcessId) return false;
         using var process = Native.OpenProcess(0x1000 | 0x100000, false, session.ProcessId); // Limited query + synchronization.
         if (process.IsInvalid || Native.WaitForSingleObject(process, 0) != 258
-            || !Native.GetProcessTimes(process, out var created, out _, out _, out _)) return false;
-        long ticks;
-        ulong fileTime = ((ulong)created.High << 32) | created.Low;
-        if (fileTime > long.MaxValue) return false;
-        try { ticks = DateTime.FromFileTimeUtc((long)fileTime).Ticks; }
-        catch (ArgumentOutOfRangeException) { return false; }
-        if (ticks != session.ProcessStartUtcTicks) return false;
+            || !ProcessInstanceIdentity.MatchesStart(process, session.ProcessStartUtcTicks)) return false;
         var image = new StringBuilder(1024); uint length = (uint)image.Capacity;
         if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
         string name = Path.GetFileName(image.ToString());
@@ -173,7 +167,6 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
     {
         [StructLayout(LayoutKind.Sequential)] internal struct Rect { public int Left, Top, Right, Bottom; }
         [StructLayout(LayoutKind.Sequential)] internal struct Point { public int X, Y; }
-        [StructLayout(LayoutKind.Sequential)] internal struct FileTime { public uint Low, High; }
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct MonitorInfo
         { public uint Size; public Rect Monitor, Work; public uint Flags; [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)] public string Device; }
         [UnmanagedFunctionPointer(CallingConvention.Winapi)] [return: MarshalAs(UnmanagedType.Bool)]
@@ -199,7 +192,6 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         internal static long Style(nint window) => nint.Size == 8 ? GetWindowLongPtr(window, -16).ToInt64() : GetWindowLong(window, -16);
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern SafeProcessHandle OpenProcess(uint rights, [MarshalAs(UnmanagedType.Bool)] bool inherit, int pid);
         [DllImport("kernel32.dll")] internal static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
-        [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetProcessTimes(SafeProcessHandle process, out FileTime created, out FileTime exited, out FileTime kernel, out FileTime user);
         [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool QueryFullProcessImageName(SafeProcessHandle process, uint flags, StringBuilder name, ref uint length);
     }
 }

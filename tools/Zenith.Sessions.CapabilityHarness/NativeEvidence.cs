@@ -27,9 +27,10 @@ public static class NativeEvidence
             || report.Checks is null || report.Checks.Count is < 1 or > 32
             || report.Checks.Any(c => c is null || c.Name is null || c.Detail is null || c.Name.Length > 100 || c.Detail.Length > 600)
             || report.CompletedUtc < report.StartedUtc || report.CompletedUtc - report.StartedUtc > TimeSpan.FromMinutes(2)
-            || report.CompletedUtc > DateTimeOffset.UtcNow.AddMinutes(1)
-            || report.CompletedUtc < DateTimeOffset.UtcNow.AddHours(-24))
+            || report.CompletedUtc > DateTimeOffset.UtcNow.AddMinutes(1))
             throw new InvalidDataException("Native report provenance, bounds or timestamps are invalid.");
+        if (report.CompletedUtc < DateTimeOffset.UtcNow.AddHours(-24))
+            throw new InvalidDataException("Native report is more than 24 hours old; run the native probe again.");
         return report;
     }
 }

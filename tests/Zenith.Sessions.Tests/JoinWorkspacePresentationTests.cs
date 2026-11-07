@@ -171,19 +171,97 @@ public sealed class JoinWorkspacePresentationTests
     [InlineData("midnight",1320,840)]
     public Task RendersJoinPageSnapshotsForReview(string theme,int width,int height)=>SearchTest.OnUi(async()=>
     {
-        // Review evidence: the page beside the 200 px sidebar and under the 44 px title bar / 32 px status bar, saved under artifacts/game-links.
+        // Review evidence: the page beside the 200 px sidebar and under the 44 px title bar / 32 px status bar, saved under the
+        // repository's artifacts/game-links; a build with no repository above it keeps them in the fixture's own Temp root.
         await using var fixture=new Fixture(theme);var view=fixture.View;int pageWidth=width-200,pageHeight=height-76;
         Layout(view,pageWidth,pageHeight);
         var render=new RenderTargetBitmap(pageWidth,pageHeight,96,96,PixelFormats.Pbgra32);render.Render(view);
         var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(render));
-        string root=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"..","..","..","..","..","artifacts","game-links"));
+        string root=ReviewSnapshotFolder(AppContext.BaseDirectory)??Path.Combine(fixture.Root,"game-links");
         Directory.CreateDirectory(root);string path=Path.Combine(root,$"join-{theme}-{width}x{height}.png");
         await using(var file=File.Create(path)) encoder.Save(file);
         Assert.True(new FileInfo(path).Length>1024);Assert.Equal(pageHeight,render.PixelHeight);
     });
 
+    [Fact]
+    public void ReviewSnapshotFolderFollowsTheRepositoryNotTheOutputDepth()
+    {
+        string temp=Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar);
+        string owned=Path.Combine(temp,"zenith-snapshot-root-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string repo=Path.Combine(owned,"repo");
+            Directory.CreateDirectory(Path.Combine(repo,"src","Zenith.Sessions.App"));
+            File.WriteAllBytes(Path.Combine(repo,"src","Zenith.Sessions.App","MainWindow.xaml"),[]);
+            // The manager check script builds the tests into artifacts\sessions-tests-bin\, two levels below the repository.
+            string runnerOutput=Path.Combine(repo,"artifacts","sessions-tests-bin")+Path.DirectorySeparatorChar;Directory.CreateDirectory(runnerOutput);
+            Assert.Equal(Path.Combine(repo,"artifacts","game-links"),ReviewSnapshotFolder(runnerOutput));
+            // The default layout is tests\Zenith.Sessions.Tests\bin\<Config>\<tfm>\, five levels below it.
+            string defaultOutput=Path.Combine(repo,"tests","Zenith.Sessions.Tests","bin","Release","net10.0-windows10.0.19041.0")+Path.DirectorySeparatorChar;Directory.CreateDirectory(defaultOutput);
+            Assert.Equal(Path.Combine(repo,"artifacts","game-links"),ReviewSnapshotFolder(defaultOutput));
+            // No repository above the output: no review folder, so the theory keeps its snapshots in its own Temp root.
+            string elsewhere=Path.Combine(owned,"elsewhere","a","b")+Path.DirectorySeparatorChar;Directory.CreateDirectory(elsewhere);
+            Assert.Null(ReviewSnapshotFolder(elsewhere));
+        }
+        finally
+        {
+            string full=Path.GetFullPath(owned);
+            if(Path.GetDirectoryName(full)!=temp||!Path.GetFileName(full).StartsWith("zenith-snapshot-root-",StringComparison.Ordinal))throw new InvalidOperationException("Unexpected snapshot-root cleanup path");
+            if(Directory.Exists(full))Directory.Delete(full,true);
+        }
+    }
+
+    /// <summary>
+    /// The repository's artifacts\game-links folder for the review snapshots, found by walking up from the test output
+    /// (at most 8 levels) to the folder that holds src\Zenith.Sessions.App\MainWindow.xaml, so the default bin\ layout
+    /// and the check script's artifacts\sessions-tests-bin\ output both land in the same place. The marker is the file
+    /// this project already embeds as ProductionMainWindow.xaml, so renaming it breaks the build first. Null when no
+    /// repository is above the output; the caller then keeps the snapshots in its own Temp root.
+    /// </summary>
+    internal static string? ReviewSnapshotFolder(string baseDirectory)
+    {
+        string? directory=Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar);
+        for(int depth=0;directory is not null&&depth<8;depth++,directory=Path.GetDirectoryName(directory))
+            if(File.Exists(Path.Combine(directory,"src","Zenith.Sessions.App","MainWindow.xaml")))return Path.Combine(directory,"artifacts","game-links");
+        return null;
+    }
+
+    // The packaged --self-check composes the real window; its join-route assertion must see the private-server box and
+    // both game-source chip lists bound to their own view models, so a rename or lost DataContext fails the packaged stage.
+    [Fact]
+    public Task PackagedJoinRouteCheckAcceptsTheProductionShareLinkAndGameSourceControls()=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint");Layout(fixture.View,1088,480);
+        PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model);
+    });
+
+    [Theory]
+    [InlineData("ShareLinkInput")]
+    [InlineData("RobloxFavoriteChips")]
+    [InlineData("RecentlyPlayedChips")]
+    public Task PackagedJoinRouteCheckRejectsARenamedJoinSourceControl(string name)=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint",page=>Named(page,name).SetAttributeValue(X+"Name",name+"Renamed"));Layout(fixture.View,1088,480);
+        var error=Assert.Throws<InvalidOperationException>(()=>PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model));
+        Assert.Equal("The packaged join route lost its private-server or game-source controls.",error.Message);
+    });
+
+    [Theory]
+    [InlineData("ShareLinkInput")]
+    [InlineData("RobloxFavoriteChips")]
+    [InlineData("RecentlyPlayedChips")]
+    public Task PackagedJoinRouteCheckRejectsAJoinSourceControlThatLostItsDataContext(string name)=>SearchTest.OnUi(async()=>
+    {
+        // Drop the nearest DataContext above the control: it then inherits the shell itself instead of its own view model.
+        await using var fixture=new Fixture("graphite-mint",page=>Named(page,name).Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext")!.Remove());
+        Layout(fixture.View,1088,480);
+        var error=Assert.Throws<InvalidOperationException>(()=>PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model));
+        Assert.Equal("The packaged join route lost its private-server or game-source controls.",error.Message);
+    });
+
     private static XDocument Source(){using var stream=typeof(JoinWorkspacePresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;return XDocument.Load(stream);}
     private static XElement Page(XDocument source,string name)=>source.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
+    private static XElement Named(XElement page,string name)=>page.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
     private sealed class Fixture:IAsyncDisposable
     {
         private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-join-layout-"+Guid.NewGuid().ToString("N"));
@@ -192,10 +270,11 @@ public sealed class JoinWorkspacePresentationTests
         public readonly NoCapture Capture=new();
         public ShellViewModel Model {get;}
         public ScrollViewer View {get;}
-        public Fixture(string theme)
+        public string Root=>_root;
+        public Fixture(string theme,Action<XElement>? edit=null)
         {
             _=Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml",UriKind.Relative));
-            var source=Source();var page=new XElement(Page(source,"JoinGamePage"));
+            var source=Source();var page=new XElement(Page(source,"JoinGamePage"));edit?.Invoke(page);
             // Loose offscreen composition has no code-behind event connection. Assert the
             // actual handler names above; preserve every visual, binding and named control.
             foreach(var element in page.DescendantsAndSelf())foreach(var attribute in element.Attributes().Where(attribute=>attribute.Name.LocalName=="Click").ToArray())attribute.Remove();

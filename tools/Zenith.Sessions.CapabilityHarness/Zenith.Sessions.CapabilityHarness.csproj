@@ -10,4 +10,7 @@
   <ItemGroup>
     <ProjectReference Include="../../src/MacroSuite.Core/MacroSuite.Core.csproj" />
   </ItemGroup>
+  <ItemGroup>
+    <InternalsVisibleTo Include="Zenith.Sessions.CapabilityHarness.Tests" />
+  </ItemGroup>
 </Project>

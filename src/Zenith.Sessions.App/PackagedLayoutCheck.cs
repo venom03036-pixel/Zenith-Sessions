@@ -1,5 +1,7 @@
 using System.Runtime.ExceptionServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Threading;
 using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
@@ -10,18 +12,25 @@ namespace Zenith.Sessions.App;
 // application resources and bindings, without showing a native window or input.
 internal static class PackagedLayoutCheck
 {
-    public static Task VerifyAsync(string root, CancellationToken ct)
+    public static Task VerifyAsync(string root, CancellationToken ct) =>
+        RunOnStaAsync(() => new App { Options = new(root, false, true), ShutdownMode = ShutdownMode.OnExplicitShutdown },
+            app => VerifyOnDispatcherAsync(app, root, ct), app => app.Shutdown(), ct);
+
+    // create runs on the new STA thread before its dispatcher pumps, body runs on that
+    // dispatcher, and cleanup runs on the same thread after the dispatcher stops.
+    internal static Task RunOnStaAsync<TState>(Func<TState> create, Func<TState, Task> body, Action<TState> cleanup, CancellationToken ct)
+        where TState : class
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             var dispatcher = Dispatcher.CurrentDispatcher;
-            App? app = null;
+            TState? state = null;
             Exception? failure = null;
             try
             {
-                app = new App { Options = new(root, false, true), ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                var operation = dispatcher.InvokeAsync(() => VerifyOnDispatcherAsync(app, root, ct)).Task.Unwrap();
+                var created = state = create();
+                var operation = dispatcher.InvokeAsync(() => body(created)).Task.Unwrap();
                 var shutdown = operation.ContinueWith(_ => dispatcher.BeginInvokeShutdown(DispatcherPriority.Background),
                     CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 Dispatcher.Run();
@@ -32,14 +41,17 @@ internal static class PackagedLayoutCheck
             {
                 // Shutdown only after the tracked operation completes. Shutting down
                 // inside its callback can retire the dispatcher before its Task completes.
-                try { app?.Shutdown(); }
+                try { if (state is not null) cleanup(state); }
                 catch (Exception ex) { failure ??= ex; }
                 finally { if (!dispatcher.HasShutdownStarted) dispatcher.InvokeShutdown(); }
             }
             if (failure is null) done.TrySetResult(); else done.TrySetException(failure);
         }) { IsBackground = true, Name = "Zenith packaged layout check" };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        return done.Task;
+        // The caller's deadline must end the stage even when body never completes (a token-less
+        // await, a modal loop). The dispatcher cannot be stopped early without the retirement race
+        // above, so a stalled one is abandoned: the thread is background and ends with the process.
+        return done.Task.WaitAsync(ct);
     }
 
     private static async Task VerifyOnDispatcherAsync(App app, string root, CancellationToken ct)
@@ -62,6 +74,9 @@ internal static class PackagedLayoutCheck
                 || window.FindName("DestinationSearchPanel") is not FrameworkElement
                 || window.FindName("NativeLaunchStages") is not System.Windows.Controls.Expander)
                 throw new InvalidOperationException("The packaged Sessions join route lost its production controls or workspace state.");
+            // Ancestor-relative DataContexts (the private-server card) resolve at DataBind priority in a never-shown window.
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            RequireJoinGameSources(window, vm);
             var diagnosticId = Guid.NewGuid(); var at = DateTimeOffset.UtcNow;
             var diagnostic = new NativeLaunchDiagnosticSnapshot(diagnosticId, 1, at, at,
                 NativeLaunchDiagnosticStage.Finished, NativeLaunchCleanupStatus.Complete,
@@ -108,5 +123,19 @@ internal static class PackagedLayoutCheck
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    // Loading the BAML alone does not notice a renamed or removed control or a lost DataContext. Require the
+    // private-server box and both game-source chip lists by name, each bound to its own view model.
+    internal static void RequireJoinGameSources(FrameworkElement scope, ShellViewModel vm)
+    {
+        if (scope.FindName("ShareLinkInput") is not TextBox shareLink || !ReferenceEquals(shareLink.DataContext, vm.ShareLink)
+            || BindingOperations.GetBindingExpression(shareLink, TextBox.TextProperty) is not { } linkInput
+            || !ReferenceEquals(linkInput.ResolvedSource, vm.ShareLink) || linkInput.ResolvedSourcePropertyName != nameof(ShareLinkViewModel.LinkInput)
+            || scope.FindName("RobloxFavoriteChips") is not ItemsControl favorites || !ReferenceEquals(favorites.DataContext, vm.RobloxFavorites)
+            || !ReferenceEquals(favorites.ItemsSource, vm.RobloxFavorites.Chips)
+            || scope.FindName("RecentlyPlayedChips") is not ItemsControl recent || !ReferenceEquals(recent.DataContext, vm.RecentlyPlayed)
+            || !ReferenceEquals(recent.ItemsSource, vm.RecentlyPlayed.Chips))
+            throw new InvalidOperationException("The packaged join route lost its private-server or game-source controls.");
     }
 }

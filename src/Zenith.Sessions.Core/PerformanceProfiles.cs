@@ -62,7 +62,7 @@ public sealed record ManagerPerformancePolicy(ManagerPerformanceProfile Profile,
             return timing + priority + " Essential RAM, commit and CPU safety sampling stays at 1000 ms with 3000 ms expiry. Resource headroom stays configured separately.";
         }
     }
-    public string PendingCapabilities => "Native FPS/graphics and client CPU/render policies, live previews, macro scheduling and per-account performance overrides require supported integration and validation. Faster manager observations do not establish improved game FPS or measured capacity gains.";
+    public string PendingCapabilities => "Native FPS/graphics, render and client CPU cap/affinity policies, live previews, macro scheduling and per-account performance overrides require supported integration and validation. Client process priority is set in Sessions, under Client CPU priority. Faster manager observations do not establish improved game FPS or measured capacity gains.";
 
     public ManagerPerformancePolicy Validated()
     {

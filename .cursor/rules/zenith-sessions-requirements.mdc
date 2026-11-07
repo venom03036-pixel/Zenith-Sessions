@@ -19,13 +19,14 @@ After each cycle:
 
 1. Run the affected tests and necessary packaged/interactive checks. Inspect failures and correct their cause.
 2. Record exact evidence, tested build identity, remaining gaps and next action against stable ledger IDs.
-3. Run the checkpoint with `-Phase After`. This records review scope, never feature acceptance.
+3. Run the checkpoint with `-Phase After`, the cycle's `-Checkpoint` label and `-TestArtifact` naming each test result file (for example `.trx`) the cycle wrote. This records review scope and which result files the cycle cites, never feature acceptance.
 4. Revisit unmet requirements before starting the next cycle. Keep source analysis, synthetic tests, rendered UI checks and live Roblox evidence distinct.
 
-Example scoped checkpoint:
+Example scoped checkpoints. Each writes its own `artifacts/sessions-requirements-review/<phase>-<checkpoint>.json` and refuses to replace a record that already exists, including one from an earlier run of the same label. To repeat a checkpoint, pass a new label such as `0.58-rerun` (lowercase letters and digits after each hyphen):
 
 ```powershell
-./scripts/Review-ZenithSessionsRequirements.ps1 -Phase Before -RequirementIds VA-07-03,VA-09-01
+./scripts/Review-ZenithSessionsRequirements.ps1 -Phase Before -Checkpoint 0.58 -RequirementIds VA-07-03,VA-09-01
+./scripts/Review-ZenithSessionsRequirements.ps1 -Phase After -Checkpoint 0.58 -RequirementIds VA-07-03,VA-09-01 -TestArtifact artifacts/sessions-tests-0.58/focused.trx
 ```
 
 Never declare parity, performance superiority, working native account selection, background automation, verified arrival or release readiness without the corresponding executed evidence. Missing/unavailable integrations remain explicit; do not disguise them with successful-looking controls or simulated sessions.

@@ -60,6 +60,48 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Equal(1, writes);
     }
 
+    // The Luau server fixture feeds these exact texts through the shipped script's size cap and JSON decode
+    // path, so a change to the published payload must change both suites together.
+    [Fact]
+    public async Task PublishedCommandJsonMatchesTheLuauFixtureGoldens()
+    {
+        string fixture = await LuauFixture();
+        var move = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, Destination, Start);
+        var status = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, null, Start);
+        Assert.Equal(LuauGolden(fixture, "goldenMove"), await PublishedMessage(move, Start));
+        Assert.Equal(LuauGolden(fixture, "goldenStatus"), await PublishedMessage(status, Start));
+
+        // The script ignores any message over 1024 bytes. The widest command it can accept must fit.
+        const long widest = 9_007_199_254_740_991;
+        var latest = DateTimeOffset.MaxValue - OwnedExperienceCommand.Lifetime;
+        var largest = new OwnedExperienceCommand(Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"), widest, widest,
+            new(widest, Guid.Parse("ffffffff-ffff-ffff-ffff-fffffffffffe")), new(widest, Guid.Parse("ffffffff-ffff-ffff-ffff-fffffffffffd")), latest);
+        var widestMessage = await PublishedMessage(largest, latest);
+        Assert.True(Encoding.UTF8.GetByteCount(widestMessage) <= 1024,
+            $"The widest command is {Encoding.UTF8.GetByteCount(widestMessage)} bytes, over the script's 1024-byte limit.");
+    }
+
+    // The Luau server fixture runs goldenMove and goldenStatus through the shipped script and requires the
+    // receipts it stores to equal these texts, claimId included. Reading them here closes the loop: a receipt
+    // field renamed or retyped on either side breaks one of the two suites.
+    [Theory]
+    [InlineData("goldenArrivedReceipt", true, OwnedExperienceStage.Arrived)]
+    [InlineData("goldenStatusReceipt", false, OwnedExperienceStage.AtSource)]
+    public async Task ReceiptsTheServerScriptStoresAreAcknowledged(string golden, bool move, OwnedExperienceStage expected)
+    {
+        string receipt = LuauGolden(await LuauFixture(), golden);
+        var command = new OwnedExperienceCommand(GoldenOperation, Universe, User, Source, move ? Destination : null, Start);
+        using var bridge = Fixture((request, _) =>
+        {
+            Assert.Equal(HttpMethod.Get, request.Method);
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK)
+            { Content = new StringContent("{\"value\":" + receipt + "}", Encoding.UTF8, "application/json") });
+        });
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.Acknowledged, result.State);
+        Assert.Equal(new(GoldenOperation, Universe, User, expected, move ? Destination : Source, Start), result.Acknowledgement);
+    }
+
     [Theory]
     [InlineData("atSource", false, OwnedExperienceStage.AtSource)]
     [InlineData("received", true, OwnedExperienceStage.Received)]
@@ -73,6 +115,110 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Equal(OwnedExperienceBridgeState.Acknowledged, result.State);
         Assert.Equal(expected, result.Acknowledgement?.Stage);
         Assert.Equal(Source, result.Acknowledgement?.Server);
+    }
+
+    // The server script accepts a command when issued <= serverNow + 2, so a Roblox clock up to two
+    // seconds behind the PC stamps a valid receipt earlier than the PC's issued second.
+    [Theory]
+    [InlineData(-2, "atSource")]
+    [InlineData(-1, "atSource")]
+    [InlineData(-1, "received")]
+    [InlineData(-2, "rejected")]
+    [InlineData(2, "atSource")]
+    public async Task ReceiptStampedWithinTheScriptClockAllowanceIsAcknowledged(int offsetSeconds, string wireStage)
+    {
+        var command = Command(join: wireStage != "atSource");
+        var receipt = Receipt(command, wireStage);
+        receipt["value"]!["observedUtc"] = Start.AddSeconds(offsetSeconds).ToUnixTimeSeconds();
+        using var bridge = Fixture((_, _) => Task.FromResult(Json(receipt)));
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.Acknowledged, result.State);
+        Assert.Equal(Start.AddSeconds(offsetSeconds), result.Acknowledgement?.ObservedUtc);
+    }
+
+    // Open Cloud stamps every response with Roblox's time in whole seconds (the HTTP Date header). The server
+    // script ignores a command issued more than two seconds ahead of its clock and gives a command issued
+    // behind it less than 45 s, so a PC clock more than two seconds off must be named, not shown as Published.
+    [Theory]
+    [InlineData(-3, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(3, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(-120, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(-2, OwnedExperienceBridgeState.Published)]
+    [InlineData(2, OwnedExperienceBridgeState.Published)]
+    [InlineData(0, OwnedExperienceBridgeState.Published)]
+    public async Task PublishReportsClockSkewWhenRobloxTimeDiffersByMoreThanTwoSeconds(int robloxAheadSeconds,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        int calls = 0;
+        using var bridge = Fixture((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(Dated(new(HttpStatusCode.OK), Start.AddSeconds(robloxAheadSeconds)));
+        });
+        var result = await bridge.PublishAsync(command, default);
+        Assert.Equal(expected, result.State);
+        Assert.Null(result.Acknowledgement);
+        Assert.Equal(1, calls);
+    }
+
+    // The Date second is stamped somewhere inside the round trip, so a slow response with agreeing clocks
+    // must not look like a PC that runs ahead.
+    [Fact]
+    public async Task SlowRoundTripWithAgreeingClocksIsNotClockSkew()
+    {
+        var command = Command();
+        var clock = new Clock();
+        using var bridge = Fixture((_, _) =>
+        {
+            clock.Now = Start.AddSeconds(4);
+            return Task.FromResult(Dated(new(HttpStatusCode.OK), Start));
+        }, clock);
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+    }
+
+    // The Date header is outside the bridge's control. The latest time it can carry must give a result, not an exception.
+    [Fact]
+    public async Task LatestPossibleRobloxTimeIsClockSkewNotAnException()
+    {
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(new(HttpStatusCode.OK), DateTimeOffset.MaxValue)));
+        Assert.Equal(OwnedExperienceBridgeState.ClockSkew, (await bridge.PublishAsync(Command(), default)).State);
+    }
+
+    // A server that dropped the command for its clock leaves no receipt. That must read as ClockSkew, not as a
+    // busy server that is still Pending.
+    [Theory]
+    [InlineData(-5, false)]
+    [InlineData(5, false)]
+    [InlineData(-5, true)]
+    public async Task ReadReportsClockSkewInsteadOfPendingWhenNoReceiptMatches(int robloxAheadSeconds, bool earlierReceipt)
+    {
+        var command = Command();
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(
+            earlierReceipt ? Json(Receipt(Command(), "arrived")) : new(HttpStatusCode.NotFound), Start.AddSeconds(robloxAheadSeconds))));
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.ClockSkew, result.State);
+        Assert.Null(result.Acknowledgement);
+    }
+
+    // A receipt is stamped by the Roblox server's clock, so it is checked against Roblox's own response time.
+    // A genuine receipt (possibly after a real teleport) is reported even when the PC clock is off.
+    [Theory]
+    [InlineData(0, 5, 5, OwnedExperienceBridgeState.Acknowledged)]
+    [InlineData(4, 1, 1, OwnedExperienceBridgeState.Acknowledged)]
+    [InlineData(0, 5, 8, OwnedExperienceBridgeState.InvalidResponse)]
+    public async Task ReceiptIsCheckedAgainstRobloxTime(int localSeconds, int robloxSeconds, int observedSeconds,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        var receipt = Receipt(command, "arrived");
+        receipt["value"]!["observedUtc"] = Start.AddSeconds(observedSeconds).ToUnixTimeSeconds();
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(Json(receipt), Start.AddSeconds(robloxSeconds))),
+            new Clock { Now = Start.AddSeconds(localSeconds) });
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(expected, result.State);
+        if (expected == OwnedExperienceBridgeState.Acknowledged)
+            Assert.Equal(Start.AddSeconds(observedSeconds), result.Acknowledgement?.ObservedUtc);
     }
 
     [Theory]
@@ -111,7 +257,7 @@ public sealed class OwnedExperienceBridgeTests
             case "wrong place": value["observedPlaceId"] = Source.PlaceId; break;
             case "wrong stage": value["stage"] = "atSource"; break;
             case "future": value["observedUtc"] = Start.AddSeconds(3).ToUnixTimeSeconds(); break;
-            case "expired observation": value["observedUtc"] = Start.AddSeconds(-1).ToUnixTimeSeconds(); break;
+            case "expired observation": value["observedUtc"] = Start.AddSeconds(-3).ToUnixTimeSeconds(); break;
         }
         string json = receipt.ToJsonString();
         if (defect == "duplicate") json = json.Insert(1, "\"value\":null,");
@@ -219,8 +365,115 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Throws<ArgumentException>(() => new OwnedExperienceCommand(Guid.NewGuid(), Universe, User, Source, Source, Start));
     }
 
+    // A key Roblox refuses needs the owner to fix it; a Roblox outage only needs time. The two must stay distinct.
+    [Theory]
+    [InlineData(true, HttpStatusCode.Unauthorized, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(true, HttpStatusCode.Forbidden, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(true, HttpStatusCode.InternalServerError, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(true, HttpStatusCode.ServiceUnavailable, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(false, HttpStatusCode.Unauthorized, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(false, HttpStatusCode.Forbidden, OwnedExperienceBridgeState.AuthorizationRequired)]
+    [InlineData(false, HttpStatusCode.InternalServerError, OwnedExperienceBridgeState.Unavailable)]
+    [InlineData(false, HttpStatusCode.ServiceUnavailable, OwnedExperienceBridgeState.Unavailable)]
+    public async Task AuthorizationAndServerErrorsMapToDistinctStates(bool publish, HttpStatusCode status,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        int calls = 0;
+        using var bridge = Fixture((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(status));
+        });
+        var result = publish ? await bridge.PublishAsync(command, default) : await bridge.ReadAsync(command, default);
+        Assert.Equal(expected, result.State);
+        Assert.Null(result.Acknowledgement);
+        Assert.Null(result.RetryUtc);
+        Assert.Equal(1, calls);
+    }
+
+    // A key store that fails, synchronously or later, needs the owner's attention. No request goes out without
+    // a key, the store's error text never reaches the result, and the lane is free for the next call.
+    [Theory]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    public async Task ThrowingKeyLoaderNeverReachesTheNetwork(bool publish, bool later)
+    {
+        Func<CancellationToken, ValueTask<string?>> broken = later
+            ? async _ => { await Task.Yield(); throw new InvalidOperationException("fixture key store is locked"); }
+            : _ => throw new InvalidOperationException("fixture key store is locked");
+        int calls = 0;
+        using var bridge = new RobloxOwnedExperienceBridge(Universe, broken, broken, new Handler((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK));
+        }), new Clock());
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var result = publish ? await bridge.PublishAsync(Command(), default) : await bridge.ReadAsync(Command(), default);
+            Assert.Equal(new OwnedExperienceBridgeResult(OwnedExperienceBridgeState.AuthorizationRequired), result);
+        }
+        Assert.Equal(0, calls);
+    }
+
+    // Each request has a five-second deadline. A Roblox endpoint that never answers gives Unavailable and frees
+    // the single lane, instead of holding it until the app closes.
+    [Fact]
+    public async Task UnansweredRequestEndsAsUnavailableAtTheFiveSecondDeadline()
+    {
+        var command = Command();
+        var clock = new Clock();
+        int calls = 0;
+        using var bridge = Fixture(async (_, ct) =>
+        {
+            if (++calls == 1) await Task.Delay(Timeout.Infinite, ct);
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        }, clock);
+        var unanswered = await bridge.PublishAsync(command, default).WaitAsync(TimeSpan.FromSeconds(30));
+        Assert.Equal(OwnedExperienceBridgeState.Unavailable, unanswered.State);
+        clock.Now = Start.AddSeconds(1);
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+        Assert.Equal(2, calls);
+    }
+
     private static OwnedExperienceCommand Command(bool join = true)
         => new(Guid.NewGuid(), Universe, User, Source, join ? Destination : null, Start);
+
+    // The operation ID the Luau server fixture uses in its goldens.
+    private static readonly Guid GoldenOperation = Guid.Parse("34567890-3456-3456-3456-34567890abcd");
+
+    private static async Task<string> LuauFixture()
+    {
+        using var stream = typeof(OwnedExperienceBridgeTests).Assembly.GetManifestResourceStream("OwnedExperienceBridgeTests.luau");
+        Assert.True(stream is not null, "The Luau server fixture is not embedded in the test assembly.");
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        return await reader.ReadToEndAsync();
+    }
+
+    private static string LuauGolden(string fixture, string name)
+    {
+        var match = System.Text.RegularExpressions.Regex.Match(fixture, $@"local {name} = \[\[(.*?)\]\]",
+            System.Text.RegularExpressions.RegexOptions.Singleline);
+        Assert.True(match.Success, $"The Luau server fixture has no {name} payload.");
+        return match.Groups[1].Value;
+    }
+
+    private static async Task<string> PublishedMessage(OwnedExperienceCommand command, DateTimeOffset now)
+    {
+        string? message = null;
+        using var bridge = new RobloxOwnedExperienceBridge(command.UniverseId, _ => ValueTask.FromResult<string?>("fixture-read"),
+            _ => ValueTask.FromResult<string?>("fixture-publish"), new Handler(async (request, ct) =>
+            {
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                message = body.RootElement.GetProperty("message").GetString();
+                return new(HttpStatusCode.OK);
+            }), new Clock { Now = now });
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+        Assert.NotNull(message);
+        return message;
+    }
 
     private static JsonObject CommandFields(OwnedExperienceCommand command) => new()
     {
@@ -245,6 +498,12 @@ public sealed class OwnedExperienceBridgeTests
 
     private static HttpResponseMessage Json(JsonObject body) => new(HttpStatusCode.OK)
     { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
+
+    private static HttpResponseMessage Dated(HttpResponseMessage response, DateTimeOffset robloxTime)
+    {
+        response.Headers.Date = robloxTime;
+        return response;
+    }
 
     private static RobloxOwnedExperienceBridge Fixture(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send, Clock? clock = null)
         => new(Universe, _ => ValueTask.FromResult<string?>("fixture-read"), _ => ValueTask.FromResult<string?>("fixture-publish"),

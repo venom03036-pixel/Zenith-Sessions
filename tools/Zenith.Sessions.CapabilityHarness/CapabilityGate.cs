@@ -72,12 +72,12 @@ public static class CapabilityGate
                 "background-keyboard" or "background-clicks" or "arrow-key-camera" =>
                     "The existing pinned-target playback session requires foreground focus. No background executor is implemented.",
                 "occluded-image-checks" =>
-                    "The current capture service uses desktop duplication/GDI regions, not a proven unobscured per-window image source.",
+                    "The macro capture service uses desktop duplication/GDI regions, not a proven unobscured per-window image source. Per-window WGC capture is used only by opt-in client previews and the own-window probe, not by macro image or condition checks.",
                 "account-reconnect" =>
                     "No account-selecting native reconnect provider is implemented. OAuth authorization and a launch URL do not prove this capability.",
                 "independent-accounts" =>
                     "Process/window discovery does not establish independent authentication or permitted multi-client capacity.",
-                "independent-runs" => "No session-addressed background executor with independent run state is implemented.",
+                "independent-runs" => "A host-local executor keeps separate run state per recipient, but only for registered diagnostic targets. Binding it to Roblox targets and per-target image/condition evaluation are not implemented.",
                 "live-broadcast" => "No verified leader/follower background input provider is implemented. Focus swapping cannot satisfy this requirement.",
                 _ => "No supported provider is available to run and verify this live Roblox exercise."
             })).ToArray();

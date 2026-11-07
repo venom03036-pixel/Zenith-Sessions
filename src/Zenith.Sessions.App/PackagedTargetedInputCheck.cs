@@ -29,25 +29,26 @@ internal static class PackagedTargetedInputCheck
             throw new InvalidDataException("A second purpose stole an owned input target.");
         var a = await first.SubmitAsync([new(TargetedInputKind.KeyDown, 135), new(TargetedInputKind.LeftDown, X: 20, Y: 30)], ct);
         var b = await second.SubmitAsync([new(TargetedInputKind.KeyDown, 134)], ct);
-        var paused = await first.PauseAsync();
+        // Pause, resume, clear and stop take no token; the stage deadline still bounds each wait.
+        var paused = await first.PauseAsync().WaitAsync(ct);
         if (a.SubmittedCount != 2 || b.SubmittedCount != 1 || paused.State != TargetedInputRunState.Paused
             || paused.LogicalHolds != 2 || paused.SubmittedHolds != 0 || second.Snapshot.SubmittedHolds != 1)
             throw new InvalidDataException("The packaged owner mixed independent holds or failed pause cleanup.");
-        var resumed = await first.ResumeAsync();
+        var resumed = await first.ResumeAsync().WaitAsync(ct);
         if (resumed.State != TargetedInputRunState.Running || resumed.SubmittedHolds != 2)
             throw new InvalidDataException("The packaged owner failed unfinished-hold restoration.");
-        var cleared = await first.ClearHoldsAsync();
+        var cleared = await first.ClearHoldsAsync().WaitAsync(ct);
         if (cleared.State != TargetedInputRunState.Running || cleared.LogicalHolds != 0 || cleared.SubmittedHolds != 0
             || owner.TryOpen(target, TargetedInputPurpose.OwnedWindowDiagnostic).Run is not null)
             throw new InvalidDataException("Clearing holds lost the packaged target lease or retained restore intent.");
         if ((await first.SubmitAsync([new(TargetedInputKind.KeyDown, 136), new(TargetedInputKind.KeyUp, 136)], ct)).SubmittedCount != 2)
             throw new InvalidDataException("The packaged owner could not continue after clearing holds.");
-        await first.PauseAsync();
-        if ((await first.ClearHoldsAsync()).State != TargetedInputRunState.Paused
-            || (await first.ResumeAsync()).SubmittedHolds != 0)
+        await first.PauseAsync().WaitAsync(ct);
+        if ((await first.ClearHoldsAsync().WaitAsync(ct)).State != TargetedInputRunState.Paused
+            || (await first.ResumeAsync().WaitAsync(ct)).SubmittedHolds != 0)
             throw new InvalidDataException("Clear erased pause state or restored cleared holds.");
         owner.SignalStopAll();
-        var stopped = await Task.WhenAll(first.StopAsync(), second.StopAsync());
+        var stopped = await Task.WhenAll(first.StopAsync(), second.StopAsync()).WaitAsync(ct);
         if (stopped.Any(run => run.State != TargetedInputRunState.Stopped || run.SubmittedHolds != 0 || run.LogicalHolds != 0)
             || transport.Commands.Count != 12 || transport.Commands.Any(command => command.Target.Window is not (100 or 101)))
             throw new InvalidDataException("The packaged owner failed terminal cleanup or emitted an unexpected target.");

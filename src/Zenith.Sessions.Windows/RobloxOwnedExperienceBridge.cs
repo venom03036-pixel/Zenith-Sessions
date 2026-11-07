@@ -12,6 +12,11 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
     private const string Topic = "ZenithSessionsV1";
     private const string Store = "ZenithSessionsReceiptsV1";
     private const int MaximumResponseBytes = 4096;
+    // Mirrors `issued <= now + 2` in integrations/roblox/ZenithSessionsBridge.server.luau: the server
+    // accepts a command while its clock trails the PC by up to two seconds and stamps the receipt with
+    // its own clock, so a valid receipt can read up to two seconds before IssuedUtc. Keep both in step.
+    // Beyond this allowance the transport reports ClockSkew (see ClockDisagrees).
+    private const long ServerClockAllowanceSeconds = 2;
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan ReadInterval = TimeSpan.FromMilliseconds(500), PublishInterval = TimeSpan.FromSeconds(1);
     private readonly long _universe;
@@ -80,9 +85,12 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
             deadline.Token.ThrowIfCancellationRequested();
             if (publish) _publishAfter = AddDelay(now, PublishInterval);
             else _readAfter = AddDelay(now, ReadInterval);
+            var sentUtc = now;
             using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
             deadline.Token.ThrowIfCancellationRequested();
             now = _clock.GetUtcNow();
+            var robloxNow = response.Headers.Date;
+            bool skewed = ClockDisagrees(robloxNow, sentUtc, now);
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
                 retryUtc = response.Headers.RetryAfter?.Date ?? AddDelay(now, response.Headers.RetryAfter?.Delta ?? TimeSpan.FromSeconds(5));
@@ -95,9 +103,10 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
             if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 return new(OwnedExperienceBridgeState.AuthorizationRequired);
             if (!Current(command, now)) return new(OwnedExperienceBridgeState.Expired);
-            if (publish) return new(response.StatusCode == HttpStatusCode.OK
-                ? OwnedExperienceBridgeState.Published : OwnedExperienceBridgeState.Unavailable);
-            if (response.StatusCode == HttpStatusCode.NotFound) return new(OwnedExperienceBridgeState.Pending);
+            if (publish) return new(response.StatusCode != HttpStatusCode.OK ? OwnedExperienceBridgeState.Unavailable
+                : skewed ? OwnedExperienceBridgeState.ClockSkew : OwnedExperienceBridgeState.Published);
+            if (response.StatusCode == HttpStatusCode.NotFound)
+                return new(skewed ? OwnedExperienceBridgeState.ClockSkew : OwnedExperienceBridgeState.Pending);
             if (response.StatusCode != HttpStatusCode.OK) return new(OwnedExperienceBridgeState.Unavailable);
             if (response.Content.Headers.ContentLength > MaximumResponseBytes)
                 return new(OwnedExperienceBridgeState.InvalidResponse);
@@ -109,7 +118,9 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
             if (!Current(command, _clock.GetUtcNow())) return new(OwnedExperienceBridgeState.Expired);
             if (count == bytes.Length) return new(OwnedExperienceBridgeState.InvalidResponse);
             using var document = JsonDocument.Parse(bytes.AsMemory(0, count), new JsonDocumentOptions { MaxDepth = 8, AllowDuplicateProperties = false });
-            return ReadReceipt(document.RootElement.GetProperty("value"), command, _clock.GetUtcNow());
+            // The receipt carries the Roblox server's time, so judge it by Roblox's own response time when there is one.
+            var result = ReadReceipt(document.RootElement.GetProperty("value"), command, robloxNow ?? _clock.GetUtcNow());
+            return result.State == OwnedExperienceBridgeState.Pending && skewed ? new(OwnedExperienceBridgeState.ClockSkew) : result;
         }
         catch (Exception ex) when (ex is (JsonException or FormatException or KeyNotFoundException or InvalidOperationException)
             && ex is not ObjectDisposedException && !ct.IsCancellationRequested)
@@ -121,6 +132,18 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
 
     private static bool Current(OwnedExperienceCommand command, DateTimeOffset now)
         => now >= command.IssuedUtc && now < command.ExpiresUtc;
+
+    // Open Cloud's Date header is Roblox's time truncated to the second, stamped at some moment between sending
+    // and receiving. Report skew only when every reading inside that window puts the PC more than the server
+    // script's allowance off, so a slow round trip or the truncation never looks like a wrong clock.
+    // Only differences are taken, so no header value can overflow the arithmetic.
+    private static bool ClockDisagrees(DateTimeOffset? robloxNow, DateTimeOffset sentUtc, DateTimeOffset receivedUtc)
+    {
+        if (robloxNow is not { } roblox) return false;
+        var allowance = TimeSpan.FromSeconds(ServerClockAllowanceSeconds);
+        return sentUtc - roblox >= allowance + TimeSpan.FromSeconds(1)   // the PC is certainly more than 2 s ahead
+            || roblox - receivedUtc > allowance;                         // the PC is certainly more than 2 s behind
+    }
 
     private static DateTimeOffset AddDelay(DateTimeOffset now, TimeSpan delay)
         => delay > DateTimeOffset.MaxValue - now ? DateTimeOffset.MaxValue : now + delay;
@@ -139,7 +162,7 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
         expiresUtc = command.ExpiresUtc.ToUnixTimeSeconds()
     });
 
-    private static OwnedExperienceBridgeResult ReadReceipt(JsonElement value, OwnedExperienceCommand command, DateTimeOffset now)
+    private static OwnedExperienceBridgeResult ReadReceipt(JsonElement value, OwnedExperienceCommand command, DateTimeOffset robloxNow)
     {
         var sent = value.GetProperty("command");
         var operation = ReadJob(sent, "operationId");
@@ -163,8 +186,9 @@ public sealed class RobloxOwnedExperienceBridge : IOwnedExperienceBridge, IDispo
             || Optional(sent, "destinationJobId")?.GetGuid() != command.Destination?.JobId
             || sent.GetProperty("issuedUtc").GetInt64() != command.IssuedUtc.ToUnixTimeSeconds()
             || sent.GetProperty("expiresUtc").GetInt64() != command.ExpiresUtc.ToUnixTimeSeconds()
-            || observed < command.IssuedUtc.ToUnixTimeSeconds() || observed >= command.ExpiresUtc.ToUnixTimeSeconds()
-            || observed > now.ToUnixTimeSeconds() + 2
+            || observed < command.IssuedUtc.ToUnixTimeSeconds() - ServerClockAllowanceSeconds
+            || observed >= command.ExpiresUtc.ToUnixTimeSeconds()
+            || observed > robloxNow.ToUnixTimeSeconds() + ServerClockAllowanceSeconds
             || value.GetProperty("observedPlaceId").GetInt64() != server.PlaceId || ReadJob(value, "observedJobId") != server.JobId)
             return new(OwnedExperienceBridgeState.InvalidResponse);
         return new(OwnedExperienceBridgeState.Acknowledged, new(command.OperationId, command.UniverseId, command.UserId,

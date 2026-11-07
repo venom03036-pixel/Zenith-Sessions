@@ -105,10 +105,7 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         {
             snapshot = null;
             uint pid = Native.GetProcessId(process);
-            if (pid == 0 || pid > int.MaxValue || !Native.GetProcessTimes(process, out long created, out _, out _, out _)
-                || created < 0 || created > DateTime.MaxValue.Ticks - DateTime.FromFileTimeUtc(0).Ticks)
-                return false;
-            long start = DateTime.FromFileTimeUtc(created).Ticks;
+            if (pid == 0 || pid > int.MaxValue || ProcessInstanceIdentity.StartTicks(process) is not { } start) return false;
             uint wait = Native.WaitForSingleObject(process, 0);
             if (wait == 0) { snapshot = new((int)pid, start, false, "", "", 0); return true; }
             if (wait != 258) return false;
@@ -159,9 +156,6 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, int processId);
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern uint GetProcessId(SafeProcessHandle process);
-        [DllImport("kernel32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GetProcessTimes(SafeProcessHandle process, out long created, out long exited, out long kernel, out long user);
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

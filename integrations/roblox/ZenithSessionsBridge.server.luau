@@ -82,24 +82,50 @@ local function updateStage(userId, commandId, claimId, stage, accept)
     end)
 end
 
-local function bounded(userId, work, terminal)
+-- Every warning names a fixed step ("move", "status check", "arrival receipt" or "teleport failure receipt") and
+-- the reason. The script adds no user, place, job, operation or claim ID and no command contents; a failed step
+-- adds only Roblox's own error text.
+local unconfirmed = " The app shows this command as unconfirmed until it expires."
+
+-- A throttled or failed Roblox call leaves its outcome unknown. Never replay a move here, but write the
+-- Roblox error to the server log so the creator can tell a throttle from a teleport failure or a script bug.
+local function attempt(step, work)
+    local completed, failure = pcall(work)
+    if not completed then
+        warn(string.format("Zenith Sessions bridge %s step stopped and was not retried (%s).", step, tostring(failure))
+            .. unconfirmed)
+    end
+end
+
+-- A busy player or a full server leaves a request without a receipt. Say so in the server log, so a failed
+-- trial can be told apart from a command that never arrived.
+local function ignored(step, reason)
+    warn(string.format("Zenith Sessions bridge ignored this %s because %s.", step, reason) .. unconfirmed)
+end
+
+local function bounded(userId, step, work, terminal)
     local running = busyUsers[userId]
     if running then
-        if terminal and not running.next then
+        if not terminal then
+            ignored(step, "a command for this player is still running")
+        elseif running.next then
+            ignored(step, "another result for this player is already waiting")
+        else
             running.next = work
+            running.nextStep = step
         end
         return
     end
     if active >= maximumActive then
+        ignored(step, string.format("this server is already running %d bridge commands", maximumActive))
         return
     end
     local owner = {}
     busyUsers[userId] = owner
     active = active + 1
-    -- A throttled or failed Roblox call leaves its outcome unknown. Never replay a move here.
-    pcall(work)
+    attempt(step, work)
     if owner.next then
-        pcall(owner.next)
+        attempt(owner.nextStep, owner.next)
     end
     active = active - 1
     busyUsers[userId] = nil
@@ -132,7 +158,7 @@ local function onMessage(message)
         expiresUtc = command.expiresUtc,
     }
 
-    bounded(command.userId, function()
+    bounded(command.userId, command.destinationPlaceId and "move" or "status check", function()
         local claimId = string.lower(HttpService:GenerateGUID(false))
         local stage = command.destinationPlaceId and "received" or "atSource"
         local accepted = store:UpdateAsync(key(command.userId), function(previous)
@@ -142,9 +168,11 @@ local function onMessage(message)
             end
             if type(previous) == "table" and type(previous.command) == "table" then
                 local prior = previous.command
-                -- One live operation per player. An out-of-order request cannot replace it.
+                -- One live move per player, for its whole 45 s, so a move is never repeated. A status check
+                -- is finished once written, so a newer status or move may replace it. An out-of-order
+                -- request never replaces anything.
                 if prior.operationId == command.operationId
-                    or (type(prior.expiresUtc) == "number" and prior.expiresUtc > now)
+                    or (type(prior.expiresUtc) == "number" and prior.expiresUtc > now and previous.stage ~= "atSource")
                     or (type(prior.issuedUtc) == "number" and prior.issuedUtc >= command.issuedUtc) then
                     return nil
                 end
@@ -176,7 +204,7 @@ local function onArrival(player)
         or type(data) ~= "table" or not isGuid(data.zenithOperationId) or not isGuid(data.zenithClaimId) then
         return
     end
-    bounded(player.UserId, function()
+    bounded(player.UserId, "arrival receipt", function()
         updateStage(player.UserId, data.zenithOperationId, data.zenithClaimId, "arrived", function(previous)
             local command = previous.command
             return player.Parent == Players and (previous.stage == "received" or previous.stage == "teleportInitiated")
@@ -194,7 +222,7 @@ local function onTeleportFailed(player, _, _, placeId, options)
     if type(data) ~= "table" or not isGuid(data.zenithOperationId) or not isGuid(data.zenithClaimId) then
         return
     end
-    bounded(player.UserId, function()
+    bounded(player.UserId, "teleport failure receipt", function()
         updateStage(player.UserId, data.zenithOperationId, data.zenithClaimId, "rejected", function(previous)
             local command = previous.command
             return player.Parent == Players and (previous.stage == "received" or previous.stage == "teleportInitiated")
@@ -206,4 +234,17 @@ end
 
 Players.PlayerAdded:Connect(onArrival)
 TeleportService.TeleportInitFailed:Connect(onTeleportFailed)
-MessagingService:SubscribeAsync("ZenithSessionsV1", onMessage)
+
+-- Roblox can throttle or briefly fail SubscribeAsync. Without a subscription this server would ignore every
+-- command for its whole lifetime, so keep retrying with a capped backoff. This is the script's last statement.
+local retryDelay = 1
+while true do
+    local subscribed, failure = pcall(MessagingService.SubscribeAsync, MessagingService, "ZenithSessionsV1", onMessage)
+    if subscribed then
+        break
+    end
+    warn(string.format("Zenith Sessions bridge could not subscribe to commands (%s). Retrying in %d s.",
+        tostring(failure), retryDelay))
+    task.wait(retryDelay)
+    retryDelay = math.min(retryDelay * 2, 60)
+end

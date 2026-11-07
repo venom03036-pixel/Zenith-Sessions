@@ -88,8 +88,8 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
     {
         if (!key.IsValid || _user is null) return false;
         using var process = Native.OpenProcess(0x1000, false, key.ProcessId); // QUERY_LIMITED_INFORMATION only.
-        if (process.IsInvalid || !Native.GetProcessTimes(process, out var created, out _, out _, out _)) return false;
-        if (Native.UtcTicks(created) != key.ProcessStartUtcTicks) return false;
+        // No liveness test here: the correlator also requires the key in the current observed set and a Restart Manager holder.
+        if (process.IsInvalid || !ProcessInstanceIdentity.MatchesStart(process, key.ProcessStartUtcTicks)) return false;
         var image = new StringBuilder(1024); uint length = (uint)image.Capacity;
         if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
         string path = image.ToString();
@@ -111,16 +111,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
 
     private static class Native
     {
-        [StructLayout(LayoutKind.Sequential)] internal struct FileTime { public uint Low, High; }
-        internal static long UtcTicks(FileTime time)
-        {
-            ulong value = ((ulong)time.High << 32) | time.Low;
-            if (value > long.MaxValue) return 0;
-            try { return DateTime.FromFileTimeUtc((long)value).Ticks; } catch (ArgumentOutOfRangeException) { return 0; }
-        }
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern SafeProcessHandle OpenProcess(uint rights, [MarshalAs(UnmanagedType.Bool)] bool inherit, int pid);
-        [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GetProcessTimes(SafeProcessHandle process, out FileTime created, out FileTime exited, out FileTime kernel, out FileTime user);
         [DllImport("kernel32.dll", EntryPoint = "QueryFullProcessImageNameW", CharSet = CharSet.Unicode, SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool QueryFullProcessImageName(SafeProcessHandle process, uint flags, StringBuilder image, ref uint length);
         [DllImport("advapi32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
@@ -179,10 +170,7 @@ internal static class RestartManagerLogQuery
             for (int i = 0; i < filled; i++)
             {
                 var native = buffer![i].Process;
-                ulong value = ((ulong)native.Created.High << 32) | native.Created.Low;
-                long ticks = 0;
-                if (value <= long.MaxValue)
-                    try { ticks = DateTime.FromFileTimeUtc((long)value).Ticks; } catch (ArgumentOutOfRangeException) { }
+                long ticks = ProcessInstanceIdentity.StartTicks(native.Created.Low, native.Created.High) ?? 0;
                 if (native.Pid == 0 || native.Pid > int.MaxValue || ticks == 0) return new(SessionLogCorrelationStatus.Unavailable, Array.Empty<ResourceHolder>());
                 holders.Add(new((int)native.Pid, ticks));
             }
@@ -195,6 +183,7 @@ internal static class RestartManagerLogQuery
     private static ResourceHolderResult Failure(uint code) => new(code == 5 ? SessionLogCorrelationStatus.AccessDenied
         : code is 2 or 3 ? SessionLogCorrelationStatus.Missing : SessionLogCorrelationStatus.Unavailable, Array.Empty<ResourceHolder>());
 
+    // Stays two DWORDs: RM_UNIQUE_PROCESS is 12 bytes with 4-byte alignment, which a long field would break.
     [StructLayout(LayoutKind.Sequential)] internal struct FileTime { public uint Low, High; }
     [StructLayout(LayoutKind.Sequential)] internal struct UniqueProcess { public uint Pid; public FileTime Created; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] internal struct ProcessInfo

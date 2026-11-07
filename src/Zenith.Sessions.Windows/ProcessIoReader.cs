@@ -31,15 +31,10 @@ public static class ProcessIoReader
             counters.ReadOperationCount, counters.WriteOperationCount, counters.OtherOperationCount);
     }
 
-    private static bool SameInstance(SafeProcessHandle handle, int processId, long expectedStartUtcTicks)
-    {
-        if (Native.GetProcessId(handle) != (uint)processId || !Native.GetExitCodeProcess(handle, out uint exitCode)
-            || exitCode != 259 || !Native.GetProcessTimes(handle, out long start, out _, out _, out _)) return false;
-        // FILETIME starts in1601. Range-check before converting untrusted native integer output.
-        // Exit FILETIME is undefined for a running process, so it is not used as a live/exit test.
-        return start >= 0 && start <= DateTime.MaxValue.Ticks - DateTime.FromFileTimeUtc(0).Ticks
-            && DateTime.FromFileTimeUtc(start).Ticks == expectedStartUtcTicks;
-    }
+    // A QUERY_LIMITED handle has no SYNCHRONIZE right, so liveness is STILL_ACTIVE (259) from GetExitCodeProcess.
+    private static bool SameInstance(SafeProcessHandle handle, int processId, long expectedStartUtcTicks) =>
+        Native.GetProcessId(handle) == (uint)processId && Native.GetExitCodeProcess(handle, out uint exitCode)
+            && exitCode == 259 && ProcessInstanceIdentity.MatchesStart(handle, expectedStartUtcTicks);
 
     private static class Native
     {
@@ -57,7 +52,5 @@ public static class ProcessIoReader
         internal static extern uint GetProcessId(SafeProcessHandle process);
         [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool GetExitCodeProcess(SafeProcessHandle process, out uint exitCode);
-        [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GetProcessTimes(SafeProcessHandle process, out long created, out long exited, out long kernel, out long user);
     }
 }

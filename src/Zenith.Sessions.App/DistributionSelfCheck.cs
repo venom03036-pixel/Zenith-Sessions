@@ -3,6 +3,7 @@ using System.Net.Http;
 using System.Reflection;
 using System.Resources;
 using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using System.Windows.Media.Imaging;
 using Zenith.Sessions.Core;
@@ -236,6 +237,10 @@ internal static class DistributionSelfCheck
             step="Read final protected record";
             if((await vault.ReadAsync(saved.Id,ct))?.Generation!=secondGeneration) throw new InvalidDataException("Protected record round trip failed.");
             cases.Add(new(stage,true));step=null;
+
+            stage="Protected private-server store round trip";
+            await PackagedPrivateServerCheck.VerifyAsync(root,ct);
+            cases.Add(new(stage,true));
 
             stage="Saved session and browser runtime boundaries";
             var sessionProfile=await repository.SaveAsync(AccountProfile.Create("synthetic session") with { Id=SessionFixtureId },ct);
@@ -639,20 +644,7 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,true));
 
             stage="Recipient bundle metadata round trip";
-            using(var bundles=new RecipientBundleStore(root))
-            {
-                var prior=await bundles.LoadAsync(ct);
-                if(prior.Bundles.Count!=0)throw new InvalidDataException("The owned self-check bundle store contains other records.");
-                var bundle=await bundles.SaveAsync(new(FixtureId,"Synthetic account bundle",[FixtureId,SessionFixtureId]),ct);
-                var renamed=await bundles.RenameAsync(bundle.Id,bundle.Revision,bundle.ChangeId,"Synthetic renamed bundle",ct);
-                var restored=(await bundles.LoadAsync(ct)).Bundles.Single();
-                var missing=restored.ResolveRecipients(new HashSet<Guid>{FixtureId});
-                if(restored.Id!=FixtureId||!restored.ProfileIds.SequenceEqual(new[]{FixtureId,SessionFixtureId})
-                    ||!missing.RequiresReview||missing.AuthorizesLaunch||missing.MissingProfileIds.Single()!=SessionFixtureId)
-                    throw new InvalidDataException("Bundle metadata acquired authority or lost recipient references.");
-                await bundles.DeleteAsync(renamed.Id,renamed.Revision,renamed.ChangeId,ct);
-                if((await bundles.LoadAsync(ct)).Bundles.Count!=0)throw new InvalidDataException("Bundle deletion failed.");
-            }
+            await PackagedRecipientBundleCheck.VerifyAsync(root,FixtureId,SessionFixtureId,ct);
             cases.Add(new(stage,true));
 
             stage="Physical client layout planner";
@@ -793,19 +785,81 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,false,ex.GetType().Name,$"0x{failure.HResult:X8}",step,method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}"));
         }
         if(!owned) { Console.WriteLine("Distribution self-check refused an unowned data folder."); return 2; }
-        var assembly=Assembly.GetExecutingAssembly();
-        await using var binary=File.OpenRead(assembly.Location);
-        string sha=Convert.ToHexString(await SHA256.HashDataAsync(binary));
+        // Not the stage deadline: the report must still be written after a stage times out. Six local reads are bounded.
+        var identity=await IdentifyBuildAsync(AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies(),CancellationToken.None);
         var result=new { FormatVersion=1,DevelopmentSelfCheck=true,ReleaseReady=false,CheckedUtc=DateTimeOffset.UtcNow,
-            AssemblySha256=sha,Runtime=Environment.Version.ToString(),SQLiteVersion=sqliteVersion,ElapsedMs=elapsed.ElapsedMilliseconds,Cases=cases,
+            AssemblySha256=identity.AssemblySha256,FirstPartySha256=identity.FirstPartySha256,FirstPartyIdentitySha256=identity.FirstPartyIdentitySha256,
+            Runtime=Environment.Version.ToString(),SQLiteVersion=sqliteVersion,ElapsedMs=elapsed.ElapsedMilliseconds,Cases=cases,
             GpuObservation=gpuEvidence,
             PublisherBoundary=new { Status=publisherEvidence?.Status.ToString(),Reason=publisherEvidence?.Reason.ToString(),NativeLaunchAuthorized=false },
             CleanupDiagnostic=new { Phase=cleanupPhase,Pending=cleanupPending,Remaining=cleanupRemaining,ErrorType=cleanupErrorType } };
         string temporary=report+".tmp";
         try { await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(result,new JsonSerializerOptions { WriteIndented=true })); File.Move(temporary,report,true); }
         finally { if(File.Exists(temporary)) File.Delete(temporary); }
-        Console.WriteLine($"Distribution self-check: {cases.Count(c=>c.Passed)}/{cases.Count}; release readiness remains false.");
+        Console.WriteLine(Summary(cases.Count(c=>c.Passed),PlannedStageCount,cases.FirstOrDefault(c=>!c.Passed)?.Name));
         return cases.All(c=>c.Passed)?0:1;
+    }
+
+    // Every stage RunAsync codes. Keep in step with $expectedCases in scripts/Check-ZenithSessionsManager.ps1.
+    internal const int PlannedStageCount=43;
+    // The run stops at the first failing stage, so the console line counts against every planned stage and names the
+    // failed one: "3/42 (failed at ...)" instead of "3/4". Stage names are static literals (no paths or secrets).
+    // The success line is unchanged so stored "42/42" evidence still matches.
+    internal static string Summary(int passed,int planned,string? failedStage)
+        =>failedStage is null
+            ?$"Distribution self-check: {passed}/{planned}; release readiness remains false."
+            :$"Distribution self-check: {passed}/{planned} (failed at {failedStage}); release readiness remains false.";
+
+    // Builds are deterministic, so a Core- or Windows-only change leaves Zenith.Sessions.App.dll byte-identical and an
+    // App-only hash cannot tell an old report from the fixed build. The report identifies every first-party assembly the
+    // packaged check exercises. Keep this list in step with $firstParty in scripts/Check-ZenithSessionsManager.ps1.
+    internal static readonly string[] FirstPartyAssemblies=["Zenith.Sessions.App.dll","Zenith.Sessions.Core.dll","Zenith.Sessions.Windows.dll",
+        "Zenith.Automation.Input.dll","Zenith.MacroHost.Contracts.dll","Zenith.MacroHost.Windows.dll"];
+    // AssemblySha256 keeps its historical meaning (the App dll alone) so older reports and ledger entries stay comparable.
+    internal sealed record BuildIdentity(string AssemblySha256,IReadOnlyDictionary<string,string> FirstPartySha256,string FirstPartyIdentitySha256);
+
+    internal static async Task<BuildIdentity> IdentifyBuildAsync(string baseDirectory,IEnumerable<Assembly> loaded,CancellationToken ct)
+    {
+        // Hash the copies that actually ran. A first-party assembly loaded from any other file would make the hashes describe other code.
+        string folder=Path.GetFullPath(baseDirectory);
+        foreach(var assembly in loaded)
+        {
+            if(assembly.IsDynamic) continue;
+            string file=assembly.GetName().Name+".dll";
+            if(Array.IndexOf(FirstPartyAssemblies,file)<0) continue;
+            if(string.IsNullOrEmpty(assembly.Location) || !string.Equals(Path.GetFullPath(assembly.Location),Path.Combine(folder,file),StringComparison.OrdinalIgnoreCase))
+                throw new InvalidDataException($"The first-party assembly {file} was not loaded from the checked folder.");
+        }
+        var hashes=await HashFirstPartyAssembliesAsync(folder,ct);
+        return new(hashes[FirstPartyAssemblies[0]],hashes,CombinedIdentity(hashes));
+    }
+
+    internal static async Task<IReadOnlyDictionary<string,string>> HashFirstPartyAssembliesAsync(string baseDirectory,CancellationToken ct)
+    {
+        var hashes=new Dictionary<string,string>(FirstPartyAssemblies.Length,StringComparer.Ordinal);
+        foreach(string name in FirstPartyAssemblies)
+        {
+            // Messages name the file only, never the folder path.
+            var file=new FileInfo(Path.Combine(baseDirectory,name));
+            if(!file.Exists || (file.Attributes & FileAttributes.ReparsePoint)!=0) throw new InvalidDataException($"The first-party assembly {name} is missing or redirected.");
+            await using var stream=new FileStream(file.FullName,FileMode.Open,FileAccess.Read,FileShare.Read,4096,FileOptions.Asynchronous|FileOptions.SequentialScan);
+            hashes.Add(name,Convert.ToHexString(await SHA256.HashDataAsync(stream,ct)));
+        }
+        return hashes;
+    }
+
+    // SHA-256 of one UTF-8 "name:SHA256\n" line per first-party assembly, in the fixed order above. The manager script
+    // recomputes the same value from the staged files, so one hash names the whole first-party set.
+    internal static string CombinedIdentity(IReadOnlyDictionary<string,string> hashes)
+    {
+        if(hashes.Count!=FirstPartyAssemblies.Length) throw new InvalidDataException("The first-party hash set is incomplete.");
+        var lines=new StringBuilder();
+        foreach(string name in FirstPartyAssemblies)
+        {
+            if(!hashes.TryGetValue(name,out string? hash)) throw new InvalidDataException($"The first-party hash set has no entry for {name}.");
+            lines.Append(name).Append(':').Append(hash).Append('\n');
+        }
+        return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(lines.ToString())));
     }
     // In-process synthetic HTTP only: the packaged check has no network or account access.
     private sealed class PublicGameFixtureHandler : HttpMessageHandler

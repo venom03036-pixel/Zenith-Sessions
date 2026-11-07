@@ -165,7 +165,7 @@ public sealed class MacroHostCatalogViewModelTests
         Assert.Contains("stopped", vm.Status, StringComparison.OrdinalIgnoreCase); Assert.False(vm.CanNext);
     }
 
-    [Fact]
+    [Fact, Trait(TestCategory.Name, TestCategory.CrossProcess)]
     public async Task Net10ClientReadsTheRealPipeFromAnIsolatedNet8Worker()
     {
         string path = TestWorkerLocator.Find("Zenith.MacroHost.ProbeWorker", "net8.0-windows10.0.19041.0");
@@ -176,7 +176,7 @@ public sealed class MacroHostCatalogViewModelTests
         using var process = Process.Start(start)!;
         try
         {
-            Assert.Equal("READY NET8", await process.StandardOutput.ReadLineAsync().WaitAsync(Deadline));
+            await ReadReadyLineAsync(process);
             await using var client = new MacroCatalogPipeClient(pipe);
             var page = await client.GetPageAsync(new(), default).WaitAsync(Deadline);
             Assert.Equal(MacroCatalogState.Ready, page.State); Assert.Equal("2.5.12-fixture", page.HostVersion);
@@ -191,6 +191,47 @@ public sealed class MacroHostCatalogViewModelTests
                 catch (Exception) { if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync().WaitAsync(Deadline); } } }
         }
     }
+
+    [Fact, Trait(TestCategory.Name, TestCategory.CrossProcess)]
+    public async Task ProbeWorkerThatExitsBeforeReadyReportsItsExitCode()
+    {
+        string path = TestWorkerLocator.Find("Zenith.MacroHost.ProbeWorker", "net8.0-windows10.0.19041.0");
+        var start = new ProcessStartInfo(path) { UseShellExecute = false, CreateNoWindow = true, WindowStyle = ProcessWindowStyle.Hidden,
+            RedirectStandardInput = true, RedirectStandardOutput = true, RedirectStandardError = true };
+        start.ArgumentList.Add("--pipe"); start.ArgumentList.Add("bad"); // The real worker rejects a non-fixture pipe with exit code 2 and prints nothing.
+        using var process = Process.Start(start)!;
+        try
+        {
+            var error = await Assert.ThrowsAsync<Xunit.Sdk.FailException>(() => ReadReadyLineAsync(process));
+            Assert.Contains("closed its output without printing READY NET8", error.Message, StringComparison.Ordinal);
+            Assert.Contains("exit code 2 (0x00000002), bad arguments", error.Message, StringComparison.Ordinal);
+            Assert.Contains("no standard error output", error.Message, StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (!process.HasExited) { process.Kill(); await process.WaitForExitAsync().WaitAsync(Deadline); }
+        }
+    }
+
+    // Reads the probe's READY line; on anything else the failure names what was read, the exit code and the start of stderr.
+    private static async Task ReadReadyLineAsync(Process process)
+    {
+        string problem;
+        try
+        {
+            string? line = await process.StandardOutput.ReadLineAsync().WaitAsync(Deadline);
+            if (line == "READY NET8") return;
+            problem = line is null ? "closed its output without printing READY NET8"
+                : "printed \"" + (line.Length > 200 ? line[..200] + "..." : line) + "\" instead of READY NET8";
+        }
+        catch (TimeoutException)
+        { problem = "printed nothing within " + Deadline.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " s"; }
+        Assert.Fail("The probe worker " + problem + ": " + await TestWorkerLocator.DescribeExitAsync(process, process.StandardError.ReadToEndAsync(), ProbeExitMeaning) + ".");
+    }
+
+    // The probe's own codes, from tools\Zenith.MacroHost.ProbeWorker\Program.cs.
+    private static string? ProbeExitMeaning(int code) => code switch
+    { 2 => "bad arguments", 3 => "unexpected input instead of EXIT", 4 => "timed out waiting for EXIT", _ => null };
 
     private sealed class Client : IZenithMacroCatalogClient, IAsyncDisposable
     {

@@ -49,7 +49,11 @@ public sealed record OwnedExperienceAcknowledgement(Guid OperationId, long Unive
 
 public enum OwnedExperienceBridgeState
 {
-    Published, Acknowledged, Pending, Expired, Busy, RateLimited, AuthorizationRequired, InvalidResponse, Unavailable
+    Published, Acknowledged, Pending, Expired, Busy, RateLimited, AuthorizationRequired, InvalidResponse, Unavailable,
+    /// <summary>Roblox's response time shows the PC clock more than two seconds ahead of or behind Roblox's.
+    /// The server may ignore the command or cut its 45 s short, so a receipt may never arrive. Syncing the
+    /// Windows clock fixes it. A later read still reports any receipt the server does write.</summary>
+    ClockSkew
 }
 
 public sealed record OwnedExperienceBridgeResult(OwnedExperienceBridgeState State,
