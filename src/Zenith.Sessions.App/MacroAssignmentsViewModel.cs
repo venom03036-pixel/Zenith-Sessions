@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
 using System.Linq;
-using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using Zenith.Sessions.Core;
@@ -106,10 +105,12 @@ public sealed class MacroAssignmentsViewModel : Observable, IAsyncDisposable
             if (choice is null) { _status = "No saved target is selected for that choice. Existing references were kept."; Publish(); return; }
             choice.Target.Validated();
             if (choice.Target.Kind != kind) throw new ArgumentException();
-            // Bound the display hint here; the domain also validates the authoritative resolved name before writing.
-            if (string.IsNullOrWhiteSpace(choice.Name) || choice.Name.Length > MacroAssignment.MaximumNameLength
-                || choice.Name.Any(c => char.IsControl(c) || c is '\u2028' or '\u2029')) throw new ArgumentException();
-            new UTF8Encoding(false, true).GetByteCount(choice.Name);
+            // The same rule the domain applies before writing, so an unstorable name is explained now instead of failing at Assign.
+            if (MacroAssignment.CheckDisplayName(choice.Name) is var problem and not MacroAssignmentNameProblem.None)
+            {
+                _status = $"That target's saved name {NameReason(problem)}, so it cannot be stored as an assignment hint. Rename it, then choose again. Existing references were kept.";
+                Publish(); return;
+            }
             _chosen = choice; _status = "Target reference captured. Select a fresh saved host macro; assigning never starts playback.";
             Publish();
         }
@@ -153,6 +154,7 @@ public sealed class MacroAssignmentsViewModel : Observable, IAsyncDisposable
             string? currentName = await _resolve(target.Target, work.Stop.Token); Ensure(work);
             if (currentName is null)
             { _status = "The captured target no longer exists. Existing assignment references were kept for review."; Publish(); return; }
+            if (UnstorableNameStatus(currentName, macro.Macro.Name) is { } refusal) { _status = refusal; Publish(); return; }
             var value = new MacroAssignment(target.Target, currentName, macro.Macro.Id, macro.Macro.Name).Validated();
             if (!await _host.RevalidateSelectionAsync(macro, work.Stop.Token))
             { Ensure(work); _status = "The captured saved macro could not be revalidated. Refresh host macros and choose again."; Publish(); return; }
@@ -238,6 +240,21 @@ public sealed class MacroAssignmentsViewModel : Observable, IAsyncDisposable
             : result.Stamp == MacroAssignmentStamp.Empty || expected != MacroAssignmentStamp.Empty
                 && (result.Stamp.Generation != expected.Generation || result.Stamp.Revision <= expected.Revision)) throw new InvalidDataException();
         return result;
+    }
+    // Names are user data that may hold credential-like text, so these explanations never repeat them.
+    private static string NameReason(MacroAssignmentNameProblem problem) => problem switch
+    {
+        MacroAssignmentNameProblem.LinkOrCredential => "looks like a link, access code or credential",
+        MacroAssignmentNameProblem.InvalidUnicode => "contains invalid Unicode text",
+        _ => $"is empty, longer than {MacroAssignment.MaximumNameLength} characters or contains line breaks or control characters"
+    };
+    private static string? UnstorableNameStatus(string targetName, string macroName)
+    {
+        if (MacroAssignment.CheckDisplayName(targetName) is var target and not MacroAssignmentNameProblem.None)
+            return $"The captured target's current name {NameReason(target)}, so it cannot be stored as an assignment hint. Rename the target, then assign again. Nothing was saved and existing references were kept.";
+        if (MacroAssignment.CheckDisplayName(macroName) is var macro and not MacroAssignmentNameProblem.None)
+            return $"The selected saved macro's name {NameReason(macro)}, so it cannot be stored as an assignment hint. Rename it in Personal Zenith, refresh host macros and select it again. Nothing was saved and existing references were kept.";
+        return null;
     }
     private static string FailureMessage(Exception error, bool issued) => error switch
     {

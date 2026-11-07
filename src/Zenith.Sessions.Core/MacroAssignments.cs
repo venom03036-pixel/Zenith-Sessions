@@ -12,6 +12,9 @@ public sealed record MacroAssignmentTarget(MacroAssignmentTargetKind Kind, Guid 
     }
 }
 
+/// <summary>Why a display hint cannot be stored. None means it can.</summary>
+public enum MacroAssignmentNameProblem { None = 0, Shape = 1, InvalidUnicode = 2, LinkOrCredential = 3 }
+
 /// <summary>Durable metadata only. Names are last-observed hints; references never authorize execution.</summary>
 public sealed record MacroAssignment(MacroAssignmentTarget Target, string TargetName, Guid MacroId, string MacroName)
 {
@@ -21,16 +24,27 @@ public sealed record MacroAssignment(MacroAssignmentTarget Target, string Target
         if (Target is null || MacroId == Guid.Empty) throw new ArgumentException("A saved target and macro identity are required.");
         Target.Validated(); ValidateName(TargetName); ValidateName(MacroName); return this;
     }
-    private static void ValidateName(string? name)
+    /// <summary>The single display-hint rule. Callers explain a refusal before writing; the result never contains the name.</summary>
+    public static MacroAssignmentNameProblem CheckDisplayName(string? name)
     {
         if (string.IsNullOrWhiteSpace(name) || name.Length > MaximumNameLength
             || name.Any(character => char.IsControl(character) || character is '\u2028' or '\u2029'))
-            throw new ArgumentException("Use display names of 1 to 200 characters without controls or line breaks.");
+            return MacroAssignmentNameProblem.Shape;
         try { new UTF8Encoding(false, true).GetByteCount(name); }
-        catch (EncoderFallbackException) { throw new ArgumentException("The assignment display name contains invalid Unicode."); }
+        catch (EncoderFallbackException) { return MacroAssignmentNameProblem.InvalidUnicode; }
         if (name.Contains("://", StringComparison.Ordinal) || name.Contains("www.", StringComparison.OrdinalIgnoreCase)
             || SensitiveMarkers.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("Use display names without links, access codes or credentials.");
+            return MacroAssignmentNameProblem.LinkOrCredential;
+        return MacroAssignmentNameProblem.None;
+    }
+    private static void ValidateName(string? name)
+    {
+        switch (CheckDisplayName(name))
+        {
+            case MacroAssignmentNameProblem.Shape: throw new ArgumentException("Use display names of 1 to 200 characters without controls or line breaks.");
+            case MacroAssignmentNameProblem.InvalidUnicode: throw new ArgumentException("The assignment display name contains invalid Unicode.");
+            case MacroAssignmentNameProblem.LinkOrCredential: throw new ArgumentException("Use display names without links, access codes or credentials.");
+        }
     }
     private static readonly string[] SensitiveMarkers = ["roblox:", "roblox-player:", ".ROBLOSECURITY", "Bearer ", "cookie=",
         "privateServerLinkCode=", "reservedServerAccessCode=", "accessCode=", "linkCode=", "refresh_token", "access_token", "client_secret", "authorization="];
