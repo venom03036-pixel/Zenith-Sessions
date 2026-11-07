@@ -77,14 +77,14 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
                     var encoded=await directory.FetchGameThumbnailAsync(thumbnail,run.Token);
                     if(!Current(run)) return;
                     if(PublicDirectoryDeferral.IsLocal(encoded)) return; // As above: this card and the rest stay askable.
-                    row.ArtAttempted=true;
-                    if(encoded.State!=PublicDirectoryState.Success || encoded.Value is not { } bytes) continue;
+                    if(encoded.State!=PublicDirectoryState.Success || encoded.Value is not { } bytes) {row.ArtAttempted=true;continue;}
+                    // Marked attempted only with a kept outcome: a run fenced while decoding never showed this card, so it stays askable.
                     ImageSource? pixels;
                     try {pixels=await Task.Run(()=>PublicAccountPresentation.DecodeCardPng(bytes.Bytes,bytes.MediaType,run.Token),CancellationToken.None);}
                     catch(OperationCanceledException) {return;}
-                    catch(Exception error) {if(!Current(run)) return;Report(error);continue;}
+                    catch(Exception error) {if(!Current(run)) return;row.ArtAttempted=true;Report(error);continue;}
                     if(!Current(run)) return;
-                    row.Art=pixels;
+                    row.ArtAttempted=true;row.Art=pixels;
                 }
             }
         }

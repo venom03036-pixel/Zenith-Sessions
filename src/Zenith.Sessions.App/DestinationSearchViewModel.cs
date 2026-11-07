@@ -113,6 +113,19 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
         browser.PropertyChanged+=SourceChanged;
     }
     public void RefreshAvailability()=>NotifyAvailability();
+    /// <summary>
+    /// The window was hidden (minimized or closed to the tray) while Join a game stays open. A running search or use stops
+    /// and clears exactly as before. A finished page keeps its cards, order, Show more progress and the pictures already
+    /// shown; picture downloads stop, and the cards still without one stay askable. Nothing is requested while hidden.
+    /// </summary>
+    public void Suspend()
+    {
+        if(_disposed)return;
+        if(_busy || _work is not null) {CancelWork(clearInput:false);return;}
+        _art.Cancel();NotifyAvailability();
+    }
+    /// <summary>The window is shown again: controls come back and only the shown cards still without a picture are asked for. No search is sent.</summary>
+    public void Resume() {if(_disposed)return;NotifyAvailability();LoadVisibleArt();}
     public Task SearchOrUseAsync(CancellationToken ct=default)
     {
         ct.ThrowIfCancellationRequested();if(!Admit()) return Task.CompletedTask;
@@ -310,8 +323,10 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
         Raise(nameof(CanShowMore));
     }
     // The loader owns and tracks the task it starts (see ArtOperation); a late result for a replaced page is fenced, never shown.
+    // Nothing is asked while search is unavailable (window hidden, page left, Lock); Resume asks for what is still missing.
     private void LoadVisibleArt()
     {
+        if(!Allowed)return;
         var pending=VisibleResults.Where(row=>row.Art is null && !row.ArtAttempted).ToArray();
         if(pending.Length!=0) _=_art.LoadAsync(pending,Interlocked.Read(ref _generation));
     }

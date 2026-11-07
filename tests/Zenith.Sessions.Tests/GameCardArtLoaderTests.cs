@@ -122,6 +122,21 @@ public sealed class GameCardArtLoaderTests
         Assert.Single(f.Directory.ArtBatches);Assert.Equal(0,f.Directory.ArtFetches);Assert.All(f.Search.VisibleResults,row=>Assert.False(row.HasArt));
     });
 
+    // A run fenced after a download, while its picture decodes off the UI thread, never showed that card. The card must
+    // stay askable, or the next trigger (Show more, sort, showing the window again) leaves its placeholder for good.
+    [Fact]
+    public Task APictureFencedWhileDecodingStaysAskable()=>SearchTest.OnUi(async()=>
+    {
+        var directory=new SearchDirectory(new SearchClock());
+        await using var loader=new GameCardArtLoader(directory,_=>{});
+        var row=new PublicGameSearchRow(new PublicRobloxGameSearchResult(1001,2001,"Game 1"));
+        Task first=loader.LoadAsync([row],1); // The synthetic batch and download answer at once, so this run is now decoding.
+        Assert.Equal(1,directory.ArtFetches);Assert.False(first.IsCompleted);
+        loader.Cancel();await first;Assert.False(row.HasArt);
+        await loader.LoadAsync([row],2);
+        Assert.Equal(2,directory.ArtFetches);Assert.True(row.HasArt);
+    });
+
     // The running page never reads Active (only tests do), so a finished run must let go of its rows and their
     // decoded pictures on its own; otherwise every search, sort and "Show more" keeps its cards alive until disposal.
     [Fact]

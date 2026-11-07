@@ -71,6 +71,9 @@ These are observed first-party behaviour, not promised stable schemas. Fixtures 
   fetched **one at a time** and decoded with the existing `PublicAccountPresentation.DecodeGalleryPng` limits. A new
   search, page, sort change, Lock, Panic, leaving Join a game or disposal cancels it, bumps the generation and
   clears decoded images. Results from an older generation are discarded. No retries, timers or polling.
+  Hiding the window (minimize, close to the tray) while Join a game stays open is not a clear: a running search or use
+  still stops, but a finished page keeps its cards, sort, Show more and pictures; picture downloads stop while hidden
+  and, when the window is shown again, only the shown cards still without a picture are asked for. No search is sent.
 - **Clicking a card uses it**: it sets the requested destination to that result's root place and loads the docked
   game panel, exactly as Use selected experience does today. It never launches or queues. The Use selected experience
   button is removed; keyboard Enter on a focused card does the same.

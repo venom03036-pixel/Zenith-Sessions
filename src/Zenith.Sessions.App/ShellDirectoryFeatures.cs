@@ -64,7 +64,7 @@ public sealed partial class ShellViewModel
     public RobloxFavoriteGamesViewModel RobloxFavorites {get;private set;}=null!;
     public RecentlyPlayedViewModel RecentlyPlayed {get;private set;}=null!;
     public ShareLinkViewModel ShareLink {get;private set;}=null!;
-    private bool _destinationSearchContextAllowed;
+    private bool _destinationSearchContextAllowed,_destinationSearchSuspended;
     public AsyncCommand RefreshPublicAccount {get;private set;}=null!;
     public AsyncCommand QueueTargetedAccounts {get;private set;}=null!;
     public AsyncCommand AccountPower {get;private set;}=null!;
@@ -201,8 +201,14 @@ public sealed partial class ShellViewModel
     private void RefreshPublicImageActivity()
     {
         GameDetails?.Gallery.SetVisible(_clientPreviewWindowVisible && IsJoinGame && !IsLocked && !_shuttingDown);
-        bool searchAllowed=CanUseDestinationSearch();
-        if(_destinationSearchContextAllowed && !searchAllowed) DestinationSearch?.CancelWork(clearInput:false);
+        // Leaving Join a game, Lock and shutdown clear the search page. Hiding the window (minimize, close to the tray) while
+        // the page stays open only suspends it: running work still stops, a finished page and its pictures stay.
+        bool pageOpen=CanUseDirectories() && IsJoinGame,searchAllowed=CanUseDestinationSearch();
+        bool owned=_destinationSearchContextAllowed || _destinationSearchSuspended;
+        if(owned && !pageOpen) DestinationSearch?.CancelWork(clearInput:false);
+        else if(_destinationSearchContextAllowed && !searchAllowed) DestinationSearch?.Suspend();
+        else if(_destinationSearchSuspended && searchAllowed) DestinationSearch?.Resume();
+        _destinationSearchSuspended=owned && pageOpen && !searchAllowed;
         _destinationSearchContextAllowed=searchAllowed;DestinationSearch?.RefreshAvailability();
         if(_publicImageLoader is null) return;
         bool visible=IsAccounts && _clientPreviewWindowVisible && !IsLocked && !_shuttingDown;
