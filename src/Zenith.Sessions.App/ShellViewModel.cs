@@ -767,8 +767,37 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
     }
     public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
-    private void LockControls(string reason) { StopOperations(reason,ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
-    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); ClearError(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
+    private void LockControls(string reason)=>StopOperations(reason,ManagerEventKind.ControlsLocked);
+    /// <summary>
+    /// Panic and Lock are absolute (Rule 11). Every step runs on its own, in the same order as before, so one that throws (a
+    /// cancellation callback or a property-changed handler, for example) never skips the launch-queue stop, the pause, the lock
+    /// or the notice after it. A failed step is kept by type only (Rule 10) and shown as an error once every step has run.
+    /// </summary>
+    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic)
+    {
+        bool locking=kind==ManagerEventKind.ControlsLocked;
+        List<Type>? failed=null;
+        void Step(Action step) { try { step(); } catch(Exception ex) { (failed??=[]).Add(ex.GetType()); } }
+        Step(HoldQueuePresentation);Step(()=>MacroAssignments.CancelWork());Step(()=>MacroHostCatalog.CancelWork());
+        Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;
+        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelOverviewFocus);
+        Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
+        Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
+        Step(_launchQueue.SignalPanic);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopGroupChanges);
+        Step(CancelPerformanceTransfers);Step(CancelInstallationWork);Step(()=>CancelDirectoryFeatures(locking));
+        _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
+        Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
+        // Every listener hears Panic, even after an earlier one throws.
+        if(PanicRequested is {} listeners) foreach(Action listener in listeners.GetInvocationList()) Step(listener);
+        Step(ClearError);Step(()=>Notice=reason);Step(()=>AddEvent(reason));_diagnostics.Record(kind);
+        if(locking) { Step(()=>ClearSettingsSearch.Execute(null));Step(()=>IsLocked=true); }
+        if(failed is null) return;
+        // Every step has run. The stop notice stays; the error says the stop may be incomplete and how to recover.
+        string stop=locking?"Lock":"Panic";
+        foreach(var type in failed) _diagnostics.Record(ManagerEventKind.OperationFailed,type);
+        foreach(var type in failed) AddEvent($"{stop} step failed ({type.Name}).");
+        ShowError($"{stop} ran every stop step, but {failed.Count} failed. Only the error types were saved to Diagnostics. Restart Zenith Sessions before starting automation again.");
+    }
     private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
     public void Fail(Exception exception)=>Fail(exception,
         exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."

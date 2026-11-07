@@ -50,6 +50,38 @@ public sealed class UnhandledExceptionGuardTests : IDisposable
     });
 
     [Fact]
+    public Task RepeatedFaultsInsideTheWindowEndTheAppWithTheirTypeFlushedButSpreadOutFaultsAreContained()=>OnUi(async ()=>
+    {
+        int? exitCode=null;var clock=new ManualClock();
+        var shell=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
+        try
+        {
+            await shell.InitializeAsync();
+            using var guard=UnhandledExceptionGuard.Attach(Dispatcher.CurrentDispatcher,Data,()=>shell,code=>exitCode=code,clock);
+            for(int i=0;i<UnhandledExceptionGuard.ContainedFaultLimit;i++) await ThrowOnDispatcherAsync();
+            Assert.Null(exitCode);
+            // Once the window has passed, the same number again is still contained.
+            clock.Advance(UnhandledExceptionGuard.ContainedFaultWindow);
+            for(int i=0;i<UnhandledExceptionGuard.ContainedFaultLimit;i++) await ThrowOnDispatcherAsync();
+            Assert.True(exitCode is null,"Faults spread over more than the window ended the app.");
+            // One more inside the window is a fault that keeps recurring (for example on every layout or render pass):
+            // containing it forever would burn CPU and could starve input such as the Panic shortcut, so the app ends.
+            await ThrowOnDispatcherAsync();
+            Assert.True(exitCode==2,"A fault that kept recurring was contained forever.");
+            // While that exit is underway, a further fault is still recorded but no longer reported as caught and kept running.
+            int caught=shell.Events.Count(e=>e.Contains("Unexpected error caught",StringComparison.Ordinal));
+            await ThrowOnDispatcherAsync();
+            Assert.Equal(caught,shell.Events.Count(e=>e.Contains("Unexpected error caught",StringComparison.Ordinal)));
+            Assert.Equal(2,exitCode);
+        }
+        finally { await shell.DisposeAsync(); }
+        // The shell's log was flushed with the fault that ended the app before the exit began.
+        string[] lines=File.ReadAllLines(LogPath(Data));
+        Assert.True(lines.Count(l=>l.Contains("InvalidOperationException",StringComparison.Ordinal))>=2*UnhandledExceptionGuard.ContainedFaultLimit+1);
+        Assert.DoesNotContain("SECRET123",string.Join('\n',lines));
+    });
+
+    [Fact]
     public Task FaultAfterTheShellClosedItsLogIsAppendedAfterTheShutdownRecordWithoutForcingExit()=>OnUi(async ()=>
     {
         int? exitCode=null;
@@ -102,6 +134,13 @@ public sealed class UnhandledExceptionGuardTests : IDisposable
         string path=LogPath(root);
         Assert.True(File.Exists(path),"No diagnostics record was written for the escaped fault.");
         return File.ReadAllText(path);
+    }
+    private sealed class ManualClock : TimeProvider
+    {
+        private long _ticks=1;
+        public override long TimestampFrequency=>TimeSpan.TicksPerSecond;
+        public override long GetTimestamp()=>_ticks;
+        public void Advance(TimeSpan by)=>_ticks+=by.Ticks;
     }
     private sealed class SyntheticMonitor : IDesktopMonitor
     {
