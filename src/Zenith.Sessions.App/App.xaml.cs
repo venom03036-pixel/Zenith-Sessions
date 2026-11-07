@@ -12,6 +12,8 @@ public partial class App : Application
     public StartupOptions Options { get; init; }=new(StartupOptions.DefaultRoot,false);
     // Well inside the roughly 5 s Windows gives an app to answer a session end before it reports the app as hung.
     private static readonly TimeSpan SessionEndFlushBudget=TimeSpan.FromSeconds(2);
+    /// <summary>Keeps by type only (Rule 10) a fault caught during exit that has nowhere else to go, and flushes the log.</summary>
+    internal void RecordFault(Type errorType)=>_guard?.Record(errorType);
     /// <summary>
     /// Windows sign-out, restart or shutdown. WPF calls Shutdown right after this and closes every window without the
     /// tray Exit path, so stop the workspace and flush its Shutdown record here. The session end is never cancelled.

@@ -83,7 +83,10 @@ public partial class MainWindow : Window
         if (_exitStarted) return; _exitStarted = true;
         try
         {
-            await _vm.DisposeAsync();
+            // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
+            // and still give the priority warning and stop the instance coordinator.
+            try { await _vm.DisposeAsync(); }
+            catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             if (_vm.PendingPriorityRestoreCount > 0)
                 MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
                     + " original client priorities. Review those clients in Task Manager. The settings last until you change them or the clients exit.",

@@ -784,35 +784,51 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         BeginShutdown();
         await DisposeClientPriorityFeaturesAsync();
         await _initializeTask;
-        await DisposeMacroAssignmentsAsync();
-        await MacroHostCatalog.DisposeAsync();
+        // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
+        // the Shutdown record, or exit's warning about client priorities Windows could not restore.
+        await StopOwnerAsync(DisposeMacroAssignmentsAsync);
+        await StopOwnerAsync(()=>MacroHostCatalog.DisposeAsync());
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex);}
         await AddRobloxAccount.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
-        await _executableTrust.DisposeAsync();
+        await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
-        await DisposeRecipientBundlesAsync();
-        await StopDirectoryFeaturesAsync();
-        await RecentClients.DisposeAsync();
+        await StopOwnerAsync(DisposeRecipientBundlesAsync);
+        await StopOwnerAsync(StopDirectoryFeaturesAsync);
+        await StopOwnerAsync(()=>RecentClients.DisposeAsync());
         try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex);}
         await DisposeClientWindowFeaturesAsync();
         await _favoritesReloadTask;
-        await DestinationFavorites.DisposeAsync();
+        await StopOwnerAsync(()=>DestinationFavorites.DisposeAsync());
         await Task.WhenAll(DestinationFavorites.Refresh.Execution,DestinationFavorites.SaveCurrent.Execution,DestinationFavorites.Rename.Execution,DestinationFavorites.Delete.Execution);
-        (_favoriteStore as IDisposable)?.Dispose();
+        StopOwner(_favoriteStore as IDisposable);
         if (_logCorrelator is not null)
             try { await _logCorrelator.DisposeAsync(); }
             catch (Exception ex) { Fail(ex); } // Optional diagnostics must not prevent vault/queue/native owner cleanup.
-        await _launchQueue.DisposeAsync();_launchQueue.Changed-=QueueChanged;_launchQueue.Faulted-=QueueFaulted;_queueStore.Dispose();
-        await DisposeNativeTrialFeaturesAsync();
-        _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); _credentialCleanup.Dispose(); await _linkService.DisposeAsync();
-        if(_signIn is IAsyncDisposable signInOwner) await signInOwner.DisposeAsync();
-        _identityProjection.Dispose(); _vault.Dispose(); (_sessionClient as IDisposable)?.Dispose();
-        (_accounts as IDisposable)?.Dispose(); (_monitor as IDisposable)?.Dispose(); _settingsStore.Dispose();_sampleSerial.Dispose();
+        // A launch queue that cannot confirm its native provider stopped still lets the native trial, sign-in and vault owners stop.
+        await StopOwnerAsync(()=>_launchQueue.DisposeAsync());_launchQueue.Changed-=QueueChanged;_launchQueue.Faulted-=QueueFaulted;StopOwner(_queueStore);
+        await StopOwnerAsync(DisposeNativeTrialFeaturesAsync);
+        _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); StopOwner(_credentialCleanup); await StopOwnerAsync(()=>_linkService.DisposeAsync());
+        if(_signIn is IAsyncDisposable signInOwner) await StopOwnerAsync(()=>signInOwner.DisposeAsync());
+        StopOwner(_identityProjection); StopOwner(_vault); StopOwner(_sessionClient as IDisposable);
+        StopOwner(_accounts as IDisposable); StopOwner(_monitor as IDisposable); StopOwner(_settingsStore);_sampleSerial.Dispose();
         _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); _lifetime.Dispose();
+    }
+    // Shutdown only. Cancellation is expected while stopping (Error Handling Standards); any other fault keeps its type only (Rule 10, via Fail).
+    private async Task StopOwnerAsync(Func<ValueTask> stop)
+    {
+        try { await stop(); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Fail(ex); }
+    }
+    private Task StopOwnerAsync(Func<Task> stop)=>StopOwnerAsync(()=>new ValueTask(stop()));
+    private void StopOwner(IDisposable? owner)
+    {
+        try { owner?.Dispose(); }
+        catch (Exception ex) { Fail(ex); }
     }
     private async Task AuthorizeSelectedAsync(bool refresh)
     {
