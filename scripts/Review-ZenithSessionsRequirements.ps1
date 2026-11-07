@@ -1,8 +1,8 @@
 param(
     [Parameter(Mandatory)][ValidateSet('Before','After')][string]$Phase,
     [Parameter(Mandatory)][string[]]$RequirementIds,
-    # Cycle label such as 0.57 or 0.45-initial. Each phase and label gets its own record, so a later cycle never overwrites an earlier one.
-    [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+(-[a-z]+)?$')][string]$Checkpoint,
+    # Cycle label such as 0.57, 0.45-initial or 0.57-game-links. Each phase and label gets its own record, and an existing record is never replaced: rerun under a new label such as 0.57-rerun2.
+    [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+(-[a-z0-9]+)*$')][string]$Checkpoint,
     # Test result files (for example .trx) this cycle wrote, relative to the source root. Required for After.
     [string[]]$TestArtifact=@()
 )
@@ -44,6 +44,9 @@ $directory=Join-Path $sourceRoot 'artifacts\sessions-requirements-review'
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
 $fileName=$Phase.ToLowerInvariant()+'-'+$Checkpoint+'.json'
 $path=Join-Path $directory $fileName
+if(Test-Path -LiteralPath $path) {
+    throw "$Phase $Checkpoint checkpoint not written: artifacts/sessions-requirements-review/$fileName already exists and is kept unchanged. Pass a new -Checkpoint label, for example $($Checkpoint)-rerun, to record another review."
+}
 $temporary=$path+'.tmp'
 $record=[ordered]@{
     FormatVersion=2; Checkpoint=$Checkpoint; ReviewedUtc=[DateTimeOffset]::UtcNow.ToString('O'); Phase=$Phase
@@ -52,6 +55,6 @@ $record=[ordered]@{
     FullProductAcceptance=$false
     EvidenceRule='This records source/scope review only. It does not execute tests, validate a feature, prove native arrival or close a requirement. TestArtifacts names the result files this cycle cites, with their write time and hash; it does not read their outcome.'
 }
-try { [IO.File]::WriteAllText($temporary,(($record | ConvertTo-Json -Depth 7)+[Environment]::NewLine),(New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath $temporary -Destination $path -Force }
+try { [IO.File]::WriteAllText($temporary,(($record | ConvertTo-Json -Depth 7)+[Environment]::NewLine),(New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath $temporary -Destination $path }
 finally { if(Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
 Write-Output "$Phase $Checkpoint review: all three prompt fingerprints match; $($selected.Count) scoped requirements and $($testArtifacts.Count) test artifacts recorded in artifacts/sessions-requirements-review/$fileName. Feature and release acceptance are unchanged."

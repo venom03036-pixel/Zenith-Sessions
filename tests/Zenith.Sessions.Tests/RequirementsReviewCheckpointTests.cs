@@ -68,11 +68,48 @@ public sealed class RequirementsReviewCheckpointTests : IDisposable
         Assert.Empty(json.RootElement.GetProperty("TestArtifacts").EnumerateArray());
     }
 
+    [Fact]
+    public async Task RepeatedCheckpointIsRefusedAndTheFirstRecordSurvives()
+    {
+        string script=await CreateFixture();
+        string cycle=Path.Combine(Repository,"artifacts","cycle","x.trx");
+        Directory.CreateDirectory(Path.GetDirectoryName(cycle)!);await File.WriteAllTextAsync(cycle,"<TestRun cycle=\"0.99\"/>");
+        string[] arguments={"-Phase","After","-RequirementIds","CAP-12-05","-Checkpoint","0.99","-TestArtifact","artifacts/cycle/x.trx"};
+        var first=await Run(script,arguments);
+        Assert.True(first.ExitCode==0,$"Exit {first.ExitCode}. Output: {first.Output} Errors: {first.Errors}");
+        string record=Path.Combine(ReviewDirectory,"after-0.99.json");
+        byte[] kept=await File.ReadAllBytesAsync(record);
+        DateTime keptWrite=File.GetLastWriteTimeUtc(record);
+
+        var second=await Run(script,arguments);
+
+        Assert.True(second.ExitCode!=0,$"A second After 0.99 checkpoint was accepted and replaced the first record. Output: {second.Output}");
+        // Windows PowerShell wraps redirected error text at the console width, sometimes mid-word.
+        Assert.Contains("after-0.99.json already exists",second.Errors.Replace("\r","").Replace("\n",""),StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(kept,await File.ReadAllBytesAsync(record));
+        Assert.Equal(keptWrite,File.GetLastWriteTimeUtc(record));
+        Assert.Equal(new[]{"after-0.99.json"},Directory.GetFiles(ReviewDirectory).Select(Path.GetFileName).ToArray());
+    }
+
+    [Theory]
+    [InlineData("0.57-game-links")]
+    [InlineData("0.57-retry2")]
+    public async Task CheckpointLabelMayCarryAHyphenatedOrNumberedSuffix(string label)
+    {
+        string script=await CreateFixture();
+
+        var run=await Run(script,"-Phase","Before","-RequirementIds","CAP-12-05","-Checkpoint",label);
+
+        Assert.True(run.ExitCode==0,$"Label {label} was refused. Exit {run.ExitCode}. Output: {run.Output} Errors: {run.Errors}");
+        Assert.True(File.Exists(Path.Combine(ReviewDirectory,"before-"+label+".json")),$"The Before checkpoint was not written to before-{label}.json.");
+    }
+
     [Theory]
     [InlineData("missing","test artifact")]
     [InlineData("absent-file","artifacts/cycle/absent.trx")]
     [InlineData("outside-root","outside the source tree")]
     [InlineData("bad-label","Cannot validate argument on parameter 'Checkpoint'")]
+    [InlineData("empty-suffix","Cannot validate argument on parameter 'Checkpoint'")]
     public async Task CheckpointIsRefusedWithoutAWrittenRecord(string kind,string expected)
     {
         string script=await CreateFixture();
@@ -83,6 +120,7 @@ public sealed class RequirementsReviewCheckpointTests : IDisposable
             "absent-file"=>new[]{"-Phase","After","-RequirementIds","CAP-12-05","-Checkpoint","0.99","-TestArtifact","artifacts/cycle/absent.trx"},
             "outside-root"=>new[]{"-Phase","After","-RequirementIds","CAP-12-05","-Checkpoint","0.99","-TestArtifact",outside},
             "bad-label"=>new[]{"-Phase","Before","-RequirementIds","CAP-12-05","-Checkpoint","..\\0.99"},
+            "empty-suffix"=>new[]{"-Phase","Before","-RequirementIds","CAP-12-05","-Checkpoint","0.99--x"},
             _=>throw new ArgumentOutOfRangeException(nameof(kind))
         };
 
