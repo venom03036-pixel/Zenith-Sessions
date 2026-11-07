@@ -792,9 +792,19 @@ internal static class DistributionSelfCheck
         string temporary=report+".tmp";
         try { await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(result,new JsonSerializerOptions { WriteIndented=true })); File.Move(temporary,report,true); }
         finally { if(File.Exists(temporary)) File.Delete(temporary); }
-        Console.WriteLine($"Distribution self-check: {cases.Count(c=>c.Passed)}/{cases.Count}; release readiness remains false.");
+        Console.WriteLine(Summary(cases.Count(c=>c.Passed),PlannedStageCount,cases.FirstOrDefault(c=>!c.Passed)?.Name));
         return cases.All(c=>c.Passed)?0:1;
     }
+
+    // Every stage RunAsync codes. Keep in step with $expectedCases in scripts/Check-ZenithSessionsManager.ps1.
+    internal const int PlannedStageCount=42;
+    // The run stops at the first failing stage, so the console line counts against every planned stage and names the
+    // failed one: "3/42 (failed at ...)" instead of "3/4". Stage names are static literals (no paths or secrets).
+    // The success line is unchanged so stored "42/42" evidence still matches.
+    internal static string Summary(int passed,int planned,string? failedStage)
+        =>failedStage is null
+            ?$"Distribution self-check: {passed}/{planned}; release readiness remains false."
+            :$"Distribution self-check: {passed}/{planned} (failed at {failedStage}); release readiness remains false.";
 
     // Builds are deterministic, so a Core- or Windows-only change leaves Zenith.Sessions.App.dll byte-identical and an
     // App-only hash cannot tell an old report from the fixed build. The report identifies every first-party assembly the
