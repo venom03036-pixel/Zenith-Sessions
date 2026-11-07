@@ -648,6 +648,23 @@
                 <TextBlock Text="Zenith checks each result and attempts to restore its changes on Exit. A crash or refused restore can leave a setting active until you change it or that client exits. CPU priority does not set a CPU percentage, FPS or memory limit." Style="{StaticResource Muted}" FontSize="12" Margin="0,8,0,0" />
               </StackPanel>
             </Expander>
+            <Expander x:Name="ClientMemoryTrimTools" Header="Client memory trim" Margin="0,8,0,0" AutomationProperties.Name="Client memory trim">
+              <StackPanel Margin="0,8,0,0">
+                <TextBlock Text="Apply to checked clients, or the selected row when none are checked. Windows moves each client's resident pages out of its working set; pages the client uses again are read back in. Zenith trims one client per second and reads its private working set before and about 10 s after." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,10" />
+                <WrapPanel>
+                  <Button x:Name="TrimClientsNowButton" Content="Trim now" Command="{Binding TrimClientsNow}" IsEnabled="{Binding CanTrimClients}" MinHeight="36" Margin="0,0,8,8" />
+                  <Button Content="Cancel trim" Command="{Binding CancelClientTrim}" IsEnabled="{Binding IsTrimmingClients}" MinHeight="36" Margin="0,0,8,8" />
+                </WrapPanel>
+                <TextBlock Text="{Binding ClientTrimStatus}" TextWrapping="Wrap" Margin="0,0,0,6" />
+                <ListView ItemsSource="{Binding ClientTrimResults}" MaxHeight="160" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Client memory trim results">
+                  <ListView.View><GridView>
+                    <GridViewColumn Header="Process" Width="100" DisplayMemberBinding="{Binding Session.ProcessId, StringFormat='PID {0}'}" />
+                    <GridViewColumn Header="Result" Width="650" DisplayMemberBinding="{Binding Explanation}" />
+                  </GridView></ListView.View>
+                </ListView>
+                <TextBlock Text="A trim does not free committed memory and is not a memory limit. Zenith has not measured any speed, stability or capacity benefit; a smaller working set number alone is not one." Style="{StaticResource Muted}" FontSize="12" Margin="0,8,0,0" />
+              </StackPanel>
+            </Expander>
             <Expander Header="Layout preferences &amp; results" Margin="0,8,0,0">
               <StackPanel Margin="0,8,0,0">
                 <WrapPanel><StackPanel Margin="0,0,12,8"><TextBlock Text="Columns · blank is auto" Style="{StaticResource Muted}" FontSize="12" /><TextBox Text="{Binding TileColumns, UpdateSourceTrigger=PropertyChanged}" Width="150" MaxLength="4" HorizontalAlignment="Left" AutomationProperties.Name="Tile columns" /></StackPanel><StackPanel Margin="0,0,12,8"><TextBlock Text="Gap" Style="{StaticResource Muted}" FontSize="12" /><TextBox Text="{Binding TileGap, UpdateSourceTrigger=PropertyChanged}" Width="70" MaxLength="4" AutomationProperties.Name="Tile gap in logical pixels" /></StackPanel><StackPanel Margin="0,0,12,8"><TextBlock Text="Minimum width" Style="{StaticResource Muted}" FontSize="12" /><TextBox Text="{Binding TileMinimumWidth, UpdateSourceTrigger=PropertyChanged}" Width="120" MaxLength="5" AutomationProperties.Name="Minimum client width in logical pixels" /></StackPanel><StackPanel Margin="0,0,12,8"><TextBlock Text="Minimum height" Style="{StaticResource Muted}" FontSize="12" /><TextBox Text="{Binding TileMinimumHeight, UpdateSourceTrigger=PropertyChanged}" Width="120" MaxLength="5" AutomationProperties.Name="Minimum client height in logical pixels" /></StackPanel><Button Content="Save all settings" Command="{Binding SaveSettings}" VerticalAlignment="Bottom" Margin="0,0,0,8" /></WrapPanel>

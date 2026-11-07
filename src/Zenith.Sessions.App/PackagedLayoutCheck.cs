@@ -84,6 +84,9 @@ internal static class PackagedLayoutCheck
             if (window.FindName("ClientPriorityTools") is not System.Windows.Controls.Expander priorityTools)
                 throw new InvalidOperationException("The packaged priority tools are missing.");
             priorityTools.IsExpanded = true;
+            if (window.FindName("ClientMemoryTrimTools") is not System.Windows.Controls.Expander trimTools)
+                throw new InvalidOperationException("The packaged memory trim tools are missing.");
+            trimTools.IsExpanded = true;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             // A never-shown Window can retain its disconnected layout. Measure the
             // production content itself to exercise the expanded panel offscreen.
@@ -97,6 +100,11 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged priority controls lost their command binding or sample-mode boundary.");
             if (priorityTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged priority controls could not be laid out.");
+            if (window.FindName("TrimClientsNowButton") is not System.Windows.Controls.Button trimButton
+                || trimButton.Command != vm.TrimClientsNow || trimButton.IsEnabled || vm.IsTrimmingClients || vm.CanTrimClients)
+                throw new InvalidOperationException("The packaged memory trim controls lost their command binding or sample-mode boundary.");
+            if (trimTools.ActualHeight <= 0)
+                throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
