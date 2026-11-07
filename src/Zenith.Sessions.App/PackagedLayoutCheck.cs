@@ -10,18 +10,25 @@ namespace Zenith.Sessions.App;
 // application resources and bindings, without showing a native window or input.
 internal static class PackagedLayoutCheck
 {
-    public static Task VerifyAsync(string root, CancellationToken ct)
+    public static Task VerifyAsync(string root, CancellationToken ct) =>
+        RunOnStaAsync(() => new App { Options = new(root, false, true), ShutdownMode = ShutdownMode.OnExplicitShutdown },
+            app => VerifyOnDispatcherAsync(app, root, ct), app => app.Shutdown(), ct);
+
+    // create runs on the new STA thread before its dispatcher pumps, body runs on that
+    // dispatcher, and cleanup runs on the same thread after the dispatcher stops.
+    internal static Task RunOnStaAsync<TState>(Func<TState> create, Func<TState, Task> body, Action<TState> cleanup, CancellationToken ct)
+        where TState : class
     {
         var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
             var dispatcher = Dispatcher.CurrentDispatcher;
-            App? app = null;
+            TState? state = null;
             Exception? failure = null;
             try
             {
-                app = new App { Options = new(root, false, true), ShutdownMode = ShutdownMode.OnExplicitShutdown };
-                var operation = dispatcher.InvokeAsync(() => VerifyOnDispatcherAsync(app, root, ct)).Task.Unwrap();
+                var created = state = create();
+                var operation = dispatcher.InvokeAsync(() => body(created)).Task.Unwrap();
                 var shutdown = operation.ContinueWith(_ => dispatcher.BeginInvokeShutdown(DispatcherPriority.Background),
                     CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
                 Dispatcher.Run();
@@ -32,14 +39,17 @@ internal static class PackagedLayoutCheck
             {
                 // Shutdown only after the tracked operation completes. Shutting down
                 // inside its callback can retire the dispatcher before its Task completes.
-                try { app?.Shutdown(); }
+                try { if (state is not null) cleanup(state); }
                 catch (Exception ex) { failure ??= ex; }
                 finally { if (!dispatcher.HasShutdownStarted) dispatcher.InvokeShutdown(); }
             }
             if (failure is null) done.TrySetResult(); else done.TrySetException(failure);
         }) { IsBackground = true, Name = "Zenith packaged layout check" };
         thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        return done.Task;
+        // The caller's deadline must end the stage even when body never completes (a token-less
+        // await, a modal loop). The dispatcher cannot be stopped early without the retirement race
+        // above, so a stalled one is abandoned: the thread is background and ends with the process.
+        return done.Task.WaitAsync(ct);
     }
 
     private static async Task VerifyOnDispatcherAsync(App app, string root, CancellationToken ct)
