@@ -373,7 +373,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(chosen is null)return;
             // A cheap fresh preflight is not a reservation. Preparing remains excluded from
             // NeedsReservation while a user-owned page may wait; reserve only at Launching.
-            if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed) { await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);return; }
+            // A row already waiting for headroom keeps its saved state: the Shell signals after every
+            // monitor sample, and re-saving an unchanged hold would fsync and republish once a second.
+            if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)
+            {
+                if(chosen.State!=LaunchState.Blocked || chosen.Problem!=LaunchProblem.InsufficientCapacity)
+                    await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);
+                return;
+            }
             if(_paused || generation!=Interlocked.Read(ref _generation)) return;
             _activeStop=CancellationTokenSource.CreateLinkedTokenSource(ct);
             _activeCompletion=new(TaskCreationOptions.RunContinuationsAsynchronously);
