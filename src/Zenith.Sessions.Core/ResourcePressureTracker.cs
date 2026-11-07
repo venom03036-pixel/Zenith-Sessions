@@ -75,7 +75,7 @@ public sealed class ResourcePressureTracker
         static ulong Sum(ulong a,ulong b)=>a>ulong.MaxValue-b?ulong.MaxValue:a+b;
         ulong physicalBase=Sum(memory.PhysicalHeadroom,memory.ReservedPhysical);
         ulong commitBase=Sum(memory.CommitHeadroom,memory.ReservedCommit);
-        // At most512MiB or5% of the space above the configured guard/reservations.
+        // At most 512 MiB or 5% of the space above the configured guard/reservations.
         // The margin never asks a small machine to recover beyond its usable capacity.
         ulong physicalMargin=Math.Min(CapacityPolicy.GiB/2,sample.TotalPhysical>physicalBase?(sample.TotalPhysical-physicalBase)/20:0);
         ulong commitMargin=Math.Min(CapacityPolicy.GiB/2,sample.CommitLimit>commitBase?(sample.CommitLimit-commitBase)/20:0);

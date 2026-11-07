@@ -130,18 +130,18 @@ Implemented: account metadata library, search/groups/dense rows, metadata
 import/export, process/resource observations, theme/settings persistence,
 independent empty groups with colors, ordering and reviewed rename/removal;
 profile metadata exports include memberships but exclude empty definitions/colors/order;
-account schema5 migration keeps a verified schema4 backup; close older previews first;
+account schema 5 migration keeps a verified schema 4 backup; close older previews first;
 per-account Windows-protected Roblox sessions, explicit user-ID validation,
 durable credential generations and credential cleanup;
 conditional sign-in/check/inspection updates and disconnect with cross-process file
 ownership, exact snapshots, generation-owned identity-journal cleanup and owner-only
-cleanup; close older previews before first use of version2 generation metadata;
+cleanup; close older previews before first use of version 2 generation metadata;
 local Settings search moves to existing controls without changing draft values;
 explicit physical content resizing and a fields-only tiny preset use the existing
 window-operation owner without focusing clients; actual placement remains unverified;
 named account bundles with metadata-only references, cross-page additions,
 explicit missing-profile review and frozen destination requests;
-queue format7 process-start receipts, pinned resource forecasts and explicit manual closure acknowledgment,
+queue format 7 process-start receipts, pinned resource forecasts and explicit manual closure acknowledgment,
 with reservation-free preparation and no automatic replay on restart;
 client-start evidence never counts as verified account identity or arrival;
 fresh exact process measurements credit only private consumption already counted
@@ -151,7 +151,7 @@ explicit experience names, creator, IDs and bounded icons;
 fresh requested-server capacity advice for the selected recipients;
 saved manager performance profiles, process cadence and launch-order policies;
 optional adapter-wide GPU engine/dedicated/shared-memory counters, with unknown
-and stale evidence kept separate; a sustained reliable85% engine load holds
+and stale evidence kept separate; a sustained reliable 85% engine load holds
 new admissions, while recovery requires thirty healthy seconds;
 explicit read-only Roblox publisher verification using cached Windows trust
 evidence; no executable is opened or given an account handoff by this check;
@@ -165,7 +165,7 @@ severity/text filters, pause/clear view and redacted copy/JSON export.
 Read-only bounded log correlation displays unverified reported player/place/server
 IDs, with separate timestamped last-known values. File-use evidence is not
 writer proof or verified account identity. No account actions use these fields.
-Recent-client presence history retains up to100 ended observations in its own
+Recent-client presence history retains up to 100 ended observations in its own
 bounded local database. Only fresh complete scans can mark a client no longer
 observed. A normal close request is recorded separately; cause remains unknown.
 Partial, stale or failed scans do not establish exit or crash. History restores
@@ -177,10 +177,10 @@ include file, network and device activity; they do not isolate disk, network,
 paging or hard faults. Read-only counters never verify an account or arrival.
 No history is persisted and no per-account polling loops/timers are created.
 Optional client previews are off by default. Select up to four observed windows
-in Sessions, choose Previews, then start. Outputs fit320x180 without upscaling
-and update at most1Hz; Windows internal capture can run faster and original-size
+in Sessions, choose Previews, then start. Outputs fit 320x180 without upscaling
+and update at most 1 Hz; Windows internal capture can run faster and original-size
 readback remains. Hidden/minimized/locked/pressured contexts stop and clear them.
-Images expire after3seconds and are never persisted or used to verify an account.
+Images expire after 3 seconds and are never persisted or used to verify an account.
 Real-client capture availability and CPU/GPU overhead remain unverified.
 The two unmodified Windows SDK projection DLLs have explicit provenance and
 the complete Microsoft SDK license. External release still requires satisfying
