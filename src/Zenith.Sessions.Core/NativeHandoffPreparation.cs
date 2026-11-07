@@ -32,6 +32,8 @@ public interface IRobloxNativeHandoffCapture : IAsyncDisposable
     // Receives only the selected account's owned credential. Must cancel external dispatch
     // synchronously and join actual browser cleanup before returning its current credential.
     Task<NativeBrowserCapture> CaptureAsync(NativeHandoffContext context, RobloxSessionCredential credential, CancellationToken ct);
+    // Same meaning as IRobloxHandoffProbe.Refusal: read before the grant is reserved.
+    RobloxHandoffProbeOutcome? Refusal => null;
 }
 
 public enum NativeHandoffPreparationStatus

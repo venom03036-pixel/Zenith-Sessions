@@ -30,6 +30,24 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     /// <summary>Tests fire the unchanged 3-minute deadline through <paramref name="time"/> instead of waiting for it.</summary>
     internal OwnedRobloxHandoffProbe(string dataRoot,Dispatcher dispatcher,TimeProvider time):this(dataRoot,dispatcher)=>_time=time;
 
+    /// <summary>
+    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched,
+    /// Busy while this or another owner holds a private folder, Cancelled after disposal. Memory only.
+    /// </summary>
+    public RobloxHandoffProbeOutcome? Refusal
+    {
+        get
+        {
+            lock(_state)
+            {
+                if(_disposed)return RobloxHandoffProbeOutcome.Cancelled;
+                if(_blocked)return RobloxHandoffProbeOutcome.CleanupFailed;
+                if(_owner is not null)return RobloxHandoffProbeOutcome.Busy;
+            }
+            return SignInProfileDirectory.HasLiveOwner(dataRoot)?RobloxHandoffProbeOutcome.Busy:null;
+        }
+    }
+
     public async Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential,CancellationToken ct)
     {
         using var captured=await InspectCoreAsync(context,credential,ct,null).ConfigureAwait(false);
@@ -66,7 +84,11 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         SignInProfileDirectory? directory=null;bool browserStarted=false;OwnedCapture? result=null;
         try
         {
-            directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);
+            try{directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);}
+            // Unrecognized, redirected or unremovable leftover data persists until someone reviews it. Latch so
+            // later checks are refused before any account's grant is reserved, instead of blaming WebView2 each time.
+            catch(Exception error)when(error is (IOException or UnauthorizedAccessException) and not SignInDirectoryInUseException)
+            {lock(_state)_blocked=true;result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);return result;}
             result=await dispatcher.InvokeAsync(()=>
             {
                 stop.Token.ThrowIfCancellationRequested();

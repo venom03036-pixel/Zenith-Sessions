@@ -165,6 +165,22 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         if(disconnect)Assert.Null(await f.Vault.ReadAsync(f.Profile.Id,default));
     }
 
+    [Theory]
+    [InlineData(RobloxHandoffProbeOutcome.CleanupFailed,NativeHandoffPreparationStatus.CleanupFailed)]
+    [InlineData(RobloxHandoffProbeOutcome.Busy,NativeHandoffPreparationStatus.Busy)]
+    public async Task RefusedCaptureNeverOpensBrowserOrChangesTheLinkedGrant(RobloxHandoffProbeOutcome refusal,NativeHandoffPreparationStatus expected)
+    {
+        // CleanupFailed must stay CleanupFailed so the configured provider still poisons itself.
+        await using var f=await Fixture.Open(_root);
+        using var browser=new Browser{Refusal=refusal,Run=(_,_,_)=>throw new InvalidOperationException("A refused capture was started.")};
+        var before=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
+        var result=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+        var after=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
+        Assert.Equal(AuthorizationHealth.Linked,after.Record!.Health);Assert.Equal(before,after);
+        Assert.Equal(expected,result.Status);Assert.Null(result.Preparation);Assert.Null(result.BrowserFacts);
+        Assert.Equal(0,browser.Calls);Assert.Empty(f.Client.Seen);
+    }
+
     [Fact]
     public async Task CancellationFromLateValidationCannotPublishAReadyPreparation()
     {
@@ -213,6 +229,7 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
     private sealed class Browser:IRobloxNativeHandoffCapture,IDisposable
     {
         public int Calls;public RobloxSessionCredential? Input,Issued;public NativeBrowserCapture? Returned;
+        public RobloxHandoffProbeOutcome? Refusal{get;set;}
         public Func<NativeHandoffContext,RobloxSessionCredential,CancellationToken,Task<NativeBrowserCapture>>? Run;
         public NativeBrowserCapture Success(NativeHandoffContext context)=>new(RobloxHandoffProbeOutcome.CapturedAndPrevented,SyntheticHandoff.Capture(context,new HandoffClock()),new(Current),NativeHandoffCaptureStatus.AcceptedSourceGrammar);
         public async Task<NativeBrowserCapture> CaptureAsync(NativeHandoffContext context,RobloxSessionCredential c,CancellationToken ct)

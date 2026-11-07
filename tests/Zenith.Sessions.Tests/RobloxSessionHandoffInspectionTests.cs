@@ -104,6 +104,26 @@ public sealed class RobloxSessionHandoffInspectionTests : IDisposable
     }
 
     [Theory]
+    [InlineData(RobloxHandoffProbeOutcome.CleanupFailed)]
+    [InlineData(RobloxHandoffProbeOutcome.Busy)]
+    public async Task RefusedProbeLeavesTheLinkedGrantUntouched(RobloxHandoffProbeOutcome outcome)
+    {
+        // A probe that refuses before opening anything (cleanup latch, or another owner's folder) never
+        // receives the cookie, so there is no rotation to fence: the saved sign-in must stay as it was.
+        await using var fixture = await Fixture.Open(Root);
+        await using var probe = new Probe { Refusal = outcome, Run = (_, _, _) => throw new InvalidOperationException("A refused probe was started.") };
+        var result = await fixture.Service.InspectHandoffAsync(fixture.Profile.Id, 42, probe, default);
+        var saved = (await fixture.Inner.ReadAsync(fixture.Profile.Id, default))!;
+        Assert.Equal(AuthorizationHealth.Linked, saved.Health); Assert.Equal(1, saved.Generation); Assert.Equal(Original, saved.SessionCookie);
+        Assert.Empty(fixture.Vault.Writes); Assert.Equal(outcome, result.Outcome); Assert.Equal(0, probe.Calls); Assert.Equal(0, fixture.Client.Calls);
+        // Once the refusal clears, the next inspection reserves the very next generation as usual.
+        probe.Refusal = null; RobloxHandoffProbeContext? reached = null;
+        probe.Run = (context, _, _) => { reached = context; return Task.FromResult(new RobloxHandoffProbeCapture(new(RobloxHandoffProbeOutcome.Cancelled))); };
+        Assert.Equal(RobloxHandoffProbeOutcome.Cancelled, (await fixture.Service.InspectHandoffAsync(fixture.Profile.Id, 42, probe, default)).Outcome);
+        Assert.Equal(1, probe.Calls); Assert.Equal(2, reached!.AuthorizationGeneration);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task CaptureWithoutAnUnexpiredCurrentOwnedCookieCannotRestoreAuthority(bool expired)
@@ -442,6 +462,7 @@ public sealed class RobloxSessionHandoffInspectionTests : IDisposable
     private sealed class Probe : IRobloxHandoffProbe
     {
         public int Calls; public RobloxSessionCredential? Input, Issued; public RobloxHandoffProbeCapture? Returned;
+        public RobloxHandoffProbeOutcome? Refusal { get; set; }
         public Func<RobloxHandoffProbeContext, RobloxSessionCredential, CancellationToken, Task<RobloxHandoffProbeCapture>>? Run;
         public async Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential, CancellationToken ct)
         {

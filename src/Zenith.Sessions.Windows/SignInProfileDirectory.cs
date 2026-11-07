@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Security.AccessControl;
 using System.Security.Principal;
 
@@ -9,9 +10,26 @@ public sealed class SignInProfileDirectory
     private const string Marker = ".zenith-private-signin";
     private const string MarkerContents = "Zenith Sessions private sign-in profile v1";
     private const string OwnerLock = "owner.lock";
+    // Leases this process holds, per browser-data root. Reading it opens no lock file, so a check
+    // can never disturb a folder whose owner is still removing it.
+    private static readonly ConcurrentDictionary<string, int> HeldLeases = new(StringComparer.OrdinalIgnoreCase);
     private FileStream? _lease;
     public string Path { get; }
-    private SignInProfileDirectory(string path, FileStream? lease = null) { Path = path; _lease = lease; }
+    private SignInProfileDirectory(string path, FileStream? lease = null)
+    {
+        Path = path; _lease = lease;
+        if (lease is not null) HeldLeases.AddOrUpdate(LeaseRoot(path), 1, static (_, held) => held + 1);
+    }
+
+    /// <summary>
+    /// True while an owner in this process still holds a sign-in folder under <paramref name="dataRoot"/>
+    /// (an open or closing sign-in, or a retained cleanup), so <see cref="Create"/> would report it in use.
+    /// </summary>
+    public static bool HasLiveOwner(string dataRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        return HeldLeases.TryGetValue(System.IO.Path.Combine(System.IO.Path.GetFullPath(dataRoot), "signin-browser-data"), out int held) && held > 0;
+    }
 
     public static SignInProfileDirectory Create(string dataRoot, Guid profileId, CancellationToken ct)
     {
@@ -92,7 +110,14 @@ public sealed class SignInProfileDirectory
         }
         DeleteOwnershipFiles();
     }
-    public void ReleaseOwnership() { _lease?.Dispose(); _lease = null; }
+    public void ReleaseOwnership() => DropLease();
+    private void DropLease()
+    {
+        if (Interlocked.Exchange(ref _lease, null) is not { } lease) return;
+        try { lease.Dispose(); }
+        finally { HeldLeases.AddOrUpdate(LeaseRoot(Path), 0, static (_, held) => held - 1); }
+    }
+    private static string LeaseRoot(string path) => System.IO.Path.GetDirectoryName(path)!;
     private static FileStream OpenLease(string path)
     {
         try { return new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None); }
@@ -103,7 +128,7 @@ public sealed class SignInProfileDirectory
     // The lock goes before the marker, so an interruption here leaves a marked or empty folder; Create recovers both.
     private void DeleteOwnershipFiles()
     {
-        _lease?.Dispose(); _lease = null;
+        DropLease();
         File.Delete(System.IO.Path.Combine(Path, OwnerLock));
         File.Delete(System.IO.Path.Combine(Path, Marker));
         Directory.Delete(Path, false);

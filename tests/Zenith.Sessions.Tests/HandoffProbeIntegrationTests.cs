@@ -21,7 +21,7 @@ public sealed partial class ClientWindowIntegrationTests
     {
         public readonly TaskCompletionSource<RobloxHandoffProbeContext> Entered=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public readonly TaskCompletionSource<RobloxHandoffProbeCapture> Finish=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public bool Disposed;public RobloxSessionCredential? Returned;
+        public bool Disposed;public RobloxSessionCredential? Returned;public RobloxHandoffProbeOutcome? Refusal{get;set;}
         public Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context,RobloxSessionCredential credential,CancellationToken ct)
         {Entered.TrySetResult(context);return Finish.Task;}
         public void Complete(RobloxHandoffProbeContext context)
@@ -105,6 +105,55 @@ public sealed partial class ClientWindowIntegrationTests
         }
         finally{held.Remove(default);}
     });
+    [Fact]
+    public Task AnotherOwnersHeldFolderIsReportedAsARefusalBeforeAnyInspectionStarts()=>OnUi(async()=>
+    {
+        await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
+        await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,Dispatcher.CurrentDispatcher);
+        await using IRobloxHandoffProbe elsewhere=new OwnedRobloxHandoffProbe(_root+"-other",Dispatcher.CurrentDispatcher);
+        Assert.Null(probe.Refusal);Assert.Null(native.Refusal);
+        // Stands in for a sign-in or latched native capture that still holds its folder lease.
+        var held=SignInProfileDirectory.Create(_root,Guid.NewGuid(),default);
+        try
+        {
+            Assert.Equal(RobloxHandoffProbeOutcome.Busy,probe.Refusal);Assert.Equal(RobloxHandoffProbeOutcome.Busy,native.Refusal);
+            Assert.Null(elsewhere.Refusal);
+        }
+        finally{held.Remove(default);}
+        Assert.Null(probe.Refusal);Assert.Null(native.Refusal);
+    });
+    [Fact]
+    public Task FolderNeedingReviewLatchesTheProbeAsCleanupFailedInsteadOfBlamingWebView2()=>OnUi(async()=>
+    {
+        string foreign=Directory.CreateDirectory(Path.Combine(_root,"signin-browser-data","not-a-zenith-folder")).FullName;
+        await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
+        using var credential=new RobloxSessionCredential("synthetic-only");
+        using(var result=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default))
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
+        Assert.True(Directory.Exists(foreign),"Unrecognized data was not preserved for review.");
+        // Later checks are refused before the caller reserves another account's grant.
+        Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,probe.Refusal);
+    });
+    [Fact]
+    public Task RefusedInspectionKeepsTheSavedSignInAndALatchedProbeDisablesTheButton()=>OnUi(async()=>
+    {
+        var probe=new HandoffBrowser();
+        await using(var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe))
+        {
+            await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];
+            shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
+            var id=shell.SelectedAccount!.Profile.Id;long? linked=shell.SelectedAccount.AuthorizationGeneration;Assert.NotNull(linked);
+            shell.ServerBrowser.LinkInput="6564161046";shell.ServerBrowser.ResolveInput();Assert.True(shell.CanInspectNativeHandoff);
+            // A transient refusal (another browser still closing) is answered on click, not by disabling the button,
+            // because nothing would re-enable it when that browser finishes closing.
+            probe.Refusal=RobloxHandoffProbeOutcome.Busy;Assert.True(shell.CanInspectNativeHandoff);
+            probe.Finish.TrySetResult(new(new(RobloxHandoffProbeOutcome.Busy)));
+            shell.InspectNativeHandoff.Execute(null);await shell.InspectNativeHandoff.Execution.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(linked,shell.Accounts.Single(row=>row.Profile.Id==id).AuthorizationGeneration);
+            Assert.False(probe.Entered.Task.IsCompleted);Assert.Contains("no page was opened",shell.HandoffInspectionStatus);
+            probe.Refusal=RobloxHandoffProbeOutcome.CleanupFailed;Assert.False(shell.CanInspectNativeHandoff);
+        }
+    });
     // Owner-level tests: the real probe admits its folder, then waits behind a gated UI thread. Every case ends
     // before any window or WebView2 environment exists, so no browser, network, account or runtime is needed.
     [Fact]
@@ -138,6 +187,7 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
             using var latched=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
             Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,latched.Result.Outcome);
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,((IRobloxHandoffProbe)probe).Refusal);
             await probe.DisposeAsync();
         }
         Assert.True(File.Exists(Path.Combine(folder,".zenith-private-signin")),"The retained folder lost its ownership marker.");

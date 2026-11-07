@@ -11,7 +11,10 @@ public sealed partial class ShellViewModel
     public AsyncCommand InspectNativeHandoff {get;private set;}=null!;
     public string HandoffInspectionStatus {get=>_handoffInspectionStatus;private set=>Set(ref _handoffInspectionStatus,value);}
     public bool CanInspectNativeHandoff=>_ready&&!IsLocked&&!IsAuthorizing&&!_nativeLaunch.IsBusy&&!_shuttingDown&&!_lifetime.IsCancellationRequested
-        &&SelectedAccount?.KnownUserId is >0&&ServerBrowser.ReadyDestination is {PlaceId:>0,JobId:null};
+        &&SelectedAccount?.KnownUserId is >0&&ServerBrowser.ReadyDestination is {PlaceId:>0,JobId:null}
+        // Only the permanent cleanup latch disables the button; a transient Busy is answered on click,
+        // since nothing would re-enable the button when another browser finishes closing.
+        &&_handoffProbe.Refusal is not RobloxHandoffProbeOutcome.CleanupFailed;
     public string HandoffSelectionSummary=>SelectedAccount is { } row
         ?$"Selected: {row.Profile.Label} · "+(row.KnownUserId is { } id?$"last-known player ID {id}":"saved sign-in required")
         :"Select an account in Accounts first.";
