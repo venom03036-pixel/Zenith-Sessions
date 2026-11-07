@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Runtime.InteropServices;
 using System.Windows.Media;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -133,6 +134,18 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
         catch(SemaphoreFullException) { /* Concurrent context changes coalesce one already pending wake. */ }
         catch(ObjectDisposedException) when(_stopping) { /* Teardown has joined the presenter. */ }
     }
+    /// <summary>
+    /// BitmapSource.Create copies the pixels into its own native bitmap, so the coordinator's detached,
+    /// never-modified exact-length array is passed directly instead of being copied again first.
+    /// Any other memory shape (a slice or non-array memory) still gets one managed copy.
+    /// </summary>
+    internal static BitmapSource CreatePreviewImage(ClientPreviewFrame frame)
+    {
+        byte[] pixels=MemoryMarshal.TryGetArray(frame.Pixels,out ArraySegment<byte> segment) && segment.Array is { } array
+            && segment.Offset==0 && segment.Count==array.Length ? array : frame.Pixels.ToArray();
+        var bitmap=BitmapSource.Create(frame.Width,frame.Height,96,96,PixelFormats.Bgra32,null,pixels,frame.Stride);
+        bitmap.Freeze();return bitmap;
+    }
     private async Task PresentAsync(CancellationToken ct)
     {
         try
@@ -161,8 +174,7 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                             if(_images.TryGetValue(result.Target,out var cached) && cached.Token==token) image=cached.Image;
                             else if(convert && converted<ClientPreviewLimits.MaximumTargets)
                             {
-                                var bitmap=BitmapSource.Create(frame.Width,frame.Height,96,96,PixelFormats.Bgra32,null,frame.Pixels.ToArray(),frame.Stride);
-                                bitmap.Freeze();image=bitmap;converted++;
+                                image=CreatePreviewImage(frame);converted++;
                             }
                             else if(convert) moreImages=true;
                         }
