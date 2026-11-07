@@ -30,8 +30,12 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     private readonly string _directory, _indexDirectory, _generationDirectory;
     private readonly SharedWriter _writer;
     private readonly object _lifetime = new();
-    private int _activeCalls;
+    private int _activeCalls, _privateDirectoryChecks;
     private bool _disposed;
+
+    // Full private-directory checks this instance has run. Tests read it to show each operation
+    // runs exactly one (Rule 17: counted, not timed).
+    internal int PrivateDirectoryChecks => Volatile.Read(ref _privateDirectoryChecks);
 
     public ProtectedCredentialVault(string root)
     {
@@ -52,7 +56,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         PathFor(profileId);
         if (minimumExclusive < 0) throw new ArgumentOutOfRangeException(nameof(minimumExclusive));
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         GenerationState state = ReadGeneration(profileId);
         long next = NextGeneration(Math.Max(minimumExclusive, state.HighestAllocated));
         await WriteGenerationAsync(state with { HighestAllocated = next, HighestMutationId = Guid.Empty }, ct).ConfigureAwait(false);
@@ -85,7 +88,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         byte[] clear = [], cipher = [], envelopeBytes = [], entropy = Entropy(durable.ProfileId, Version);
         try
         {
-            EnsurePrivateDirectories();
             if (File.Exists(path))
             {
                 AuthorizationRecord existing = ReadProtected(path, durable.ProfileId, out _);
@@ -345,7 +347,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     {
         string path = PathFor(profileId);
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         ct.ThrowIfCancellationRequested();
         if (!File.Exists(path)) return null;
         AuthorizationRecord record = ReadProtected(path, profileId, out bool legacy);
@@ -362,7 +363,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     {
         PathFor(profileId);
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         ct.ThrowIfCancellationRequested();
         return ReadSummary(profileId);
     }
@@ -373,7 +373,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         if (profileIds.Count > 200) throw new ArgumentOutOfRangeException(nameof(profileIds), "Request at most 200 visible profile summaries.");
         foreach (Guid id in profileIds) PathFor(id);
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         var summaries = new List<AuthorizationMetadata>(profileIds.Count);
         foreach (Guid id in profileIds.Distinct())
         {
@@ -387,7 +386,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     {
         if (!AuthorizationIdentity.HasVerifiedContext(provider, issuer, subject)) throw new ArgumentException("The verified provider identity context is invalid.");
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         ct.ThrowIfCancellationRequested();
         IdentityClaim? claim = ReadClaim(IdentityKey(provider, issuer, subject));
         if (claim is null) return null;
@@ -401,7 +399,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     {
         if (userId <= 0) throw new ArgumentOutOfRangeException(nameof(userId));
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        EnsurePrivateDirectories();
         AuthorizationMetadata? found = null;
         foreach (var context in RobloxContexts)
         {
@@ -426,7 +423,6 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     private async Task DeleteOwnedAsync(Guid profileId, CancellationToken ct, long? fenceGeneration = null)
     {
         string path = PathFor(profileId);
-        EnsurePrivateDirectories();
         ct.ThrowIfCancellationRequested();
         ProfilePointer? pointer = ReadPointer(profileId);
         if (pointer is null && File.Exists(path))
@@ -660,27 +656,44 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     private static InvalidDataException InvalidRecord() => new("The protected authorization record is invalid or unsupported. Its original is preserved; sign in or review recovery options. Obsolete refresh tokens will not be restored.");
     private static InvalidDataException IncompleteIdentity() => new("The saved authorization identity index is incomplete or inconsistent. Its originals are preserved; review recovery or disconnect this authorization before relinking.");
 
+    // Before the lease: only what creating the coordination file needs. Linked ancestors are
+    // refused and a missing vault directory is created private; nothing else is inspected here.
+    private void PrepareLeaseDirectory()
+    {
+        RejectLinkedAncestors();
+        if (Directory.Exists(_directory)) return;
+        FileSystemAclExtensions.Create(new DirectoryInfo(_directory), DirectoryAcl(CurrentUser()));
+        RejectReparse(_directory);
+    }
+    // The one full check per operation. EnterAsync runs it after the lease is held, so operation
+    // bodies never repeat it and a wait for another lease holder cannot make it stale.
     private void EnsurePrivateDirectories()
+    {
+        Interlocked.Increment(ref _privateDirectoryChecks);
+        RejectLinkedAncestors();
+        SecurityIdentifier user = CurrentUser();
+        RestrictDirectory(_directory, user); RestrictDirectory(_indexDirectory, user); RestrictDirectory(_generationDirectory, user);
+    }
+    private void RejectLinkedAncestors()
     {
         for (string? ancestor = _directory; ancestor is not null; ancestor = Path.GetDirectoryName(ancestor))
             if (Directory.Exists(ancestor) || File.Exists(ancestor)) RejectReparse(ancestor);
-        RestrictDirectory(_directory); RestrictDirectory(_indexDirectory); RestrictDirectory(_generationDirectory);
     }
-    private static void RestrictDirectory(string path)
+    private static void RestrictDirectory(string path, SecurityIdentifier user)
     {
         var directory = new DirectoryInfo(path);
         if (directory.Exists) RejectReparse(path);
-        FileSystemAclExtensions.Create(directory, DirectoryAcl());
+        FileSystemAclExtensions.Create(directory, DirectoryAcl(user));
         RejectReparse(path);
         // Freshly inspect three directory ACLs once per operation; avoid stale path caches and
         // avoid rewriting already-private permissions during lightweight metadata restoration.
-        if (!HasPrivateDirectoryAcl(directory.GetAccessControl(AccessControlSections.Access)))
-            directory.SetAccessControl(DirectoryAcl());
+        if (!HasPrivateDirectoryAcl(directory.GetAccessControl(AccessControlSections.Access), user))
+            directory.SetAccessControl(DirectoryAcl(user));
     }
-    private static bool HasPrivateDirectoryAcl(DirectorySecurity acl)
+    private static bool HasPrivateDirectoryAcl(DirectorySecurity acl, SecurityIdentifier user)
     {
         if (!acl.AreAccessRulesProtected) return false;
-        SecurityIdentifier user = CurrentUser(), system = new(WellKnownSidType.LocalSystemSid, null);
+        var system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
         bool hasUser = false, hasSystem = false;
         foreach (FileSystemAccessRule rule in acl.GetAccessRules(true, true, typeof(SecurityIdentifier)))
         {
@@ -698,11 +711,11 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         using var identity = WindowsIdentity.GetCurrent();
         return identity.User ?? throw new UnauthorizedAccessException("The current Windows user identity is unavailable for vault protection.");
     }
-    private static DirectorySecurity DirectoryAcl()
+    private static DirectorySecurity DirectoryAcl(SecurityIdentifier user)
     {
         var acl = new DirectorySecurity();
         acl.SetAccessRuleProtection(true, false);
-        foreach (SecurityIdentifier sid in new[] { CurrentUser(), new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null) })
+        foreach (SecurityIdentifier sid in new[] { user, new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null) })
             acl.AddAccessRule(new FileSystemAccessRule(sid, FileSystemRights.FullControl, InheritanceFlags.ContainerInherit | InheritanceFlags.ObjectInherit, PropagationFlags.None, AccessControlType.Allow));
         return acl;
     }
@@ -827,8 +840,12 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
                 // Enter may initially run on the UI thread. Force the platform portion off that
                 // context even when the in-process semaphore was immediately available.
                 await _writer.Semaphore.WaitAsync(deadline.Token).ConfigureAwait(ConfigureAwaitOptions.ForceYielding); entered = true;
-                EnsurePrivateDirectories();
+                PrepareLeaseDirectory();
                 var processLease = await AcquireProcessLeaseAsync(deadline.Token).ConfigureAwait(false);
+                // The full check runs once, under the lease, for every operation. A directory
+                // changed while this call waited for another holder is therefore still caught.
+                try { EnsurePrivateDirectories(); }
+                catch { processLease.Dispose(); throw; }
                 return new(this, processLease);
             }
             catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw new AuthorizationVaultBusyException(); }
