@@ -20,6 +20,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
 {
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
+    private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
     private readonly TimeProvider _time = TimeProvider.System;
     private readonly object _state = new();
     private int _active;
@@ -91,8 +92,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         var completion = new TaskCompletionSource<RobloxSessionCredential>(TaskCreationOptions.RunContinuationsAsynchronously);
         var browserExited = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         CoreWebView2Environment? environment = null;
+        CoreWebView2? guarded = null;
         Task? saveTask = null;
-        bool closing = false, controllerReady = false;
+        bool closing = false, controllerReady = false, externalInstalled = false, framesInstalled = false;
         EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited = (_, _) => browserExited.TrySetResult();
         void HidePending() { if (!closing) { window.IsEnabled = false; window.Hide(); } }
         CancelEventHandler close = (_, e) => { if (!closing) { e.Cancel = true; HidePending(); completion.TrySetCanceled(ct.IsCancellationRequested ? ct : new CancellationToken(true)); } };
@@ -127,6 +129,11 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             controllerReady = true;
             ct.ThrowIfCancellationRequested();
             var core = browser.CoreWebView2;
+            // Install the launch guards before any page opens. Roblox's Play button starts roblox-player: from a hidden
+            // child frame that NavigationStarting never sees. A runtime that cannot install them fails closed below.
+            guarded = core;
+            core.LaunchingExternalUriScheme += ExternalScheme; externalInstalled = true;
+            core.FrameNavigationStarting += FrameNavigationStarting; framesInstalled = true;
             core.Settings.IsPasswordAutosaveEnabled = false; core.Settings.IsGeneralAutofillEnabled = false;
             core.Settings.AreDevToolsEnabled = false; core.Settings.AreDefaultContextMenusEnabled = false;
             core.Settings.IsStatusBarEnabled = true;
@@ -168,8 +175,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             browser.Dispose();
             closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close();
             // The cleanup stays tracked past this observation: a late browser exit still removes the folder and clears the latch.
+            // The launch guards stay installed through cookie deletion and controller shutdown, until the browser's exit.
             cleaned = await SettleCleanupAsync(FinishCleanupAsync(browserExited.Task, controllerReady, cookieProblem, directory,
-                () => { if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
+                () => { DetachLaunchGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
             if (!cleaned) accepted?.Dispose();
             if (completion.Task.IsCompletedSuccessfully && !ReferenceEquals(accepted, completion.Task.Result)) completion.Task.Result.Dispose();
         }
@@ -197,6 +205,26 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         void NavigationStarting(object? _, CoreWebView2NavigationStartingEventArgs e)
         {
             if (!RobloxSignInNavigation.IsAllowed(e.Uri)) { e.Cancel = true; status.Text = "This window stays on Roblox’s own HTTPS pages. Use a Roblox passkey, password, or supported sign-in option on this page."; }
+        }
+        void ExternalScheme(object? _, CoreWebView2LaunchingExternalUriSchemeEventArgs e)
+        {
+            e.Cancel = true; // First and unconditional: this window never forwards a launch to Roblox or any other app.
+            status.Text = ExternalLaunchRefused;
+        }
+        void FrameNavigationStarting(object? _, CoreWebView2NavigationStartingEventArgs e)
+        {
+            if (!RobloxSignInNavigation.IsAllowedFrame(e.Uri)) { e.Cancel = true; status.Text = ExternalLaunchRefused; }
+        }
+        void DetachLaunchGuards()
+        {
+            if (guarded is null) return;
+            try
+            {
+                if (externalInstalled) guarded.LaunchingExternalUriScheme -= ExternalScheme;
+                if (framesInstalled) guarded.FrameNavigationStarting -= FrameNavigationStarting;
+            }
+            // The browser's exit is already confirmed: a closed controller may reject removal, but nothing live is left unguarded.
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
         }
         void NewWindowRequested(object? _, CoreWebView2NewWindowRequestedEventArgs e) { e.Handled = true; status.Text = "Pop-up navigation is disabled in this private sign-in. Use an option on Roblox’s page."; }
         void DownloadStarting(object? _, CoreWebView2DownloadStartingEventArgs e) { e.Cancel = true; }

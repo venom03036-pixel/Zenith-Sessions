@@ -29,6 +29,44 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     public void TopLevelSignInNavigationCannotDispatchExternalPages(string? value, bool expected)
         => Assert.Equal(expected, RobloxSignInNavigation.IsAllowed(value));
 
+    // Roblox's Play button delivers roblox-player: through a hidden child frame, which NavigationStarting never sees.
+    // Frames stay scheme-based: Roblox's sign-in challenges may load third-party HTTPS frames.
+    [Theory]
+    [InlineData("roblox-player:1+launchmode:play", false)]
+    [InlineData("roblox:", false)]
+    [InlineData("ms-settings:", false)]
+    [InlineData("javascript:x", false)]
+    [InlineData("http://www.roblox.com/", false)]
+    [InlineData("file:///C:/Windows/test.html", false)]
+    [InlineData("about:settings", false)]
+    [InlineData("not a uri", false)]
+    [InlineData(null, false)]
+    [InlineData("about:blank", true)]
+    [InlineData("about:srcdoc", true)]
+    [InlineData("blob:https://www.roblox.com/0d1f9c1e-0000-4000-8000-000000000000", true)]
+    [InlineData("data:text/html,synthetic", true)]
+    [InlineData("https://www.roblox.com/games/1", true)]
+    [InlineData("https://challenge.example.invalid/frame", true)]
+    public void FrameNavigationCannotDispatchNativeSchemes(string? value, bool expected)
+        => Assert.Equal(expected, RobloxSignInNavigation.IsAllowedFrame(value));
+
+    [Fact]
+    public void SignInWindowCancelsExternalSchemeLaunchesBeforeNavigating()
+    {
+        using var stream = typeof(RobloxSignInPresentationTests).Assembly.GetManifestResourceStream("ProductionOwnedRobloxSignIn.cs")!;
+        using var reader = new StreamReader(stream); string source = reader.ReadToEnd();
+        int navigate = source.IndexOf("core.Navigate(", StringComparison.Ordinal);
+        Assert.True(navigate > 0, "The sign-in no longer navigates its own CoreWebView2.");
+        int external = source.IndexOf("LaunchingExternalUriScheme +=", StringComparison.Ordinal);
+        Assert.True(external > 0 && external < navigate, "The sign-in window opens Roblox's pages without a LaunchingExternalUriScheme guard installed first.");
+        int frames = source.IndexOf("FrameNavigationStarting +=", StringComparison.Ordinal);
+        Assert.True(frames > 0 && frames < navigate, "The sign-in window opens Roblox's pages without a FrameNavigationStarting guard installed first.");
+        int handler = source.IndexOf("void ExternalScheme(", StringComparison.Ordinal);
+        Assert.True(handler > 0, "The sign-in window has no ExternalScheme handler.");
+        string body = source[(source.IndexOf('{', handler) + 1)..].TrimStart();
+        Assert.StartsWith("e.Cancel = true;", body);
+    }
+
     [Fact]
     public void OwnedPrivateDirectoryRejectsAnActiveOwnerAndCanBeReusedAfterCleanup()
     {
