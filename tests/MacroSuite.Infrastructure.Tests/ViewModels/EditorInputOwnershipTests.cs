@@ -81,6 +81,36 @@ public partial class MacroEditorViewModelTests
     });
 
     [Fact]
+    public Task EditorOwnership_EditorFocusPauseDuringPlaybackRetirementIsANoOp() => OwnershipOnUi(async () =>
+    {
+        using var folder = new RoutingTempFolder(); var arbiter = new HostInputOperationArbiter(); var player = new OwnershipPlayer();
+        using var vm = CreateOwnershipEditor(folder.Library, arbiter, player, delay: TimeSpan.FromSeconds(30));
+        var started = OwnershipGate();
+        vm.StatusChanged += message => { if (message.StartsWith("Executing '", StringComparison.Ordinal)) started.TrySetResult(); };
+        Task run = vm.RunMacroAsync();
+        Exception? probe = null; int probes = 0;
+        try
+        {
+            await started.Task.WaitAsync(OwnershipDeadline);
+            // The native detach runs during retirement after the controller is disposed and before the
+            // editor retracts it, off the UI thread: the same window an editor restore can land in.
+            player.OnDetach = () =>
+            {
+                Interlocked.Increment(ref probes);
+                probe = Record.Exception(() => vm.PauseForEditorFocusAsync().GetAwaiter().GetResult());
+            };
+        }
+        finally { await vm.StopMacroAsync().WaitAsync(OwnershipDeadline); await run.WaitAsync(OwnershipDeadline); }
+        Assert.Equal(1, probes);
+        Assert.Null(probe);
+        Assert.False(vm.IsPaused);
+        Assert.False(vm.IsRunning);
+        Assert.False(arbiter.Snapshot.IsBusy);
+        Assert.False(arbiter.Snapshot.IsQuarantined);
+        await vm.ShutdownAsync();
+    });
+
+    [Fact]
     public Task EditorOwnership_StopWaitsForActualCapturedBackendCleanupBeforeAReplacement() => OwnershipOnUi(async () =>
     {
         using var folder = new RoutingTempFolder(); var arbiter = new HostInputOperationArbiter();
@@ -435,9 +465,13 @@ public partial class MacroEditorViewModelTests
         public readonly TaskCompletionSource ReleaseEntered = OwnershipGate();
         public readonly ManualResetEventSlim AllowRelease = new(false);
         public HostInputOperationLease? LastLease;
+        public Action? OnDetach;
         public bool IsPlaying => false;
         public IDisposable AttachHostOperation(HostInputOperationLease lease)
-        { LastLease = lease; Interlocked.Increment(ref Attachments); return new OwnershipToken(() => { if (ReferenceEquals(LastLease, lease)) LastLease = null; }); }
+        {
+            LastLease = lease; Interlocked.Increment(ref Attachments);
+            return new OwnershipToken(() => { if (ReferenceEquals(LastLease, lease)) LastLease = null; OnDetach?.Invoke(); });
+        }
         public void ReleaseHostOperationInputs(HostInputOperationLease lease)
         {
             Assert.True(lease.OwnsCleanup); Interlocked.Increment(ref Releases); ReleaseEntered.TrySetResult();
