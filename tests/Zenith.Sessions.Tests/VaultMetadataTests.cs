@@ -185,6 +185,41 @@ public sealed class VaultMetadataTests : IDisposable
         Assert.Empty(Directory.GetFiles(VaultRoot, "*.tmp", SearchOption.AllDirectories));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteRemovesCrashOrphanedAtomicWriteTemporariesButKeepsAnotherProfilesFiles(bool throughDisconnectSnapshot)
+    {
+        using var vault = new ProtectedCredentialVault(Root);
+        var record = Record(Guid.NewGuid());
+        var sibling = Record(Guid.NewGuid(), userId: 456);
+        await vault.SaveAsync(record, default);
+        await vault.SaveAsync(sibling, default);
+        string path = RecordPath(record.ProfileId), siblingPath = RecordPath(sibling.ProfileId);
+        var pointer = JsonNode.Parse(await File.ReadAllTextAsync(path + ".identity"))!.AsObject();
+        string index = Path.Combine(VaultRoot, "identity-index");
+        string[] claims = [Path.Combine(index, pointer["IdentityKey"]!.GetValue<string>() + ".json"), Path.Combine(index, pointer["UserKey"]!.GetValue<string>() + ".json")];
+        // A process kill or power loss between creating and publishing an atomic write leaves
+        // these exact names behind: the envelope, the pointer and both plaintext identity claims.
+        foreach (string target in claims.Prepend(path + ".identity").Prepend(path))
+            File.Copy(target, target + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        string siblingTemporary = siblingPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.Copy(siblingPath, siblingTemporary);
+        static string[] Names(IEnumerable<string> files) => files.Select(file => Path.GetFileName(file)!).Order(StringComparer.Ordinal).ToArray();
+        string[] siblingIndex = Names(Directory.GetFiles(index).Where(file => !claims.Contains(file) && !file.EndsWith(".tmp", StringComparison.Ordinal)));
+
+        if (throughDisconnectSnapshot)
+        {
+            AuthorizationWriteSnapshot snapshot = await vault.ReadWriteSnapshotAsync(record.ProfileId, default);
+            Assert.Equal(AuthorizationMutationStatus.Applied, (await vault.TryDeleteSnapshotAsync(snapshot, default)).Status);
+        }
+        else await vault.DeleteAsync(record.ProfileId, default);
+
+        Assert.Equal(Names([siblingPath, siblingPath + ".identity", siblingTemporary, ProtectedCredentialVault.WriterLockFileName]), Names(Directory.GetFiles(VaultRoot)));
+        Assert.Equal(siblingIndex, Names(Directory.GetFiles(index)));
+        Assert.Equal(sibling with { AccessToken = "" }, await vault.ReadAsync(sibling.ProfileId, default));
+    }
+
     [Fact]
     public async Task IdentityAndMappedUserDeduplicateAtomicallyAcrossVaultInstances()
     {
@@ -361,6 +396,82 @@ public sealed class VaultMetadataTests : IDisposable
             Assert.All(acl.GetAccessRules(true, true, typeof(SecurityIdentifier)).Cast<FileSystemAccessRule>(), rule =>
             { Assert.True(rule.IdentityReference.Equals(currentUser) || rule.IdentityReference.Equals(system)); Assert.Equal(AccessControlType.Allow, rule.AccessControlType); });
         }
+    }
+
+    [Theory]
+    [InlineData(nameof(ProtectedCredentialVault.ReadSummariesAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.GetSummaryAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.ReadAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.FindByIdentityAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.FindByRobloxUserIdAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.AllocateNextGenerationAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.SaveAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.DeleteAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.TryReplaceNextAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.TryCommitSnapshotAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.TryDeleteSnapshotAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.ReadWriteSnapshotAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.TryFenceOwnedMutationAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.TryDispatchCurrentAsync))]
+    public async Task VaultOperationChecksPrivateDirectoriesOncePerCall(string operation)
+    {
+        using var vault = new ProtectedCredentialVault(Root);
+        var record = Record(Guid.NewGuid());
+        var other = Record(Guid.NewGuid(), userId: 456);
+        await vault.SaveAsync(record, default);
+        await vault.SaveAsync(other, default);
+        AuthorizationRecord stored = record with { AccessToken = "" };
+        AuthorizationWriteSnapshot snapshot = await vault.ReadWriteSnapshotAsync(record.ProfileId, default);
+        int before = vault.PrivateDirectoryChecks;
+        Task call = operation switch
+        {
+            nameof(vault.ReadSummariesAsync) => vault.ReadSummariesAsync([record.ProfileId, other.ProfileId], default),
+            nameof(vault.GetSummaryAsync) => vault.GetSummaryAsync(record.ProfileId, default),
+            nameof(vault.ReadAsync) => vault.ReadAsync(record.ProfileId, default),
+            nameof(vault.FindByIdentityAsync) => vault.FindByIdentityAsync(record.Provider, record.Issuer, record.Subject, default),
+            nameof(vault.FindByRobloxUserIdAsync) => vault.FindByRobloxUserIdAsync(record.VerifiedUserId, default),
+            nameof(vault.AllocateNextGenerationAsync) => vault.AllocateNextGenerationAsync(record.ProfileId, 0, default),
+            nameof(vault.SaveAsync) => vault.SaveAsync(record with { Generation = 2 }, default),
+            nameof(vault.DeleteAsync) => vault.DeleteAsync(record.ProfileId, default),
+            nameof(vault.TryReplaceNextAsync) => vault.TryReplaceNextAsync(stored, stored with { RefreshToken = "synthetic-rotated-refresh" }, Guid.NewGuid(), default),
+            nameof(vault.TryCommitSnapshotAsync) => vault.TryCommitSnapshotAsync(snapshot, record with { Generation = snapshot.NextGeneration }, Guid.NewGuid(), default),
+            nameof(vault.TryDeleteSnapshotAsync) => vault.TryDeleteSnapshotAsync(snapshot, default),
+            nameof(vault.ReadWriteSnapshotAsync) => vault.ReadWriteSnapshotAsync(record.ProfileId, default),
+            nameof(vault.TryFenceOwnedMutationAsync) => vault.TryFenceOwnedMutationAsync(record.ProfileId, Guid.NewGuid(), default),
+            nameof(vault.TryDispatchCurrentAsync) => vault.TryDispatchCurrentAsync(snapshot, () => throw new InvalidOperationException("A synthetic OAuth record must not dispatch."), default),
+            _ => throw new ArgumentOutOfRangeException(nameof(operation))
+        };
+        await call;
+        Assert.Equal(1, vault.PrivateDirectoryChecks - before);
+    }
+
+    [Theory]
+    [InlineData(nameof(ProtectedCredentialVault.ReadWriteSnapshotAsync))]
+    [InlineData(nameof(ProtectedCredentialVault.ReadSummariesAsync))]
+    public async Task DirectoryLoosenedWhileWaitingForTheLeaseIsRepairedBeforeTheOperationReads(string operation)
+    {
+        using var vault = new ProtectedCredentialVault(Root);
+        var record = Record(Guid.NewGuid());
+        await vault.SaveAsync(record, default);
+        var index = new DirectoryInfo(Path.Combine(VaultRoot, "identity-index"));
+        Task call;
+        // Another holder owns the coordination file, so the operation waits for the lease.
+        using (var held = new FileStream(Path.Combine(VaultRoot, ProtectedCredentialVault.WriterLockFileName), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            call = operation == nameof(vault.ReadWriteSnapshotAsync)
+                ? vault.ReadWriteSnapshotAsync(record.ProfileId, default)
+                : vault.ReadSummariesAsync([record.ProfileId], default);
+            await Task.Delay(300);
+            Assert.False(call.IsCompleted);
+            // Inheriting from the private vault directory grants nobody new, but is no longer an
+            // explicit protected ACL, so the check must repair it.
+            DirectorySecurity loosened = index.GetAccessControl();
+            loosened.SetAccessRuleProtection(false, true);
+            index.SetAccessControl(loosened);
+            Assert.False(index.GetAccessControl().AreAccessRulesProtected);
+        }
+        await call.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(index.GetAccessControl().AreAccessRulesProtected);
     }
 
     private JsonObject ReadEnvelope(Guid id) => JsonNode.Parse(File.ReadAllBytes(RecordPath(id)).AsSpan(Magic.Length))!.AsObject();

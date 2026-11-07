@@ -113,6 +113,17 @@ public sealed partial class ShellViewModel
         Interlocked.Increment(ref _nativeTrialEpoch);_nativeLaunch.CancelActive();ClearSelectedNativeDiagnostics();NativeTrialStatus=reason;
         _launchEvidenceExportStop?.Cancel();
     }
+    // Removing a profile or saved sign-in stops the whole queue by design and waits before changing
+    // saved state. That also ends any trial in progress, so fence its card and return a notice suffix
+    // naming the stop; nothing is added when the queue was already paused and no trial was running.
+    private string StopQueueForSavedStateRemoval(string trialReason)
+    {
+        bool trialStopped=_nativeLaunch.IsBusy||!StartNativeTrial.Execution.IsCompleted,queueWasActive=!EffectiveQueuePaused;
+        if(trialStopped)FenceNativeTrial(trialReason);
+        _launchQueue.SignalPanic();
+        return trialStopped?" The native trial in progress was stopped and the launch queue was paused. Review the queue and choose Resume queue when ready."
+            :queueWasActive?" The launch queue was paused. Review the queue and choose Resume queue when ready.":"";
+    }
     private void RefreshNativeTrialFeatures()
     {
         Raise(nameof(CanRunNativeTrial));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));

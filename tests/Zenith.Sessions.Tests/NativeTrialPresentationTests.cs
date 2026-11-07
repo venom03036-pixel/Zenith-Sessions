@@ -120,6 +120,59 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(CapabilityState.Unavailable, shell.SelectedInstallation!.Candidate.NamedAccountLaunch);
     });
 
+    // Removal and disconnect stop the whole queue by design and wait before changing saved state.
+    // The trial card and notice must say so instead of still asking the user to choose Play.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RemovingAnotherAccountDuringANativeTrialFencesTheTrialStatusAndReportsTheQueuePause(bool disconnect) => OnUi(async () =>
+    {
+        var child = new NativeEvidenceChild { PreparationGate = EvidenceGate() };
+        await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
+        var trial = shell.SelectedAccount!; var other = shell.Accounts.Single(row => row.Profile.Id != trial.Profile.Id);
+        shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
+        var context = await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        Assert.Contains("Trial queued for", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Task removing;
+        try
+        {
+            if (disconnect) { shell.SelectedAccount = other; shell.DisconnectAccount.Execute(null); removing = shell.DisconnectAccount.Execution; }
+            else removing = shell.DeleteAccountsAsync([other]);
+            await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            Assert.False(removing.IsCompleted); // The removal still waits for the trial's actual cleanup.
+        }
+        finally { child.PreparationGate!.TrySetResult(); }
+        await removing.WaitAsync(TimeSpan.FromSeconds(6));
+        using (var stop = new CancellationTokenSource(TimeSpan.FromSeconds(6)))
+            while (shell.Launches.SingleOrDefault(row => row.Id == context.OriginalIntent.OperationId)?.Operation.State != LaunchState.Cancelled)
+                await Task.Delay(5, stop.Token);
+        Assert.Equal(0, child.Starts);
+        Assert.DoesNotContain("Trial queued for", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.StartsWith(disconnect ? "Trial stopped because a saved sign-in was removed." : "Trial stopped because a profile was removed.", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.StartsWith(disconnect ? "Saved sign-in removed from Zenith." : "Removed 1 profile(s).", shell.Notice, StringComparison.Ordinal);
+        Assert.EndsWith(" The native trial in progress was stopped and the launch queue was paused. Review the queue and choose Resume queue when ready.", shell.Notice, StringComparison.Ordinal);
+        Assert.Equal("Resume queue", shell.QueuePauseLabel);
+        Assert.Contains(shell.Accounts, row => row.Profile.Id == trial.Profile.Id);
+        Assert.Equal(!disconnect, shell.Accounts.All(row => row.Profile.Id != other.Profile.Id));
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RemovingAProfileReportsAQueuePauseOnlyWhenTheQueueWasRunning(bool running) => OnUi(async () =>
+    {
+        await using var shell = await NativeEvidenceShellAsync(new NativeEvidenceChild(), new NativeEvidenceMonitor());
+        string trialStatus = shell.NativeTrialStatus;
+        if (running) { shell.ToggleQueuePause.Execute(null); await shell.ToggleQueuePause.Execution; Assert.Equal("Pause queue", shell.QueuePauseLabel); }
+        else Assert.Equal("Resume queue", shell.QueuePauseLabel);
+        var other = shell.Accounts.Single(row => row.Profile.Id != shell.SelectedAccount!.Profile.Id);
+        await shell.DeleteAccountsAsync([other]);
+        Assert.Equal(trialStatus, shell.NativeTrialStatus);
+        Assert.StartsWith("Removed 1 profile(s). Roblox clients were left open.", shell.Notice, StringComparison.Ordinal);
+        if (running) Assert.EndsWith(". The launch queue was paused. Review the queue and choose Resume queue when ready.", shell.Notice, StringComparison.Ordinal);
+        else Assert.DoesNotContain("queue", shell.Notice, StringComparison.OrdinalIgnoreCase);
+    });
+
     [Fact]
     public void ProductionNativeTrialUsesTheExplicitConfirmationHandlerAndDoesNotRebindOrdinaryCommands()
     {

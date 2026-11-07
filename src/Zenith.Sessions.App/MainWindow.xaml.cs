@@ -353,7 +353,7 @@ public partial class MainWindow : Window
     }
     private async void RemoveProfile(object sender, RoutedEventArgs e)
     {
-        if (_vm.SelectedAccount is not { } row || _vm.IsLocked) return;
+        if (_vm.SelectedAccount is not { } row || _vm.IsLocked || _vm.ReportPendingRemoval([row])) return;
         if (MessageBox.Show(this, $"Remove the saved profile “{row.Label}”? Its running client will remain open.", "Remove profile", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         try { await _vm.DeleteAccountsAsync([row]); } catch (Exception ex) { _vm.Fail(ex); }
     }
@@ -361,6 +361,7 @@ public partial class MainWindow : Window
     {
         var rows = _vm.Accounts.Where(a => a.IsChecked).ToArray(); if (_vm.IsLocked) return;
         if (rows.Length == 0) { _vm.Inform("Select profiles using their checkboxes before removing them."); return; }
+        if (_vm.ReportPendingRemoval(rows)) return;
         if (MessageBox.Show(this, $"Remove {rows.Length} selected profiles? Running clients will remain open.", "Remove selected profiles", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         try { await _vm.DeleteAccountsAsync(rows); } catch (Exception ex) { _vm.Fail(ex); }
     }

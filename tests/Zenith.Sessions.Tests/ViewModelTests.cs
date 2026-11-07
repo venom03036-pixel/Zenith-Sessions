@@ -124,10 +124,29 @@ public sealed class ViewModelTests : IDisposable
         await vm.SaveAccountAsync(AccountProfile.Create("Source") with { Notes="Synthetic note\nSecond line" });
         vm.ToggleFavorite.Execute(null); await vm.ToggleFavorite.Execution; Assert.True(vm.SelectedAccount!.Profile.IsFavorite);
         string path=Path.Combine(_root,"metadata.json"); await vm.ExportAsync(path);
-        string json=await File.ReadAllTextAsync(path); Assert.Contains("\"Version\":3",json); Assert.DoesNotContain("AccessToken",json);
+        string json=await File.ReadAllTextAsync(path); Assert.Contains("\"Version\":4",json); Assert.DoesNotContain("AccessToken",json);
+        // A row already in the library (same name and username) is skipped on import, so rename the source first.
+        await vm.SaveAccountAsync(vm.SelectedAccount!.Profile with { Label="Renamed source" });
         await vm.ImportAsync(path); Assert.Equal(2,vm.AccountCount);
         Assert.All(vm.Accounts,row=> { Assert.True(row.Profile.IsFavorite);Assert.Equal("Synthetic note\nSecond line",row.Profile.Notes);Assert.Equal("Not linked",row.Identity); });
         Assert.Equal(2,vm.Accounts.Select(a=>a.Profile.Id).Distinct().Count());
+    });
+    [Fact]
+    public Task SecondRemovalWhileTheFirstIsPendingDoesNotReportAConflict()=>CheckAsync(async vm=>
+    {
+        await vm.SaveAccountAsync(AccountProfile.Create("Alt"));
+        var row=vm.SelectedAccount!;
+        var first=vm.DeleteAccountsAsync([row]); var second=vm.DeleteAccountsAsync([row]);
+        Assert.True(vm.IsRemovalPending(row)); Assert.Contains("already being removed",vm.Notice);
+        await first;
+        Assert.Null(await Record.ExceptionAsync(()=>second));
+        Assert.DoesNotContain("changed elsewhere",vm.Notice); Assert.Contains("Removed 1 profile",vm.Notice);
+        Assert.DoesNotContain(vm.Accounts,a=>a.Profile.Id==row.Profile.Id);
+        // The in-flight mark is released once the removal finishes, so a later removal is not refused.
+        Assert.False(vm.IsRemovalPending(row));
+        // A removal that faults (here the stale row no longer matches the library) also releases its mark.
+        Assert.NotNull(await Record.ExceptionAsync(()=>vm.DeleteAccountsAsync([row])));
+        Assert.False(vm.IsRemovalPending(row));
     });
     [Fact]
     public Task LegacyMetadataDoesNotAcquireAClaimedVerifiedIdentity()=>CheckAsync(async vm=>
@@ -181,6 +200,45 @@ public sealed class ViewModelTests : IDisposable
         var row=new AccountRow(AccountProfile.Create("A")); var now=DateTimeOffset.UtcNow;
         row.SetAuthorization("Linked","Verified identity",now.AddSeconds(1)); row.UpdateAuthorizationClock(now);
         Assert.Equal("Linked",row.Identity); row.UpdateAuthorizationClock(now.AddSeconds(2)); Assert.Equal("Expired",row.Identity);
+    }
+    // The row button decides between sign-in and launch from the cached saved sign-in, never from display wording.
+    [Theory]
+    [InlineData(AuthorizationHealth.Linked,5,"Launch")]
+    [InlineData(AuthorizationHealth.Linked,-5,"Sign in")]
+    [InlineData(AuthorizationHealth.SignInRequired,5,"Sign in")]
+    [InlineData(AuthorizationHealth.RefreshPending,5,"Sign in")]
+    public void AccountPowerFollowsTheSavedSignInHealthAndExpiry(AuthorizationHealth health,int expiresInMinutes,string expected)
+    {
+        var profile=AccountProfile.Create("A");
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            health,DateTimeOffset.UtcNow.AddMinutes(expiresInMinutes),DateTimeOffset.UtcNow));
+        Assert.Equal(expected,row.PowerLabel); Assert.Equal(expected=="Sign in",row.NeedsSignIn);
+        Assert.Equal(expected=="Launch",row.PowerExplanation.Contains("Launch this account's preferred game",StringComparison.Ordinal));
+    }
+    [Fact]
+    public void ASecurityCheckRowStillOffersSignInAndItsButtonIsRefreshedWhenTheWordingChanges()
+    {
+        var profile=AccountProfile.Create("A");
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            AuthorizationHealth.SignInRequired,DateTimeOffset.UtcNow.AddMinutes(5),DateTimeOffset.UtcNow));
+        var raised=new List<string?>(); row.PropertyChanged+=(_,e)=>raised.Add(e.PropertyName);
+        row.SetAuthorization("Security check required","Roblox asked for a human security check.");
+        Assert.Equal("Sign in",row.PowerLabel); Assert.True(row.NeedsSignIn);
+        Assert.DoesNotContain("Launch this account's preferred game",row.PowerExplanation);
+        Assert.Contains(nameof(AccountRow.PowerLabel),raised); Assert.Contains(nameof(AccountRow.PowerExplanation),raised);
+    }
+    [Fact]
+    public void ALinkedRowOffersSignInOnceItsSavedSignInExpiresOnTheClock()
+    {
+        var profile=AccountProfile.Create("A"); var now=DateTimeOffset.UtcNow;
+        var row=new AccountRow(profile);
+        row.SetCachedAuthorization(new AuthorizationMetadata(profile.Id,profile.Id.ToString("N"),RobloxSessionIdentity.Provider,RobloxSessionIdentity.Issuer,"123",123,"linked_name",8,
+            AuthorizationHealth.Linked,now.AddMinutes(1),now));
+        Assert.Equal("Launch",row.PowerLabel);
+        row.UpdateAuthorizationClock(now.AddMinutes(2));
+        Assert.Equal("Expired",row.Identity); Assert.Equal("Sign in",row.PowerLabel); Assert.True(row.NeedsSignIn);
     }
     [Fact]
     public void AccountRowUsesLastLinkedIdentityInsteadOfAPossiblyIncorrectEnteredUsername()
@@ -256,6 +314,16 @@ public sealed class ViewModelTests : IDisposable
         await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
         Assert.False(vm.IsReady); Assert.Contains("Library unavailable",vm.EmptyAccountsText); Assert.Equal("Startup needs attention",vm.SaveStatus);
         await Assert.ThrowsAsync<InvalidOperationException>(()=>vm.SaveAccountAsync(AccountProfile.Create("Must not replace data")));
+    });
+    [Fact]
+    public Task CorruptVaultFileOfADeletedProfileDoesNotMakeTheLibraryUnavailable()=>OnDispatcherAsync(async ()=>
+    {
+        using(var repository=new AccountRepository(_root))
+        { await repository.InitializeAsync(default); await CleanupRecoveryTests.DeletedProfileWithDamagedPointerAsync(repository,_root); }
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
+        Assert.True(vm.IsReady); Assert.NotEqual("Startup needs attention",vm.SaveStatus); Assert.DoesNotContain("Library unavailable",vm.EmptyAccountsText);
+        Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("is damaged",vm.CredentialCleanupStatus);
+        Assert.DoesNotContain("Check storage access",vm.CredentialCleanupStatus);
     });
     private static Task OnDispatcherAsync(Func<Task> work)
     {

@@ -328,11 +328,14 @@ internal static class DistributionSelfCheck
                     || addedProfile.Group != "General" || addedProfile.PreferredPlaceId is not null
                     || addedSummary is not { VerifiedUserId: 789, Health: AuthorizationHealth.Linked })
                     throw new InvalidDataException("The verified account creation did not preserve its identity and default preferences.");
-                bool duplicateRejected = false;
-                try { await setupService.AddAsync(ct); }
-                catch (AccountLinkException) { duplicateRejected = true; }
-                if (!duplicateRejected || (await repository.ReadAsync(new(PageSize: 1), ct)).Total != beforeAdd.Total + 1)
-                    throw new InvalidDataException("The duplicate saved account created another profile or authorization.");
+                // Adding the same verified player again refreshes its saved sign-in on the existing row.
+                var refreshed = await setupService.AddAsync(ct);
+                var refreshedSummary = await vault.GetSummaryAsync(added.ProfileId, ct);
+                if (!refreshed.Refreshed || refreshed.ProfileId != added.ProfileId
+                    || (await repository.ReadAsync(new(PageSize: 1), ct)).Total != beforeAdd.Total + 1
+                    || await repository.FindAsync(added.ProfileId, ct) != addedProfile
+                    || refreshedSummary is not { VerifiedUserId: 789, Health: AuthorizationHealth.Linked } || refreshedSummary.Generation <= addedSummary.Generation)
+                    throw new InvalidDataException("Adding the saved account again created another profile or did not refresh its existing sign-in.");
                 // Only this exact newly created synthetic profile is removed. An interrupted
                 // check retains its files for review; the normal user workspace is excluded.
                 await setupService.DisconnectAsync(added.ProfileId, ct);

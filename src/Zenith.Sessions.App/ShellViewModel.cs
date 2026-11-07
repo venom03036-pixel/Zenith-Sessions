@@ -23,24 +23,37 @@ public sealed partial class AccountRow(AccountProfile profile) : Observable
         Profile.Username.Length==0?"Sign in to identify this account":"@"+Profile.Username+" · entered label";
     public long? KnownUserId=>_authorizationMetadata?.VerifiedUserId;
     public long? AuthorizationGeneration=>_authorizationMetadata?.Generation;
+    /// <summary>Last-known summary, carried to the next page load only while the protected store is busy.</summary>
+    internal AuthorizationMetadata? CachedAuthorization=>_authorizationMetadata;
+    internal const string BusyIdentity="Sign-in status busy";
+    /// <summary>The protected store was busy, so this row's saved sign-in was not read. It is not a missing sign-in.</summary>
+    public bool SignInStatusBusy=>_identity==BusyIdentity;
     public string Group => Profile.GroupsSummary;
     public string FavoriteLabel=>Profile.IsFavorite?"★ Favorite":"☆ Add favorite";
     public string Notes=>Profile.Notes.Length==0?"No notes added.":Profile.Notes;
     private string _identity="Not linked", _linkedAccount="No official account linked";
     private DateTimeOffset? _expiresUtc;
+    private bool _signInExpired; // The cached summary's expiry has passed (at load or on the clock).
     public string Identity => _identity;
     public string LinkedAccount => _linkedAccount;
-    public void SetAuthorization(string state,string account,DateTimeOffset? expiresUtc=null) { _identity=state; _linkedAccount=account; _expiresUtc=expiresUtc; Raise(nameof(Identity)); Raise(nameof(LinkedAccount)); }
+    /// <summary>Sets the status wording only. The row's button still follows the cached summary (<see cref="NeedsSignIn"/>).</summary>
+    public void SetAuthorization(string state,string account,DateTimeOffset? expiresUtc=null)
+    { _identity=state; _linkedAccount=account; _expiresUtc=expiresUtc; Raise(nameof(Identity)); Raise(nameof(LinkedAccount)); Raise(nameof(PowerLabel)); Raise(nameof(PowerExplanation)); }
     public void SetCachedAuthorization(AuthorizationMetadata metadata)
     {
         if(_publicData is not null && _authorizationMetadata?.VerifiedUserId!=metadata.VerifiedUserId) ClearPublicPresentation();
-        _authorizationMetadata=metadata;
-        string state=metadata.Health!=AuthorizationHealth.Linked?"Sign in required":metadata.ExpiresUtc<=DateTimeOffset.UtcNow?"Expired link":"Saved link";
+        _authorizationMetadata=metadata; _signInExpired=metadata.ExpiresUtc<=DateTimeOffset.UtcNow;
+        string state=metadata.Health!=AuthorizationHealth.Linked?"Sign in required":_signInExpired?"Expired link":"Saved link";
         SetAuthorization(state,$"Last-known linked ID {metadata.VerifiedUserId}. Authorization is checked before use.",metadata.ExpiresUtc);
-        Raise(nameof(Label));Raise(nameof(Initial));Raise(nameof(Username));Raise(nameof(KnownUserId));Raise(nameof(AuthorizationGeneration));Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation));
+        Raise(nameof(Label));Raise(nameof(Initial));Raise(nameof(Username));Raise(nameof(KnownUserId));Raise(nameof(AuthorizationGeneration));
     }
     public void UpdateAuthorizationClock(DateTimeOffset now)
-    { if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity));Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); } }
+    {
+        bool changed=false;
+        if(_authorizationMetadata is { } metadata && !_signInExpired && now>=metadata.ExpiresUtc) { _signInExpired=true; changed=true; }
+        if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity)); changed=true; }
+        if(changed) { Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); }
+    }
     public string Destination => Profile.PreferredPlaceId switch
     {
         6564161046 => "Coloseum sword-fight", 110829983956014 => "Anime Card Clash", 2512643572 => "Bubble Gum Simulator",
@@ -155,8 +168,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
     private Task _queryTask = Task.CompletedTask, _monitorTask = Task.CompletedTask, _initializeTask = Task.CompletedTask;
+    /// <summary>The owned debounced account query or busy-store retry; shutdown joins it.</summary>
+    internal Task AccountQuery=>_queryTask;
     private Task? _disposeTask;
     private readonly HashSet<Task> _profileOperations=[];
+    /// <summary>Profile ids whose removal is queued or running; touched only on the UI thread.</summary>
+    private readonly HashSet<Guid> _pendingProfileRemovals=[];
     private readonly SemaphoreSlim _profileSerial=new(1,1);
     private bool _shuttingDown,_settingsNeedRepair,_libraryUnavailable;
     private Guid? _selectAfterReload;
@@ -346,6 +363,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RefreshAuthorization=new(_=>AuthorizeSelectedAsync(true),Fail);
         DisconnectAccount=new(_=>DisconnectSelectedAsync(),Fail);
         CancelAuthorization=new(_=>_authorizationStop?.Cancel());
+        InitializeAccountHealthFeatures();
         CleanupCredentials=new(async _=> { if(!_ready) throw new AccountLinkException("Resolve the library startup error before retrying credential cleanup."); await CleanupCredentialsAsync(); },Fail);
         InitializeHandoffProbe(handoffProbe);
         InitializeNativeTrialFeatures();
@@ -445,22 +463,46 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         int allCount = query.Group is null && query.Search.Length == 0 ? page.Total
             : (await Task.Run(() => _accounts.ReadAsync(new(PageSize: 1), ct), ct)).Total;
         if (generation != _queryGeneration || ct.IsCancellationRequested) return;
-        var rows=await Task.Run(async ()=>
+        // A busy store is retryable and says nothing about a saved sign-in. Keep each visible row's
+        // last-known link instead (launch and dispatch re-check the vault generation and fail closed).
+        var lastKnown=new Dictionary<Guid,AuthorizationMetadata>(Accounts.Count);
+        foreach(var published in Accounts) if(published.CachedAuthorization is { } known) lastKnown[published.Profile.Id]=known;
+        var (rows,storeBusy)=await Task.Run(async ()=>
         {
             var result=new List<AccountRow>();
-            IReadOnlyDictionary<Guid,AuthorizationMetadata> summaries;
-            bool metadataUnavailable=false;
-            try { summaries=(await _vault.ReadSummariesAsync(page.Items.Select(p=>p.Id).ToArray(),ct)).ToDictionary(m=>m.ProfileId); }
+            var ids=page.Items.Select(p=>p.Id).ToArray();
+            var summaries=new Dictionary<Guid,AuthorizationMetadata>(ids.Length);
+            HashSet<Guid>? unavailable=null, busy=null;
+            try { foreach(var summary in await _vault.ReadSummariesAsync(ids,ct)) summaries[summary.ProfileId]=summary; }
+            catch(AuthorizationVaultBusyException) { busy=[..ids]; }
             catch(Exception ex) when(ex is InvalidDataException or IOException or UnauthorizedAccessException)
-            { summaries=new Dictionary<Guid,AuthorizationMetadata>();metadataUnavailable=true; }
+            {
+                // One damaged or locked record must not hide every other row's link. Only on this
+                // degraded path, re-read each visible profile alone (same validation, same lease)
+                // so just the failing rows are marked; cancellation still propagates.
+                unavailable=[];
+                for(int i=0;i<ids.Length;i++)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try { if(await _vault.GetSummaryAsync(ids[i],ct) is { } summary) summaries[ids[i]]=summary; }
+                    // Every later read would wait out the same 2-second lease deadline.
+                    catch(AuthorizationVaultBusyException) { busy=[..ids[i..]]; break; }
+                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException) { unavailable.Add(ids[i]); }
+                }
+            }
             foreach(var item in page.Items)
             {
                 ct.ThrowIfCancellationRequested(); var row=new AccountRow(item);
                 if(summaries.TryGetValue(item.Id,out var summary)) row.SetCachedAuthorization(summary);
-                else if(metadataUnavailable) row.SetAuthorization("Link index unavailable","Protected files were preserved. Sign in again or review storage access; account metadata remains usable.");
+                else if(busy?.Contains(item.Id)==true)
+                {
+                    if(lastKnown.TryGetValue(item.Id,out var known)) row.SetCachedAuthorization(known);
+                    else row.SetAuthorization(AccountRow.BusyIdentity,"Protected storage was busy, so this saved sign-in was not read. Zenith checks again shortly, or choose Refresh. Protected files were not changed.");
+                }
+                else if(unavailable?.Contains(item.Id)==true) row.SetAuthorization("Link index unavailable","Protected files were preserved. Sign in again or review storage access; account metadata remains usable.");
                 result.Add(row);
             }
-            return result;
+            return (result,busy is not null);
         },ct);
         await RefreshMainAccountDisplayAsync(rows,generation,ct);
         if(generation!=_queryGeneration || ct.IsCancellationRequested) return;
@@ -494,6 +536,31 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(selectedGroup is not null && Group.Value is null) ScheduleQuery();
         }
         if(generation==_queryGeneration && !ct.IsCancellationRequested && publicImageEpoch==_directoryGeneration) QueueCurrentPublicImages();
+        if(storeBusy && generation==_queryGeneration && !ct.IsCancellationRequested) ScheduleBusyStoreRetry(generation);
+    }
+    private static readonly TimeSpan BusyStoreRetryDelay=TimeSpan.FromSeconds(1);
+    private int? _busyStoreRetryGeneration;
+    /// <summary>
+    /// Re-reads the same page once after the protected store reported busy. It is owned like a
+    /// debounced query (chained into <see cref="_queryTask"/>, cancelled with <see cref="_queryCancellation"/>
+    /// and joined at shutdown), keeps the current page, and allows one retry per query generation,
+    /// so a store that stays busy cannot loop. Any newer search, filter, page or reload supersedes it.
+    /// </summary>
+    private void ScheduleBusyStoreRetry(int generation)
+    {
+        if(_busyStoreRetryGeneration==generation || _shuttingDown || _lifetime.IsCancellationRequested) return;
+        _busyStoreRetryGeneration=generation;
+        // The prior query may be the one publishing now; it is awaited, never cancelled, before its source is disposed.
+        var priorCancellation=_queryCancellation; var prior=_queryTask;
+        _queryCancellation=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _queryTask=RetryBusyStoreQueryAsync(prior,priorCancellation,generation,_queryCancellation.Token);
+    }
+    private async Task RetryBusyStoreQueryAsync(Task prior,CancellationTokenSource? priorCancellation,int generation,CancellationToken ct)
+    {
+        try { await prior; } finally { priorCancellation?.Dispose(); }
+        try { await Task.Delay(BusyStoreRetryDelay,ct); if(generation==_queryGeneration && !_libraryUnavailable) await LoadAccountsAsync(ct,generation); }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        catch (Exception ex) { Fail(ex); }
     }
     public Task SaveAccountAsync(AccountProfile profile)=>OwnProfileOperation(()=>SaveAccountCoreAsync(profile));
     private async Task ChangeWindowAsync(object? parameter,ClientWindowAction action)
@@ -509,24 +576,60 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task SaveAccountCoreAsync(AccountProfile profile)
     {
         if(!_ready) throw new InvalidOperationException("The local library has not opened successfully.");
-        var saved=await Task.Run(() => _accounts.SaveAsync(profile, _lifetime.Token)); _selectAfterReload=saved.Id; await LoadAccountsAsync(_lifetime.Token);
-        Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
+        var saved=await Task.Run(() => _accounts.SaveAsync(profile, _lifetime.Token)); _selectAfterReload=saved.Id;
         _diagnostics.Record(ManagerEventKind.ProfileSaved);
+        // The commit is authoritative. A failed list refresh must not reach the dialog as a failed
+        // save: a retry would carry the old revision and report a false "changed elsewhere" conflict.
+        // No retry or compensating write; the next successful reload selects the saved row.
+        try { await LoadAccountsAsync(_lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            Notice = "Profile saved, but the account list could not refresh. Use Refresh to reload it.";
+            AddEvent($"Profile saved; list refresh failed ({ex.GetType().Name}).");
+            _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+            return;
+        }
+        Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
     }
-    public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)=>OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows));
+    /// <summary>True while a removal of this row's profile is queued or running. UI-thread state, like <see cref="_profileOperations"/>.</summary>
+    public bool IsRemovalPending(AccountRow row)=>_pendingProfileRemovals.Contains(row.Profile.Id);
+    /// <summary>Shows why a removal is refused and returns true when any of these rows is already being removed.</summary>
+    public bool ReportPendingRemoval(IReadOnlyList<AccountRow> rows)
+    {
+        if(!rows.Any(IsRemovalPending)) return false;
+        Notice=rows.Count==1?"That profile is already being removed. Wait for the removal to finish."
+            :"Some checked profiles are already being removed. Wait for that removal to finish, then check the remaining profiles again.";
+        return true;
+    }
+    /// <summary>Removes the rows' profiles. A second request for a profile whose removal is still queued or running is refused with a notice,
+    /// so it cannot repeat the queue stop and authorization invalidation and then fail as a stale-revision conflict.</summary>
+    public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)
+    {
+        if(ReportPendingRemoval(rows)) return Task.CompletedTask;
+        var ids=rows.Select(r=>r.Profile.Id).Distinct().ToArray();
+        foreach(var id in ids) _pendingProfileRemovals.Add(id);
+        return RemoveOwnedProfilesAsync(ids,rows);
+    }
+    private async Task RemoveOwnedProfilesAsync(Guid[] ids,IReadOnlyList<AccountRow> rows)
+    {
+        // Released on every path (completed, faulted, cancelled or refused before it started) so the profile can be removed again later.
+        try { await OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows)); }
+        finally { foreach(var id in ids) _pendingProfileRemovals.Remove(id); }
+    }
     private async Task DeleteAccountsCoreAsync(IReadOnlyList<AccountRow> rows)
     {
-        _launchQueue.SignalPanic();
+        string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a profile was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
         if(QueueReady)
         {
             foreach(var row in rows)await _launchQueue.InvalidateAuthorizationAsync(row.Profile.Id,_lifetime.Token);
         }
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         if(_linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
-        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,InspectNativeHandoff.Execution); }
+        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
-        Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}"; AddEvent("Selected profiles removed.");
+        Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}{queueStopped}"; AddEvent("Selected profiles removed.");
         _diagnostics.Record(ManagerEventKind.ProfilesRemoved);
     }
     public Task ExportAsync(string path)=>OwnProfileOperation(()=>ExportCoreAsync(path));
@@ -540,15 +643,44 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 await using(var file=new FileStream(temporary,FileMode.Create,FileAccess.Write,FileShare.None,32768,FileOptions.Asynchronous|FileOptions.WriteThrough))
                 {
                     await using var writer=new Utf8JsonWriter(file);
-                    writer.WriteStartObject(); writer.WriteNumber("Version",3); writer.WritePropertyName("Profiles"); writer.WriteStartArray();
+                    async Task FlushBoundedAsync()
+                    {
+                        await writer.FlushAsync(_lifetime.Token);
+                        if(file.Length>16*1024*1024-64) throw new InvalidDataException("The export exceeds 16 MiB. Shorten notes or export a smaller library. The existing destination was preserved.");
+                    }
+                    writer.WriteStartObject(); writer.WriteNumber("Version",ProfileMetadataImport.CurrentVersion);
+                    writer.WritePropertyName("Groups"); writer.WriteStartArray();
+                    if(_accounts is IAccountGroupCatalog catalog)
+                    {
+                        // Saved groups, including empty ones, in list order. All pages must come from one catalog
+                        // revision so a concurrent reorder cannot duplicate or drop a group in the file.
+                        long revision=0; int written=0;
+                        for(int page=0;;page++)
+                        {
+                            var groups=await catalog.ReadGroupCatalogAsync(new(Page:page,PageSize:1000),_lifetime.Token);
+                            if(groups.Total>ProfileMetadataImport.MaximumGroups) throw new InvalidDataException("Export at most 100,000 saved groups per operation.");
+                            if(page==0) revision=groups.CatalogRevision;
+                            else if(groups.CatalogRevision!=revision) throw new InvalidDataException("The saved groups changed while exporting. Export again; the existing destination was preserved.");
+                            foreach(var group in groups.Items)
+                            {
+                                _lifetime.Token.ThrowIfCancellationRequested();
+                                writer.WriteStartObject(); writer.WriteString("Name",group.Name);
+                                if(group.ColorHex is null) writer.WriteNull("ColorHex"); else writer.WriteString("ColorHex",group.ColorHex);
+                                writer.WriteNumber("SortOrder",written++); writer.WriteEndObject();
+                            }
+                            await FlushBoundedAsync();
+                            if(groups.Items.Count==0||written>=groups.Total) break;
+                        }
+                    }
+                    writer.WriteEndArray();
+                    writer.WritePropertyName("Profiles"); writer.WriteStartArray();
                     int exported=0;
                     for(int page=0;;page++)
                     {
                         var batch=await _accounts.ReadAsync(new(Page:page),_lifetime.Token);
                         if(batch.Total>100000) throw new InvalidDataException("Export at most 100,000 profiles per operation.");
                         foreach(var profile in batch.Items) { _lifetime.Token.ThrowIfCancellationRequested(); JsonSerializer.Serialize(writer,profile); }
-                        await writer.FlushAsync(_lifetime.Token);
-                        if(file.Length>16*1024*1024-64) throw new InvalidDataException("The export exceeds 16 MiB. Shorten notes or export a smaller library. The existing destination was preserved.");
+                        await FlushBoundedAsync();
                         exported+=batch.Items.Count; if(exported>=batch.Total) break;
                     }
                     writer.WriteEndArray();writer.WriteEndObject();await writer.FlushAsync(_lifetime.Token);await file.FlushAsync(_lifetime.Token);file.Flush(true);
@@ -557,7 +689,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         });
-        Notice = "Profiles and group memberships exported. Saved empty groups, colors, group order, authorization and credentials are excluded.";
+        Notice = "Profiles, group memberships, saved groups (including empty ones), group colors and group order exported. Authorization and credentials are excluded.";
         _diagnostics.Record(ManagerEventKind.MetadataExported);
     }
     public Task ImportAsync(string path)=>OwnProfileOperation(()=>ImportCoreAsync(path));
@@ -569,12 +701,52 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if (stream.Length is 0 or > ProfileMetadataImport.MaximumBytes) throw new InvalidDataException("Import requires a nonempty metadata file of at most 16 MiB.");
             byte[] bytes = new byte[(int)stream.Length];
             await stream.ReadExactlyAsync(bytes, _lifetime.Token);
-            return ProfileMetadataImport.Decode(bytes, _lifetime.Token);
+            return ProfileMetadataImport.DecodeDocument(bytes, _lifetime.Token);
         });
-        var validated = imported.Select(profile => profile with { Id = Guid.NewGuid(), Revision = 0, RobloxUserId = null }).ToArray();
-        await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
-        await LoadAccountsAsync(_lifetime.Token); Notice = $"Imported {validated.Length} profiles. Sign-in is required separately."; AddEvent("Profile metadata imported.");
+        // Exported IDs and Roblox user IDs are hints, never identity (CONFLICT-04), so they cannot detect a
+        // row this library already has. Name plus username, ignoring case, does; such rows are skipped.
+        var existing = await Task.Run(() => ReadProfileKeysAsync(_lifetime.Token));
+        var validated = imported.Profiles.Where(profile => !existing.Contains(ProfileKey(profile)))
+            .Select(profile => profile with { Id = Guid.NewGuid(), Revision = 0, RobloxUserId = null }).ToArray();
+        int skipped = imported.Profiles.Count - validated.Length;
+        // Groups first: creating profiles adds any missing membership group without a color at the end of the list.
+        int addedGroups = await Task.Run(() => ImportGroupsAsync(imported.Groups, _lifetime.Token));
+        if (validated.Length > 0) await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
+        await LoadAccountsAsync(_lifetime.Token);
+        string skippedText = skipped == 0 ? "" : $" Skipped {skipped} already in this library (same name and username).";
+        string groupsText = imported.Groups.Count == 0 ? ""
+            : _accounts is not IAccountGroupCatalog ? " Saved groups, colors and order were not added because this library has no group list."
+            : (addedGroups == 0 ? "" : $" Added {addedGroups} saved group(s) with their colors and order.")
+              + (addedGroups == imported.Groups.Count ? "" : $" Kept this library's colors and order for {imported.Groups.Count - addedGroups} group(s) it already had.");
+        Notice = $"Imported {validated.Length} profiles.{skippedText}{groupsText} Sign-in is required separately."; AddEvent("Profile metadata imported.");
         _diagnostics.Record(ManagerEventKind.ProfilesImported);
+    }
+    private static string ProfileKey(AccountProfile profile) => profile.Label.Trim() + "\n" + profile.Username.Trim();
+    private async Task<HashSet<string>> ReadProfileKeysAsync(CancellationToken ct)
+    {
+        // A label cannot contain a line break, so the joined key is unambiguous.
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase); int read = 0;
+        for (int page = 0; ; page++)
+        {
+            var batch = await _accounts.ReadAsync(new(Page: page), ct);
+            foreach (var profile in batch.Items) { ct.ThrowIfCancellationRequested(); keys.Add(ProfileKey(profile)); }
+            read += batch.Items.Count; if (batch.Items.Count == 0 || read >= batch.Total) return keys;
+        }
+    }
+    /// <summary>Creates the saved groups this library lacks, in exported order, so they keep their colors and relative
+    /// order after this library's own groups. A group it already has keeps its own color and position. Returns how many were added.</summary>
+    private async Task<int> ImportGroupsAsync(IReadOnlyList<ProfileMetadataGroup> groups, CancellationToken ct)
+    {
+        if (groups.Count == 0 || _accounts is not IAccountGroupCatalog catalog) return 0;
+        int added = 0;
+        foreach (var group in groups)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await catalog.FindGroupAsync(group.Name, ct) is not null) continue;
+            long revision = (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), ct)).CatalogRevision;
+            await catalog.CreateGroupAsync(group.Name, group.ColorHex, revision, ct); added++;
+        }
+        return added;
     }
     private async Task MonitorLoopAsync(CancellationToken ct)
     {
@@ -760,7 +932,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
         await _executableTrust.DisposeAsync();
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
-            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
+            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         await DisposeRecipientBundlesAsync();
         await StopDirectoryFeaturesAsync();
@@ -817,19 +989,21 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         if(IsLocked || SelectedAccount is not { } selected) return;
         _preserveStopNotice=false;
-        _launchQueue.SignalPanic();
+        string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a saved sign-in was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
         if(QueueReady) await _launchQueue.InvalidateAuthorizationAsync(selected.Profile.Id,_lifetime.Token);
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
-        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,InspectNativeHandoff.Execution);
+        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution);
         await Task.Run(()=>_linkService.DisconnectAsync(selected.Profile.Id,_lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token);
-        if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices.";
+        if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices."+queueStopped;
         _diagnostics.Record(ManagerEventKind.AuthorizationDisconnected);
     }
     private async Task CleanupCredentialsAsync()
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
-        CredentialCleanupStatus=result.Remaining==0?"No pending credential cleanup.":$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.";
+        CredentialCleanupStatus=result.Remaining==0?"No pending credential cleanup."
+            :result.ErrorType==nameof(InvalidDataException)?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete."
+            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.";
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.Record(ManagerEventKind.OperationFailed); }
     }
     private LaunchAdmission ReadLaunchAdmission(IReadOnlyList<LaunchOperation> operations)

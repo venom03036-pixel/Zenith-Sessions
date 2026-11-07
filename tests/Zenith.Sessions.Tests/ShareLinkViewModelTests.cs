@@ -92,6 +92,25 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task SignInRequiredAsksTheShellToReloadTheCheckedAccount()=>SearchTest.OnUi(async()=>
+    {
+        // The service marks a rejected saved session as needing sign-in; the account row must show it without a manual refresh.
+        await using var f=new SearchTest();var resolver=new Resolver{Response=_=>new(RobloxShareLinkOutcome.SignInRequired)};var store=new Store();
+        var rejected=new List<Guid>();var failures=new List<Exception>();Exception? reloadFailure=null;
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,failures.Add,games:f.Directory,
+            sessionRejected:(profile,ct)=>{rejected.Add(profile);return reloadFailure is null?Task.CompletedTask:Task.FromException(reloadFailure);});
+        vm.LinkInput=Link("Server");await vm.CheckAsync();
+        Assert.Equal(new[]{ProfileA},rejected);Assert.Equal("Sign in with the selected account to check share links.",vm.Status);Assert.False(vm.IsBusy);
+        resolver.Response=_=>new(RobloxShareLinkOutcome.Experience,5,6);vm.LinkInput=Link("ExperienceDetails");await vm.CheckAsync();
+        resolver.Response=_=>new(RobloxShareLinkOutcome.Unavailable);vm.LinkInput=Link("Server");await vm.CheckAsync();
+        Assert.Single(rejected);Assert.Empty(failures); // Only a sign-in answer reloads the account.
+        reloadFailure=new System.IO.IOException("Synthetic library read failure "+LinkCode);resolver.Response=_=>new(RobloxShareLinkOutcome.SignInRequired);
+        vm.LinkInput=Link("Server");await vm.CheckAsync();
+        Assert.Equal(2,rejected.Count);Assert.Equal("Sign in with the selected account to check share links.",vm.Status);Assert.False(vm.IsBusy);
+        var failure=Assert.Single(failures);Assert.DoesNotContain(LinkCode,failure.ToString(),StringComparison.Ordinal);
+    });
+
+    [Fact]
     public Task UnparseableInputIsRejectedWithoutARequest()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver();var store=new Store();

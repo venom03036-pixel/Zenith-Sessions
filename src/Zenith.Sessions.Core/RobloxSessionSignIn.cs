@@ -28,7 +28,12 @@ public sealed class RobloxSessionValidation(LinkedIdentity identity, RobloxSessi
     public void Dispose() => RotatedCredential?.Dispose();
     public override string ToString() => "RobloxSessionValidation { Credential = [protected] }";
 }
-public enum RobloxSessionFailure { InvalidSession, Challenge, Network, TimedOut, InvalidResponse }
+/// <summary>
+/// Network and TimedOut are ambiguous: Roblox may have handled the request and replaced the session.
+/// NotProcessed is only for outcomes that provably did not replace it: the connection never reached
+/// Roblox, or Roblox turned the request away as busy (429/503) without sending a session cookie.
+/// </summary>
+public enum RobloxSessionFailure { InvalidSession, Challenge, Network, TimedOut, InvalidResponse, NotProcessed }
 public sealed class RobloxSessionException(RobloxSessionFailure failure, string explanation) : Exception(explanation)
 { public RobloxSessionFailure Failure { get; } = failure; }
 
@@ -41,8 +46,12 @@ public interface IRobloxSessionClient
 {
     Task<RobloxSessionValidation> ValidateAsync(RobloxSessionCredential credential, CancellationToken ct);
 }
-/// <summary>Saved metadata and verified website identity only; never native launch or arrival proof.</summary>
-public sealed record AddedRobloxAccount(Guid ProfileId, LinkedIdentity Identity);
+/// <summary>
+/// Saved metadata and verified website identity only; never native launch or arrival proof.
+/// Refreshed means the verified player already had a saved Roblox session on ProfileId, so that
+/// row's saved sign-in was replaced and no profile was created.
+/// </summary>
+public sealed record AddedRobloxAccount(Guid ProfileId, LinkedIdentity Identity, bool Refreshed = false);
 public interface IRobloxSessionLinkService : IAsyncDisposable
 {
     Task<AddedRobloxAccount> AddAsync(CancellationToken ct);

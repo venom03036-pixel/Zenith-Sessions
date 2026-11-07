@@ -308,6 +308,18 @@ public sealed class AccountGroupCatalogTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(()=>repository.InitializeAsync(default));Assert.Equal(before,await File.ReadAllBytesAsync(DatabasePath));
     }
 
+    [Fact]
+    public async Task ReadOnlyAccountPageAndCleanupReadsDoNotWaitForAForeignWriteReservation()
+    {
+        using var repository=await Open();await repository.SaveAsync(Profile("Listed"),default);
+        var removed=await repository.SaveAsync(Profile("Pending cleanup"),default);await repository.DeleteAsync(removed.Id,removed.Revision,default);
+        // BEGIN IMMEDIATE on a foreign connection holds only the RESERVED lock (nothing written or spilled), so plain readers can still take SHARED.
+        await using var foreign=await Database();using var reservation=foreign.BeginTransaction(deferred:false);
+        Assert.Equal(1,(await repository.ReadAsync(new(),default).WaitAsync(TimeSpan.FromSeconds(2))).Total);
+        Assert.Equal(1,(await repository.ReadCredentialCleanupAsync(default).WaitAsync(TimeSpan.FromSeconds(2))).Total);
+        reservation.Rollback();
+    }
+
     [Theory]
     [InlineData("{}")]
     [InlineData("[\"Raid\"]")]

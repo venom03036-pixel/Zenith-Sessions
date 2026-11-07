@@ -41,10 +41,10 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         Assert.True(saved.IsFavorite); Assert.Equal("Beta\nGamma", saved.AdditionalGroups);
         Assert.Equal(new[] { "Primary", "Beta", "Gamma" }, saved.GroupNames);
 
-        string path = Path.Combine(_root, "groups-v3.json"); await vm.ExportAsync(path);
+        string path = Path.Combine(_root, "groups-v4.json"); await vm.ExportAsync(path);
         using (var json = JsonDocument.Parse(await File.ReadAllTextAsync(path)))
         {
-            Assert.Equal(3, json.RootElement.GetProperty("Version").GetInt32());
+            Assert.Equal(4, json.RootElement.GetProperty("Version").GetInt32());
             var exported = Assert.Single(json.RootElement.GetProperty("Profiles").EnumerateArray());
             Assert.Equal("Beta\nGamma", exported.GetProperty("AdditionalGroups").GetString());
             Assert.False(exported.TryGetProperty("GroupNames", out _));
@@ -52,6 +52,9 @@ public sealed class AccountGroupIntegrationTests : IDisposable
             foreach (string secret in new[] { "SessionCookie", "AccessToken", "RefreshToken", "CredentialRef", "AuthorizationGeneration" })
                 Assert.False(exported.TryGetProperty(secret, out _));
         }
+        // Re-importing a row this library already has (same name and username) is now skipped, so rename
+        // the source first to keep exercising the unauthenticated copy of every exported field.
+        await vm.SaveAccountAsync(Assert.Single(vm.Accounts).Profile with { Label = "Renamed source" });
         await vm.ImportAsync(path);
         Assert.Equal(2, vm.AccountCount);
         var imported = Assert.Single(vm.Accounts.Where(row => row.Profile.Id != source.Id)).Profile;
@@ -268,6 +271,7 @@ public sealed class AccountGroupIntegrationTests : IDisposable
     [Theory]
     [InlineData(1)]
     [InlineData(2)]
+    [InlineData(3)]
     public Task LegacyExportsWithAnExplicitEmptyAdditionalGroupsFieldRemainCompatible(int version) => OnUi(async () =>
     {
         var repository = new GroupRepository(_root); await using var vm = await Ready(repository);
@@ -279,6 +283,55 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         Assert.Equal(new[] { "General" }, imported.GroupNames); Assert.Null(imported.RobloxUserId);
         await AssertNoAuthorizationOrQueue(vm, imported.Id);
     });
+
+    [Fact]
+    public Task MovingAnExportToAnotherLibraryKeepsSavedGroupsColorsOrderEmptyGroupsAndFavorites() => OnUi(async () =>
+    {
+        string path = await ExportMovedLibrary();
+        string root = Path.Combine(_root, "destination"); var destination = new AccountRepository(root);
+        await using var vm = await Ready(destination, root);
+        await vm.ImportAsync(path);
+        // Creation order, not alphabetical order; "Empty" has no accounts in the source library.
+        Assert.Equal(new (string, string?)[] { ("Zeta", "#FF0000"), ("Alpha", null), ("Empty", "#00FF00") }, await CatalogNames(destination));
+        Assert.Equal(2, vm.AccountCount);
+        var main = Assert.Single(vm.Accounts, row => row.Profile.Label == "Main").Profile;
+        Assert.True(main.IsFavorite); Assert.Equal("Zeta", main.Group); Assert.Null(main.RobloxUserId);
+        Assert.Contains("Imported 2 profiles", vm.Notice);
+        await AssertNoAuthorizationOrQueue(vm, vm.Accounts.Select(row => row.Profile.Id).ToArray());
+    });
+
+    [Fact]
+    public Task ImportingTheSameExportTwiceSkipsProfilesAlreadyInTheLibraryAndKeepsExistingGroupColors() => OnUi(async () =>
+    {
+        string path = await ExportMovedLibrary();
+        string root = Path.Combine(_root, "destination"); var destination = new AccountRepository(root);
+        await using var vm = await Ready(destination, root);
+        IAccountGroupCatalog catalog = destination;
+        await catalog.CreateGroupAsync("ALPHA", "#ABCDEF", (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision, default);
+        await vm.ImportAsync(path);
+        await vm.ImportAsync(path);
+        Assert.Equal(2, vm.AccountCount);
+        Assert.Equal(new[] { "Alt", "Main" }, vm.Accounts.Select(row => row.Profile.Label).Order());
+        Assert.Contains("Imported 0 profiles", vm.Notice); Assert.Contains("Skipped 2 already in this library", vm.Notice);
+        // An existing group keeps this library's color and position; missing groups follow it in their exported order.
+        Assert.Equal(new (string, string?)[] { ("ALPHA", "#ABCDEF"), ("Zeta", "#FF0000"), ("Empty", "#00FF00") }, await CatalogNames(destination));
+    });
+
+    private async Task<string> ExportMovedLibrary()
+    {
+        string root = Path.Combine(_root, "source"), path = Path.Combine(_root, "moved-library.json");
+        var repository = new AccountRepository(root);
+        await using var vm = await Ready(repository, root);
+        IAccountGroupCatalog catalog = repository;
+        foreach (var (name, color) in new (string, string?)[] { ("Zeta", "#ff0000"), ("Alpha", null), ("Empty", "#00FF00") })
+            await catalog.CreateGroupAsync(name, color, (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision, default);
+        await vm.SaveAccountAsync(AccountProfile.Create("Main") with { Username = "MainUser", Group = "Zeta", IsFavorite = true });
+        await vm.SaveAccountAsync(AccountProfile.Create("Alt") with { Username = "AltUser", Group = "Alpha", AdditionalGroups = "Zeta" });
+        await vm.ExportAsync(path);
+        return path;
+    }
+    private static async Task<(string, string?)[]> CatalogNames(IAccountGroupCatalog catalog)
+        => (await catalog.ReadGroupCatalogAsync(new(PageSize: 1000), default)).Items.Select(item => (item.Name, item.ColorHex)).ToArray();
 
     [Fact]
     public Task DisposeJoinsTheActualLateGroupOwnerBeforeDisposingItsRepository() => OnUi(async () =>

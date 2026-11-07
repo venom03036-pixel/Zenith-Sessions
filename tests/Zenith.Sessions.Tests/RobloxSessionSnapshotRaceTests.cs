@@ -152,6 +152,44 @@ public sealed class RobloxSessionSnapshotRaceTests : IDisposable
         Assert.Equal(456,profile.RobloxUserId);Assert.Equal("verified_player",profile.Username);Assert.Equal("Alias preserved",profile.Label);
     }
 
+    [Fact]
+    public async Task ShareLinkRotationIsCommittedThroughTheActualVaultSnapshotAtTheNextGeneration()
+    {
+        // R-accounts-3: Roblox replaced the saved session while answering a share link.
+        await using var fixture=await Fixture.Open(Root,true);var shareLinks=new RotatingShareLinks();
+        await using var service=new RobloxSessionLinkService(fixture.Profiles,fixture.Vault,fixture.Client,fixture.Browser,shareLinks:shareLinks);
+        using var link=new RobloxShareLink(new ProtectedShareCode("abc123"),RobloxShareLinkType.ExperienceDetails);
+        using var resolution=await service.ResolveShareLinkAsync(fixture.Profile.Id,link,default);
+        Assert.Equal(RobloxShareLinkOutcome.Experience,resolution.Outcome);Assert.Null(resolution.TakeRotatedCredential());
+        Assert.Equal(Original,shareLinks.SeenCookie);Assert.Equal(new[]{Current},fixture.Client.Seen);Assert.Equal(0,fixture.Browser.Calls);
+        var snapshot=await fixture.Inner.ReadWriteSnapshotAsync(fixture.Profile.Id,default);
+        Assert.Equal(Current,snapshot.Record!.SessionCookie);Assert.Equal(AuthorizationHealth.Linked,snapshot.Record.Health);
+        Assert.Equal(2,snapshot.Record.Generation);Assert.Equal(2,snapshot.HighestAllocated);Assert.Equal(2,snapshot.LastCommitted);
+    }
+
+    [Fact]
+    public async Task AShareLinkRotationInterruptedAfterItsCommitFencesOnlyThatWriteAndTheAnswerStands()
+    {
+        await using var fixture=await Fixture.Open(Root,true);var shareLinks=new RotatingShareLinks();
+        fixture.Vault.AfterCommit=replacement=>replacement.Health==AuthorizationHealth.Linked?throw new IOException("Synthetic receipt failure"):Task.CompletedTask;
+        await using var service=new RobloxSessionLinkService(fixture.Profiles,fixture.Vault,fixture.Client,fixture.Browser,shareLinks:shareLinks);
+        using var link=new RobloxShareLink(new ProtectedShareCode("abc123"),RobloxShareLinkType.ExperienceDetails);
+        using var resolution=await service.ResolveShareLinkAsync(fixture.Profile.Id,link,default);
+        Assert.Equal(RobloxShareLinkOutcome.Experience,resolution.Outcome);Assert.Equal(5,resolution.PlaceId);
+        var snapshot=await fixture.Inner.ReadWriteSnapshotAsync(fixture.Profile.Id,default);
+        Assert.Equal(AuthorizationHealth.SignInRequired,snapshot.Record!.Health);Assert.Empty(snapshot.Record.SessionCookie);
+        Assert.Equal(3,snapshot.HighestAllocated);Assert.Equal(2,snapshot.LastCommitted);Assert.Equal(Guid.Empty,snapshot.HighestMutationId);
+    }
+
+    private sealed class RotatingShareLinks : IRobloxShareLinkClient
+    {
+        public string? SeenCookie;
+        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link,RobloxSessionCredential credential,RobloxShareLinkTokenScope scope,CancellationToken ct)
+        {ct.ThrowIfCancellationRequested();SeenCookie=credential.CopyValue();return Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience,5,6,rotatedCredential:new(Current)));}
+        public void ForgetTokens(Guid profileId){}
+        public void ForgetAllTokens(){}
+    }
+
     private sealed class Fixture : IAsyncDisposable
     {
         public required AccountRepository Profiles;public required AccountProfile Profile;public required ProtectedCredentialVault Inner;

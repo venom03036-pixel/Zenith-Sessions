@@ -41,8 +41,11 @@ public sealed class RobloxSessionClient : IRobloxSessionClient, IDisposable
             if (!response.IsSuccessStatusCode)
             {
                 if (response.Headers.Contains("rblx-challenge-id") || response.Headers.Contains("rblx-challenge-type")) throw Failure(RobloxSessionFailure.Challenge);
-                throw Failure(response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden
-                    ? RobloxSessionFailure.InvalidSession : RobloxSessionFailure.Network);
+                if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden) throw Failure(RobloxSessionFailure.InvalidSession);
+                // A busy refusal without any session cookie did not replace the session. Gateway errors
+                // (500/502/504) can follow upstream processing, so they stay ambiguous like a timeout.
+                throw Failure((response.StatusCode is HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable) && !CarriesSessionCookie(response)
+                    ? RobloxSessionFailure.NotProcessed : RobloxSessionFailure.Network);
             }
             using var json = await ReadJsonAsync(response, stop.Token).ConfigureAwait(false);
             var root = json.RootElement;
@@ -58,13 +61,28 @@ public sealed class RobloxSessionClient : IRobloxSessionClient, IDisposable
             return new(identity, Rotation(response, credential, _time.GetUtcNow()));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { throw Failure(RobloxSessionFailure.TimedOut); }
+        // Connect-phase failures: the request, and so the cookie, never reached Roblox.
+        catch (HttpRequestException error) when (error.HttpRequestError is HttpRequestError.NameResolutionError
+            or HttpRequestError.ConnectionError or HttpRequestError.ProxyTunnelError) { throw Failure(RobloxSessionFailure.NotProcessed); }
         catch (HttpRequestException) { throw Failure(RobloxSessionFailure.Network); }
         catch (IOException) { throw Failure(RobloxSessionFailure.Network); }
         catch (JsonException) { throw Failure(RobloxSessionFailure.InvalidResponse); }
         catch (InvalidOperationException) { throw Failure(RobloxSessionFailure.InvalidResponse); }
     }
 
-    private static RobloxSessionCredential? Rotation(HttpResponseMessage response, RobloxSessionCredential original, DateTimeOffset now)
+    // Deliberately broader than Rotation's parser: any header naming the session cookie, in any
+    // case or form, counts as possible replacement and keeps the outcome ambiguous.
+    private static bool CarriesSessionCookie(HttpResponseMessage response) =>
+        response.Headers.TryGetValues("Set-Cookie", out var headers)
+        && headers.Any(header => header.Contains("ROBLOSECURITY", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// The one replacement .ROBLOSECURITY a signed-in response may set, as an unverified disposable candidate; null when
+    /// there is none or it repeats the original. Shared with the share-link client so every signed-in request reads a
+    /// rotation the same way. A foreign domain, a duplicate, a deletion or an unreadable lifetime throws
+    /// RobloxSessionException (InvalidResponse or InvalidSession) without the header text.
+    /// </summary>
+    internal static RobloxSessionCredential? Rotation(HttpResponseMessage response, RobloxSessionCredential original, DateTimeOffset now)
     {
         if (!response.Headers.TryGetValues("Set-Cookie", out var headers)) return null;
         RobloxSessionCredential? candidate = null; int count = 0, sessionCookies = 0;
@@ -134,6 +152,7 @@ public sealed class RobloxSessionClient : IRobloxSessionClient, IDisposable
         RobloxSessionFailure.Challenge => "Roblox requires a human sign-in check. Complete sign-in in the official window.",
         RobloxSessionFailure.Network => "Roblox could not be reached. The session's current validity is unknown.",
         RobloxSessionFailure.TimedOut => "The Roblox session check timed out. Its current validity is unknown.",
+        RobloxSessionFailure.NotProcessed => "Roblox could not be reached or was busy, so the session was not checked. Its current validity is unknown.",
         _ => "Roblox returned an unsupported session response. No replacement session was saved."
     });
     public void Dispose() => _http.Dispose();

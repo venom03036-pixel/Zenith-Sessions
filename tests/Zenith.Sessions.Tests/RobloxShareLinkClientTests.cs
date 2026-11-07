@@ -373,6 +373,56 @@ public sealed class RobloxShareLinkClientTests
         Assert.DoesNotContain(ShareCode, link.ToString(), StringComparison.Ordinal);
     }
 
+    [Fact]
+    public async Task ARotatedSessionCookieFromEitherHandshakeResponseIsHandedBackUnverified()
+    {
+        // R-accounts-3: Roblox may replace the session on the answer itself.
+        using var handler = new Handler((_, _) => Task.FromResult(Rotating(Json(Experience("Valid")), "synthetic-rotated-answer")));
+        using var resolution = await Resolve(handler, RobloxShareLinkType.ExperienceDetails);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Equal(5, resolution.PlaceId);
+        using (var candidate = resolution.TakeRotatedCredential())
+        {
+            Assert.NotNull(candidate); Assert.Equal("synthetic-rotated-answer", candidate.CopyValue());
+            Assert.InRange(candidate.ExpiresUtc!.Value, DateTimeOffset.UtcNow.AddMinutes(59), DateTimeOffset.UtcNow.AddMinutes(61));
+        }
+        Assert.Null(resolution.TakeRotatedCredential()); // Moved once; the caller owns it.
+        Assert.DoesNotContain("synthetic-rotated", resolution.ToString(), StringComparison.Ordinal);
+
+        // ...or on the CSRF 403 that starts the handshake, even though the answer after it carries none.
+        int calls = 0;
+        using var handshake = new Handler((_, _) => Task.FromResult(++calls == 1 ? Rotating(Denied("jCcE5fGts0n2"), "synthetic-rotated-csrf") : Json(Server("Valid"))));
+        using var server = await Resolve(handshake, RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.PrivateServer, server.Outcome); Assert.Equal(2, handshake.Calls);
+        using (var candidate = server.TakeRotatedCredential()) Assert.Equal("synthetic-rotated-csrf", candidate?.CopyValue());
+
+        // When both replace it, the newest cookie wins, as in a browser's cookie store.
+        calls = 0;
+        using var twice = new Handler((_, _) => Task.FromResult(++calls == 1 ? Rotating(Denied("jCcE5fGts0n2"), "synthetic-rotated-first") : Rotating(Json(Experience("Valid")), "synthetic-rotated-second")));
+        using var newest = await Resolve(twice, RobloxShareLinkType.ExperienceDetails);
+        using (var candidate = newest.TakeRotatedCredential()) Assert.Equal("synthetic-rotated-second", candidate?.CopyValue());
+
+        // A refused answer still hands back the replacement Roblox issued before refusing.
+        calls = 0;
+        using var refused = new Handler((_, _) => Task.FromResult(++calls == 1 ? Rotating(Denied("jCcE5fGts0n2"), "synthetic-rotated-refused") : new HttpResponseMessage(HttpStatusCode.Unauthorized) { Content = new StringContent("{}", Encoding.UTF8, "application/json") }));
+        using var signIn = await Resolve(refused, RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, signIn.Outcome);
+        using (var candidate = signIn.TakeRotatedCredential()) Assert.Equal("synthetic-rotated-refused", candidate?.CopyValue());
+    }
+
+    [Theory]
+    [InlineData(".ROBLOSECURITY=synthetic-rotated; Domain=foreign.invalid")] // Not Roblox's cookie.
+    [InlineData(".ROBLOSECURITY=; Max-Age=0")]                                // Roblox deleting the session.
+    [InlineData(".ROBLOSECURITY=" + Secret + "; Domain=.roblox.com")]          // The same session again.
+    public async Task AnUnusableOrUnchangedSessionCookieLeavesNoCandidateAndTheAnswerStands(string header)
+    {
+        using var handler = new Handler((_, _) => { var response = Json(Experience("Valid")); response.Headers.Add("Set-Cookie", header); return Task.FromResult(response); });
+        using var resolution = await Resolve(handler, RobloxShareLinkType.ExperienceDetails);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Null(resolution.TakeRotatedCredential());
+    }
+
+    private static HttpResponseMessage Rotating(HttpResponseMessage response, string cookie)
+    { response.Headers.Add("Set-Cookie", ".ROBLOSECURITY=" + cookie + "; Domain=.roblox.com; Path=/; Secure; HttpOnly; Max-Age=3600"); return response; }
+
     private static async Task<RobloxShareLinkResolution> Resolve(Handler handler, RobloxShareLinkType type)
     {
         using var client = new RobloxShareLinkClient(handler);

@@ -30,8 +30,16 @@ public sealed partial class ShellViewModel
             }
             if (!keepSelection && SelectedAccount?.Profile.Id == selectionAtStart)
                 SelectedAccount = Accounts.FirstOrDefault(row => row.Profile.Id == added.ProfileId) ?? SelectedAccount;
-            Notice = $"Added @{added.Identity.Username}. The sign-in is saved with Windows protection; native launching is verified separately.";
-            AddEvent("Roblox account added from its verified sign-in identity.");
+            if (added.Refreshed)
+            {
+                Notice = $"Refreshed the saved sign-in for @{added.Identity.Username}. This account was already in your library, so no new row was added and its name, notes and groups were kept.";
+                AddEvent("Saved Roblox sign-in refreshed for an account already in the library.");
+            }
+            else
+            {
+                Notice = $"Added @{added.Identity.Username}. The sign-in is saved with Windows protection; native launching is verified separately.";
+                AddEvent("Roblox account added from its verified sign-in identity.");
+            }
             _diagnostics.Record(ManagerEventKind.AuthorizationLinked);
         }
         catch (OperationCanceledException)

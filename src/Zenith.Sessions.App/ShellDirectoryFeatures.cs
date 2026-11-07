@@ -19,7 +19,7 @@ public sealed partial class AccountRow
         LaunchState.Queued=>"Cancel",LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing=>"Cancel",
         LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.Arrived or LaunchState.ClientStartedUnverified=>"Review",
         LaunchState.Blocked when _launchProblem==LaunchProblem.InsufficientCapacity=>"Cancel",
-        LaunchState.Blocked=>"Details",_=>KnownUserId is null || Identity is "Sign in required" or "Expired" or "Expired link"?"Sign in":"Launch"
+        LaunchState.Blocked=>"Details",_=>SignInStatusBusy?"Refresh":NeedsSignIn?"Sign in":"Launch"
     };
     public string LaunchStatus=>_launchState switch
     {
@@ -28,8 +28,10 @@ public sealed partial class AccountRow
         null=>"No verified client",_=>_launchState.ToString()!
     };
     public string PowerExplanation=>_launchState is LaunchState.Queued or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing?
-        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):KnownUserId is null?
-        "Connect this saved profile through Roblox's sign-in page. Games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
+        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):SignInStatusBusy?
+        "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
+        "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
+        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
     public void SetPublicPresentation(PublicAccountData value)
     {
         if(value.UserId!=KnownUserId) return;
@@ -79,7 +81,8 @@ public sealed partial class ShellViewModel
         // A universe-only share link opens the universe's root place, read anonymously after the signed-in resolve.
         var shareLinkResolver=new RootPlaceShareLinkResolver(_linkService,publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory);
         ShareLink=new(shareLinkResolver,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory);
+            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory,
+            sessionRejected:(_,ct)=>ReloadAccountsAfterRejectedSessionAsync(ct));
         DestinationSearch=new(publicDirectory as IPublicRobloxGameSearchDirectory ?? gameDirectory as IPublicRobloxGameSearchDirectory,
             ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),
             art:publicDirectory as IPublicRobloxGameArtDirectory ?? gameDirectory as IPublicRobloxGameArtDirectory,shareLinkHandler:RouteShareLinkAsync);
@@ -135,9 +138,20 @@ public sealed partial class ShellViewModel
                 else Notice=launch.Detail.Length>0?launch.Detail:"Review this account's existing client before another launch.";
                 return;
             }
-            if(row.KnownUserId is null || row.Identity is "Sign in required" or "Expired" or "Expired link") {await AuthorizeSelectedAsync(false);return;}
+            if(row.SignInStatusBusy)
+            {
+                // Busy storage is not a missing sign-in: reload the page instead of opening Roblox sign-in.
+                long epoch=_directoryGeneration;
+                await LoadAccountsAsync(_lifetime.Token);
+                if(epoch!=_directoryGeneration || !CanUseDirectories()) return;
+                Notice=Accounts.FirstOrDefault(a=>a.Profile.Id==row.Profile.Id) is {SignInStatusBusy:true}
+                    ?"Protected sign-in storage is still busy. Zenith checks it again shortly; protected files were not changed."
+                    :"Saved sign-in status reloaded.";
+                return;
+            }
+            if(row.NeedsSignIn || row.KnownUserId is not { } userId) {await AuthorizeSelectedAsync(false);return;}
             if(!QueueReady) {Notice="The launch queue is unavailable. Resolve its storage error before requesting a client.";return;}
-            var binding=new LaunchAccountBinding(row.KnownUserId.Value,row.AuthorizationGeneration??0);
+            var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
             var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
             Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
         },Fail);
@@ -168,6 +182,19 @@ public sealed partial class ShellViewModel
         else RobloxFavorites.Cancel();
         if(IsJoinGame && CanUseDirectories()) _=ShareLink.LoadSavedAsync(); else ShareLink.Cancel();
         RefreshRecentlyPlayed();
+    }
+    /// <summary>
+    /// Roblox refused the selected account's saved session during a share-link check, and the service marked it as
+    /// needing sign-in. Reload the page so its row and launch button say so now, not after a manual refresh. Owned by the
+    /// share-link check (awaited there and joined on its disposal) and by this shell's lifetime; failures become a notice.
+    /// </summary>
+    private async Task ReloadAccountsAfterRejectedSessionAsync(CancellationToken ct)
+    {
+        if(_lifetime.IsCancellationRequested || ct.IsCancellationRequested) return;
+        using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
+        try {await LoadAccountsAsync(stop.Token);}
+        catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        catch(Exception error) {Fail(error);}
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
     private Task RouteShareLinkAsync(RobloxShareLink link)

@@ -70,6 +70,65 @@ public sealed class AccountQueryPublicationTests : IDisposable
         Assert.Contains(vm.Groups, group => group.Value == "New group");
     }).WaitAsync(TimeSpan.FromSeconds(20));
 
+    [Fact]
+    public Task CommittedProfileSaveWithFailedListRefreshIsReportedAsSaved() => OnDispatcherAsync(async () =>
+    {
+        // Synthetic local data only. The commit succeeds; only the list refresh that follows it fails.
+        using var storage = new AccountRepository(Root);
+        await storage.InitializeAsync(default);
+        var accounts = new ReloadFailureGate(storage);
+        await using var vm = new ShellViewModel(Root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), accounts: accounts);
+        await vm.InitializeAsync();
+        Assert.True(vm.IsReady);
+        var profile = AccountProfile.Create("Saved fixture");
+
+        // The dialog awaits this task: completing normally closes it; a fault shows "could not be saved".
+        await vm.SaveAccountAsync(profile).WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, accounts.FailedReads);
+        Assert.Equal(1, (await storage.ReadAsync(new(), default)).Total);
+        Assert.Contains("saved", vm.Notice);
+        Assert.Contains("Refresh", vm.Notice);
+        Assert.DoesNotContain(ReloadFailureGate.Marker, vm.Notice);
+        Assert.DoesNotContain(vm.Events, line => line.Contains(ReloadFailureGate.Marker));
+        Assert.Contains(vm.Events, line => line.Contains("Profile saved") && line.Contains(nameof(IOException)));
+
+        // An explicit Refresh publishes the committed row and selects it.
+        accounts.StopFailing();
+        vm.Refresh.Execute(null);
+        await vm.Refresh.Execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(profile.Id, Assert.Single(vm.Accounts).Profile.Id);
+        Assert.Equal(profile.Id, vm.SelectedAccount?.Profile.Id);
+    }).WaitAsync(TimeSpan.FromSeconds(20));
+
+    private sealed class ReloadFailureGate(IAccountRepository inner) : IAccountRepository
+    {
+        public const string Marker = "private-refresh-marker";
+        private int _failing, _failedReads;
+        public int FailedReads => Volatile.Read(ref _failedReads);
+        public void StopFailing() => Interlocked.Exchange(ref _failing, 0);
+        public async Task<AccountProfile> SaveAsync(AccountProfile profile, CancellationToken ct)
+        {
+            var saved = await inner.SaveAsync(profile, ct).ConfigureAwait(false);
+            Interlocked.Exchange(ref _failing, 1); // Every list read after the commit fails until released.
+            return saved;
+        }
+        public Task<AccountPage> ReadAsync(AccountQuery query, CancellationToken ct)
+        {
+            if (Volatile.Read(ref _failing) == 0) return inner.ReadAsync(query, ct);
+            Interlocked.Increment(ref _failedReads);
+            throw new IOException(Marker);
+        }
+        public Task InitializeAsync(CancellationToken ct) => inner.InitializeAsync(ct);
+        public Task<AccountProfile?> FindAsync(Guid id, CancellationToken ct) => inner.FindAsync(id, ct);
+        public Task<IReadOnlyList<string>> ReadGroupsAsync(CancellationToken ct) => inner.ReadGroupsAsync(ct);
+        public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => inner.DeleteAsync(id, revision, ct);
+        public Task CreateManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct) => inner.CreateManyAsync(profiles, ct);
+        public Task DeleteManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct) => inner.DeleteManyAsync(profiles, ct);
+        public Task<CredentialCleanupPage> ReadCredentialCleanupAsync(CancellationToken ct) => inner.ReadCredentialCleanupAsync(ct);
+        public Task CompleteCredentialCleanupAsync(Guid id, CancellationToken ct) => inner.CompleteCredentialCleanupAsync(id, ct);
+    }
+
     private sealed class MainLookupGate(IAccountRepository inner, Guid mainId) : IAccountRepository
     {
         private readonly TaskCompletionSource<bool> _entered = new(TaskCreationOptions.RunContinuationsAsynchronously);

@@ -64,17 +64,25 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
-    public Task DuplicateVerifiedAccountDoesNotCreateAnotherProfileOrReplaceTheOriginalGrant() => OnUi(async () =>
+    public Task AddingAnAlreadySavedAccountRefreshesItsSignInKeepsItsDetailsAndSelectsItsRow() => OnUi(async () =>
     {
         var signIn = new DirectSignIn(); var client = new DirectClient();
         await using var shell = DirectShell(_root, signIn, client); await shell.InitializeAsync();
         shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
-        var original = Assert.Single(shell.Accounts).Profile; using var vault = new ProtectedCredentialVault(_root);
-        var before = await vault.ReadAsync(original.Id, default);
+        var first = Assert.Single(shell.Accounts).Profile;
+        await shell.SaveAccountAsync(first with { Label = "Main alt", Notes = "Keep these notes", Group = "Family", AdditionalGroups = "Raid" });
+        await shell.SaveAccountAsync(AccountProfile.Create("Other row"));
+        var original = shell.Accounts.First(row => row.Profile.Id == first.Id).Profile; Assert.Equal("Main alt", original.Label);
+        shell.SelectedAccount = shell.Accounts.First(row => row.Alias == "Other row");
+        using var vault = new ProtectedCredentialVault(_root); var before = (await vault.ReadAsync(original.Id, default))!;
         shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
-        Assert.Equal(original, Assert.Single(shell.Accounts).Profile); Assert.Equal(original.Id, shell.SelectedAccount?.Profile.Id);
-        Assert.Equal(before, await vault.ReadAsync(original.Id, default)); Assert.Contains("already", shell.Notice, StringComparison.OrdinalIgnoreCase);
-        using var repository = new AccountRepository(_root); Assert.Equal(1, (await repository.ReadAsync(new(), default)).Total);
+        Assert.NotEqual(original.Id, signIn.ProfileId); Assert.Equal(2, shell.Accounts.Count);
+        var row = shell.Accounts.First(item => item.Profile.Id == original.Id); Assert.Equal(original, row.Profile); Assert.Same(row, shell.SelectedAccount);
+        var after = (await vault.ReadAsync(original.Id, default))!;
+        Assert.Equal(before with { Generation = before.Generation + 1 }, after); Assert.Equal(after.Generation, row.AuthorizationGeneration);
+        Assert.Contains("Refreshed", shell.Notice); Assert.Contains("@direct_player", shell.Notice); Assert.DoesNotContain("Added", shell.Notice);
+        using var repository = new AccountRepository(_root); Assert.Equal(2, (await repository.ReadAsync(new(), default)).Total);
+        Assert.Null(await repository.FindAsync(signIn.ProfileId, default));
         Assert.Single(Directory.GetFiles(Path.Combine(_root, "accounts.vault"), "*.dpapi")); DirectNoSecrets(shell);
     });
 

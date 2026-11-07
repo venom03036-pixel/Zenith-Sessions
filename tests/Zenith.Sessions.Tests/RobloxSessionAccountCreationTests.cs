@@ -13,7 +13,8 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
 {
     private readonly string _name = "zenith-session-add-" + Guid.NewGuid().ToString("N");
     private string Root => Path.Combine(Path.GetTempPath(), _name);
-    private const string Original = "synthetic-account-add-original", Rotated = "synthetic-account-add-rotated", Foreign = "synthetic-account-add-newer";
+    private const string Original = "synthetic-account-add-original", Rotated = "synthetic-account-add-rotated", Foreign = "synthetic-account-add-newer",
+        Stale = "synthetic-account-add-stale";
     private static LinkedIdentity Identity(long user = 456, string username = "verified_player")
         => new(user, username, RobloxSessionIdentity.Issuer, user.ToString(System.Globalization.CultureInfo.InvariantCulture));
     private static AuthorizationRecord Record(Guid id, long generation = 1, string cookie = Original)
@@ -54,17 +55,14 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
         Assert.False(File.Exists(fixture.JournalPath(added.ProfileId))); AssertDisposed(fixture.Browser.Issued.Single());
     }
 
-    [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public async Task ExistingSessionOrIndexedOlderOAuthIdentityIsRejectedBeforeCreatingAnotherProfile(bool olderOAuth)
+    [Fact]
+    public async Task IndexedOlderOAuthIdentityIsRejectedBeforeCreatingAnotherProfile()
     {
+        // An older authorization type is never converted by Add; only a saved Roblox session is refreshed.
         await using var fixture = await Fixture.Open(Root);
         var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Existing alias"), default);
-        var record = olderOAuth
-            ? new AuthorizationRecord(existing.Id, RobloxOAuthIdentity.Provider, 456, 1, "", "synthetic-old-oauth-refresh", DateTimeOffset.MaxValue,
-                "old_username", AuthorizationHealth.SignInRequired, RobloxOAuthIdentity.Issuer, "opaque-older-subject")
-            : Record(existing.Id);
+        var record = new AuthorizationRecord(existing.Id, RobloxOAuthIdentity.Provider, 456, 1, "", "synthetic-old-oauth-refresh", DateTimeOffset.MaxValue,
+            "old_username", AuthorizationHealth.SignInRequired, RobloxOAuthIdentity.Issuer, "opaque-older-subject");
         await fixture.Inner.SaveAsync(record, default);
         byte[] before = await File.ReadAllBytesAsync(fixture.SecretPath(existing.Id));
         var error = await Assert.ThrowsAsync<AccountLinkException>(() => fixture.Service.AddAsync(default));
@@ -75,6 +73,66 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
         Assert.Equal(before, await File.ReadAllBytesAsync(fixture.SecretPath(existing.Id)));
         Assert.Equal(record, await fixture.Inner.ReadAsync(existing.Id, default));
         Assert.Equal(0, fixture.Profiles.Creates); Assert.Equal(0, fixture.Vault.Commits); Assert.Equal(0, fixture.Vault.Fences);
+        AssertDisposed(fixture.Browser.Issued.Single());
+    }
+
+    [Theory]
+    [InlineData(AuthorizationHealth.Linked)]
+    [InlineData(AuthorizationHealth.SignInRequired)]
+    public async Task AddingAnAlreadySavedSessionRefreshesThatRowsSignInWithoutCreatingAProfileOrChangingItsMetadata(AuthorizationHealth health)
+    {
+        await using var fixture = await Fixture.Open(Root);
+        var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Main alt") with
+        {
+            Username = "verified_player", RobloxUserId = 456, Notes = "Keep these notes", Group = "Family", AdditionalGroups = "Raid",
+            IsFavorite = true, Priority = 7, PreferredPlaceId = 42
+        }, default);
+        await fixture.Inner.SaveAsync(Record(existing.Id, cookie: health == AuthorizationHealth.Linked ? Stale : "") with { Health = health }, default);
+        var added = await fixture.Service.AddAsync(default);
+        Assert.Equal(existing.Id, added.ProfileId); Assert.True(added.Refreshed); Assert.Equal(Identity(), added.Identity);
+        Guid signInOwner = fixture.Browser.Ids.Single(); Assert.NotEqual(existing.Id, signInOwner);
+        Assert.Null(await fixture.InnerProfiles.FindAsync(signInOwner, default)); Assert.Equal(1, (await fixture.InnerProfiles.ReadAsync(new(), default)).Total);
+        Assert.Equal(existing, await fixture.InnerProfiles.FindAsync(existing.Id, default));
+        Assert.Equal(Record(existing.Id, 2), await fixture.Inner.ReadAsync(existing.Id, default));
+        var unused = await fixture.Inner.ReadWriteSnapshotAsync(signInOwner, default); Assert.Null(unused.Record); Assert.Equal(0, unused.HighestAllocated);
+        Assert.Equal(1, fixture.Vault.Commits); Assert.Equal(0, fixture.Vault.Fences); Assert.Equal(0, fixture.Profiles.Creates); Assert.Equal(0, fixture.Profiles.Upserts);
+        Assert.False(File.Exists(fixture.JournalPath(existing.Id))); Assert.False(File.Exists(fixture.JournalPath(signInOwner)));
+        Assert.Equal(1, fixture.Client.Calls); Assert.DoesNotContain(Original, added.ToString()); AssertDisposed(fixture.Browser.Issued.Single());
+    }
+
+    [Fact]
+    public async Task ASavedSessionForAnotherPlayerIsLeftAloneAndTheNewPlayerGetsItsOwnProfile()
+    {
+        await using var fixture = await Fixture.Open(Root);
+        var other = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Other player") with { Username = "other_player", RobloxUserId = 789 }, default);
+        var otherRecord = new AuthorizationRecord(other.Id, RobloxSessionIdentity.Provider, 789, 1, "", "", DateTimeOffset.MaxValue,
+            "other_player", AuthorizationHealth.Linked, RobloxSessionIdentity.Issuer, "789", SessionCookie: Stale);
+        await fixture.Inner.SaveAsync(otherRecord, default);
+        var added = await fixture.Service.AddAsync(default);
+        Assert.False(added.Refreshed); Assert.Equal(fixture.Browser.Ids.Single(), added.ProfileId); Assert.NotEqual(other.Id, added.ProfileId);
+        Assert.Equal(2, (await fixture.InnerProfiles.ReadAsync(new(), default)).Total); Assert.Equal(1, fixture.Profiles.Creates);
+        Assert.Equal(other, await fixture.InnerProfiles.FindAsync(other.Id, default)); Assert.Equal(otherRecord, await fixture.Inner.ReadAsync(other.Id, default));
+        Assert.Equal(Record(added.ProfileId), await fixture.Inner.ReadAsync(added.ProfileId, default));
+    }
+
+    [Fact]
+    public async Task DisconnectOfTheSavedRowDuringItsRefreshCancelsAndJoinsTheRefreshBeforeRemovingIt()
+    {
+        await using var fixture = await Fixture.Open(Root); var entered = Signal(); var release = Signal();
+        var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Main alt") with { Username = "verified_player", RobloxUserId = 456 }, default);
+        await fixture.Inner.SaveAsync(Record(existing.Id, cookie: Stale), default);
+        fixture.Vault.BeforeCommit = async (snapshot, _) => { if (snapshot.ProfileId == existing.Id) { entered.TrySetResult(); await release.Task; } };
+        var adding = fixture.Service.AddAsync(default); Task? disconnecting = null;
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); disconnecting = fixture.Service.DisconnectAsync(existing.Id, default);
+            Assert.False(disconnecting.IsCompleted); Assert.False(adding.IsCompleted);
+        }
+        finally { release.TrySetResult(); }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => adding.WaitAsync(TimeSpan.FromSeconds(3)));
+        await disconnecting!.WaitAsync(TimeSpan.FromSeconds(3));
+        Assert.Null(await fixture.Inner.ReadAsync(existing.Id, default)); Assert.Equal(1, (await fixture.InnerProfiles.ReadAsync(new(), default)).Total);
+        Assert.Null(await fixture.InnerProfiles.FindAsync(fixture.Browser.Ids.Single(), default)); Assert.Equal(0, fixture.Profiles.Creates);
         AssertDisposed(fixture.Browser.Issued.Single());
     }
 

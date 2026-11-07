@@ -20,6 +20,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private readonly Func<Guid?> _selectedProfile;
     private readonly Func<bool> _canUse;
     private readonly Action<Exception> _failed;
+    private readonly Func<Guid,CancellationToken,Task>? _sessionRejected;
     private readonly CancellationTokenSource _lifetime=new();
     private readonly List<Task> _operations=[];
     private CancellationTokenSource? _stop,_storeStop;
@@ -55,10 +56,11 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private bool Allowed=>!_disposed && !_lifetime.IsCancellationRequested && _canUse();
 
     public ShareLinkViewModel(IRobloxShareLinkResolver? resolver,IPrivateServerStore? store,ServerBrowserViewModel browser,Func<Guid?> selectedProfile,
-        Func<bool> canUse,Action<Exception>? failed=null,IPublicRobloxGameDirectory? games=null)
+        Func<bool> canUse,Action<Exception>? failed=null,IPublicRobloxGameDirectory? games=null,Func<Guid,CancellationToken,Task>? sessionRejected=null)
     {
         ArgumentNullException.ThrowIfNull(browser);ArgumentNullException.ThrowIfNull(selectedProfile);ArgumentNullException.ThrowIfNull(canUse);
         _resolver=resolver;_store=store;_browser=browser;_selectedProfile=selectedProfile;_canUse=canUse;_failed=failed??(_=>{});_games=games;
+        _sessionRejected=sessionRejected;
         Check=new(_=>CheckAsync(),ReportFailure);SaveAsFavorite=new(_=>SaveAsFavoriteAsync(),ReportFailure);
         Remove=new(_=>RemoveSelectedAsync(),ReportFailure);RefreshSaved=new(_=>LoadSavedAsync(),ReportFailure);
     }
@@ -95,7 +97,9 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
             try {resolution=await _resolver!.ResolveShareLinkAsync(profile,link,stop.Token);}
             finally {link.Dispose();}
             if(!Current(generation,stop)) {resolution.Dispose();return;}
+            bool rejected=resolution.Outcome==RobloxShareLinkOutcome.SignInRequired;
             await PublishAsync(resolution,invite,generation,stop);
+            if(rejected) await ReportSessionRejectedAsync(profile);
         }
         catch(OperationCanceledException) { }
         catch(Exception error) {if(Current(generation,stop)) SetStatus("The share link could not be checked right now. Try again later.");ReportSafeFailure(error);}
@@ -150,6 +154,18 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
             _status="Private server link checked. Save it as a favorite; joining needs launcher support that is coming next.";
         }
         Raise(nameof(HasResult));Raise(nameof(HasPrivateResult));Raise(nameof(ResultTitle));Raise(nameof(ResultDetail));Raise(nameof(Status));NotifyAvailability();
+    }
+    /// <summary>
+    /// The service marks a saved session Roblox refused as needing sign-in. Ask the owner to reload the account so its
+    /// row and launch button agree with this panel. Awaited inside the tracked check, so disposal joins it; a reload
+    /// failure keeps the sign-in status and reaches diagnostics only as the fixed application-owned failure.
+    /// </summary>
+    private async Task ReportSessionRejectedAsync(Guid profile)
+    {
+        if(_sessionRejected is null) return;
+        try {await _sessionRejected(profile,_lifetime.Token);}
+        catch(OperationCanceledException) { }
+        catch(Exception error) {ReportSafeFailure(error);}
     }
     private async Task<string?> LookupNameAsync(long placeId,CancellationToken ct)
     {

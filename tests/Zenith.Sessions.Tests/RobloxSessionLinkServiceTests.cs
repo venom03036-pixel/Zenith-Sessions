@@ -162,13 +162,121 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, (await unwired.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
     }
 
+    [Fact]
+    public async Task ShareLinkUnauthorizedFencesTheSavedSessionToSignInRequired()
+    {
+        // Roblox answered 401 with this saved session: the account row and launch eligibility must stop calling it linked.
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) }; var client = new Client(); var browser = new Browser();
+        await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        var fenced = vault.Records[profile.Id];
+        Assert.Equal(AuthorizationHealth.SignInRequired, fenced.Health); Assert.True(fenced.Generation > 1); Assert.Equal(1, vault.Saves);
+        Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.GetSummaryAsync(profile.Id, default))!.Health); // What the account row reads.
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Equal(1, resolver.Calls); Assert.Equal(0, client.Calls); Assert.Equal(0, browser.Calls); Assert.Equal(1, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkUnauthorizedLeavesANewerGrantFromAnotherOperationUnchanged()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var newer = Saved(profile.Id) with { Generation = 2, SessionCookie = "synthetic-rotation" };
+        // Another process signs in again while Roblox is answering the old session's request.
+        var resolver = new ShareLinks { Reply = () => { vault.Records[profile.Id] = newer; return new(RobloxShareLinkOutcome.SignInRequired); } };
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Same(newer, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkFailuresOtherThanUnauthorizedLeaveTheSavedSessionLinked()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        var saved = Saved(profile.Id); vault.Records[profile.Id] = saved;
+        foreach (var outcome in new[] { RobloxShareLinkOutcome.Unavailable, RobloxShareLinkOutcome.Expired, RobloxShareLinkOutcome.Invalid })
+        {
+            var resolver = new ShareLinks { Reply = () => new(outcome) };
+            await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+            using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+            Assert.Equal(outcome, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        }
+        Assert.Same(saved, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkRotatedSessionIsSavedAtTheNextGenerationOnlyAfterItVerifiesAsTheSamePlayer()
+    {
+        // R-accounts-3: Roblox replaced the saved session while answering the share link.
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var expiry = DateTimeOffset.UtcNow.AddHours(1); RobloxSessionCredential? rotation = null;
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: rotation = new("synthetic-share-rotation", expiry)) };
+        var client = new Client(); var browser = new Browser();
+        await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.ExperienceDetails);
+        using var resolution = await service.ResolveShareLinkAsync(profile.Id, link, default);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Equal(5, resolution.PlaceId);
+        Assert.Null(resolution.TakeRotatedCredential()); // The replacement never leaves the service.
+        Assert.Throws<ObjectDisposedException>(() => rotation!.CopyValue());
+        var kept = vault.Records[profile.Id];
+        Assert.Equal("synthetic-share-rotation", kept.SessionCookie); Assert.Equal(2, kept.Generation); Assert.Equal(AuthorizationHealth.Linked, kept.Health);
+        Assert.Equal(expiry, kept.ExpiresUtc); Assert.Equal(456, kept.VerifiedUserId); Assert.Equal(1, vault.Saves);
+        Assert.Equal(new[] { "synthetic-share-rotation" }, client.Seen); Assert.Equal(0, browser.Calls); // Verified with the replacement itself.
+        Assert.DoesNotContain("synthetic-share-rotation", resolution.ToString(), StringComparison.Ordinal);
+
+        // A 401 that came with a verified replacement keeps the replacement instead of marking the row as needing sign-in.
+        var refusedResolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired, rotatedCredential: new("synthetic-share-rotation-2")) };
+        await using var refusedService = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: refusedResolver);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await refusedService.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Equal(1, refusedResolver.Calls); Assert.Equal("synthetic-share-rotation", refusedResolver.SeenCookie);
+        var replaced = vault.Records[profile.Id];
+        Assert.Equal("synthetic-share-rotation-2", replaced.SessionCookie); Assert.Equal(3, replaced.Generation); Assert.Equal(AuthorizationHealth.Linked, replaced.Health);
+    }
+
+    [Fact]
+    public async Task ShareLinkRotatedSessionThatFailsVerificationOrMeetsANewerRecordLeavesTheVaultUnchanged()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        var saved = Saved(profile.Id); vault.Records[profile.Id] = saved;
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        foreach (var reply in new Func<int, CancellationToken, Task<RobloxSessionValidation>>[]
+        {
+            (_, _) => Task.FromResult(new RobloxSessionValidation(Identity(789))), // Another player.
+            (_, _) => throw new RobloxSessionException(RobloxSessionFailure.InvalidSession, "synthetic refusal"),
+            (_, _) => throw new RobloxSessionException(RobloxSessionFailure.Network, "synthetic network failure")
+        })
+        {
+            var client = new Client { Reply = reply }; RobloxSessionCredential? rotation = null;
+            var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: rotation = new("synthetic-share-rotation")) };
+            await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser(), shareLinks: resolver);
+            using var resolution = await service.ResolveShareLinkAsync(profile.Id, link, default);
+            Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Equal(5, resolution.PlaceId); // The answer stands.
+            Assert.Equal(1, client.Calls); Assert.Throws<ObjectDisposedException>(() => rotation!.CopyValue());
+            Assert.Same(saved, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+        }
+
+        // Another operation saved a newer sign-in while Roblox was answering: the replacement is not even checked.
+        var newer = Saved(profile.Id) with { Generation = 2, SessionCookie = "synthetic-newer-sign-in" };
+        var racing = new ShareLinks { Reply = () => { vault.Records[profile.Id] = newer; return new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: new("synthetic-share-rotation")); } };
+        var unused = new Client();
+        await using var racingService = new RobloxSessionLinkService(repository, vault, unused, new Browser(), shareLinks: racing);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, (await racingService.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Same(newer, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves); Assert.Equal(0, unused.Calls);
+    }
+
     private sealed class ShareLinks : IRobloxShareLinkClient
     {
         public int Calls; public string? SeenCookie; public RobloxShareLink? SeenLink; public RobloxShareLinkTokenScope? SeenScope; private RobloxSessionCredential? _credential;
         public readonly List<Guid> Forgotten = []; public int ForgotAll;
+        public Func<RobloxShareLinkResolution>? Reply;
         public bool CredentialDisposedAfterCall { get { try { _credential?.CopyValue(); return false; } catch (ObjectDisposedException) { return true; } } }
         public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, RobloxShareLinkTokenScope scope, CancellationToken ct)
-        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); SeenScope = scope; _credential = credential; return Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
+        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); SeenScope = scope; _credential = credential; return Task.FromResult(Reply?.Invoke() ?? new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
         public void ForgetTokens(Guid profileId) => Forgotten.Add(profileId);
         public void ForgetAllTokens() => ForgotAll++;
     }
@@ -249,6 +357,54 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
         Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); Assert.Equal(Secret, vault.Records[profile.Id].SessionCookie);
         await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default)); Assert.Equal(1, client.Calls);
+    }
+
+    // R-accounts-1: a check Roblox provably never processed restores the unchanged saved session.
+    [Fact]
+    public async Task SavedCheckThatRobloxNeverProcessedRestoresTheUnchangedSessionAtAFreshGeneration()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (call, _) =>
+        {
+            Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); // Still fenced before every contact.
+            return call == 1 ? throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal " + Secret)
+                : Task.FromResult(new RobloxSessionValidation(Identity()));
+        } };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.Equal(RobloxSessionFailure.NotProcessed, error.Failure);
+        Assert.DoesNotContain(Secret, error.Message); Assert.DoesNotContain("Synthetic", error.Message); Assert.Contains("unchanged", error.Message);
+        Assert.Equal(Saved(profile.Id) with { Generation = 3 }, vault.Records[profile.Id]);
+        // The restored record is an ordinary saved sign-in: the next check fences, contacts Roblox and verifies it.
+        await service.CheckSavedAsync(profile.Id, default);
+        Assert.Equal(2, client.Calls); Assert.Equal(5, vault.Records[profile.Id].Generation); Assert.Equal(AuthorizationHealth.Linked, vault.Records[profile.Id].Health);
+    }
+
+    [Fact]
+    public async Task ARefusedCheckOfARotatedReplacementNeverRestoresTheOldSession()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (call, _) => call == 1 ? Task.FromResult(new RobloxSessionValidation(Identity(), new("synthetic-rotation")))
+            : throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal") };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.NotEqual(RobloxSessionFailure.NotProcessed, error.Failure); Assert.Contains("needing sign-in", error.Message);
+        Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); Assert.Equal(2, vault.Records[profile.Id].Generation);
+        Assert.Equal(2, client.Calls);
+    }
+
+    [Fact]
+    public async Task ARefusedCheckNeverOverwritesAnotherOperationsNewerRecord()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (_, _) =>
+        {
+            vault.Records[profile.Id] = vault.Records[profile.Id] with { VerifiedUsername = "newer_player" };
+            throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal");
+        } };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.Equal("newer_player", vault.Records[profile.Id].VerifiedUsername); Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
     }
 
     [Fact]

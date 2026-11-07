@@ -185,6 +185,15 @@ name, creator line, playing + rating, accent border and check when it is the cur
   profile or account; never saved or logged) and sent first, so a repeat check is normally one request instead of two.
   A refused token still gets only the one retry. Any failure drops it; disconnecting the saved sign-in drops that
   profile's token; Lock, Panic and shutdown drop all of them; at most 256 are kept, and one more drops them all.
+- A 401 also marks that exact saved session as needing sign-in (a conditional write that never replaces a newer
+  sign-in), and the shell reloads the account page, so the row, its launch button and this panel agree.
+- If either handshake response sets a new `.ROBLOSECURITY` (read with the identity check's own parser; the newest
+  wins), the resolver hands it back unverified and the link service keeps it like a sign-in: only when the fixed
+  authenticated-user check names the same player, only if the sent record is still the saved one, and at the next
+  generation through the snapshot write. A mismatch, refusal, network failure or newer record leaves the vault as it
+  was and the answer stands; a kept replacement also means a 401 no longer marks the row as needing sign-in.
+  (R-accounts-3; whether Roblox invalidates the old cookie after rotating it is not established.) Every other outcome
+  leaves the vault unchanged.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
   `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.

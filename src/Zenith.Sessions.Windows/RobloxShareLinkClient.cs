@@ -14,7 +14,8 @@ namespace Zenith.Sessions.Windows;
 /// plus verified account) and sent first, so a repeat resolve is normally one request instead of two; it is never saved,
 /// logged or sent for another scope, and is dropped on any failure, on Forget and on Dispose. The response shape is observed web-client behaviour, not a
 /// documented contract; anything unexpected (including a repeated key) is Unavailable, never a guess. The request body and the response buffer
-/// carry codes, so both are zeroed after use. A rotated session cookie in the response is ignored, never saved.
+/// carry codes, so both are zeroed after use. A replacement session cookie in either handshake response is read with
+/// the identity check's own parser and handed back on the resolution, unverified; this client never saves it.
 /// </summary>
 public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
 {
@@ -27,15 +28,17 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     private readonly object _tokenGate = new();
     private readonly Dictionary<RobloxShareLinkTokenScope, string> _tokens = [];
     private long _tokenEpoch; // Bumped by every Forget, so a resolve still in flight cannot keep a token afterwards.
+    private readonly TimeProvider _time;
 
     public RobloxShareLinkClient(TimeSpan? timeout = null) : this(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }, timeout) { }
     // Injected transports are for controlled tests; production uses the constructor above.
-    public RobloxShareLinkClient(HttpMessageHandler handler, TimeSpan? timeout = null)
+    public RobloxShareLinkClient(HttpMessageHandler handler, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
         if (handler is HttpClientHandler native) { native.AllowAutoRedirect = false; native.UseCookies = false; }
         if (handler is SocketsHttpHandler sockets) { sockets.AllowAutoRedirect = false; sockets.UseCookies = false; }
         _timeout = timeout ?? TimeSpan.FromSeconds(20);
+        _time = timeProvider ?? TimeProvider.System;
         if (_timeout <= TimeSpan.Zero || _timeout > TimeSpan.FromMinutes(1)) throw new ArgumentOutOfRangeException(nameof(timeout));
         _http = new(handler, disposeHandler: true) { Timeout = Timeout.InfiniteTimeSpan };
     }
@@ -70,27 +73,52 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
         Uri endpoint = typeName is null ? V2Endpoint : Endpoint;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); stop.CancelAfter(_timeout);
         string? csrf = KeptToken(scope, out long epoch); bool accepted = false;
+        // Owned here until it moves onto the returned resolution; any other exit disposes it.
+        RobloxSessionCredential? rotated = null;
         try
         {
             for (int attempt = 0; attempt < 2; attempt++)
             {
                 using var response = await SendAsync(link, endpoint, typeName, credential, csrf, stop.Token).ConfigureAwait(false);
-                if (response.RequestMessage?.RequestUri is { } actual && actual != endpoint) return new(RobloxShareLinkOutcome.Unavailable);
+                if (response.RequestMessage?.RequestUri is { } actual && actual != endpoint) return Answer(new(RobloxShareLinkOutcome.Unavailable));
+                rotated = Newest(rotated, response, credential);
                 // The documented handshake: a missing or refused token gets one retry with the issued token, then stop.
                 if (response.StatusCode == HttpStatusCode.Forbidden && attempt == 0 && response.Headers.TryGetValues("x-csrf-token", out var tokens)
                     && tokens.FirstOrDefault() is { Length: > 0 and <= 256 } token)
                 { csrf = token; continue; }
-                if (response.StatusCode == HttpStatusCode.Unauthorized) return new(RobloxShareLinkOutcome.SignInRequired);
-                if (response.StatusCode != HttpStatusCode.OK) return new(RobloxShareLinkOutcome.Unavailable);
+                if (response.StatusCode == HttpStatusCode.Unauthorized) return Answer(new(RobloxShareLinkOutcome.SignInRequired));
+                if (response.StatusCode != HttpStatusCode.OK) return Answer(new(RobloxShareLinkOutcome.Unavailable));
                 accepted = true;
-                return await ParseAsync(response, link.Type, stop.Token).ConfigureAwait(false);
+                return Answer(await ParseAsync(response, link.Type, stop.Token).ConfigureAwait(false));
             }
-            return new(RobloxShareLinkOutcome.Unavailable);
+            return Answer(new(RobloxShareLinkOutcome.Unavailable));
         }
-        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return new(RobloxShareLinkOutcome.Unavailable); }
-        catch (HttpRequestException) { return new(RobloxShareLinkOutcome.Unavailable); }
-        catch (IOException) { return new(RobloxShareLinkOutcome.Unavailable); }
-        finally { Keep(scope, epoch, accepted ? csrf : null); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        catch (HttpRequestException) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        catch (IOException) { return Answer(new(RobloxShareLinkOutcome.Unavailable)); }
+        finally { Keep(scope, epoch, accepted ? csrf : null); rotated?.Dispose(); }
+
+        // Moves the candidate onto the answer, whatever the answer is: Roblox may already have replaced the session.
+        RobloxShareLinkResolution Answer(RobloxShareLinkResolution resolution)
+        {
+            if (rotated is not { } candidate) return resolution;
+            rotated = null;
+            return new(resolution.Outcome, resolution.PlaceId, resolution.UniverseId, resolution.OwnerUserId, resolution.PrivateServerCode,
+                resolution.JobId, candidate);
+        }
+    }
+
+    /// <summary>
+    /// The newest session cookie wins, as in a browser's cookie store: a response without one keeps the earlier
+    /// candidate, and an unusable one (foreign domain, deletion, unreadable lifetime) leaves none to keep.
+    /// </summary>
+    private RobloxSessionCredential? Newest(RobloxSessionCredential? earlier, HttpResponseMessage response, RobloxSessionCredential original)
+    {
+        RobloxSessionCredential? next;
+        try { next = RobloxSessionClient.Rotation(response, original, _time.GetUtcNow()); }
+        catch (RobloxSessionException) { earlier?.Dispose(); return null; }
+        if (next is null) return earlier;
+        earlier?.Dispose(); return next;
     }
 
     private string? KeptToken(RobloxShareLinkTokenScope scope, out long epoch)

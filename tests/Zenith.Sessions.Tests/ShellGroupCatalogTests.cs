@@ -65,13 +65,15 @@ public sealed class ShellGroupCatalogTests : IDisposable
     });
 
     [Fact]
-    public Task ProfileOnlyExportClearlyExcludesIndependentCatalogPresentation() =>OnUi(async()=>
+    public Task ExportCarriesIndependentCatalogPresentationWithoutAuthorization() =>OnUi(async()=>
     {
         var repository=new AccountRepository(_root);var auth=new ForbiddenAuthorization();await using var shell=await Ready(repository,auth);
         var page=await shell.ReadGroupCatalogAsync(new(),default);await shell.CreateGroupAsync("Empty only","#FFAA00",page.CatalogRevision,default);
         string export=Path.Combine(_root,"metadata.json");await shell.ExportAsync(export);
-        Assert.Contains("empty groups",shell.Notice);Assert.Contains("colors",shell.Notice);Assert.Contains("group order",shell.Notice);
-        Assert.DoesNotContain("Empty only",await File.ReadAllTextAsync(export));Assert.Equal(0,auth.Calls);
+        Assert.Contains("empty ones",shell.Notice);Assert.Contains("colors",shell.Notice);Assert.Contains("group order",shell.Notice);
+        Assert.Contains("Authorization and credentials are excluded",shell.Notice);
+        var exported=ProfileMetadataImport.DecodeDocument(await File.ReadAllBytesAsync(export));
+        Assert.Equal(new ProfileMetadataGroup("Empty only","#FFAA00",0),Assert.Single(exported.Groups));Assert.Empty(exported.Profiles);Assert.Equal(0,auth.Calls);
     });
 
     [Fact]

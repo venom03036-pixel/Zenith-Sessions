@@ -37,9 +37,33 @@ public sealed class CleanupRecoveryTests : IDisposable
         await repository.DeleteManyAsync([a,b],default);
         var page=await repository.ReadCredentialCleanupAsync(default); var vault=new FailingCleanupVault { Failure=page.ProfileIds[0] };
         using var service=new CredentialCleanupService(repository,vault);
-        var result=await service.RunAsync(default); Assert.Equal(2,result.Remaining); Assert.Equal(nameof(IOException),result.ErrorType);
-        Assert.Equal(2,(await repository.ReadCredentialCleanupAsync(default)).Total);
+        var result=await service.RunAsync(default); Assert.Equal(1,result.Remaining); Assert.Equal(nameof(IOException),result.ErrorType);
+        Assert.Equal(page.ProfileIds[0],Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
         vault.Failure=null; Assert.Equal(0,(await service.RunAsync(default)).Remaining);
+    }
+    [Fact]
+    public async Task CorruptVaultIndexForADeletedProfileIsReportedAndRetainedNotThrown()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var profile=await DeletedProfileWithDamagedPointerAsync(repository,_root);
+        using var vault=new ProtectedCredentialVault(_root);
+        using var cleanup=new CredentialCleanupService(repository,vault);
+        var result=await cleanup.RunAsync(default);
+        Assert.Equal(1,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType);
+        Assert.Equal(profile.Id,Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
+        string record=Path.Combine(_root,"accounts.vault",profile.Id.ToString("N")+".dpapi");
+        Assert.True(File.Exists(record)); Assert.True(File.Exists(record+".identity"));
+    }
+    /// <summary>Deletes a profile whose synthetic protected record remains, then damages its vault pointer file.</summary>
+    internal static async Task<AccountProfile> DeletedProfileWithDamagedPointerAsync(AccountRepository repository,string root)
+    {
+        var profile=await repository.SaveAsync(AccountProfile.Create("A"),default);
+        using(var vault=new ProtectedCredentialVault(root))
+            await vault.SaveAsync(new AuthorizationRecord(profile.Id,"roblox-oauth",123,1,"synthetic-access","synthetic-refresh",DateTimeOffset.UtcNow.AddMinutes(10),
+                Issuer:RobloxOAuthIdentity.Issuer,Subject:"123"),default);
+        await repository.DeleteAsync(profile.Id,profile.Revision,default);
+        await File.WriteAllTextAsync(Path.Combine(root,"accounts.vault",profile.Id.ToString("N")+".dpapi.identity"),"{");
+        return profile;
     }
     [Fact]
     public async Task FailedBulkDeleteRollsBackCleanupIntentAsWellAsProfiles()
@@ -65,12 +89,60 @@ public sealed class CleanupRecoveryTests : IDisposable
         verify.CommandText="SELECT label FROM profiles"; Assert.Equal("Preserved",await verify.ExecuteScalarAsync());
         Assert.Equal(0,(await repository.ReadCredentialCleanupAsync(default)).Total);
     }
+    [Fact]
+    public async Task CleanupFailureOnOneRecordStillRemovesEveryOtherPendingRecord()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var a=await repository.SaveAsync(AccountProfile.Create("A"),default); var b=await repository.SaveAsync(AccountProfile.Create("B"),default);
+        var c=await repository.SaveAsync(AccountProfile.Create("C"),default);
+        await repository.DeleteManyAsync([a,b,c],default);
+        var page=await repository.ReadCredentialCleanupAsync(default); var vault=new FailingCleanupVault { Failure=page.ProfileIds[0] };
+        using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result=await service.RunAsync(timeout.Token);
+        Assert.Equal(1,result.Remaining); Assert.Equal(nameof(IOException),result.ErrorType);
+        Assert.Equal(page.ProfileIds[0],Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
+        Assert.Equal(page.ProfileIds.Order(),vault.Calls.Order());
+    }
+    [Fact]
+    public async Task CleanupThatFailsForEveryRecordTriesEachOnceThenReturns()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var a=await repository.SaveAsync(AccountProfile.Create("A"),default); var b=await repository.SaveAsync(AccountProfile.Create("B"),default);
+        var c=await repository.SaveAsync(AccountProfile.Create("C"),default);
+        await repository.DeleteManyAsync([a,b,c],default);
+        var page=await repository.ReadCredentialCleanupAsync(default); var vault=new FailingCleanupVault { FailEvery=true };
+        using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result=await service.RunAsync(timeout.Token);
+        Assert.Equal(3,result.Remaining); Assert.Equal(nameof(IOException),result.ErrorType);
+        Assert.Equal(page.ProfileIds.Order(),vault.Calls.Order());
+        Assert.Equal(3,(await repository.ReadCredentialCleanupAsync(default)).Total);
+    }
+    [Fact]
+    public async Task BusyVaultEndsTheCleanupRunInsteadOfWaitingOnEveryRecord()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var a=await repository.SaveAsync(AccountProfile.Create("A"),default); var b=await repository.SaveAsync(AccountProfile.Create("B"),default);
+        await repository.DeleteManyAsync([a,b],default);
+        var vault=new FailingCleanupVault { Busy=true };
+        using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result=await service.RunAsync(timeout.Token);
+        Assert.Equal(2,result.Remaining); Assert.Equal(nameof(AuthorizationVaultBusyException),result.ErrorType);
+        Assert.Single(vault.Calls);
+        vault.Busy=false; Assert.Equal(0,(await service.RunAsync(timeout.Token)).Remaining);
+    }
     private sealed class FailingCleanupVault : IAccountCredentialVault
     {
-        public Guid? Failure;
+        public Guid? Failure; public bool FailEvery; public bool Busy;
+        public readonly List<Guid> Calls=[];
         public Task<AuthorizationRecord?> ReadAsync(Guid id,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
         public Task SaveAsync(AuthorizationRecord record,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
-        public Task DeleteAsync(Guid id,CancellationToken ct) { ct.ThrowIfCancellationRequested(); if(id==Failure) throw new IOException("Synthetic storage failure"); return Task.CompletedTask; }
+        public Task DeleteAsync(Guid id,CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Calls.Add(id);
+            if(Busy) throw new AuthorizationVaultBusyException();
+            if(FailEvery || id==Failure) throw new IOException("Synthetic storage failure");
+            return Task.CompletedTask;
+        }
     }
     public void Dispose()
     {

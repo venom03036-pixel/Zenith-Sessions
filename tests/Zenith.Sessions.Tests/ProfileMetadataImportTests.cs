@@ -33,6 +33,42 @@ public sealed class ProfileMetadataImportTests
     }
 
     [Fact]
+    public void Version4KeepsSavedGroupsInTheirExportedOrderWithNormalizedColors()
+    {
+        object[] groups = { new { Name = "Zeta", ColorHex = "#ff0000", SortOrder = 7L }, new { Name = " Empty ", ColorHex = (string?)null, SortOrder = 2L } };
+        var document = ProfileMetadataImport.DecodeDocument(JsonSerializer.SerializeToUtf8Bytes(new { Version = 4, Groups = groups, Profiles = new[] { Profile } }));
+        Assert.Equal(Profile.Validated(), Assert.Single(document.Profiles));
+        Assert.Equal(new ProfileMetadataGroup[] { new("Empty", null, 2), new("Zeta", "#FF0000", 7) }, document.Groups);
+    }
+
+    [Fact]
+    public void Version3FilesStillImportWithNoSavedGroups()
+    {
+        var document = ProfileMetadataImport.DecodeDocument(Document(3, Profile));
+        Assert.Equal(Profile.Validated(), Assert.Single(document.Profiles)); Assert.Empty(document.Groups);
+    }
+
+    [Theory]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":\"red\",\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":\"#12345G\",\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":7,\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"SortOrder\":-1}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"SortOrder\":\"0\"}")]
+    [InlineData("{\"Name\":\" \",\"ColorHex\":null,\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"ColorHex\":\"#000000\",\"SortOrder\":0}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"SortOrder\":0,\"Id\":\"synthetic-secret-marker\"}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"SortOrder\":0},{\"Name\":\"zeta\",\"ColorHex\":null,\"SortOrder\":1}")]
+    [InlineData("{\"Name\":\"Zeta\",\"ColorHex\":null,\"SortOrder\":0},{\"Name\":\"Alpha\",\"ColorHex\":null,\"SortOrder\":0}")]
+    [InlineData("null")]
+    public void InvalidColorsOrAmbiguousSavedGroupsRejectTheWholeFile(string groups)
+    {
+        string json = "{\"Version\":4,\"Groups\":[" + groups + "],\"Profiles\":[]}";
+        var error = Assert.Throws<InvalidDataException>(() => ProfileMetadataImport.DecodeDocument(Encoding.UTF8.GetBytes(json)));
+        Assert.Contains("preserved", error.Message); Assert.DoesNotContain("synthetic-secret-marker", error.ToString());
+    }
+
+    [Fact]
     public void DuplicateRecipientsAreRejectedInsteadOfCreatingTwoDifferentImportedAccounts()
         => Assert.Throws<InvalidDataException>(() => ProfileMetadataImport.Decode(Document(3, Profile, Profile)));
 
@@ -49,6 +85,10 @@ public sealed class ProfileMetadataImportTests
     [InlineData("{\"Version\":3,\"Profiles\":[],\"Credentials\":[]}")]
     [InlineData("{\"Version\":3,\"Profiles\":[],\"version\":3}")]
     [InlineData("{\"Version\":4,\"Profiles\":[]}")]
+    [InlineData("{\"Version\":3,\"Groups\":[],\"Profiles\":[]}")]
+    [InlineData("{\"Version\":4,\"Groups\":null,\"Profiles\":[]}")]
+    [InlineData("{\"Version\":4,\"Groups\":[],\"Groups\":[],\"Profiles\":[]}")]
+    [InlineData("{\"Version\":5,\"Groups\":[],\"Profiles\":[]}")]
     [InlineData("{\"Version\":\"3\",\"Profiles\":[]}")]
     [InlineData("{\"Version\":3,\"Profiles\":null}")]
     [InlineData("{\"Version\":3,\"Profiles\":[null]}")]

@@ -19,7 +19,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
     {
         // The isolated browser needs an owner identity before any metadata exists. A new
         // profile is published only after the authenticated identity is completely verified.
-        var operation = Begin(Guid.NewGuid(), ct); bool succeeded = false;
+        // If that player already has a saved Roblox session, this same owned operation moves to
+        // that row and refreshes its sign-in instead of discarding the finished sign-in.
+        var operation = Begin(Guid.NewGuid(), ct); Guid created = operation.ProfileId; bool succeeded = false;
         try
         {
             var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
@@ -29,7 +31,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             Ensure(operation);
             var identity = await VerifyAndSave(operation, credential, null, writeSnapshot: snapshot,
                 createProfile: true).ConfigureAwait(false);
-            Ensure(operation); succeeded = true; return new(operation.ProfileId, identity);
+            Ensure(operation); succeeded = true; return new(operation.ProfileId, identity, Refreshed: operation.ProfileId != created);
         }
         finally { await CompleteMutationAsync(operation, succeeded).ConfigureAwait(false); }
     }
@@ -66,6 +68,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             // A response can rotate the credential even if its body, connection or cancellation then fails.
             // Fence old authority durably before contacting Roblox. Retain its protected material for
             // recovery, but require explicit sign-in after any interrupted check rather than replay it.
+            // Only a check Roblox provably never processed (NotProcessed) undoes its own fence.
             long pendingGeneration = snapshot.NextGeneration; var pendingMutationId = Guid.NewGuid();
             var pending = previous with { Generation = pendingGeneration, Health = AuthorizationHealth.SignInRequired };
             var reserved = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(snapshot, pending, pendingMutationId, operation.Token).ConfigureAwait(false);
@@ -81,6 +84,21 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             {
                 var identity = await VerifyAndSave(operation, credential, pending, writeSnapshot: pendingSnapshot).ConfigureAwait(false);
                 succeeded = true; return identity;
+            }
+            catch (RobloxSessionException error) when (error.Failure == RobloxSessionFailure.NotProcessed)
+            {
+                // The saved session itself never reached Roblox, or was turned away without a replacement
+                // (VerifyAndSave reports a refused replacement check as Network), so it was not rotated.
+                // Restore it only if this check's own fence is still the current record.
+                Ensure(operation);
+                var restored = previous with { Generation = pendingSnapshot.NextGeneration };
+                operation.FinalMutationIssued = true; // Cleanup may fence only this exact write.
+                var receipt = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(pendingSnapshot, restored,
+                    operation.FinalMutationId, operation.Token).ConfigureAwait(false);
+                Ensure(operation); RequireMutation(receipt, restored.Generation);
+                succeeded = true;
+                throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
+                    "Roblox could not be reached or was busy, so the saved sign-in was not checked. It was left unchanged; check it again later.");
             }
             catch (RobloxSessionException error) when (error.Failure is RobloxSessionFailure.Network or RobloxSessionFailure.TimedOut)
             {
@@ -226,7 +244,11 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             var saved = credential; var identity = first.Identity;
             if (first.RotatedCredential is { } candidate)
             {
-                second = await client.ValidateAsync(candidate, operation.Token).ConfigureAwait(false);
+                // Roblox already replaced the original, so a refused replacement check is not grounds
+                // to restore anything: report it as the ambiguous outcome it is for the saved record.
+                try { second = await client.ValidateAsync(candidate, operation.Token).ConfigureAwait(false); }
+                catch (RobloxSessionException error) when (error.Failure == RobloxSessionFailure.NotProcessed)
+                { throw new RobloxSessionException(RobloxSessionFailure.Network, "Roblox replaced the session but could not be reached to verify the replacement. No replacement was saved; sign in again."); }
                 Ensure(operation); ValidateIdentity(second.Identity);
                 if (second.Identity.UserId != first.Identity.UserId || second.Identity.Issuer != first.Identity.Issuer || second.Identity.Subject != first.Identity.Subject)
                 {
@@ -237,7 +259,13 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
                     throw new AccountLinkException("Roblox replaced the session again while it was being verified. No unverified replacement was saved; sign in again.");
                 saved = candidate; identity = second.Identity;
             }
-            await Unique(operation.ProfileId, identity, operation.Token, createProfile).ConfigureAwait(false);
+            if (await Unique(operation.ProfileId, identity, operation.Token, createProfile).ConfigureAwait(false) is { } savedProfileId)
+            {
+                // The credential is still owned here, so the refresh happens in this operation and is
+                // never held across a prompt. Only the protected sign-in and last-known identity change.
+                writeSnapshot = await AdoptSavedSessionAsync(operation, savedProfileId, identity).ConfigureAwait(false);
+                createProfile = false;
+            }
             if (!createProfile) await RequireProfile(operation.ProfileId, operation.Token).ConfigureAwait(false);
             Ensure(operation);
             if (saved.ExpiresUtc is { } expiry && expiry <= DateTimeOffset.UtcNow)
@@ -331,15 +359,42 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         finally { lock (_state) _disconnect = null; completion.TrySetResult(); }
     }
 
-    private async Task Unique(Guid profileId, LinkedIdentity identity, CancellationToken ct, bool addingAccount = false)
+    /// <summary>
+    /// Refuses a verified player saved on another profile. When adding, returns that profile instead
+    /// if it holds this player's saved Roblox session, so the add refreshes it rather than duplicating it.
+    /// </summary>
+    private async Task<Guid?> Unique(Guid profileId, LinkedIdentity identity, CancellationToken ct, bool addingAccount = false)
     {
         if (vault is not IRobloxAuthorizationIdentityReader metadata)
             throw new AccountLinkException("The protected store cannot safely check duplicate Roblox identities. No session was saved.");
         var existing = await metadata.FindByRobloxUserIdAsync(identity.UserId, ct).ConfigureAwait(false);
-        if (existing is not null && existing.ProfileId != profileId)
-            throw new AccountLinkException(addingAccount
-                ? "This Roblox account is already saved in your library. Use its existing row. Its saved sign-in was not replaced."
-                : "This Roblox account is already saved on another profile. Disconnect its existing session before saving it here.");
+        if (existing is null || existing.ProfileId == profileId) return null;
+        // An older authorization type is never converted here; it must be removed explicitly first.
+        if (addingAccount && existing.Provider == RobloxSessionIdentity.Provider) return existing.ProfileId;
+        throw new AccountLinkException(addingAccount
+            ? "This Roblox account is already saved in your library with an older type of sign-in, so it was not refreshed. Select its row, choose Remove saved sign-in, then choose Sign in with Roblox."
+            : "This Roblox account is already saved on another profile. Disconnect its existing session before saving it here.");
+    }
+    /// <summary>
+    /// Moves this owned add to the saved row of the same verified player. The move happens under the
+    /// state gate, so a later Disconnect, Cancel or Dispose for that row reaches this operation; like
+    /// Begin, it refuses while a disconnect is waiting. The commit stays conditional on the row's snapshot.
+    /// </summary>
+    private async Task<AuthorizationWriteSnapshot> AdoptSavedSessionAsync(Operation operation, Guid profileId, LinkedIdentity identity)
+    {
+        operation.Token.ThrowIfCancellationRequested();
+        lock (_state)
+        {
+            if (_disposed || operation.Invalidated || !ReferenceEquals(_active, operation)) throw new OperationCanceledException(operation.Token);
+            if (_disconnect is not null)
+                throw new AccountLinkException("A saved sign-in is being removed, so this account's saved sign-in was not refreshed. Add the account again after that finishes.");
+            operation.ProfileId = profileId;
+        }
+        var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
+        // The identity index named this row; its own record must still hold this player's Roblox session.
+        if (snapshot.Record?.Validated() is not { } saved || !SameIdentity(saved, identity))
+            throw AuthorizationChanged();
+        return snapshot;
     }
     private async Task RequireProfile(Guid profileId, CancellationToken ct)
     { if (await profiles.FindAsync(profileId, ct).ConfigureAwait(false) is null) throw new AccountLinkException("This saved profile no longer exists. No session was attached."); }
@@ -423,7 +478,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
     private sealed class Operation(Guid profileId, CancellationTokenSource stop) : IDisposable
     {
         private int _finished;
-        public Guid ProfileId { get; } = profileId;
+        // Changed only under the service state gate, by AdoptSavedSessionAsync.
+        public Guid ProfileId { get; set; } = profileId;
         public CancellationToken Token { get; } = stop.Token;
         public bool Invalidated;
         public Guid FinalMutationId { get; } = Guid.NewGuid();

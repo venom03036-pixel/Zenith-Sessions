@@ -85,10 +85,14 @@ public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid
 /// What a share link resolved to. Public place/universe IDs only, plus the owned private server code when the link was
 /// a server invitation, or the canonical job ID of the inviter's server for a ServerInstance (a requested server, never
 /// proof of access or arrival). Resolution proves neither access nor arrival. ToString never shows a code.
+/// A replacement session cookie Roblox sent with the answer travels separately: it is unverified, never shown, and
+/// belongs to whoever takes it; disposing the resolution disposes it if nobody did.
 /// </summary>
 public sealed class RobloxShareLinkResolution(RobloxShareLinkOutcome outcome, long? placeId = null, long? universeId = null,
-    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null, string? jobId = null) : IDisposable
+    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null, string? jobId = null,
+    RobloxSessionCredential? rotatedCredential = null) : IDisposable
 {
+    private RobloxSessionCredential? _rotatedCredential = rotatedCredential;
     public RobloxShareLinkOutcome Outcome { get; } = outcome;
     public long? PlaceId { get; } = placeId;
     public long? UniverseId { get; } = universeId;
@@ -106,7 +110,9 @@ public sealed class RobloxShareLinkResolution(RobloxShareLinkOutcome outcome, lo
         return RobloxRequestedDestination.TryNormalizeJobId(jobId, out string? job) ? job
             : throw new ArgumentException("A server job ID must be a nonempty GUID in dashed format.", nameof(jobId));
     }
-    public void Dispose() => PrivateServerCode?.Dispose();
+    /// <summary>Moves the unverified replacement session (if any) to the caller, who must dispose it. Later calls return null.</summary>
+    public RobloxSessionCredential? TakeRotatedCredential() => Interlocked.Exchange(ref _rotatedCredential, null);
+    public void Dispose() { PrivateServerCode?.Dispose(); TakeRotatedCredential()?.Dispose(); }
 }
 
 /// <summary>
@@ -122,6 +128,7 @@ public readonly record struct RobloxShareLinkTokenScope(Guid ProfileId, long Rob
 /// One signed-in resolve request. The credential is borrowed for the call and never retained or logged. The client may keep
 /// the anti-forgery (CSRF) token Roblox last accepted for a scope, in memory only and never logged, so that account's next
 /// resolve normally takes one request. Sign-out forgets one profile's tokens; Lock, Panic and shutdown forget all of them.
+/// A replacement session cookie Roblox sends during the call is handed back on the resolution, never saved here.
 /// </summary>
 public interface IRobloxShareLinkClient
 {
