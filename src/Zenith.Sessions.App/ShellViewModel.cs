@@ -289,9 +289,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxSessionClient? sessionClient=null,IClientExecutableTrustVerifier? executableTrust=null,IRecipientBundleStore? recipientBundleStore=null,
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
-        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null)
+        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
+        TimeProvider? idleClock=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        _idleLock=new(idleClock);
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
@@ -329,7 +331,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex); } });
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { IsLocked = false; ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { IsLocked = false; ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); });
         SaveSettings = new(_ => SavePreferencesAsync(), Fail);
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, Fail);
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, Fail);
@@ -375,9 +377,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;
+            _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
             await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             await CleanupCredentialsAsync();
@@ -681,7 +684,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var performance=ReadPerformanceDraft();
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         await SaveCurrentSettingsAsync(requested);
@@ -695,7 +698,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
-            && CloseButtonExits == _savedSettings.CloseButtonExits
+            && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -718,6 +721,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
                 _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel));
+                if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
             }
@@ -748,7 +752,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(requested) RecentClients.RecordCloseRequest(new(null,session.ProcessId,session.ProcessStartUtcTicks),requestedAt);
         Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
     }
-    public void LockDashboard() { StopOperations("Controls locked. Monitoring continues; automation requires explicit restart.",ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
+    public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
+    private void LockControls(string reason) { StopOperations(reason,ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
     private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
     private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
     public void Fail(Exception exception)
@@ -796,6 +801,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         if(_shuttingDown) return;
         _shuttingDown=true;
+        StopIdleLock();
         StopClientPriorityOperations();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();

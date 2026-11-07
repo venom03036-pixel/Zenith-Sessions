@@ -52,6 +52,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "theme", "palette", "purple", "plum"),
         E("close-button", "Close button exits the manager", "Choose whether the window's close button keeps the manager in the tray (the default) or exits it like Exit. Save settings to apply.",
             SettingsSearchTarget.Appearance, "tray", "close to tray", "minimize to tray", "notification area", "quit", "background"),
+        E("idle-lock", "Lock when idle", "Choose whether the manager locks like Lock after a time without keyboard or mouse input. Off by default; save settings to apply.",
+            SettingsSearchTarget.Appearance, "idle", "auto lock", "automatic lock", "inactivity", "timeout", "away", "privacy", "security"),
 
         E("profile-maximum-efficiency", "Maximum Efficiency", "Choose the manager profile with less frequent process observations and wider eligible-start spacing.",
             SettingsSearchTarget.Performance, "performance preset", "monitoring", "cadence", "sampling"),

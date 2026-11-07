@@ -58,6 +58,7 @@ public partial class MainWindow : Window
             vm.SetPanicRegistration(!vm.IsSample && _panicKey.RegisterF12(handle));
         };
         SystemEvents.SessionSwitch += OnSessionSwitch;
+        InputManager.Current.PostProcessInput += NoteUserInput;
     }
     private void ContentSizeChanged(object sender,SizeChangedEventArgs e)
     {
@@ -72,6 +73,17 @@ public partial class MainWindow : Window
     private void UpdatePreviewVisibility()=>_vm.SetPreviewWindowVisible(IsVisible && WindowState!=WindowState.Minimized);
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     { if (e.Reason == SessionSwitchReason.SessionLock) Dispatcher.BeginInvoke(_vm.LockDashboard); }
+    // The optional idle lock counts only real keyboard and mouse input in this manager's windows (dialogs included). WPF
+    // repeats a still pointer's position when the layout under it changes, so a move counts only when the position differs.
+    // This runs for every input event, so it only stores a timestamp (Rule 7).
+    private void NoteUserInput(object sender, ProcessInputEventArgs e)
+    {
+        switch (e.StagingItem.Input)
+        {
+            case KeyEventArgs or MouseButtonEventArgs or MouseWheelEventArgs: _vm.NoteUserInput(); break;
+            case MouseEventArgs move when move.RoutedEvent == Mouse.MouseMoveEvent: var at = move.GetPosition(null); _vm.NotePointer(at.X, at.Y); break;
+        }
+    }
     private nint OnMessage(nint window, int message, nint w, nint l, ref bool handled)
     {
         if (message == GlobalPanicRegistration.Message && w == GlobalPanicRegistration.Identifier) { _vm.Panic.Execute(null); handled = true; }
@@ -93,7 +105,7 @@ public partial class MainWindow : Window
     protected override void OnClosed(EventArgs e)
     {
         _panicKey.Dispose();
-        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; _vm.ThemeChanged -= SetTheme;
+        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme;
         _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;PreviewKeyDown-=SettingsPagePreviewKeyDown;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
@@ -124,7 +136,8 @@ public partial class MainWindow : Window
         var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
         return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
     }
-    private void Restore() { Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
+    // Reopening from the tray or a second launch is the user returning, so the idle lock counts it as input.
+    private void Restore() { _vm.NoteUserInput(); Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
     public void RestoreFromLaunch() => Restore();
     private void DragHeader(object sender, MouseButtonEventArgs e)
     { if (e.ChangedButton == MouseButton.Left) { if (e.ClickCount == 2) WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; else DragMove(); } }
@@ -194,6 +207,7 @@ public partial class MainWindow : Window
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,
                 "close-button"=>SettingsCloseButtonExits,
+                "idle-lock"=>SettingsIdleLock,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
