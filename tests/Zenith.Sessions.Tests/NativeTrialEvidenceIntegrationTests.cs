@@ -161,6 +161,78 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Empty(Directory.EnumerateFiles(_root, "settings.json.*.tmp", SearchOption.TopDirectoryOnly));
     });
 
+    // Pure presentation-row fixtures: synthetic records only, no shell, process or log.
+    private static readonly DateTimeOffset EvidenceRowAt = new(2026, 11, 7, 8, 0, 0, TimeSpan.Zero);
+    private static LaunchOperation EvidenceRowOperation() => new(
+        new(Guid.NewGuid(), Guid.NewGuid(), 1, 123, 42, 0, EvidenceRowAt.AddMinutes(-6), 7, EvidenceJob, RobloxServerKind.Public, true),
+        LaunchState.ClientStartedUnverified, LaunchProblem.ClientStartedUnverified, EvidenceRowAt, new(700001, EvidenceRowAt.AddMinutes(-10).UtcTicks, EvidenceRowAt.AddMinutes(-5)));
+    private static NativeTrialEvidenceView EvidenceRowView(LaunchOperation operation) => new(operation.Intent.OperationId, 123, 42, EvidenceJob,
+        operation.ProcessReceipt, NativeTrialProcessPresence.Observed, EvidenceRowAt, EvidenceRowAt.AddMilliseconds(-100),
+        new(123, EvidenceRowAt.AddSeconds(-1), NativeTrialReportedStatus.ReportedMatchUnverified),
+        new(42, Guid.Parse(EvidenceJob), EvidenceRowAt.AddSeconds(-1), NativeTrialReportedStatus.ReportedMatchUnverified, NativeTrialReportedStatus.ReportedMatchUnverified),
+        new(123, EvidenceRowAt.AddSeconds(-2), NativeTrialReportedStatus.LastKnownOnly),
+        new(42, Guid.Parse(EvidenceJob), EvidenceRowAt.AddSeconds(-2), NativeTrialReportedStatus.LastKnownOnly, NativeTrialReportedStatus.LastKnownOnly),
+        NativeTrialEvidenceOutcome.ReportedMatchUnverified, "Reported values are unverified diagnostics.");
+
+    [Fact]
+    public void LaunchEvidenceRowMeasurementOnlyChangeDoesNotRaiseRequestFields()
+    {
+        var operation = EvidenceRowOperation(); var view = EvidenceRowView(operation);
+        var row = new LaunchEvidenceRow(operation); row.Update(operation, view);
+        var raised = new List<string?>(); row.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+        // A new presentation tick re-measures the same process; nothing about the request changed.
+        row.Update(operation, view with { ProcessObservedUtc = EvidenceRowAt.AddSeconds(1), ProcessMeasurementUtc = EvidenceRowAt.AddSeconds(1) });
+        Assert.Equal(new[] { nameof(LaunchEvidenceRow.ObservationTime), nameof(LaunchEvidenceRow.View) }, raised.Order(StringComparer.Ordinal));
+        raised.Clear(); row.Update(operation, row.View!); Assert.Empty(raised);
+    }
+
+    [Fact]
+    public void LaunchEvidenceRowRaisesEveryDisplayedTextThatChanged()
+    {
+        var operation = EvidenceRowOperation(); var baseline = EvidenceRowView(operation);
+        var texts = typeof(LaunchEvidenceRow).GetProperties().Where(property => property.PropertyType == typeof(string)).ToArray();
+        Assert.True(texts.Length >= 12);
+        var changes = new (string Name, LaunchOperation Operation, NativeTrialEvidenceView View)[]
+        {
+            ("operation-state", operation with { State = LaunchState.Cancelled }, baseline),
+            ("expected-player", operation, baseline with { ExpectedUserId = 456 }),
+            ("requested-place", operation, baseline with { RequestedPlaceId = 99 }),
+            ("requested-server", operation, baseline with { RequestedJobId = null }),
+            ("receipt", operation, baseline with { ProcessReceipt = baseline.ProcessReceipt! with { ProcessId = 700002 } }),
+            ("presence", operation, baseline with { Presence = NativeTrialProcessPresence.NotObserved }),
+            ("measurement", operation, baseline with { ProcessMeasurementUtc = null }),
+            ("reported-player", operation, baseline with { ReportedUser = baseline.ReportedUser with { UserId = 456 } }),
+            ("reported-player-time", operation, baseline with { ReportedUser = baseline.ReportedUser with { ObservedUtc = EvidenceRowAt } }),
+            ("reported-place", operation, baseline with { ReportedDestination = baseline.ReportedDestination with { PlaceId = 99 } }),
+            ("reported-server", operation, baseline with { ReportedDestination = baseline.ReportedDestination with { JobId = Guid.NewGuid() } }),
+            ("reported-time", operation, baseline with { ReportedDestination = baseline.ReportedDestination with { ObservedUtc = EvidenceRowAt } }),
+            ("reported-status", operation, baseline with { ReportedDestination = baseline.ReportedDestination with { JobStatus = NativeTrialReportedStatus.Stale } }),
+            ("last-known-player", operation, baseline with { LastKnownUser = baseline.LastKnownUser with { UserId = 456 } }),
+            ("last-known-destination", operation, baseline with { LastKnownDestination = baseline.LastKnownDestination with { JobId = Guid.NewGuid() } }),
+            ("outcome", operation, baseline with { Outcome = NativeTrialEvidenceOutcome.ReportedMismatchUnverified }),
+            ("explanation", operation, baseline with { Explanation = "A different synthetic explanation." })
+        };
+        foreach (var change in changes)
+        {
+            var row = new LaunchEvidenceRow(operation); row.Update(operation, baseline);
+            AssertChangedTextsRaised(row, change.Name, () => row.Update(change.Operation, change.View));
+        }
+        // The first projection replaces the no-evidence placeholders.
+        var fresh = new LaunchEvidenceRow(operation);
+        AssertChangedTextsRaised(fresh, "first-view", () => fresh.Update(operation, baseline));
+
+        void AssertChangedTextsRaised(LaunchEvidenceRow row, string change, Action update)
+        {
+            var before = texts.ToDictionary(text => text.Name, text => (string?)text.GetValue(row)); var viewBefore = row.View;
+            var raised = new HashSet<string?>(); row.PropertyChanged += (_, e) => raised.Add(e.PropertyName);
+            update();
+            foreach (var text in texts)
+                if (!string.Equals(before[text.Name], (string?)text.GetValue(row), StringComparison.Ordinal))
+                    Assert.True(raised.Contains(text.Name), $"{change} changed {text.Name} without a notification.");
+            Assert.True(raised.Contains(nameof(LaunchEvidenceRow.View)) == (viewBefore != row.View), $"{change} View notification does not match the change.");
+        }
+    }
+
     private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null)
     {
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());

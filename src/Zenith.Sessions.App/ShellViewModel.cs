@@ -643,8 +643,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 if (index < 0) { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;Sessions.Add(row);clientRowsChanged=true; } else Sessions[index].Update(session);
             }
             _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
-            RefreshLaunchEvidence();
-            RecentClients.Observe(snapshot,_logProjection.EvidenceSnapshot(now),now);
+            // One registry snapshot per tick feeds both readers.
+            var evidence=_logProjection.EvidenceSnapshot(now);
+            RefreshLaunchEvidenceWith(evidence);
+            RecentClients.Observe(snapshot,evidence,now);
             var logViews = _logProjection.Snapshot(now);
             foreach (var row in Sessions)
                 row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
