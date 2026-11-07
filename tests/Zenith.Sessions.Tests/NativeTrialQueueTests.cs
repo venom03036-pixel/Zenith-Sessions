@@ -80,6 +80,32 @@ public sealed class NativeTrialQueueTests
     }
 
     [Fact]
+    public async Task PanicBetweenTrialResumeCheckAndCommitKeepsTheQueuePausedAndPersistsTheStop()
+    {
+        var store = new Store(); var provider = new Provider();
+        await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
+        var request = await queue.EnqueueTrialAsync(Profile(), default, Binding, Destination);
+        var writes = new ConcurrentQueue<LaunchQueueSnapshot>();
+        store.BeforeSave = snapshot => { writes.Enqueue(snapshot); return Task.CompletedTask; };
+        // Panic never waits for the queue lock, so it can land after the consent check and before the resume commits.
+        queue.TrialResumeCheckedForTest = queue.SignalPanic;
+        Assert.False(await queue.ResumeTrialAsync(request.Intent.OperationId, default));
+        queue.TrialResumeCheckedForTest = null;
+        // Panic's own wake saves the stop; no write may record the queue as running.
+        await Until(() => !writes.IsEmpty);
+        Assert.All(writes, snapshot => Assert.True(snapshot.Paused, "A trial resume overwrote Panic's saved pause."));
+        Assert.False(queue.IsTrialOperation(request.Intent.OperationId));
+        Assert.Equal(LaunchState.Queued, store.Row(request.Intent.OperationId)!.State);
+        Assert.Equal(LaunchProblem.None, store.Row(request.Intent.OperationId)!.Problem);
+        // The in-memory fence holds too: a fresh trial is saved behind the pause and is not prepared.
+        var second = await queue.EnqueueTrialAsync(Profile("Second trial"), default, Binding, Destination);
+        Assert.True(writes.Last(snapshot => snapshot.Operations.Any(row => row.Intent.OperationId == second.Intent.OperationId)).Paused,
+            "The queue stayed running in memory after Panic.");
+        Assert.Equal(0, provider.Preparations); Assert.Equal(0, provider.Starts);
+        Assert.True(store.Last.Paused);
+    }
+
+    [Fact]
     public async Task RestartRestoresOnlyReviewDataAndNoTrialConsent()
     {
         var store = new Store(); var firstProvider = new Provider(); LaunchOperation request;
