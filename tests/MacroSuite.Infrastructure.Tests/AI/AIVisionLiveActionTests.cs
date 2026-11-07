@@ -108,11 +108,16 @@ public sealed class AIVisionLiveActionTests
             modelId: modelId,
             providerId: providerId)
         {
-            Timeout = TimeSpan.FromSeconds(90)
+            Timeout = TimeSpan.FromSeconds(90),
+            // Input-producing AI actions must name the window they may act on (Rule 8).
+            ExpectedWindow = TargetWindowTitle
         };
 
         var context = new MacroContext(capture, controller)
         {
+            // Same foreground-title reader the app wires for playback, so the validator
+            // checks the real foreground window against ExpectedWindow.
+            ForegroundWindow = Win32ForegroundWindowInfo.Default,
             InputPlayer = player,
             VisionRouter = router,
             ApprovalGate = new ApprovalGate(ApprovalPolicy.AutoApprove),
