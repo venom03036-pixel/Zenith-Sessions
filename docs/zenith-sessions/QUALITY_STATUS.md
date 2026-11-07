@@ -62,7 +62,7 @@ The merge itself needed 46 conflict resolutions and one post-merge fix (failure 
 |---|---|---|
 | Work items | 199 Verified · 3 Not reproduced · 1 Needs decision (of 203) | tables below |
 | Lane reviews | 13 independent reviews; every finding graded important (14) was fixed with a test that failed first; 67 minor findings are listed as open rows at the end | review rows `M-…` |
-| Zenith Sessions tests | 5,442 / 5,443 pass, 0 fail; 1 skipped (needs the Luau 0.745 binaries, which only the main working copy has) | `artifacts/quality-loop/round1/sessions.txt` |
+| Zenith Sessions tests | 5,443 / 5,443 in the working copy (the integration copy skipped 1 test that needs the Luau 0.745 binaries kept only here) | `artifacts/quality-loop/round1/sessions-working-copy.txt` |
 | MacroSuite.Core.Tests | 761 / 761 (was 759) | `artifacts/quality-loop/round1/MacroSuite.Core.Tests.txt` |
 | MacroSuite.Infrastructure.Tests | 1,172 pass, 0 fail, 3 skipped (D3D11 hardware) on a quiet machine (was 1,155 / 9 fail). One test that calls a cloud AI provider with the key in your vault was left out of unattended runs | `artifacts/quality-loop/round1/MacroSuite.Infrastructure.Tests.txt` |
 | — under load | 5 dispatcher-timing tests time out when the Sessions suite ran just before (Windows error reporting was still processing a deliberate test crash). The same tests pass alone and in a control run of the unmerged lane | item `F-1` below |
