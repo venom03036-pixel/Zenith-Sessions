@@ -78,7 +78,8 @@ public sealed partial class ShellViewModel
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
         ShareLink=new(_linkService,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory);
+            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory,
+            sessionRejected:(_,ct)=>ReloadAccountsAfterRejectedSessionAsync(ct));
         DestinationSearch=new(publicDirectory as IPublicRobloxGameSearchDirectory ?? gameDirectory as IPublicRobloxGameSearchDirectory,
             ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),
             art:publicDirectory as IPublicRobloxGameArtDirectory ?? gameDirectory as IPublicRobloxGameArtDirectory,shareLinkHandler:RouteShareLinkAsync);
@@ -178,6 +179,19 @@ public sealed partial class ShellViewModel
         else RobloxFavorites.Cancel();
         if(IsJoinGame && CanUseDirectories()) _=ShareLink.LoadSavedAsync(); else ShareLink.Cancel();
         RefreshRecentlyPlayed();
+    }
+    /// <summary>
+    /// Roblox refused the selected account's saved session during a share-link check, and the service marked it as
+    /// needing sign-in. Reload the page so its row and launch button say so now, not after a manual refresh. Owned by the
+    /// share-link check (awaited there and joined on its disposal) and by this shell's lifetime; failures become a notice.
+    /// </summary>
+    private async Task ReloadAccountsAfterRejectedSessionAsync(CancellationToken ct)
+    {
+        if(_lifetime.IsCancellationRequested || ct.IsCancellationRequested) return;
+        using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
+        try {await LoadAccountsAsync(stop.Token);}
+        catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        catch(Exception error) {Fail(error);}
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
     private Task RouteShareLinkAsync(RobloxShareLink link)

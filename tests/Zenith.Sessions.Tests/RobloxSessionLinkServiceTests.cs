@@ -146,12 +146,59 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, (await unwired.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
     }
 
+    [Fact]
+    public async Task ShareLinkUnauthorizedFencesTheSavedSessionToSignInRequired()
+    {
+        // Roblox answered 401 with this saved session: the account row and launch eligibility must stop calling it linked.
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) }; var client = new Client(); var browser = new Browser();
+        await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        var fenced = vault.Records[profile.Id];
+        Assert.Equal(AuthorizationHealth.SignInRequired, fenced.Health); Assert.True(fenced.Generation > 1); Assert.Equal(1, vault.Saves);
+        Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.GetSummaryAsync(profile.Id, default))!.Health); // What the account row reads.
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Equal(1, resolver.Calls); Assert.Equal(0, client.Calls); Assert.Equal(0, browser.Calls); Assert.Equal(1, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkUnauthorizedLeavesANewerGrantFromAnotherOperationUnchanged()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var newer = Saved(profile.Id) with { Generation = 2, SessionCookie = "synthetic-rotation" };
+        // Another process signs in again while Roblox is answering the old session's request.
+        var resolver = new ShareLinks { Reply = () => { vault.Records[profile.Id] = newer; return new(RobloxShareLinkOutcome.SignInRequired); } };
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Same(newer, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkFailuresOtherThanUnauthorizedLeaveTheSavedSessionLinked()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        var saved = Saved(profile.Id); vault.Records[profile.Id] = saved;
+        foreach (var outcome in new[] { RobloxShareLinkOutcome.Unavailable, RobloxShareLinkOutcome.Expired, RobloxShareLinkOutcome.Invalid })
+        {
+            var resolver = new ShareLinks { Reply = () => new(outcome) };
+            await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+            using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+            Assert.Equal(outcome, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        }
+        Assert.Same(saved, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+    }
+
     private sealed class ShareLinks : IRobloxShareLinkClient
     {
         public int Calls; public string? SeenCookie; public RobloxShareLink? SeenLink; private RobloxSessionCredential? _credential;
+        public Func<RobloxShareLinkResolution>? Reply;
         public bool CredentialDisposedAfterCall { get { try { _credential?.CopyValue(); return false; } catch (ObjectDisposedException) { return true; } } }
         public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, CancellationToken ct)
-        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); _credential = credential; return Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
+        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); _credential = credential; return Task.FromResult(Reply?.Invoke() ?? new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
     }
 
     [Fact]

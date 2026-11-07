@@ -159,6 +159,9 @@ name, creator line, playing + rating, accent border and check when it is the cur
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF
   retry (403 with `x-csrf-token` → repeat once with the token), then stop. 401 → SignInRequired.
+- A 401 also marks that exact saved session as needing sign-in (a conditional write that never replaces a newer
+  sign-in), and the shell reloads the account page, so the row, its launch button and this panel agree. Every other
+  outcome leaves the vault unchanged.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
   `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
