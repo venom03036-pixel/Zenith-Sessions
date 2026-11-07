@@ -295,6 +295,51 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.StartsWith("Diagnostics active",vm.DiagnosticsStatus);Assert.DoesNotContain("refreshed",vm.DiagnosticsStatus);
         vm.Navigate.Execute("Diagnostics");Assert.StartsWith("Live view",vm.DiagnosticViewStatus);
     });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnEntryLostToADiskErrorIsNotCalledBusyOrRoutineOnceTheLogRecovers(bool monitoringStopped)=>OnUi(async ()=>
+    {
+        // The lost entry is a failure record, and nothing was busy: another program held the log for one write.
+        IDesktopMonitor monitor=monitoringStopped?new FaultingMonitor():new SyntheticMonitor();
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,monitor);await vm.InitializeAsync();
+        string log=Path.Combine(Data,"diagnostics","manager.jsonl");
+        await UntilAsync(()=>File.Exists(log));
+        vm.Navigate.Execute("Diagnostics");
+        if(monitoringStopped) await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("monitoring stopped",StringComparison.Ordinal);});
+        FileStream? blocker=null;
+        await UntilAsync(()=>(blocker=TryOpenDenyingWriters(log)) is not null);
+        using(blocker)
+        {
+            vm.Fail(new IOException("synthetic"),ManagerSubsystem.Library);
+            await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("another program",StringComparison.Ordinal);});
+        }
+        // The next successful write clears the failure text, so the header falls back to the skip count.
+        await vm.SaveAccountAsync(AccountProfile.Create("Saved after the log was released"));
+        await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return !vm.DiagnosticsStatus.Contains("another program",StringComparison.Ordinal);});
+        using var report=JsonDocument.Parse(vm.BuildDiagnosticReport());
+        long lost=report.RootElement.GetProperty("DroppedEvents").GetInt64();Assert.True(lost>=1,"No entry was lost to the held log.");
+        Assert.DoesNotContain("busy",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("routine",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
+        string unwritten=$"{(lost==1?"1 event was":$"{lost} events were")} not written to the disk log";
+        Assert.Equal(monitoringStopped?$"Diagnostics recording · {unwritten} · monitoring stopped · view updates when refreshed"
+            :$"Diagnostics active · {unwritten}.",vm.DiagnosticsStatus);
+    });
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        // Bounded wait for the background writer; the disk has no completion event to observe.
+        var deadline=DateTime.UtcNow.AddSeconds(10);
+        while(!condition())
+        {
+            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
+            await Task.Delay(10);
+        }
+    }
+    private static FileStream? TryOpenDenyingWriters(string path)
+    {
+        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
+        catch(IOException) {return null;}
+    }
     [Fact]
     public Task ShareLinkCheckSaveFailureAndRemoveNeverWriteCodesToAnyDiagnosticsOutput()=>OnUi(async ()=>
     {

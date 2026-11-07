@@ -119,11 +119,13 @@ public sealed partial class ShellViewModel
     {
         bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
         string? stopped=live?null:_overviewMonitorStopped?"monitoring stopped":_libraryUnavailable?"startup needs attention":null;
-        // A disk-writer failure always wins so the header agrees with the storage footer.
+        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
+        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
+        string? unwritten=dropped<=0?null:dropped==1?"1 event was not written to the disk log":$"{dropped} events were not written to the disk log";
         DiagnosticsStatus=_diagnostics.Failure??(stopped is not null
-            ? $"{(dropped>0?$"Diagnostics busy: {dropped} routine events skipped":"Diagnostics recording")} · {stopped} · view updates when refreshed"
+            ? $"Diagnostics recording · {(unwritten is null?"":unwritten+" · ")}{stopped} · view updates when refreshed"
             : !live?"Diagnostics starting"
-            : dropped>0?$"Diagnostics busy: {dropped} routine events skipped.":"Diagnostics active · bounded to three log files");
+            : unwritten is not null?$"Diagnostics active · {unwritten}.":"Diagnostics active · bounded to three log files");
         // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
         if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
     }
