@@ -59,11 +59,16 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
     public Task ActiveCapture=>_coordinator.ActiveOperation;
     public Task Completion=>_presenter;
 
+    /// <param name="failed">The presenter itself faulted; previews become unavailable.</param>
+    /// <param name="captureFailed">
+    /// The shared capture owner reports only a provider capture, cleanup or shutdown failure type, on its own
+    /// thread; previews stay available. It must not throw.
+    /// </param>
     public ClientPreviewsViewModel(IClientPreviewProvider provider,Dispatcher dispatcher,Func<bool> canUse,
-        Action<Exception>? failed=null,TimeProvider? clock=null)
+        Action<Exception>? failed=null,TimeProvider? clock=null,Action<Type>? captureFailed=null)
     {
         _dispatcher=dispatcher;_canUse=canUse;_failed=failed??(_=>{});_clock=clock??TimeProvider.System;
-        _coordinator=new(provider,_clock);
+        _coordinator=new(provider,_clock,captureFailed);
         _presenter=Task.Run(()=>PresentAsync(_lifetime.Token));
     }
     public void Start(IReadOnlyList<ClientPreviewTarget> targets,DateTimeOffset eligibilityExpiresUtc)

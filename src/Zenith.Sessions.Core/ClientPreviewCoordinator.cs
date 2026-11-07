@@ -9,6 +9,7 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
 {
     private readonly IClientPreviewProvider _provider;
     private readonly TimeProvider _clock;
+    private readonly Action<Type>? _failed;
     private readonly object _gate = new();
     private readonly SemaphoreSlim _wake = new(0, 1);
     private readonly CancellationTokenSource _lifetime = new();
@@ -18,17 +19,22 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
     private CaptureOperation? _capture;
     private TaskCompletionSource<bool> _drained = CompletedDrain();
     private ClientPreviewSnapshot _snapshot = new(0, false, Array.Empty<ClientPreviewResult>(), "Client previews are off.");
-    private long _generation, _revision;
+    private long _generation, _revision, _reportedCaptureFailureGeneration;
     private DateTimeOffset? _eligibilityExpiresUtc;
     private string _stoppedExplanation = "Client previews are off.";
     private const string EligibilityExpired = "Preview eligibility expired. Start previews again after fresh resource observations.";
     private bool _providerOwned, _releaseRequested, _releaseFailed, _disposed;
     private Task? _dispose;
 
-    public ClientPreviewCoordinator(IClientPreviewProvider provider, TimeProvider? timeProvider = null)
+    /// <param name="failed">
+    /// Receives only the exception type of a provider capture failure (at most once per request generation),
+    /// a failed cleanup, or a failed shutdown step. It runs on the coordinator's own threads after
+    /// <c>_gate</c> is released and must not throw: a throwing callback is a programming error that ends the worker.
+    /// </param>
+    public ClientPreviewCoordinator(IClientPreviewProvider provider, TimeProvider? timeProvider = null, Action<Type>? failed = null)
     {
         ArgumentNullException.ThrowIfNull(provider);
-        _provider = provider; _clock = timeProvider ?? TimeProvider.System;
+        _provider = provider; _clock = timeProvider ?? TimeProvider.System; _failed = failed;
         _worker = Task.Run(RunAsync, CancellationToken.None);
     }
 
@@ -300,13 +306,20 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
                     }
                 }
                 catch (OperationCanceledException) when (operation.Token.IsCancellationRequested) { }
-                catch (Exception)
+                catch (Exception error)
                 {
-                    // No native/provider exception message or free text is published or retained.
+                    // No native/provider exception message or free text is published or retained; only the
+                    // type is reported, once per request, so a source failing every batch cannot flood diagnostics.
+                    bool report;
                     lock (_gate)
+                    {
                         if (Current(request, operation)) Publish(request.Generation, true,
                             request.Mode == ClientPreviewMode.Overview ? MergeOverview(request, All(batch.Targets, ClientPreviewStatus.Failed))
                                 : All(request.Targets, ClientPreviewStatus.Failed), "Client preview capture could not finish.", false);
+                        report = _reportedCaptureFailureGeneration != request.Generation;
+                        if (report) _reportedCaptureFailureGeneration = request.Generation;
+                    }
+                    if (report) ReportFailure(error);
                 }
                 finally
                 {
@@ -344,26 +357,33 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
                 return;
             }
         }
-        bool success;
+        Exception? failure = null;
         try
         {
             // There is no abandoned cleanup deadline. This executes only on the capture worker,
             // after the actual CaptureAsync owner has completed, even if cancellation was ignored.
-            await _provider.ReleaseAsync(CancellationToken.None).ConfigureAwait(false); success = true;
+            await _provider.ReleaseAsync(CancellationToken.None).ConfigureAwait(false);
         }
-        catch (Exception) { success = false; }
-        lock (_gate)
+        catch (Exception error) { failure = error; }
+        bool success = failure is null;
+        // Reported before the drain completes, so a StopAsync caller that observes the failure finds it
+        // recorded. The finally keeps ownership state consistent even if the callback itself throws.
+        try { ReportFailure(failure); }
+        finally
         {
-            _releaseRequested = false; _releaseFailed = !success;
-            if (success) _providerOwned = false;
-            else { _request = null; _surfaceTimes.Clear(); }
-            _drained.TrySetResult(success);
-            if (!success) Publish(_generation, false, Array.Empty<ClientPreviewResult>(),
-                "Preview cleanup failed. Resources remain owned until cleanup or shutdown finishes.", true);
-            else if (_request is { } request && !_disposed) Publish(request.Generation, true,
-                request.Mode == ClientPreviewMode.Overview ? OverviewRows(request.Targets, _snapshot.Results)
-                    : Pending(request.Targets), "Client previews requested.", false);
-            else Publish(_generation, false, Array.Empty<ClientPreviewResult>(), _stoppedExplanation, false);
+            lock (_gate)
+            {
+                _releaseRequested = false; _releaseFailed = !success;
+                if (success) _providerOwned = false;
+                else { _request = null; _surfaceTimes.Clear(); }
+                _drained.TrySetResult(success);
+                if (!success) Publish(_generation, false, Array.Empty<ClientPreviewResult>(),
+                    "Preview cleanup failed. Resources remain owned until cleanup or shutdown finishes.", true);
+                else if (_request is { } request && !_disposed) Publish(request.Generation, true,
+                    request.Mode == ClientPreviewMode.Overview ? OverviewRows(request.Targets, _snapshot.Results)
+                        : Pending(request.Targets), "Client previews requested.", false);
+                else Publish(_generation, false, Array.Empty<ClientPreviewResult>(), _stoppedExplanation, false);
+            }
         }
     }
 
@@ -552,6 +572,8 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
     { var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously); result.SetResult(true); return result; }
     private void EnsureDrainPending()
     { if (_drained.Task.IsCompleted) _drained = new(TaskCreationOptions.RunContinuationsAsynchronously); }
+    // Type only: Core never hands an exception or its message to the callback. Never called under _gate.
+    private void ReportFailure(Exception? error) { if (error is not null) _failed?.Invoke(error.GetType()); }
     private void Signal()
     {
         try { _wake.Release(); }
@@ -575,15 +597,16 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
     private async Task DisposeCoreAsync(CaptureOperation? capture)
     {
         await Task.CompletedTask.ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        bool success = true;
+        Exception? cancelFailure = null, workerFailure = null, disposeFailure = null;
         capture?.Cancel();
         try { await _lifetime.CancelAsync().ConfigureAwait(false); }
-        catch (Exception) { success = false; }
+        catch (Exception error) { cancelFailure = error; }
         Signal();
         try { await _worker.ConfigureAwait(false); }
-        catch (Exception) { success = false; }
+        catch (Exception error) { workerFailure = error; }
         try { await _provider.DisposeAsync().ConfigureAwait(false); }
-        catch (Exception) { success = false; }
+        catch (Exception error) { disposeFailure = error; }
+        bool success = cancelFailure is null && workerFailure is null && disposeFailure is null;
         lock (_gate)
         {
             if (success)
@@ -595,7 +618,11 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
             else Publish(_generation, false, Array.Empty<ClientPreviewResult>(), "Preview cleanup failed during shutdown.", true);
         }
         _lifetime.Dispose(); _wake.Dispose();
-        if (!success) throw new ClientPreviewException();
+        if (success) return;
+        // Each actual shutdown failure type is reported after owned handles are disposed; the caller
+        // still sees only the fixed ClientPreviewException.
+        ReportFailure(cancelFailure); ReportFailure(workerFailure); ReportFailure(disposeFailure);
+        throw new ClientPreviewException();
     }
 
     private sealed record Request(long Generation, IReadOnlyList<ClientPreviewTarget> Targets, ClientPreviewMode Mode)

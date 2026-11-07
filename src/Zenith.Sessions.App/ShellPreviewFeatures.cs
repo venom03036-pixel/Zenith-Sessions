@@ -33,7 +33,9 @@ public sealed partial class ShellViewModel
     private void InitializeClientPreviews(IClientPreviewProvider? provider)
     {
         ClientPreviews=new(provider??new WindowsClientPreviewProvider(),_dispatcher,()=>_clientPreviewAllowed,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),
+            // A defined kind keeps this thread-safe Record from throwing on the capture worker.
+            captureFailed:type=>_diagnostics.Record(ManagerEventKind.OperationFailed,type));
         ClientPreviews.SetRosterVisible(OverviewRosterVisible);
         ClientPreviews.PropertyChanged+=(_,args)=>
         {if(args.PropertyName==nameof(ClientPreviewsViewModel.IsAvailable)) {Raise(nameof(CanStartClientPreviews));Raise(nameof(CanStartWindowsOverview));}

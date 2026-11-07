@@ -100,6 +100,21 @@ public sealed partial class ClientPreviewPresentationTests : IDisposable
         Assert.Equal(calls, provider.CaptureCalls); Assert.False(shell.ClientPreviews.IsRunning);
     });
 
+    [Fact]
+    public Task ShellRecordsOnlyTheCaptureFailureTypeAndKeepsPreviewsAvailable() => OnUi(async () =>
+    {
+        var provider = new PreviewProvider(); var monitor = new DesktopMonitor();
+        await using var shell = await Ready(monitor, provider);
+        ShowPreviews(shell); shell.SelectedSession = shell.Sessions[0]; shell.StartClientPreviews.Execute(null);
+        var call = await provider.NextAsync(); Task active = shell.ClientPreviews.ActiveCapture;
+        call.Reply.SetException(new TimeoutException("untrusted-provider-marker")); await active.WaitAsync(TimeSpan.FromSeconds(5));
+        shell.RefreshDiagnostics.Execute(null);
+        var failure = Assert.Single(shell.DiagnosticRows, row => row.Event.Kind == Zenith.Sessions.Windows.ManagerEventKind.OperationFailed
+            && row.Event.ErrorType == nameof(TimeoutException));
+        Assert.DoesNotContain("untrusted-provider-marker", failure.Event.Summary);
+        Assert.True(shell.ClientPreviews.IsAvailable); // A provider failure is not a presenter fault.
+    });
+
     [Theory]
     [InlineData("start")]
     [InlineData("window")]
