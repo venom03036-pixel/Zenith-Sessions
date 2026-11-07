@@ -39,6 +39,20 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task UniverseOnlyLinksUseTheRootPlaceAndCanBeSaved()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();var rootPlaces=new RootPlaces(6,100);
+        var resolver=new Resolver{Response=_=>new(RobloxShareLinkOutcome.Experience,null,6)};
+        await using var vm=new ShareLinkViewModel(new RootPlaceShareLinkResolver(resolver,rootPlaces),store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("ExperienceDetails");await vm.CheckAsync();
+        Assert.True(vm.HasResult);Assert.Equal(100,f.Browser.Destination!.PlaceId);Assert.Contains("Place 100",vm.ResultTitle);Assert.Equal(1,rootPlaces.Calls);
+        resolver.Response=_=>new(RobloxShareLinkOutcome.PrivateServer,null,6,null,new ProtectedPrivateServerCode(LinkCode));
+        vm.LinkInput=Link("Server");await vm.CheckAsync();Assert.True(vm.HasPrivateResult);Assert.Contains("Place 100",vm.ResultTitle);
+        await vm.SaveAsFavoriteAsync();
+        var saved=Assert.Single(store.Items);Assert.Equal(100,saved.PlaceId);Assert.Equal(6,saved.UniverseId);Assert.Equal(LinkCode,store.Codes[saved.Id]);
+    });
+
+    [Fact]
     public Task NoSelectedAccountOrNoSessionAsksToSignInWithoutARequest()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver();var store=new Store();Guid? profile=null;
@@ -167,6 +181,16 @@ public sealed class ShareLinkViewModelTests
         public void Release()=>_release.TrySetResult();
         public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId,RobloxShareLink link,CancellationToken ct)
         {Calls++;LastProfile=profileId;LastToken=ct;Entered.TrySetResult();if(Hold)await _release.Task;return Response?.Invoke(link)??new(RobloxShareLinkOutcome.Experience,5,6);}
+    }
+    private sealed class RootPlaces(long universeId,long rootPlaceId):IPublicRobloxGameBatchDirectory
+    {
+        public int Calls;
+        public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>> LookupGamesAsync(IReadOnlyList<long> universeIds,CancellationToken ct)
+        {
+            Calls++;Assert.Equal(new[]{universeId},universeIds.ToArray());
+            IReadOnlyList<PublicRobloxGame> games=[new(rootPlaceId,universeId,rootPlaceId,"Synthetic root",7,"Creator",PublicRobloxCreatorKind.User,3,20,DateTimeOffset.UnixEpoch)];
+            return Task.FromResult(SearchTest.Ok(games));
+        }
     }
     private sealed class Store:IPrivateServerStore
     {

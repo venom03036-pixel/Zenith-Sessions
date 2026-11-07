@@ -106,7 +106,9 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
             case "Valid": break;
             default: return new(RobloxShareLinkOutcome.Unavailable);
         }
-        if (!TryId(data, "placeId", out long placeId) || !TryId(data, "universeId", out long universeId)) return new(RobloxShareLinkOutcome.Unavailable);
+        // Roblox's web page reads only universeId here and opens the universe's root place, so placeId is optional
+        // (null when absent; RootPlaceShareLinkResolver fills it). A present placeId must still be a positive number.
+        if (!TryId(data, "universeId", out long universeId) || !TryOptionalId(data, "placeId", out long? placeId)) return new(RobloxShareLinkOutcome.Unavailable);
         if (type == RobloxShareLinkType.ExperienceDetails) return new(RobloxShareLinkOutcome.Experience, placeId, universeId);
         long? owner = null;
         if (data.TryGetProperty("ownerUserId", out var ownerField) && ownerField.ValueKind != JsonValueKind.Null)
@@ -123,6 +125,13 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
 
     private static bool TryId(JsonElement item, string name, out long value)
     { value = 0; return item.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out value) && value > 0; }
+    private static bool TryOptionalId(JsonElement item, string name, out long? value)
+    {
+        value = null;
+        if (!item.TryGetProperty(name, out var field) || field.ValueKind == JsonValueKind.Null) return true;
+        if (!TryId(item, name, out long id)) return false;
+        value = id; return true;
+    }
 
     private sealed record ShareLinkRequest(string linkId, string linkType);
     public void Dispose() => _http.Dispose();

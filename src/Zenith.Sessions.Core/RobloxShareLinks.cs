@@ -107,6 +107,38 @@ public interface IRobloxShareLinkResolver
 }
 
 /// <summary>
+/// Completes a resolution whose payload named only a universe. Roblox's web page opens such a link at the universe's
+/// root place, so the root place is read from the anonymous public games listing: one request, no saved session, after
+/// the signed-in resolve has released its credential and account operation. A restricted, missing or failed lookup is
+/// Unavailable, never a guess. The result stays a requested destination; nothing launches.
+/// </summary>
+public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, IPublicRobloxGameBatchDirectory? games) : IRobloxShareLinkResolver
+{
+    private readonly IRobloxShareLinkResolver _inner = inner ?? throw new ArgumentNullException(nameof(inner));
+
+    public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId, RobloxShareLink link, CancellationToken ct)
+    {
+        var resolution = await _inner.ResolveShareLinkAsync(profileId, link, ct).ConfigureAwait(false);
+        if (resolution.Outcome is not (RobloxShareLinkOutcome.Experience or RobloxShareLinkOutcome.PrivateServer) || resolution.PlaceId is not null)
+            return resolution;
+        bool owned = true; // Until the private server code moves to the completed resolution, this method owns it.
+        try
+        {
+            if (games is null || resolution.UniverseId is not { } universeId) return new(RobloxShareLinkOutcome.Unavailable);
+            var listing = await games.LookupGamesAsync([universeId], ct).ConfigureAwait(false);
+            long? rootPlaceId = null;
+            if (listing.State == PublicDirectoryState.Success && listing.Value is { } listed)
+                foreach (var game in listed)
+                    if (game.UniverseId == universeId && game.RootPlaceId > 0) rootPlaceId = game.RootPlaceId;
+            if (rootPlaceId is not { } placeId) return new(RobloxShareLinkOutcome.Unavailable);
+            owned = false; // Explicit transfer: the completed resolution now owns and disposes the code; the original is dropped.
+            return new(resolution.Outcome, placeId, universeId, resolution.OwnerUserId, resolution.PrivateServerCode);
+        }
+        finally { if (owned) resolution.Dispose(); }
+    }
+}
+
+/// <summary>
 /// Pure, bounded parsing of https://www.roblox.com/share?code=…&amp;type=… links. The existing destination parser keeps
 /// discarding share codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
 /// </summary>

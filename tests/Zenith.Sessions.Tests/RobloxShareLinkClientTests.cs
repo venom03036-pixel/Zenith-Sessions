@@ -72,6 +72,43 @@ public sealed class RobloxShareLinkClientTests
         resolution.Dispose(); Assert.Throws<ObjectDisposedException>(() => code.Reveal(_ => { }));
     }
 
+    // Roblox's own web code reads only these fields (status, universeId, and linkCode for servers), then opens the
+    // universe's root place. A payload without placeId must still resolve; the root place is looked up separately.
+    [Fact]
+    public async Task UniverseOnlyPayloadsResolveWithoutAPlace()
+    {
+        using var experienceHandler = new Handler((_, _) => Task.FromResult(Json("{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"universeId\":6}}")));
+        using var experience = await Resolve(experienceHandler, RobloxShareLinkType.ExperienceDetails);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, experience.Outcome); Assert.Null(experience.PlaceId); Assert.Equal(6, experience.UniverseId);
+        Assert.Null(experience.PrivateServerCode);
+
+        using var serverHandler = new Handler((_, _) => Task.FromResult(Json("{\"privateServerInviteData\":{\"status\":\"Valid\",\"universeId\":6,\"linkCode\":\"" + LinkCode + "\"}}")));
+        using var server = await Resolve(serverHandler, RobloxShareLinkType.Server);
+        Assert.Equal(RobloxShareLinkOutcome.PrivateServer, server.Outcome); Assert.Null(server.PlaceId); Assert.Equal(6, server.UniverseId);
+        Assert.Null(server.OwnerUserId); Assert.Equal("3210", Assert.IsType<ProtectedPrivateServerCode>(server.PrivateServerCode).Last4);
+
+        using var nullPlaceHandler = new Handler((_, _) => Task.FromResult(Json("{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":null,\"universeId\":6}}")));
+        using var nullPlace = await Resolve(nullPlaceHandler, RobloxShareLinkType.ExperienceDetails);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, nullPlace.Outcome); Assert.Null(nullPlace.PlaceId); Assert.Equal(6, nullPlace.UniverseId);
+    }
+
+    [Fact]
+    public async Task UniverseStaysRequiredAndAPresentPlaceMustBeValid()
+    {
+        foreach (string body in new[]
+        {
+            "{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":5}}",
+            "{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":5,\"universeId\":0}}",
+            "{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":\"5\",\"universeId\":6}}",
+            "{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":0,\"universeId\":6}}"
+        })
+        {
+            using var handler = new Handler((_, _) => Task.FromResult(Json(body)));
+            using var resolution = await Resolve(handler, RobloxShareLinkType.ExperienceDetails);
+            Assert.Equal(RobloxShareLinkOutcome.Unavailable, resolution.Outcome); Assert.Null(resolution.PlaceId); Assert.Null(resolution.UniverseId);
+        }
+    }
+
     [Theory]
     [InlineData("Expired", RobloxShareLinkOutcome.Expired)]
     [InlineData("Invalid", RobloxShareLinkOutcome.Invalid)]

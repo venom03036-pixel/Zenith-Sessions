@@ -162,6 +162,10 @@ name, creator line, playing + rating, accent border and check when it is the cur
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
   `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
+- `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
+  (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
+  `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
+  request after the signed-in resolve has finished. A restricted, missing or failed lookup is `Unavailable`.
 
 ### 4.3 Using the result
 
