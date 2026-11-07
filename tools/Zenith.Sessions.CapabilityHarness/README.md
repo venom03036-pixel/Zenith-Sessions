@@ -12,7 +12,7 @@ Requires .NET 10 SDK. From the Personal source directory:
 dotnet test .\tests\Zenith.Sessions.CapabilityHarness.Tests\Zenith.Sessions.CapabilityHarness.Tests.csproj --configuration Release
 ```
 
-Outputs are `artifacts/sessions-feasibility/feasibility.json` and `feasibility.md`. Repeated runs replace these reports instead of creating runtime extractions. Exit code **3** means the inspection completed but the release gate is blocked. Code 2 means the harness/configuration failed; 130 means cancellation. This version has no option to import evidence or override a failed gate.
+Outputs are `artifacts/sessions-feasibility/feasibility.json` and `feasibility.md`. Repeated runs replace these reports instead of creating runtime extractions. Exit code **3** means the inspection completed but the release gate is blocked. Code 2 means the harness/configuration failed (for example a missing audited source file, a `--native-report` more than 24 hours old, or the 60-second time limit); 130 means you cancelled with Ctrl+C. This version has no option to import evidence or override a failed gate.
 
 ## What actually executes
 
