@@ -200,6 +200,56 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.True(changed);Assert.Empty(shell.Launches);Assert.Equal(0,child.Preparations);
     });
 
+    [Fact]
+    public Task NativeTrialInstallationChangeDuringPreparationReportsTheStop()=>OnUi(async ()=>
+    {
+        // Changing the selected installation fences the trial by design; the user must be told it stopped.
+        var child=new NativeEvidenceChild{PreparationGate=EvidenceGate()};
+        await using var shell=await NativeEvidenceShellAsync(child,new NativeEvidenceMonitor());
+        Assert.True(shell.CanRefreshInstallations);
+        shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));await shell.StartNativeTrial.Execution;
+        await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        bool refreshReenabled=false;
+        void Watch(object? sender,System.ComponentModel.PropertyChangedEventArgs args)
+        {if(args.PropertyName==nameof(ShellViewModel.CanRefreshInstallations)&&shell.CanRefreshInstallations)refreshReenabled=true;}
+        shell.PropertyChanged+=Watch;
+        try
+        {
+            // Refresh would clear the trial installation; it stays unavailable while the provider owns a preparation.
+            Assert.False(shell.CanRefreshInstallations);
+            shell.SelectedInstallation=new(shell.SelectedInstallation!.Candidate with
+            {ExecutablePath=Path.Combine(_root,"other-never-created","RobloxPlayerBeta.exe")});
+        }
+        finally{child.PreparationGate!.TrySetResult();}
+        try
+        {
+            using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(6));
+            while(shell.Launches.Any(row=>row.Operation.State is LaunchState.Queued or LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching))
+                await Task.Delay(5,stop.Token);
+        }
+        finally{shell.PropertyChanged-=Watch;}
+        Assert.Contains("stopped",shell.NativeTrialStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("installation selection changed",shell.NativeTrialStatus,StringComparison.Ordinal);
+        Assert.DoesNotContain("Native file selected",shell.NativeTrialStatus,StringComparison.Ordinal);
+        Assert.Equal(shell.NativeTrialStatus,shell.Notice);
+        Assert.DoesNotContain("Trial queued",shell.Notice,StringComparison.Ordinal);
+        Assert.Equal(1,child.Preparations);Assert.Equal(0,child.Starts);
+        Assert.True(refreshReenabled);Assert.True(shell.CanRefreshInstallations);
+    });
+
+    [Fact]
+    public Task NativeTrialInstallationInspectionWithoutATrialKeepsTheSelectionStatus()=>OnUi(async ()=>
+    {
+        var child=new NativeEvidenceChild();
+        await using var shell=await NativeEvidenceShellAsync(child,new NativeEvidenceMonitor());
+        string notice=shell.Notice;
+        shell.SelectedInstallation=new(shell.SelectedInstallation!.Candidate with
+        {ExecutablePath=Path.Combine(_root,"other-never-created","RobloxPlayerBeta.exe")});
+        Assert.DoesNotContain("stopped",shell.NativeTrialStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(notice,shell.Notice);Assert.True(shell.CanRefreshInstallations);
+        Assert.Equal(0,child.Preparations);
+    });
+
     private sealed class NativeReviewRepository(string root):IAccountRepository,IDisposable
     {
         private readonly AccountRepository _inner=new(root);

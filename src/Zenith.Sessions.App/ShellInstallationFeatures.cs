@@ -61,7 +61,8 @@ public sealed partial class ShellViewModel
     public string InstallationStatus { get => _installationStatus; private set => Set(ref _installationStatus, value); }
     public string InstallationObserved { get => _installationObserved; private set => Set(ref _installationObserved, value); }
     public bool IsInstallationDiscoveryBusy { get => _installationBusy; private set { if (Set(ref _installationBusy, value)) { Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); } } }
-    public bool CanRefreshInstallations => _ready && !IsLocked && !_shuttingDown && !IsSample && !IsInstallationDiscoveryBusy && !IsPublisherVerificationBusy;
+    // Refresh clears the selected installation, which would stop an owned native preparation; wait for it to finish.
+    public bool CanRefreshInstallations => _ready && !IsLocked && !_shuttingDown && !IsSample && !IsInstallationDiscoveryBusy && !IsPublisherVerificationBusy && !_nativeLaunch.IsBusy;
     public AsyncCommand RefreshInstallations { get; private set; } = null!;
     public Command CancelInstallationDiscovery { get; private set; } = null!;
 
