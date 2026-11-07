@@ -49,6 +49,7 @@ internal interface IClientLogProbe : IDisposable
 /// Reconciliation is driven by offers, not a new timer. All paths stay inside this Windows implementation.
 /// RM calls are synchronous: cancellation/deadlines are checked between native calls, not hard interrupts.
 /// DisposeAsync cancels and awaits the actual owner; it never abandons native work or starts replacement workers.
+/// A failed pass is retried by the same owner on a later offer; only consecutive failures end it.
 /// </summary>
 public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 {
@@ -76,6 +77,8 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     // It stays under the 30 s lease cap that SessionEvidenceRegistry and SessionLogProjection enforce;
     // the 15 s display freshness check there is separate and does not discard facts.
     private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
+    // The fifth failed pass in a row ends the worker, so a persistent fault still reaches DisposeAsync.
+    private const int MaximumConsecutivePassFailures = 5;
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
     private readonly IClientLogProbe _probe;
@@ -89,7 +92,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private ClientLogCandidates _candidates = new(Array.Empty<ClientLogCandidate>(), false);
     private long? _lastPass, _lastDiscovery;
     private long _revision, _visit;
-    private int _liveReaders, _disposed;
+    private int _liveReaders, _disposed, _consecutiveFailures;
     private bool _scoutFirst;
     // Include the reader's bounded rewrite anchor in the shared content-read budget.
     private int ReaderByteBudget => Math.Max(1, Math.Min(_options.BytesPerReader, _options.SharedReadBytes) - 64);
@@ -136,7 +139,20 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 }
                 if (_lastPass is { } prior && _clock.GetElapsedTime(prior) < TimeSpan.FromSeconds(1)) continue;
                 _lastPass = _clock.GetTimestamp();
-                await PassAsync(input, _stop.Token).ConfigureAwait(false);
+                try
+                {
+                    await PassAsync(input, _stop.Token).ConfigureAwait(false);
+                    _consecutiveFailures = 0;
+                }
+                catch (Exception) when (!_stop.IsCancellationRequested && _consecutiveFailures < MaximumConsecutivePassFailures - 1)
+                {
+                    // One failed pass (for example ERROR_OPERATION_ABORTED surfacing as OperationCanceledException) is not
+                    // terminal: drop every cursor, mark all rows Unavailable, and rediscover on the next offer, which the
+                    // 1 s pass gate already rate-limits. Repeated failures still end this owner and surface at DisposeAsync.
+                    _consecutiveFailures++;
+                    ClearReaders(); _candidates = new(Array.Empty<ClientLogCandidate>(), false); _lastDiscovery = null;
+                    Publish(Volatile.Read(ref _latest), [], SessionLogCorrelationStatus.Unavailable);
+                }
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }

@@ -34,7 +34,14 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         public readonly List<string> QueriedPaths = [];
         public ResourceHolderResult Result = new(SessionLogCorrelationStatus.ResourceHolderObserved, new[] { new ResourceHolder(process.ProcessId, process.ProcessStartUtcTicks) });
         public IReadOnlyList<ClientLogCandidate> Files = new[] { new ClientLogCandidate(path, ClientLogVariant.Win32, SyntheticClientLogFixtures.Time) };
-        public ClientLogCandidates Discover(int maximum, CancellationToken ct) { ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Discoveries); return new(Files, false); }
+        public Exception? DiscoverFailure, EveryDiscoverFailure; // One-shot and persistent synthetic probe faults.
+        public ClientLogCandidates Discover(int maximum, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Interlocked.Increment(ref Discoveries);
+            if (Interlocked.Exchange(ref DiscoverFailure, null) is { } failure) throw failure;
+            if (EveryDiscoverFailure is { } persistent) throw persistent;
+            return new(Files, false);
+        }
         public bool IsCurrentClient(SessionProcessKey key, ClientLogVariant variant)
         {
             Interlocked.Increment(ref Validations);
@@ -190,6 +197,47 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         var disposal = worker.DisposeAsync().AsTask();
         Assert.False(disposal.IsCompleted); probe.Release.Set();
         await disposal.WaitAsync(TimeSpan.FromSeconds(5)); Assert.True(probe.Disposed);
+    }
+
+    [Fact]
+    public async Task AOneOffProbeFailurePublishesUnavailableAndTheNextOfferRecovers()
+    {
+        // Win32Marshal maps ERROR_OPERATION_ABORTED to OperationCanceledException although shutdown was never requested.
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock(); var probe = new Probe(Log, Key()) { DiscoverFailure = new OperationCanceledException() };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        worker.Offer(Desktop(Key()), Key().HostId);
+        var failed = await After(worker);
+        var row = Assert.Single(failed.Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.Unavailable, row.Correlation); Assert.Null(row.Batch);
+
+        clock.Advance(1000); worker.Offer(Desktop(Key()), Key().HostId);
+        var next = Assert.Single((await After(worker, failed.Revision)).Sessions);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, next.Correlation);
+        Assert.NotNull(next.Batch);
+        Assert.Equal(2, probe.Discoveries);
+        await worker.DisposeAsync(); // A recovered pass failure is not reported again at shutdown.
+        Assert.True(probe.Disposed);
+    }
+
+    [Fact]
+    public async Task FiveConsecutiveProbeFailuresStillEndTheWorkerAndSurfaceAtDisposal()
+    {
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock();
+        var probe = new Probe(Log, Key()) { EveryDiscoverFailure = new InvalidOperationException("Synthetic persistent probe fault.") };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        long revision = 0;
+        for (int pass = 0; pass < 5; pass++)
+        {
+            if (pass != 0) clock.Advance(1000);
+            worker.Offer(Desktop(Key()), Key().HostId);
+            var snapshot = await After(worker, revision); revision = snapshot.Revision;
+            Assert.Equal(SessionLogCorrelationStatus.Unavailable, Assert.Single(snapshot.Sessions).Correlation);
+        }
+        Assert.Equal(5, probe.Discoveries);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => worker.DisposeAsync().AsTask());
+        Assert.True(probe.Disposed);
     }
 
     [Fact]
