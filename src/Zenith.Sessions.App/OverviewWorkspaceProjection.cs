@@ -77,7 +77,7 @@ public static class OverviewWorkspaceProjection
             return(null,"Queue unavailable or still opening.","Existing queue files and uncertain requests require review; no empty healthy queue is implied.");
         int count=rows.Count;
         if(count is <0 or >LaunchReservationProjection.MaximumOperations) return(null,"Queue summary unavailable.","The retained queue snapshot needs review.");
-        int queued=0,starting=0,blocked=0,failed=0,review=0;
+        int queued=0,starting=0,waiting=0,blocked=0,failed=0,review=0;
         var ids=new HashSet<Guid>();
         for(int i=0;i<count;i++)
         {
@@ -86,13 +86,15 @@ public static class OverviewWorkspaceProjection
                 return(null,"Queue summary unavailable.","The retained queue snapshot needs review.");
             if(row.State==LaunchState.Queued) queued++;
             if(row.State is LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing) starting++;
-            if(row.State==LaunchState.Blocked) blocked++;
+            // Capacity waits restart on their own (the runner's own predicate); other blocks need the user.
+            if(LaunchDescriptions.AwaitsCapacity(row)) waiting++;
+            else if(row.State==LaunchState.Blocked) blocked++;
             if(row.State==LaunchState.Failed) failed++;
             if(LaunchRow.IsReviewable(row)) review++;
         }
         string mode=input.Locked?"Controls locked":input.QueuePaused?"Queue paused":"Queue active";
         string observed=input.QueueObservedUtc is { } at && ValidDate(at,now)?" · snapshot observed "+Stamp(at):" · observation time unavailable";
-        return(queued,mode+observed,$"{starting} preparing/dispatching · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
+        return(queued,mode+observed,$"{starting} preparing/dispatching · {waiting} waiting for capacity (start automatically while the queue is active) · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
     }
     private static bool Fresh(DateTimeOffset at,DateTimeOffset now,TimeSpan age)=>ValidDate(at,now) && now-at<=age;
     private static bool ValidDate(DateTimeOffset at,DateTimeOffset now)=>at!=default && now!=default && at<=now;

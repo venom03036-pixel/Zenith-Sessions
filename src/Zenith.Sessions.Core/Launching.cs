@@ -86,6 +86,9 @@ public static class LaunchDescriptions
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
+    /// <summary>A request held only for resource headroom. The runner re-selects it beside Queued rows and
+    /// starts it on its own once admission allows; every other Blocked row needs the user first.</summary>
+    public static bool AwaitsCapacity(LaunchOperation operation)=>operation.State==LaunchState.Blocked && operation.Problem==LaunchProblem.InsufficientCapacity;
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
@@ -362,7 +365,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(_paused || _unhealthy || !ReadPacing().Ready || HasUnreconciledStart()) return;
             var policy=Volatile.Read(ref _performance);
             if(policy is not null) {stabilization=TimeSpan.FromMilliseconds(policy.StabilizationMs);stagger=TimeSpan.FromMilliseconds(policy.StaggerMs);}
-            chosen=_operations.Where(o=>o.State==LaunchState.Queued || o.State==LaunchState.Blocked && o.Problem==LaunchProblem.InsufficientCapacity)
+            chosen=_operations.Where(o=>o.State==LaunchState.Queued || LaunchDescriptions.AwaitsCapacity(o))
                 .OrderByDescending(o=>o.Intent.Priority+Math.Max(0,(_time.GetUtcNow()-o.Intent.RequestedUtc).TotalMinutes)
                     +(policy is {MainAccountProfileId:{ } main} && main==o.Intent.ProfileId?policy.MainAccountPriorityBoost:0))
                 .ThenBy(o=>o.Intent.RequestedUtc).ThenBy(o=>o.Intent.OperationId).FirstOrDefault();
@@ -377,7 +380,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             // monitor sample, and re-saving an unchanged hold would fsync and republish once a second.
             if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)
             {
-                if(chosen.State!=LaunchState.Blocked || chosen.Problem!=LaunchProblem.InsufficientCapacity)
+                if(!LaunchDescriptions.AwaitsCapacity(chosen))
                     await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);
                 return;
             }

@@ -112,6 +112,27 @@ public sealed class OverviewWorkspaceProjectionTests
         Assert.Equal(1,view.QueuedRequests);Assert.Contains("4 preparing/dispatching",view.QueueSummary);Assert.Contains("1 blocked",view.QueueSummary);Assert.Contains("1 failed",view.QueueSummary);Assert.Contains("2 reviewable retained requests",view.QueueSummary);
         Assert.Null(OverviewWorkspaceProjection.Create(Input() with {QueueReady=false},Now).QueuedRequests);
     }
+    [Fact]
+    public void CapacityWaitingRowsAreCountedSeparatelyFromBlocksThatNeedAction()
+    {
+        // The runner re-selects Blocked+InsufficientCapacity rows and starts them once headroom returns;
+        // a provider or identity block never starts without the user. One "N blocked" hid that difference.
+        var operations=new[]{Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity},Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity},
+            Operation(LaunchState.Blocked) with {Problem=LaunchProblem.ProviderUnavailable},Operation(LaunchState.Queued)};
+        LaunchCoordinator.ValidateSnapshot(new(true,operations));
+        var view=OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,operations)},Now);
+        Assert.Equal(1,view.QueuedRequests);
+        Assert.Contains(" · 2 waiting for capacity (start automatically while the queue is active) · ",view.QueueSummary);
+        Assert.Contains(" · 1 blocked · ",view.QueueSummary);Assert.DoesNotContain("3 blocked",view.QueueSummary);
+    }
+    [Theory]
+    [InlineData(LaunchState.Blocked,LaunchProblem.InsufficientCapacity,true)]
+    [InlineData(LaunchState.Blocked,LaunchProblem.ProviderUnavailable,false)] [InlineData(LaunchState.Blocked,LaunchProblem.IdentityUnverified,false)]
+    [InlineData(LaunchState.Blocked,LaunchProblem.PreparationInterrupted,false)] [InlineData(LaunchState.Blocked,LaunchProblem.Interrupted,false)]
+    [InlineData(LaunchState.Blocked,LaunchProblem.None,false)] [InlineData(LaunchState.Queued,LaunchProblem.None,false)]
+    [InlineData(LaunchState.Failed,LaunchProblem.InsufficientCapacity,false)]
+    public void AwaitsCapacityIsExactlyTheBlockedRowTheRunnerRetries(LaunchState state,LaunchProblem problem,bool expected)
+        =>Assert.Equal(expected,LaunchDescriptions.AwaitsCapacity(Operation(state) with {Problem=problem}));
     [Theory]
     [InlineData(LaunchState.Queued,false,false,false)] [InlineData(LaunchState.Blocked,false,false,false)]
     [InlineData(LaunchState.Preparing,false,false,false)] [InlineData(LaunchState.Validating,false,false,false)]

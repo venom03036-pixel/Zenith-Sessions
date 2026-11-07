@@ -69,6 +69,17 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         Assert.DoesNotContain("Opening",shell.QueueStatus);Assert.Equal(1,shell.Overview.QueuedRequests);Assert.StartsWith("Queue paused",shell.Overview.QueueCaption);
     });
     [Fact]
+    public Task FooterCountsCapacityWaitingRowsApartFromBlocksThatNeedAction()=>OnUi(async()=>
+    {
+        await using var shell=Create(new Monitor());
+        var waiting=OverviewWorkspaceProjectionTests.Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity};
+        Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[waiting]));await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        typeof(ShellViewModel).GetProperty(nameof(ShellViewModel.QueueReady))!.SetValue(shell,true);
+        Assert.Contains("0 queued · 1 waiting for capacity · ",shell.QueueStatus);Assert.Contains(" · 0 blocked · ",shell.QueueStatus);
+        Assert.Equal(0,shell.Overview.QueuedRequests);
+        Assert.Contains("1 waiting for capacity",shell.Overview.QueueSummary);Assert.Contains(" · 0 blocked · ",shell.Overview.QueueSummary);
+    });
+    [Fact]
     public Task PanicFencesOldQueueCallbacksAndSupersedesAnActuallyAwaitedResume()=>OnUi(async()=>
     {
         await using var shell=Create(new Monitor());await shell.InitializeAsync();await Until(()=>shell.Overview.QueuedRequests==0);
