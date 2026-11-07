@@ -8,6 +8,7 @@ public sealed class SignInProfileDirectory
 {
     private const string Marker = ".zenith-private-signin";
     private const string MarkerContents = "Zenith Sessions private sign-in profile v1";
+    private const string OwnerLock = "owner.lock";
     private FileStream? _lease;
     public string Path { get; }
     private SignInProfileDirectory(string path, FileStream? lease = null) { Path = path; _lease = lease; }
@@ -32,20 +33,27 @@ public sealed class SignInProfileDirectory
         directory.SetAccessControl(acl);
         // Only exact, marked folders created by this component may be recovered. A held lease
         // proves another sign-in still owns its directory; do not inspect or remove its contents.
+        // A folder holding only this component's marker and lock (or nothing at all) was left by an
+        // interrupted create or remove: it has no browser data to review, so it is recovered even
+        // when its marker is incomplete or its lock is missing.
         int prior = 0;
         foreach (string old in Directory.EnumerateDirectories(browserRoot))
         {
             ct.ThrowIfCancellationRequested();
             if (++prior > 8 || !OwnedName(System.IO.Path.GetFileName(old))) throw new IOException("Private sign-in cleanup needs review before another browser can open.");
-            AssertMarker(old);
-            using (new FileStream(System.IO.Path.Combine(old, "owner.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None)) { }
-            new SignInProfileDirectory(old).Remove(ct);
+            if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new IOException("Private sign-in cleanup found redirected storage.");
+            bool ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
+            if (!ownershipFilesOnly) AssertMarker(old);
+            // FileShare.None still rejects a live owner; a missing lock is recreated and held until the folder is gone.
+            var recovered = new SignInProfileDirectory(old, new FileStream(System.IO.Path.Combine(old, OwnerLock), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None));
+            try { if (ownershipFilesOnly) recovered.DeleteOwnershipFiles(); else recovered.Remove(ct); }
+            finally { recovered.ReleaseOwnership(); }
         }
         string path = System.IO.Path.Combine(browserRoot, profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
         ct.ThrowIfCancellationRequested();
         Directory.CreateDirectory(path);
         File.WriteAllText(System.IO.Path.Combine(path, Marker), MarkerContents);
-        return new(path, new FileStream(System.IO.Path.Combine(path, "owner.lock"), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None));
+        return new(path, new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None));
     }
 
     public void Remove(CancellationToken ct)
@@ -73,10 +81,37 @@ public sealed class SignInProfileDirectory
         }
         ct.ThrowIfCancellationRequested();
         AssertAncestors(Path);
-        _lease?.Dispose(); _lease = null;
-        Directory.Delete(Path, true);
+        // Delete browser data while the marker and lease stay in place. A recursive delete of the
+        // whole folder keeps going after a locked file and removes the marker and lock before it
+        // throws, which left a folder no later sign-in could recognize or recover.
+        foreach (string entry in Directory.GetFileSystemEntries(Path))
+        {
+            if (IsOwnershipFile(entry)) continue;
+            if ((File.GetAttributes(entry) & FileAttributes.Directory) != 0) Directory.Delete(entry, true);
+            else File.Delete(entry);
+        }
+        DeleteOwnershipFiles();
     }
     public void ReleaseOwnership() { _lease?.Dispose(); _lease = null; }
+    // The lock goes before the marker, so an interruption here leaves a marked or empty folder; Create recovers both.
+    private void DeleteOwnershipFiles()
+    {
+        _lease?.Dispose(); _lease = null;
+        File.Delete(System.IO.Path.Combine(Path, OwnerLock));
+        File.Delete(System.IO.Path.Combine(Path, Marker));
+        Directory.Delete(Path, false);
+    }
+    private static bool IsOwnershipFile(string entry)
+    {
+        string name = System.IO.Path.GetFileName(entry);
+        return name.Equals(Marker, StringComparison.OrdinalIgnoreCase) || name.Equals(OwnerLock, StringComparison.OrdinalIgnoreCase);
+    }
+    private static bool HoldsOnlyOwnershipFiles(string path)
+    {
+        foreach (string entry in Directory.EnumerateFileSystemEntries(path))
+            if (!IsOwnershipFile(entry) || (File.GetAttributes(entry) & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0) return false;
+        return true;
+    }
     private static void AssertAncestors(string path)
     {
         for (DirectoryInfo? parent = new(path); parent is not null; parent = parent.Parent)

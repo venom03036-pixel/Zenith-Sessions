@@ -56,6 +56,44 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Throws<IOException>(()=>SignInProfileDirectory.Create(_root,Guid.NewGuid(),default)); Assert.True(File.Exists(Path.Combine(unknown,"keep.txt")));
     }
     [Fact]
+    public void FailedCleanupKeepsOwnershipMarkersAndRecoversAfterRelease()
+    {
+        var d = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        string nested = Path.Combine(d.Path, "EBWebView", "Default"); Directory.CreateDirectory(nested);
+        string locked = Path.Combine(nested, "locked"); File.WriteAllText(locked, "test only");
+        using (new FileStream(locked, FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            Assert.ThrowsAny<IOException>(() => d.Remove(default));
+            Assert.True(File.Exists(Path.Combine(d.Path, ".zenith-private-signin")), "A failed cleanup deleted the ownership marker.");
+            Assert.True(File.Exists(Path.Combine(d.Path, "owner.lock")), "A failed cleanup deleted the owner lock.");
+            Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        }
+        d.ReleaseOwnership();
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(Directory.Exists(d.Path)); next.Remove(default);
+    }
+    [Fact]
+    public void RecoveryAcceptsMarkedFolderWhoseLockIsMissing()
+    {
+        var old = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default); old.ReleaseOwnership();
+        File.Delete(Path.Combine(old.Path, "owner.lock"));
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(Directory.Exists(old.Path)); next.Remove(default);
+    }
+    [Fact]
+    public void RecoveryRemovesOwnedFoldersThatHoldNoBrowserDataButPreservesUnmarkedData()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        string OwnedName() => Path.Combine(browserRoot, Guid.NewGuid().ToString("N") + "-" + Guid.NewGuid().ToString("N"));
+        string empty = OwnedName(); Directory.CreateDirectory(empty);
+        string shortMarker = OwnedName(); Directory.CreateDirectory(shortMarker); File.WriteAllText(Path.Combine(shortMarker, ".zenith-private-signin"), "");
+        var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Assert.False(Directory.Exists(empty)); Assert.False(Directory.Exists(shortMarker)); next.Remove(default);
+        string unmarked = OwnedName(); Directory.CreateDirectory(unmarked); File.WriteAllText(Path.Combine(unmarked, "keep.txt"), "keep");
+        Assert.Throws<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.True(File.Exists(Path.Combine(unmarked, "keep.txt")));
+    }
+    [Fact]
     public void CancelledDirectoryAdmissionDoesNotCreatePrivateData()
     {
         using var stop = new CancellationTokenSource(); stop.Cancel();
