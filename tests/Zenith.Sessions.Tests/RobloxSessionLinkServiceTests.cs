@@ -232,6 +232,54 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default)); Assert.Equal(1, client.Calls);
     }
 
+    // R-accounts-1: a check Roblox provably never processed restores the unchanged saved session.
+    [Fact]
+    public async Task SavedCheckThatRobloxNeverProcessedRestoresTheUnchangedSessionAtAFreshGeneration()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (call, _) =>
+        {
+            Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); // Still fenced before every contact.
+            return call == 1 ? throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal " + Secret)
+                : Task.FromResult(new RobloxSessionValidation(Identity()));
+        } };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.Equal(RobloxSessionFailure.NotProcessed, error.Failure);
+        Assert.DoesNotContain(Secret, error.Message); Assert.DoesNotContain("Synthetic", error.Message); Assert.Contains("unchanged", error.Message);
+        Assert.Equal(Saved(profile.Id) with { Generation = 3 }, vault.Records[profile.Id]);
+        // The restored record is an ordinary saved sign-in: the next check fences, contacts Roblox and verifies it.
+        await service.CheckSavedAsync(profile.Id, default);
+        Assert.Equal(2, client.Calls); Assert.Equal(5, vault.Records[profile.Id].Generation); Assert.Equal(AuthorizationHealth.Linked, vault.Records[profile.Id].Health);
+    }
+
+    [Fact]
+    public async Task ARefusedCheckOfARotatedReplacementNeverRestoresTheOldSession()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (call, _) => call == 1 ? Task.FromResult(new RobloxSessionValidation(Identity(), new("synthetic-rotation")))
+            : throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal") };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.NotEqual(RobloxSessionFailure.NotProcessed, error.Failure); Assert.Contains("needing sign-in", error.Message);
+        Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); Assert.Equal(2, vault.Records[profile.Id].Generation);
+        Assert.Equal(2, client.Calls);
+    }
+
+    [Fact]
+    public async Task ARefusedCheckNeverOverwritesAnotherOperationsNewerRecord()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+        var client = new Client { Reply = (_, _) =>
+        {
+            vault.Records[profile.Id] = vault.Records[profile.Id] with { VerifiedUsername = "newer_player" };
+            throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal");
+        } };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
+        await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.Equal("newer_player", vault.Records[profile.Id].VerifiedUsername); Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
+    }
+
     [Fact]
     public async Task ExpiredSavedSessionIsFencedWithoutAnyRemoteCall()
     {

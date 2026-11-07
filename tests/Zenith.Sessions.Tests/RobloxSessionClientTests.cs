@@ -1,5 +1,7 @@
+using System.IO;
 using System.Net;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Text;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
@@ -81,7 +83,7 @@ public sealed class RobloxSessionClientTests
     [InlineData(401, false, RobloxSessionFailure.InvalidSession)]
     [InlineData(403, true, RobloxSessionFailure.Challenge)]
     [InlineData(302, false, RobloxSessionFailure.Network)]
-    [InlineData(429, false, RobloxSessionFailure.Network)]
+    [InlineData(429, false, RobloxSessionFailure.NotProcessed)]
     public async Task FailureStatesAreFixedAndNeverRetried(int status, bool challenge, RobloxSessionFailure expected)
     {
         int calls = 0;
@@ -94,6 +96,93 @@ public sealed class RobloxSessionClientTests
         using var credential = new RobloxSessionCredential(Secret);
         var error = await Assert.ThrowsAsync<RobloxSessionException>(() => client.ValidateAsync(credential, default));
         Assert.Equal(expected, error.Failure); Assert.Equal(1, calls); Assert.DoesNotContain(Secret, error.ToString());
+    }
+
+    // R-accounts-1: only a busy refusal that carries no session cookie provably left the saved session
+    // in place. A gateway error or any session Set-Cookie may follow a rotation and stays ambiguous.
+    [Theory]
+    [InlineData(429, null, RobloxSessionFailure.NotProcessed)]
+    [InlineData(503, null, RobloxSessionFailure.NotProcessed)]
+    [InlineData(429, ".ROBLOSECURITY=synthetic-rotated; Domain=.roblox.com; Path=/; Secure; HttpOnly", RobloxSessionFailure.Network)]
+    [InlineData(503, ".ROBLOSECURITY=synthetic-rotated; Domain=.roblox.com", RobloxSessionFailure.Network)]
+    [InlineData(429, ".roblosecurity=synthetic-rotated; Path=/", RobloxSessionFailure.Network)]
+    [InlineData(500, null, RobloxSessionFailure.Network)]
+    [InlineData(502, null, RobloxSessionFailure.Network)]
+    [InlineData(504, null, RobloxSessionFailure.Network)]
+    public async Task OnlyABusyRefusalWithoutASessionCookieIsNotProcessed(int status, string? setCookie, RobloxSessionFailure expected)
+    {
+        int calls = 0;
+        using var client = new RobloxSessionClient(new Transport((_, _) =>
+        {
+            calls++; var response = new HttpResponseMessage((HttpStatusCode)status) { Content = new StringContent(Secret) };
+            if (setCookie is not null) response.Headers.Add("Set-Cookie", setCookie);
+            return Task.FromResult(response);
+        }));
+        using var credential = new RobloxSessionCredential(Secret);
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => client.ValidateAsync(credential, default));
+        Assert.Equal(expected, error.Failure); Assert.Equal(1, calls);
+        Assert.DoesNotContain(Secret, error.ToString()); Assert.DoesNotContain("synthetic-rotated", error.ToString());
+    }
+
+    [Theory]
+    [InlineData(HttpRequestError.NameResolutionError, RobloxSessionFailure.NotProcessed)]
+    [InlineData(HttpRequestError.ConnectionError, RobloxSessionFailure.NotProcessed)]
+    [InlineData(HttpRequestError.ProxyTunnelError, RobloxSessionFailure.NotProcessed)]
+    [InlineData(HttpRequestError.Unknown, RobloxSessionFailure.Network)]
+    [InlineData(HttpRequestError.SecureConnectionError, RobloxSessionFailure.Network)]
+    [InlineData(HttpRequestError.ResponseEnded, RobloxSessionFailure.Network)]
+    [InlineData(HttpRequestError.InvalidResponse, RobloxSessionFailure.Network)]
+    public async Task OnlyAConnectionThatNeverReachedRobloxIsNotProcessed(HttpRequestError kind, RobloxSessionFailure expected)
+    {
+        int calls = 0;
+        using var client = new RobloxSessionClient(new Transport((_, _) => { calls++; throw new HttpRequestException(kind, Secret, new IOException(Secret)); }));
+        using var credential = new RobloxSessionCredential(Secret);
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => client.ValidateAsync(credential, default));
+        Assert.Equal(expected, error.Failure); Assert.Equal(1, calls);
+        Assert.DoesNotContain(Secret, error.ToString()); Assert.Null(error.InnerException);
+    }
+
+    [Theory]
+    [InlineData(SocketError.ConnectionRefused)]
+    [InlineData(SocketError.HostNotFound)]
+    public async Task TheRealHandlersRefusedOrUnresolvedConnectionIsNotProcessed(SocketError socketError)
+    {
+        // The production handler type with a connect step that fails before any socket opens:
+        // proves the platform labels these failures as connect-phase errors. Nothing leaves this PC.
+        int connects = 0;
+        var handler = new SocketsHttpHandler
+        {
+            UseProxy = false,
+            ConnectCallback = (_, _) => { Interlocked.Increment(ref connects); throw new SocketException((int)socketError); }
+        };
+        using var client = new RobloxSessionClient(handler);
+        using var credential = new RobloxSessionCredential(Secret);
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => client.ValidateAsync(credential, default));
+        Assert.Equal(RobloxSessionFailure.NotProcessed, error.Failure); Assert.Equal(1, connects); Assert.Null(error.InnerException);
+    }
+
+    [Fact]
+    public async Task ABodyThatFailsAfterRobloxAnsweredStaysAmbiguous()
+    {
+        using var client = new RobloxSessionClient(new Transport((_, _) =>
+            Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK) { Content = new StreamContent(new FailingBody()) })));
+        using var credential = new RobloxSessionCredential(Secret);
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => client.ValidateAsync(credential, default));
+        Assert.Equal(RobloxSessionFailure.Network, error.Failure); Assert.DoesNotContain(Secret, error.ToString());
+    }
+
+    private sealed class FailingBody : Stream
+    {
+        public override bool CanRead => true; public override bool CanSeek => false; public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new IOException(Secret);
+        public override ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken ct = default) => ValueTask.FromException<int>(new IOException(Secret));
+        public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken ct) => Task.FromException<int>(new IOException(Secret));
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     [Fact]

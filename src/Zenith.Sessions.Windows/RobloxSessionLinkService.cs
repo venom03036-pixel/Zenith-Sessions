@@ -66,6 +66,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             // A response can rotate the credential even if its body, connection or cancellation then fails.
             // Fence old authority durably before contacting Roblox. Retain its protected material for
             // recovery, but require explicit sign-in after any interrupted check rather than replay it.
+            // Only a check Roblox provably never processed (NotProcessed) undoes its own fence.
             long pendingGeneration = snapshot.NextGeneration; var pendingMutationId = Guid.NewGuid();
             var pending = previous with { Generation = pendingGeneration, Health = AuthorizationHealth.SignInRequired };
             var reserved = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(snapshot, pending, pendingMutationId, operation.Token).ConfigureAwait(false);
@@ -81,6 +82,21 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             {
                 var identity = await VerifyAndSave(operation, credential, pending, writeSnapshot: pendingSnapshot).ConfigureAwait(false);
                 succeeded = true; return identity;
+            }
+            catch (RobloxSessionException error) when (error.Failure == RobloxSessionFailure.NotProcessed)
+            {
+                // The saved session itself never reached Roblox, or was turned away without a replacement
+                // (VerifyAndSave reports a refused replacement check as Network), so it was not rotated.
+                // Restore it only if this check's own fence is still the current record.
+                Ensure(operation);
+                var restored = previous with { Generation = pendingSnapshot.NextGeneration };
+                operation.FinalMutationIssued = true; // Cleanup may fence only this exact write.
+                var receipt = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(pendingSnapshot, restored,
+                    operation.FinalMutationId, operation.Token).ConfigureAwait(false);
+                Ensure(operation); RequireMutation(receipt, restored.Generation);
+                succeeded = true;
+                throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
+                    "Roblox could not be reached or was busy, so the saved sign-in was not checked. It was left unchanged; check it again later.");
             }
             catch (RobloxSessionException error) when (error.Failure is RobloxSessionFailure.Network or RobloxSessionFailure.TimedOut)
             {
@@ -226,7 +242,11 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             var saved = credential; var identity = first.Identity;
             if (first.RotatedCredential is { } candidate)
             {
-                second = await client.ValidateAsync(candidate, operation.Token).ConfigureAwait(false);
+                // Roblox already replaced the original, so a refused replacement check is not grounds
+                // to restore anything: report it as the ambiguous outcome it is for the saved record.
+                try { second = await client.ValidateAsync(candidate, operation.Token).ConfigureAwait(false); }
+                catch (RobloxSessionException error) when (error.Failure == RobloxSessionFailure.NotProcessed)
+                { throw new RobloxSessionException(RobloxSessionFailure.Network, "Roblox replaced the session but could not be reached to verify the replacement. No replacement was saved; sign in again."); }
                 Ensure(operation); ValidateIdentity(second.Identity);
                 if (second.Identity.UserId != first.Identity.UserId || second.Identity.Issuer != first.Identity.Issuer || second.Identity.Subject != first.Identity.Subject)
                 {

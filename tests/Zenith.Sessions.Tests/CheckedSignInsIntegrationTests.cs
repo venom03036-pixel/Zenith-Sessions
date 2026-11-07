@@ -14,7 +14,7 @@ namespace Zenith.Sessions.Tests;
 public sealed partial class ClientWindowIntegrationTests
 {
     private const string HealthCookiePrefix = "synthetic-health-batch-";
-    public enum HealthReply { Valid, Invalid, Challenge, Network, TimedOut }
+    public enum HealthReply { Valid, Invalid, Challenge, Network, TimedOut, NotProcessed }
 
     [Fact]
     public Task CheckedSignInsAreCheckedOneAtATimeInPageOrderAndEachRowShowsItsResult() => OnUi(async () =>
@@ -62,6 +62,28 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.GetSummaryAsync(order[1].Id, default))!.Health);
         foreach (var later in order.Skip(2)) Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(later.Id, default))!.Health);
         Assert.Contains(reason, shell.Notice); Assert.Contains("1 verified", shell.Notice); Assert.Contains("2 not checked", shell.Notice);
+        Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+    });
+
+    // R-accounts-1: Roblox unreachable or busy for a check stops the batch and loses no saved sign-in.
+    [Fact]
+    public Task CheckedSignInsStopWhenRobloxNeverProcessedACheckAndKeepThatSignIn() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient();
+        await using var shell = await HealthShell(signIn, client, linked: 4);
+        foreach (var row in shell.Accounts) row.IsChecked = true;
+        var order = shell.Accounts.Select(row => (Cookie: CookieOf(row), row.Profile.Id)).ToArray();
+        client.Replies[order[1].Cookie] = HealthReply.NotProcessed;
+
+        shell.CheckCheckedSignIns.Execute(null); await shell.CheckCheckedSignIns.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(new[] { order[0].Cookie, order[1].Cookie }, client.Snapshot().Select(call => call.Cookie));
+        using var vault = new ProtectedCredentialVault(_root);
+        foreach (var account in order) Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(account.Id, default))!.Health);
+        Assert.Equal("Saved link", shell.Accounts.Single(row => row.Profile.Id == order[1].Id).Identity);
+        Assert.Contains("could not be reached or was busy", shell.Notice); Assert.Contains("1 verified", shell.Notice);
+        Assert.Contains("3 not checked", shell.Notice); Assert.DoesNotContain("sign-in because", shell.Notice);
+        Assert.DoesNotContain("need sign-in", shell.Notice); Assert.DoesNotContain("needs sign-in", shell.Notice);
         Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
@@ -167,6 +189,7 @@ public sealed partial class ClientWindowIntegrationTests
                 case HealthReply.Challenge: throw new RobloxSessionException(RobloxSessionFailure.Challenge, "Synthetic challenge " + cookie);
                 case HealthReply.Network: throw new RobloxSessionException(RobloxSessionFailure.Network, "Synthetic outage " + cookie);
                 case HealthReply.TimedOut: throw new RobloxSessionException(RobloxSessionFailure.TimedOut, "Synthetic timeout " + cookie);
+                case HealthReply.NotProcessed: throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal " + cookie);
             }
             int index = int.Parse(cookie[HealthCookiePrefix.Length..], CultureInfo.InvariantCulture); long userId = 1000 + index;
             return new(new(userId, "health_" + index, RobloxSessionIdentity.Issuer, userId.ToString(CultureInfo.InvariantCulture)));
