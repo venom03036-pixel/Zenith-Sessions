@@ -136,6 +136,17 @@ public partial class MainWindow : Window
         var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
         return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
     }
+    // The footer's error (assertive) and status (polite) texts are live regions. WPF does not raise LiveRegionChanged when a
+    // bound text changes, so each update of either binding announces it; Fail and Inform notify even for identical text.
+    private void AnnounceNotice(object sender, System.Windows.Data.DataTransferEventArgs e)
+    { if (e.Property == System.Windows.Controls.TextBlock.TextProperty && sender is System.Windows.Controls.TextBlock text) AnnounceLiveRegion(text); }
+    /// <summary>Asks screen readers to read <paramref name="text"/> by its live setting. Empty text, such as a dismissed error, is not announced.</summary>
+    internal static void AnnounceLiveRegion(System.Windows.Controls.TextBlock text)
+    {
+        if (text.Text.Length == 0) return;
+        (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(text) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(text))
+            ?.RaiseAutomationEvent(System.Windows.Automation.Peers.AutomationEvents.LiveRegionChanged);
+    }
     // Reopening from the tray or a second launch is the user returning, so the idle lock counts it as input.
     private void Restore() { _vm.NoteUserInput(); Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
     public void RestoreFromLaunch() => Restore();
@@ -245,7 +256,7 @@ public partial class MainWindow : Window
         // Only the public game page ever leaves the app: never a server, share or private code.
         if(!link.StartsWith("https://www.roblox.com/games/",StringComparison.Ordinal)) return;
         try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link) {UseShellExecute=true});_vm.Inform("Opened the public game page in your browser. No account was launched or signed in.");}
-        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex);_vm.Inform("The browser could not be opened. Use Copy link instead.");}
+        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex,"The browser could not be opened. Use Copy link instead.");}
     }
     private void CopyGamePageLinkClick(object sender,RoutedEventArgs e)
     {
@@ -267,7 +278,7 @@ public partial class MainWindow : Window
         JoinGamePage.ScrollToTop();
     }
     private void ClipboardUnavailable(Exception error)
-    { _vm.Fail(error);_vm.Inform("The clipboard is busy or unavailable. Try copying again."); }
+    { _vm.Fail(error,"The clipboard is busy or unavailable. Try copying again."); }
     private void CopyPerformanceShareCode(object sender, RoutedEventArgs e)
     {
         try

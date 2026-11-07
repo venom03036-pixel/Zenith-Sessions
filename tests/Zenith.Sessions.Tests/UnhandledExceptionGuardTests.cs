@@ -37,7 +37,7 @@ public sealed class UnhandledExceptionGuardTests : IDisposable
             using var guard=UnhandledExceptionGuard.Attach(Dispatcher.CurrentDispatcher,Data,()=>shell,code=>exitCode=code);
             await ThrowOnDispatcherAsync();
             Assert.Null(exitCode);
-            Assert.Contains("unexpected error",shell.Notice);Assert.DoesNotContain("SECRET123",shell.Notice);
+            Assert.Contains("unexpected error",shell.ErrorNotice);Assert.DoesNotContain("SECRET123",shell.ErrorNotice);Assert.DoesNotContain("SECRET123",shell.Notice);
             Assert.Contains(shell.Events,e=>e.Contains("(InvalidOperationException)",StringComparison.Ordinal));
             Assert.All(shell.Events,e=>Assert.DoesNotContain("SECRET123",e));
         }

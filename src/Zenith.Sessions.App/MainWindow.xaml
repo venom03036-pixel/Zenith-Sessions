@@ -1547,7 +1547,15 @@
               </ContentControl.Style>
             </ContentControl>
             <TextBlock DockPanel.Dock="Left" Text="{Binding QueueStatus}" ToolTip="{Binding QueueStatus}" Style="{StaticResource CaptionLine}" MaxWidth="420" VerticalAlignment="Center" Margin="0,0,16,0" />
-            <TextBlock Text="{Binding Notice}" ToolTip="{Binding Notice}" Style="{StaticResource CaptionLine}" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
+            <!-- A failure stays beside the status line until dismissed. Screen readers hear the error assertively and the status politely. -->
+            <DockPanel x:Name="FooterNotices" LastChildFill="True" VerticalAlignment="Center">
+              <StackPanel DockPanel.Dock="Left" Orientation="Horizontal" Visibility="{Binding HasErrorNotice, Converter={StaticResource VisibleIf}}" Margin="0,0,16,0">
+                <Path Style="{StaticResource Glyph}" Width="14" Height="14" Stroke="{DynamicResource AccentDanger}" Data="M1.5,8 A6.5,6.5 0 1 1 14.5,8 A6.5,6.5 0 1 1 1.5,8 Z M8,4.6 V8.6 M8,11.1 V11.4" Margin="0,0,6,0" />
+                <TextBlock Text="{Binding ErrorNotice, NotifyOnTargetUpdated=True}" Binding.TargetUpdated="AnnounceNotice" ToolTip="{Binding ErrorNotice}" AutomationProperties.Name="{Binding ErrorNotice, StringFormat='Error: {0}'}" AutomationProperties.LiveSetting="Assertive" Style="{StaticResource CaptionLine}" Foreground="{DynamicResource AccentDanger}" MaxWidth="440" VerticalAlignment="Center" />
+                <Button Content="Dismiss" Command="{Binding DismissError}" ToolTip="Dismiss this error" AutomationProperties.Name="Dismiss error" Style="{StaticResource QuietButton}" MinHeight="26" Padding="10,0" Margin="8,2,0,2" />
+              </StackPanel>
+              <TextBlock Text="{Binding Notice, NotifyOnTargetUpdated=True}" Binding.TargetUpdated="AnnounceNotice" ToolTip="{Binding Notice}" AutomationProperties.LiveSetting="Polite" Style="{StaticResource CaptionLine}" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" />
+            </DockPanel>
           </DockPanel>
         </Expander.Header>
         <Grid Height="220" Margin="16,10,16,6">

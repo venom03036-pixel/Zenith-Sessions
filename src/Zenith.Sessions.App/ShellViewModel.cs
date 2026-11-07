@@ -175,7 +175,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private int _filteredTotal;
     private bool _updatingGroups;
     private bool _ready, _locked;
-    private string _tab = "Overview", _search = "", _notice = "Starting local services…";
+    private string _tab = "Overview", _search = "", _notice = "Starting local services…", _errorNotice = "";
     private GroupFilter _group=GroupFilter.All;
     private AccountOrder _order;
     private AccountRow? _selected;
@@ -224,6 +224,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string EmptyAccountsText => !_ready?(_libraryUnavailable?"Library unavailable. Existing files were preserved; open Settings for recovery.":"Opening your local library…")
         :AccountCount == 0 ? "Add your first account profile to get started." : "No profiles match this search or group.";
     public string Notice { get => _notice; private set => Set(ref _notice, value); }
+    /// <summary>
+    /// The last failure, shown beside <see cref="Notice"/> in the error colour until it is dismissed, replaced by a newer
+    /// failure or cleared by Panic or Lock, so a later notice cannot hide it. Empty when there is none.
+    /// </summary>
+    public string ErrorNotice => _errorNotice;
+    public bool HasErrorNotice => _errorNotice.Length > 0;
+    public Command DismissError { get; }
     public string PageLabel { get => _pageLabel; private set => Set(ref _pageLabel, value); }
     public string SaveStatus { get => _saveStatus; private set => Set(ref _saveStatus, value); }
     public int AccountCount { get => _accountCount; private set => Set(ref _accountCount, value); }
@@ -330,6 +337,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex); } });
+        DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
         Lock = new(_ => LockDashboard()); Unlock = new(_ => { IsLocked = false; ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); });
         SaveSettings = new(_ => SavePreferencesAsync(), Fail);
@@ -754,24 +762,30 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
     private void LockControls(string reason) { StopOperations(reason,ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
-    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
+    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); ClearError(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
     private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
-    public void Fail(Exception exception)
-    {
-        Notice = exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
+    public void Fail(Exception exception)=>Fail(exception,
+        exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
             :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException ? exception.Message
-            : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.";
+            : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.");
+    /// <summary>Shows <paramref name="message"/> as the error and records the failure by type only. The message is shown as given, so it must carry no secrets (Rule 10).</summary>
+    public void Fail(Exception exception,string message)
+    {
+        ShowError(message);
         AddEvent($"Operation failed ({exception.GetType().Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
     }
+    // Raised even when the text is unchanged, so the footer's live region announces a repeated failure again.
+    private void ShowError(string message) { _errorNotice=message; Raise(nameof(ErrorNotice)); Raise(nameof(HasErrorNotice)); }
+    private void ClearError() { if(_errorNotice.Length>0) ShowError(""); }
     // Last-chance seam for UnhandledExceptionGuard. Only a Type crosses it: exception messages can carry
     // links, share codes or account names (Rule 10), so it never goes through Fail(), which echoes some messages.
     internal bool IsShuttingDown=>_shuttingDown;
-    /// <summary>UI thread only. Shows a fixed notice for a fault that escaped every handler; Panic and Lock notices stay.</summary>
+    /// <summary>UI thread only. Shows a fixed error for a fault that escaped every handler; Panic and Lock notices stay.</summary>
     internal void ContainUnhandled(Type errorType)
     {
         if(!IsLocked && !_preserveStopNotice)
-            Notice="Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.";
+            ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
         AddEvent($"Unexpected error caught ({errorType.Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);
     }
@@ -779,7 +793,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     internal bool TryRecordUnhandled(Type errorType)=>_diagnostics.TryRecord(ManagerEventKind.OperationFailed,errorType);
     /// <summary>Flushes and closes this shell's log; idempotent, and later records are ignored. Used only when nothing else will flush it.</summary>
     internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
-    public void Inform(string message) => Notice = message;
+    // Raised even when the text is unchanged, so the footer's live region announces a repeated notice, such as a second copy, again.
+    public void Inform(string message) { if(!Set(ref _notice,message,nameof(Notice))) Raise(nameof(Notice)); }
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
     /// <summary>
     /// UI thread only. Windows is signing out, restarting or shutting down, and WPF closes every window next without

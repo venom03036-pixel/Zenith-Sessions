@@ -55,9 +55,9 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
         string settings=Path.Combine(Data,"settings.json");byte[] originalSettings=await File.ReadAllBytesAsync(settings);
         vm.ExportDiagnostics.Execute(settings);await vm.ExportDiagnostics.Execution;
-        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("outside the app",vm.Notice);
+        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("outside the app",vm.ErrorNotice);
         vm.ExportDiagnostics.Execute("\\\\?\\"+settings);await vm.ExportDiagnostics.Execution;
-        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("normal, nonredirected",vm.Notice);
+        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("normal, nonredirected",vm.ErrorNotice);
         string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
         await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
         try {vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;Assert.Equal("old report",await File.ReadAllTextAsync(report));}

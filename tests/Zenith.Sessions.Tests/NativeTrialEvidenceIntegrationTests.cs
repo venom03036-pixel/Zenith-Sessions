@@ -156,7 +156,7 @@ public sealed partial class ClientWindowIntegrationTests
         byte[] original = await File.ReadAllBytesAsync(settings);
         shell.ExportLaunchEvidence.Execute(settings); await shell.ExportLaunchEvidence.Execution;
         Assert.Equal(original, await File.ReadAllBytesAsync(settings));
-        Assert.Contains("outside the app", shell.Notice, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("outside the app", shell.ErrorNotice, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Launch evidence saved", shell.Notice, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(Directory.EnumerateFiles(_root, "settings.json.*.tmp", SearchOption.TopDirectoryOnly));
     });

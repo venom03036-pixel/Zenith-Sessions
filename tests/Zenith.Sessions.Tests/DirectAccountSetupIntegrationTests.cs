@@ -73,7 +73,7 @@ public sealed partial class ClientWindowIntegrationTests
         var before = await vault.ReadAsync(original.Id, default);
         shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
         Assert.Equal(original, Assert.Single(shell.Accounts).Profile); Assert.Equal(original.Id, shell.SelectedAccount?.Profile.Id);
-        Assert.Equal(before, await vault.ReadAsync(original.Id, default)); Assert.Contains("already", shell.Notice, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(before, await vault.ReadAsync(original.Id, default)); Assert.Contains("already", shell.ErrorNotice, StringComparison.OrdinalIgnoreCase);
         using var repository = new AccountRepository(_root); Assert.Equal(1, (await repository.ReadAsync(new(), default)).Total);
         Assert.Single(Directory.GetFiles(Path.Combine(_root, "accounts.vault"), "*.dpapi")); DirectNoSecrets(shell);
     });

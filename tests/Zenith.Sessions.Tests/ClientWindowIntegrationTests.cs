@@ -69,7 +69,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         {
             vm.Sessions[0].IsChecked = true; vm.TileGap = "-1";
             vm.ArrangeClients.Execute(null); await vm.ArrangeClients.Execution;
-            Assert.Equal(0, monitor.Arrangements); Assert.Contains("Gap", vm.Notice);
+            Assert.Equal(0, monitor.Arrangements); Assert.Contains("Gap", vm.ErrorNotice);
             vm.TileGap = "12"; vm.TileColumns = "2"; vm.TileMinimumWidth = "480";
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
             Assert.Equal("Settings saved", vm.SaveStatus);
