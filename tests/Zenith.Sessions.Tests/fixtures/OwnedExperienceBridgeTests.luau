@@ -162,6 +162,8 @@ check("exact public move separates initiation and arrival", function()
     state:arrive(move.options.data)
     local record = state.receipts[recordKey]
     assert(record.stage == "arrived" and record.observedPlaceId == destinationPlace and record.observedJobId == destinationJob)
+    -- A clean move leaves the creator's server output quiet.
+    assert(#state.warnings == 0, "a clean move wrote " .. #state.warnings .. " server warnings")
 end)
 
 check("duplicate and competing commands cannot repeat a move", function()
@@ -211,9 +213,15 @@ check("ambiguous errors stay unknown and expired arrivals are ignored", function
     state.onTeleport = function() error("ambiguous failure") end
     state:send()
     assert(state.receipts[recordKey].stage == "received" and state.teleports == 1)
+    -- The move is not replayed, but the creator's server output names why it stopped, without command IDs.
+    assert(#state.warnings == 1, "a failed teleport wrote " .. #state.warnings .. " server warnings instead of 1")
+    local warning = state.warnings[1]
+    assert(string.find(warning, "ambiguous failure", 1, true), "the warning does not carry the Roblox error: " .. warning)
+    assert(not string.find(warning, operation, 1, true) and not string.find(warning, "87654321-", 1, true),
+        "the warning exposes an operation or claim ID: " .. warning)
     state.now = state.now + 45
     state:arrive(state.teleport.options.data)
-    assert(state.receipts[recordKey].stage == "received")
+    assert(state.receipts[recordKey].stage == "received" and #state.warnings == 1)
 end)
 
 check("storage failure prevents a move and frees the owner", function()
@@ -221,9 +229,32 @@ check("storage failure prevents a move and frees the owner", function()
     state.failWrite = true
     state:send()
     assert(state.teleports == 0 and state.receipts[recordKey] == nil)
+    assert(#state.warnings == 1, "a failed receipt write wrote " .. #state.warnings .. " server warnings instead of 1")
+    assert(string.find(state.warnings[1], "storage unavailable", 1, true),
+        "the warning does not carry the Roblox error: " .. state.warnings[1])
     state.failWrite = false
     state:send()
-    assert(state.teleports == 1)
+    assert(state.teleports == 1 and #state.warnings == 1)
+end)
+
+check("a failed deferred terminal receipt is reported and frees the owner", function()
+    local state = fixture()
+    state.onTeleport = function(place, targets, options)
+        -- The failure callback is deferred behind the running move; then both receipt writes fail.
+        state.source.fail(targets[1], nil, nil, place, options)
+        state.failWrite = true
+    end
+    state:send()
+    assert(state.teleports == 1 and state.receipts[recordKey].stage == "received")
+    assert(#state.warnings == 2, "two failed steps wrote " .. #state.warnings .. " server warnings instead of 2")
+    for _, warning in ipairs(state.warnings) do
+        assert(string.find(warning, "storage unavailable", 1, true), "the warning does not carry the Roblox error: " .. warning)
+    end
+    state.failWrite = false
+    state.onTeleport = nil
+    state.now = state.now + 46
+    state:send({ operationId = otherOperation }, true)
+    assert(state.receipts[recordKey].stage == "atSource" and state.receipts[recordKey].command.operationId == otherOperation)
 end)
 
 check("a failed subscription is retried with capped backoff and later commands are received", function()

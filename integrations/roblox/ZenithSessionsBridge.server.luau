@@ -82,6 +82,17 @@ local function updateStage(userId, commandId, claimId, stage, accept)
     end)
 end
 
+-- A throttled or failed Roblox call leaves its outcome unknown. Never replay a move here, but write the
+-- Roblox error to the server log so the creator can tell a throttle from a teleport failure or a script bug.
+-- Only the error text is written: no operation, claim or job IDs and no command contents.
+local function attempt(work)
+    local completed, failure = pcall(work)
+    if not completed then
+        warn(string.format("Zenith Sessions bridge step stopped and was not retried (%s). "
+            .. "The app shows this command as unconfirmed until it expires.", tostring(failure)))
+    end
+end
+
 local function bounded(userId, work, terminal)
     local running = busyUsers[userId]
     if running then
@@ -96,10 +107,9 @@ local function bounded(userId, work, terminal)
     local owner = {}
     busyUsers[userId] = owner
     active = active + 1
-    -- A throttled or failed Roblox call leaves its outcome unknown. Never replay a move here.
-    pcall(work)
+    attempt(work)
     if owner.next then
-        pcall(owner.next)
+        attempt(owner.next)
     end
     active = active - 1
     busyUsers[userId] = nil
