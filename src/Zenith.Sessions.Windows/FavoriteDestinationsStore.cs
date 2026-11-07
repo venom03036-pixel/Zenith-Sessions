@@ -37,6 +37,8 @@ public sealed class FavoriteDestinationsStore : IFavoriteDestinationStore,IDispo
             int index=Array.FindIndex(document.Items,item=>item.Id==destination.Id);
             if(index<0 && destination.Revision!=0 || index>=0 && (document.Items[index].Revision!=destination.Revision || document.Items[index].ChangeId!=destination.ChangeId))
                 throw new FavoriteDestinationConflictException();
+            // A rename meets the whole shared name rule; an unchanged saved name stays as it was saved.
+            if(index>=0 && !string.Equals(document.Items[index].Name,destination.Name,StringComparison.Ordinal)) FavoriteDestination.ValidateName(destination.Name);
             if(index<0 && document.Items.Length>=FavoriteDestination.MaximumCount) throw new FavoriteDestinationCapacityException();
             if(destination.Revision==long.MaxValue || document.Revision==long.MaxValue)
                 throw Damaged("Favorites revisions cannot advance. Existing files were preserved; review the favorites storage.");

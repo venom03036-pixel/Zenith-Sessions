@@ -133,7 +133,7 @@ public sealed class RecipientBundlesViewModel : Observable,IAsyncDisposable
     {
         if(!CanUseSelected||SelectedBundle is not{ } selected)return Task.CompletedTask;
         RecipientBundle draft;
-        try{draft=(selected with{Name=name}).Validated();}catch(ArgumentException){Status="Use a readable bundle name of 1–80 characters, without links or credentials.";return Task.CompletedTask;}
+        try{draft=(selected with{Name=RecipientBundle.ValidateName(name)}).Validated();}catch(ArgumentException){Status="Use a readable bundle name of 1–80 characters, without links or credentials.";return Task.CompletedTask;}
         return StartAsync(async token=>
         {
             var saved=await _store.RenameAsync(selected.Id,selected.Revision,selected.ChangeId,draft.Name,token);

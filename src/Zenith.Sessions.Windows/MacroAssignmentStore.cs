@@ -272,7 +272,7 @@ public sealed class MacroAssignmentStore : IMacroAssignmentStore, IAsyncDisposab
         long kind = reader.GetInt64(1);
         if (kind is < 1 or > 3) throw Storage(MacroAssignmentStorageProblem.Damaged);
         var id = ReadGuid(reader, 2); string target = ReadText(reader, 5); var macro = ReadGuid(reader, 8); string name = ReadText(reader, 11);
-        return new MacroAssignment(new((MacroAssignmentTargetKind)kind, id), target, macro, name).Validated();
+        return new MacroAssignment(new((MacroAssignmentTargetKind)kind, id), target, macro, name).ValidatedSaved();
     }
     private static Guid ReadGuid(SqliteDataReader reader, int start)
     {

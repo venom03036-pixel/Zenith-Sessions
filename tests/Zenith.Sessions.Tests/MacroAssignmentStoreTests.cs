@@ -232,6 +232,19 @@ public sealed class MacroAssignmentStoreTests
     }
 
     [Fact]
+    public async Task ARowSavedUnderTheEarlierNarrowerNameRuleStaysReadableButNewNamesMeetTheWholeRule()
+    {
+        await using var fixture = new Fixture(); var store = fixture.Store(); var saved = Assignment();
+        await store.SaveAsync(saved, MacroAssignmentStamp.Empty, default);
+        // "code=" joined the assignment name rule when the four display-name rules were unified; a row saved before must stay readable.
+        fixture.Sql(store.Path, db => { using var command = db.CreateCommand(); command.CommandText = "UPDATE assignments SET macro_name='Promo code=1'"; command.ExecuteNonQuery(); });
+        var page = await Read(store); Assert.Equal("Promo code=1", Assert.Single(page.Items).MacroName);
+        await Assert.ThrowsAsync<ArgumentException>(() => store.SaveAsync(saved with { MacroName = "Promo code=2" }, page.Stamp, default));
+        var written = await store.SaveAsync(saved with { MacroName = "Promo" }, page.Stamp, default).WaitAsync(Deadline);
+        Assert.Equal(MacroAssignmentWriteState.Applied, written.State); Assert.Equal("Promo", Assert.Single((await Read(store)).Items).MacroName);
+    }
+
+    [Fact]
     public async Task MalformedOffPageRowCannotHideBehindAHealthyFirstPageOrWrite()
     {
         await using var fixture = new Fixture(); var store = fixture.Store(); var saved = Assignment(); var stamp = (await store.SaveAsync(saved, MacroAssignmentStamp.Empty, default)).Stamp;

@@ -1,5 +1,3 @@
-using System.Text;
-
 namespace Zenith.Sessions.Core;
 
 public enum MacroAssignmentTargetKind { Account = 1, Group = 2, Bundle = 3 }
@@ -16,24 +14,19 @@ public sealed record MacroAssignmentTarget(MacroAssignmentTargetKind Kind, Guid 
 public sealed record MacroAssignment(MacroAssignmentTarget Target, string TargetName, Guid MacroId, string MacroName)
 {
     public const int MaximumCount = 10_000, MaximumPageSize = 100, MaximumNameLength = 200;
-    public MacroAssignment Validated()
+    public MacroAssignment Validated() => Validated(saved: false);
+    /// <summary>Checks an assignment read back from storage. Its names met the rule in force when they were saved, so a marker
+    /// the shared display-name rule added later never makes a saved row unreadable.</summary>
+    public MacroAssignment ValidatedSaved() => Validated(saved: true);
+    private MacroAssignment Validated(bool saved)
     {
         if (Target is null || MacroId == Guid.Empty) throw new ArgumentException("A saved target and macro identity are required.");
-        Target.Validated(); ValidateName(TargetName); ValidateName(MacroName); return this;
+        Target.Validated();
+        if (!IsPlain(TargetName) || !IsPlain(MacroName))
+            throw new ArgumentException("Use display names of 1 to 200 characters on one line, without links, access codes or credentials.");
+        return this;
+        bool IsPlain(string? name) => saved ? DisplayNameRules.IsReadable(name, MaximumNameLength) : DisplayNameRules.IsPlain(name, MaximumNameLength);
     }
-    private static void ValidateName(string? name)
-    {
-        if (string.IsNullOrWhiteSpace(name) || name.Length > MaximumNameLength
-            || name.Any(character => char.IsControl(character) || character is '\u2028' or '\u2029'))
-            throw new ArgumentException("Use display names of 1 to 200 characters without controls or line breaks.");
-        try { new UTF8Encoding(false, true).GetByteCount(name); }
-        catch (EncoderFallbackException) { throw new ArgumentException("The assignment display name contains invalid Unicode."); }
-        if (name.Contains("://", StringComparison.Ordinal) || name.Contains("www.", StringComparison.OrdinalIgnoreCase)
-            || SensitiveMarkers.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("Use display names without links, access codes or credentials.");
-    }
-    private static readonly string[] SensitiveMarkers = ["roblox:", "roblox-player:", ".ROBLOSECURITY", "Bearer ", "cookie=",
-        "privateServerLinkCode=", "reservedServerAccessCode=", "accessCode=", "linkCode=", "refresh_token", "access_token", "client_secret", "authorization="];
     public override string ToString() => $"MacroAssignment {{ Target = {Target?.Kind}:{Target?.Id}, MacroId = {MacroId}, Execution = unavailable }}";
 }
 
@@ -73,7 +66,7 @@ public sealed record MacroAssignmentPage(MacroAssignmentStamp Stamp, IReadOnlyLi
         for (int index = 0; index < owned.Length; index++)
         {
             var item = Items[index] ?? throw new ArgumentException("The assignment page has an invalid entry.");
-            item.Validated(); if (!targets.Add(item.Target)) throw new ArgumentException("The assignment page contains a duplicate target.");
+            item.ValidatedSaved(); if (!targets.Add(item.Target)) throw new ArgumentException("The assignment page contains a duplicate target.");
             owned[index] = item;
         }
         return this with { Items = Array.AsReadOnly(owned) };

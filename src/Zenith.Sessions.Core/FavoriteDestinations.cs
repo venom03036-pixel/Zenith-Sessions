@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text;
 
 namespace Zenith.Sessions.Core;
 
@@ -12,23 +11,17 @@ public sealed record FavoriteDestination(Guid Id,string Name,long PlaceId,string
     {
         if(Id==Guid.Empty || PlaceId<=0 || Revision<0) throw new ArgumentException("The favorite identity, place or revision is invalid.");
         if((Revision==0)!=(ChangeId==Guid.Empty)) throw new ArgumentException("The favorite revision and change identity are inconsistent.");
-        if(Name is null || Name.Length>MaximumNameLength || string.IsNullOrWhiteSpace(Name)
-            || Name.Any(c=>char.IsControl(c) || c is '\u2028' or '\u2029'))
-            throw new ArgumentException("Use a favorite name of 1 to 80 characters without line breaks or controls.");
-        try {new UTF8Encoding(false,true).GetByteCount(Name);}
-        catch(EncoderFallbackException) {throw new ArgumentException("The favorite name contains invalid Unicode.");}
-        // This is a display label, never a place to retain the user's original link or grant material.
-        if(Name.Contains("://",StringComparison.Ordinal) || Name.Contains("www.",StringComparison.OrdinalIgnoreCase)
-            || Name.Contains("roblox:",StringComparison.OrdinalIgnoreCase) || Name.Contains("roblox-player:",StringComparison.OrdinalIgnoreCase)
-            || Name.Contains(".ROBLOSECURITY",StringComparison.OrdinalIgnoreCase) || Name.Contains("Bearer ",StringComparison.OrdinalIgnoreCase)
-            || SensitiveNameMarkers.Any(marker=>Name.Contains(marker,StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("Use a display name, without links, access codes or credentials.");
+        // This is a display label, never a place to retain the user's original link or grant material. A new favorite's name meets
+        // the whole shared rule; a saved revision keeps the name it was saved under, and the store checks a rename with ValidateName.
+        if(!(Revision==0?DisplayNameRules.IsPlain(Name,MaximumNameLength):DisplayNameRules.IsReadable(Name,MaximumNameLength)))
+            throw new ArgumentException(NameRule);
         if(JobId is not null && !RobloxRequestedDestination.TryNormalizeJobId(JobId,out _))
             throw new ArgumentException("A favorite server ID must be a nonempty dashed GUID.");
         return this with {Name=Name.Trim(),JobId=JobId is null?null:Guid.ParseExact(JobId,"D").ToString("D")};
     }
-    private static readonly string[] SensitiveNameMarkers=["privateServerLinkCode=","reservedServerAccessCode=","accessCode=","linkCode=",
-        "refresh_token","access_token","client_secret","authorization=","cookie="];
+    /// <summary>Checks a new or changed favorite name against the shared display-name rule and returns it trimmed.</summary>
+    public static string ValidateName(string? name)=>DisplayNameRules.IsPlain(name,MaximumNameLength)?name.Trim():throw new ArgumentException(NameRule);
+    private const string NameRule="Use a favorite name of 1 to 80 characters on one line, without links, access codes or credentials.";
     public RobloxRequestedDestination RequestedDestination=>new(Validated().PlaceId,JobId);
     public string DestinationSummary=>$"Place {PlaceId}"+(JobId is null?" · any eligible server":$" · server {JobId}");
     public override string ToString()=>$"Favorite destination {{ Id = {Id}, PlaceId = {PlaceId}, HasServer = {JobId is not null}, Revision = {Revision}, Arrival = unverified }}";

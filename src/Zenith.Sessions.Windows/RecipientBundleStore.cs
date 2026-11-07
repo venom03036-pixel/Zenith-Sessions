@@ -43,6 +43,8 @@ public sealed class RecipientBundleStore : IRecipientBundleStore, IDisposable
             int index = Array.FindIndex(document.Items, item => item.Id == bundle.Id);
             if (index < 0 ? bundle.Revision != 0 : !Matches(document.Items[index], bundle.Revision, bundle.ChangeId))
                 throw new RecipientBundleConflictException();
+            // A rename meets the whole shared name rule; an unchanged saved name stays as it was saved.
+            if (index >= 0 && !string.Equals(document.Items[index].Name, bundle.Name, StringComparison.Ordinal)) RecipientBundle.ValidateName(bundle.Name);
             if (index < 0 && document.Items.Length >= RecipientBundle.MaximumCount) throw new RecipientBundleCapacityException();
             return await SaveItemAsync(bundle, index, loaded, token).ConfigureAwait(false);
         }, ct);
