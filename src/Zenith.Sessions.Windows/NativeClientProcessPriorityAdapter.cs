@@ -112,7 +112,7 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
             var image = new StringBuilder(1024);
             uint length = (uint)image.Capacity;
             if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
-            string? sid = ReadUserSid(process);
+            string? sid = ProcessTokenUser.Read(process);
             if (sid is null) return false;
             uint priority = Native.GetPriorityClass(process);
             if (priority == 0) return false;
@@ -127,24 +127,6 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
             bool accepted = Native.SetPriorityClass(handle, priority);
             error = Marshal.GetLastWin32Error();
             return accepted;
-        }
-
-        private static string? ReadUserSid(SafeProcessHandle process)
-        {
-            if (!Native.OpenProcessToken(process, 0x0008, out var token)) return null; // TOKEN_QUERY only.
-            using (token)
-            {
-                Native.GetTokenInformation(token, 1, 0, 0, out uint bytes); // TokenUser.
-                if (bytes is 0 or > 65536) return null;
-                nint buffer = Marshal.AllocHGlobal((int)bytes);
-                try
-                {
-                    if (!Native.GetTokenInformation(token, 1, buffer, bytes, out uint written) || written > bytes) return null;
-                    nint sid = Marshal.ReadIntPtr(buffer);
-                    return sid == 0 ? null : new SecurityIdentifier(sid).Value;
-                }
-                finally { Marshal.FreeHGlobal(buffer); }
-            }
         }
     }
 
@@ -164,11 +146,5 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool SetPriorityClass(SafeProcessHandle process, uint priority);
-        [DllImport("advapi32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool OpenProcessToken(SafeProcessHandle process, uint access, out SafeAccessTokenHandle token);
-        [DllImport("advapi32.dll", SetLastError = true)]
-        [return: MarshalAs(UnmanagedType.Bool)]
-        internal static extern bool GetTokenInformation(SafeAccessTokenHandle token, int informationClass, nint buffer, uint bytes, out uint written);
     }
 }

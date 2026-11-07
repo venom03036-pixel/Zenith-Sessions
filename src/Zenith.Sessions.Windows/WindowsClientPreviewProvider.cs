@@ -18,6 +18,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
 {
     private readonly SemaphoreSlim _lane = new(1, 1);
     private readonly ClientPreviewSourceCache<Source> _sources = new();
+    private readonly ClientPreviewSelectedRotation _rotation = new();
     private readonly Dictionary<ClientPreviewTarget, long> _delivered = [];
     private IDirect3DDevice? _device;
     private nint _devicePointer, _contextPointer;
@@ -80,7 +81,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         // No per-window task/timer: each native call is joined, and the soft budget is checked
         // only between targets. The native operation may itself take longer than this budget.
         return await RunOverviewBatchAsync(targets,
-            target => CaptureOneAsync(target, generation, epoch, ct, evictForOverview: true),
+            target => CaptureOneAsync(target, generation, epoch, ct, selected: false),
             TimeProvider.System, ct).ConfigureAwait(false);
     }
 
@@ -112,13 +113,14 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         if (_lastBatch != 0 && Stopwatch.GetElapsedTime(_lastBatch, now) < ClientPreviewLimits.MinimumBatchInterval)
             return Results(targets, ClientPreviewStatus.Deferred);
         _lastBatch = now;
+        // Results keep selection order; the visit order lets an over-budget selection rotate one slot.
         var results = new ClientPreviewResult[targets.Length];
-        for (int index = 0; index < targets.Length; index++)
+        foreach (int index in _rotation.BeginBatch(targets, _sources))
             results[index] = Stopped(epoch, ct) ? Result(targets[index], ClientPreviewStatus.Cancelled)
-                : await CaptureOneAsync(targets[index], generation, epoch, ct).ConfigureAwait(false);
+                : await CaptureOneAsync(targets[index], generation, epoch, ct, selected: true).ConfigureAwait(false);
         return Array.AsReadOnly(results);
     }
-    private async Task<ClientPreviewResult> CaptureOneAsync(ClientPreviewTarget target, long generation, long epoch, CancellationToken ct, bool evictForOverview = false)
+    private async Task<ClientPreviewResult> CaptureOneAsync(ClientPreviewTarget target, long generation, long epoch, CancellationToken ct, bool selected)
     {
         bool drop = false;
         try
@@ -136,9 +138,11 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
                 {
                     item = CreateItem(target.Window); var nativeSize = item.Size;
                     var size = new PreviewSurfaceSize(nativeSize.Width, nativeSize.Height);
-                    bool fits = evictForOverview ? _sources.MakeRoom(size, ct) : _sources.Fits(size);
-                    if (!fits)
-                        return Result(target, ClientPreviewStatus.Deferred);
+                    // Runs only on the readback lane, after the previous borrowed frame ended. Overview batches
+                    // evict least-recently-used sources (the coordinator keeps last-known tiles); pinned selections
+                    // keep what fits and hand one rotating slot on per batch.
+                    bool admitted = selected ? _rotation.Admit(_sources, target, size, ct) : _sources.MakeRoom(size, ct);
+                    if (!admitted) return Result(target, ClientPreviewStatus.Deferred);
                     if (Stopped(epoch, ct)) return Result(target, ClientPreviewStatus.Cancelled);
                     source = new Source(item, size); _sources.Add(target, size, source); item = null;
                     try { EnsureDevice(); source.Start(_device!); }
@@ -270,7 +274,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
             try { _device?.Dispose(); _device = null; } catch { failed = true; }
             if (_device is null) { ReleasePointer(ref _contextPointer); ReleasePointer(ref _devicePointer); }
         }
-        _delivered.Clear(); _deviceFailed = false; _lastBatch = 0;
+        _delivered.Clear(); _rotation.Reset(); _deviceFailed = false; _lastBatch = 0;
         if (failed) throw new ClientPreviewException();
     }
     public async Task ReleaseAsync(CancellationToken ct)

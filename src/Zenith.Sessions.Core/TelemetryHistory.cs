@@ -18,7 +18,7 @@ public sealed class TelemetryHistory
 {
     public const int MaximumClients = 128, MaximumPoints = 120;
     public static readonly TimeSpan Window = TimeSpan.FromMinutes(2);
-    public static readonly TimeSpan MaximumSystemAge = TimeSpan.FromSeconds(3);
+    public static readonly TimeSpan MaximumSystemAge = CapacityPolicy.ResourceSampleExpiry;
     public static readonly TimeSpan MaximumClientAge = TimeSpan.FromSeconds(10);
     private readonly object _gate = new();
     private readonly List<SystemTelemetryPoint> _systemPoints = [];
@@ -70,10 +70,14 @@ public sealed class TelemetryHistory
             var pids = new HashSet<int>();
             foreach (var row in snapshot.Sessions)
             {
-                if (row is null) return changed;
-                var key = new SessionProcessKey(null, row.ProcessId, row.ProcessStartUtcTicks);
-                if (!key.IsValid || !pids.Add(row.ProcessId) || key.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks
+                if (row is null || row.ProcessId <= 0 || !pids.Add(row.ProcessId)
                     || row.ObservedUtc > completed || !Fresh(row.ObservedUtc, now, MaximumClientAge)) return changed;
+                var key = new SessionProcessKey(null, row.ProcessId, row.ProcessStartUtcTicks);
+                if (key.IsValid && key.ProcessStartUtcTicks <= row.ObservedUtc.UtcTicks) continue;
+                // The monitor's explicit "identity unavailable" row (for example another Windows user's client) has
+                // no key, so it contributes nothing; it must not discard every other client's measurement.
+                if (row.ProcessStartUtcTicks == 0 && row.Problem is not null) continue;
+                return changed;
             }
             if (snapshot.ProcessObservedUtc.HasValue)
             { _processRevision = snapshot.ProcessRevision; _processObserved = completed; }

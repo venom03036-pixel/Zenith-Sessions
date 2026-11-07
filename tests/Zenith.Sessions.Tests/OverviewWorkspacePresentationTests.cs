@@ -73,6 +73,14 @@ public sealed class OverviewWorkspacePresentationTests
         queue.Command!.Execute(null);Assert.True(model.QueueExpanded);Assert.Equal(1,model.Changes);
         return Task.CompletedTask;
     });
+    [Fact]
+    public void ShellKeepsResourceHeadlinesOnlyInTheFreshnessCheckedOverviewProjection()
+    {
+        // The view binds Overview.Physical/Commit/Cpu. A second, unbound formatter without the freshness gate
+        // must not be recomputed and raised on every presentation tick.
+        string[] dead=["Physical","Commit","Cpu","SessionCount","SampleTime"];
+        Assert.Empty(dead.Where(name=>typeof(ShellViewModel).GetProperty(name) is not null));
+    }
     private sealed class Model
     {
         public Model()

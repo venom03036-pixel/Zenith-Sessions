@@ -61,7 +61,21 @@ public sealed class WindowsGpuTelemetryReader : IDisposable
     private GpuTelemetrySnapshot ReadOwned(CancellationToken ct)
     {
         if (_query is not null && _retryAfter is { } partialRetry
-            && _clock.GetElapsedTime(partialRetry, _clock.GetTimestamp()) >= TimeSpan.FromSeconds(30)) ResetQuery();
+            && _clock.GetElapsedTime(partialRetry, _clock.GetTimestamp()) >= TimeSpan.FromSeconds(30))
+        {
+            // Re-add only the missing counters on the open query. Rebuilding it would discard the
+            // utilization baseline of a working engine counter every 30 s and publish an unknown
+            // engine sample each time, which keeps an established GPU hold from ever recovering.
+            // Added counters stay owned by the query; a cancelled Add is closed by Read's catch.
+            bool engineWasMissing = _engine == 0;
+            if (_engine == 0) _engine = Add(EngineCounterPath, ct);
+            if (_dedicated == 0) _dedicated = Add(DedicatedCounterPath, ct);
+            if (_shared == 0) _shared = Add(SharedCounterPath, ct);
+            // A newly added rate counter has no earlier raw value: warm it up before reporting load.
+            // Memory counters are gauges and need no baseline.
+            if (engineWasMissing && _engine != 0) _hasBaseline = false;
+            _retryAfter = _engine == 0 || _dedicated == 0 || _shared == 0 ? _clock.GetTimestamp() : null;
+        }
         if (_query is null)
         {
             if (_retryAfter is { } retry && _clock.GetElapsedTime(retry, _clock.GetTimestamp()) < TimeSpan.FromSeconds(30))

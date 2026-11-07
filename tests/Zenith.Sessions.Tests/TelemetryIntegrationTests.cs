@@ -1,5 +1,6 @@
 using System.IO;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -46,9 +47,59 @@ public sealed class TelemetryIntegrationTests:IDisposable
         Assert.Equal(monitor.Frame.Resources.ObservedUtc,cpu[0].ObservedUtc);Assert.Equal(0,provider.Captures);
     });
 
+    [Fact]
+    public Task EndedClientHistoryRemainsViewableAsLastKnown() => OnUi(async()=>
+    {
+        var monitor=new Monitor();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,monitor,previewProvider:new PreviewProvider());
+        await shell.InitializeAsync();Assert.True(shell.IsReady,shell.Notice);
+        shell.Refresh.Execute(null);await shell.Refresh.Execution;
+        shell.Navigate.Execute("Sessions");shell.SelectedSession=Assert.Single(shell.Sessions);shell.ShowClientHistoryMode.Execute(null);
+        Assert.Equal(25,Assert.Single(shell.Telemetry.ClientCpuPoints).Value);
+        var live=Assert.Single(shell.HistoryChoices);
+        Assert.Same(shell.SelectedSession,live.Live);Assert.Same(live,shell.SelectedHistoryChoice);Assert.Equal("PID 77",live.Label);
+        var series=shell.Telemetry.ClientCpuPoints;
+        // A fresh, complete scan without PID 77: the only evidence that lets Recent clients record it as no longer observed.
+        var at=DateTimeOffset.UtcNow;
+        monitor.Next=new(monitor.Frame.Resources with {ObservedUtc=at},[],ProcessObservedUtc:at,ProcessRevision:2,ProcessInventoryComplete:true);
+        shell.Refresh.Execute(null);await shell.Refresh.Execution;
+        Assert.Empty(shell.Sessions);
+        Assert.Null(shell.SelectedSession); // Join, close, arrange and preview can never target the ended process.
+        var ended=Assert.Single(shell.HistoryChoices);
+        Assert.Null(ended.Live);Assert.Equal(live.Process,ended.Process);
+        Assert.Contains("PID 77",ended.Label);Assert.Contains("ended",ended.Label);Assert.Contains("last-known",ended.Label);
+        Assert.Same(ended,shell.SelectedHistoryChoice);
+        Assert.Equal(25,Assert.Single(shell.Telemetry.ClientCpuPoints).Value);
+        Assert.Same(series,shell.Telemetry.ClientCpuPoints);
+        Assert.Contains("last-known",shell.Telemetry.ClientStatus);
+        Assert.Contains("cause unknown",shell.Telemetry.ClientStatus);
+        Assert.DoesNotContain("Select",shell.Telemetry.ClientStatus);
+        // The next tick keeps the same choice object, so the picker does not flicker or drop its selection.
+        shell.Refresh.Execute(null);await shell.Refresh.Execution;
+        Assert.Same(ended,Assert.Single(shell.HistoryChoices));Assert.Same(ended,shell.SelectedHistoryChoice);Assert.Null(shell.SelectedSession);
+        // Leaving the ended choice clears the view; choosing it again shows the same retained series without selecting a row.
+        shell.SelectedHistoryChoice=null;
+        Assert.Contains("Select",shell.Telemetry.ClientStatus);Assert.Empty(shell.Telemetry.ClientCpuPoints);
+        shell.SelectedHistoryChoice=ended;
+        Assert.Null(shell.SelectedSession);Assert.Equal(25,Assert.Single(shell.Telemetry.ClientCpuPoints).Value);
+    });
+
+    [Fact]
+    public void HistoryPickerListsHistoryChoicesInsteadOfTheActionSelection()
+    {
+        using var source=typeof(TelemetryIntegrationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        XNamespace presentation="http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var picker=XDocument.Load(source).Descendants(presentation+"ComboBox")
+            .Single(element=>(string?)element.Attribute("AutomationProperties.Name")=="Client resource history selection");
+        Assert.Equal("{Binding HistoryChoices}",(string?)picker.Attribute("ItemsSource"));
+        Assert.Equal("{Binding SelectedHistoryChoice}",(string?)picker.Attribute("SelectedItem"));
+        Assert.Equal("Label",(string?)picker.Attribute("DisplayMemberPath"));
+    }
+
     private sealed class Monitor:IDesktopMonitor
     {
         private readonly Lazy<DesktopSnapshot> _frame=new(CreateFrame);
+        public DesktopSnapshot? Next;
         public DesktopSnapshot Frame=>_frame.Value;
         private static DesktopSnapshot CreateFrame()
         {
@@ -59,7 +110,7 @@ public sealed class TelemetryIntegrationTests:IDisposable
                 [new(77,at.AddMinutes(-10).UtcTicks,"Synthetic",123,"Synthetic",false,true,1024,2048,25,at,
                     IoRates:new(at,1024,2048,0,1,2,0))],ProcessObservedUtc:at,ProcessRevision:1,ProcessInventoryComplete:true);
         }
-        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) {ct.ThrowIfCancellationRequested();return Task.FromResult(Frame);}
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) {ct.ThrowIfCancellationRequested();return Task.FromResult(Volatile.Read(ref Next)??Frame);}
         public Task<bool> FocusAsync(SessionObservation s,CancellationToken ct)=>throw new InvalidOperationException("No desktop action expected.");
         public Task<bool> RequestCloseAsync(SessionObservation s,CancellationToken ct)=>throw new InvalidOperationException("No desktop action expected.");
     }

@@ -38,6 +38,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.Installation=>"Roblox installation",
         ManagerSubsystem.ClientPriority=>"Client priority",
         ManagerSubsystem.Lifecycle=>"Startup and shutdown",
+        ManagerSubsystem.ClientMemory=>"Client memory",
         _=>"Unrecognized subsystem"
     };
 }

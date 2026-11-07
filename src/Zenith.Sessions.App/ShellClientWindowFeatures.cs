@@ -188,6 +188,16 @@ public sealed partial class ShellViewModel
             Dimension(ClientContentHeight, "height", ClientContentSize.MinimumHeight)).Validated();
     }
 
+    /// <summary>
+    /// Fills the monitor list once the shell is ready and unlocked (startup, or the first unlock after a lock that
+    /// covered startup), so Tile clients and the saved monitor choice work without the manual refresh button. It runs
+    /// through the RefreshClientDisplays command, so the read is tracked, cancelled by Panic/Lock and awaited on dispose.
+    /// </summary>
+    private void LoadClientDisplaysOnce()
+    {
+        if (CanRefreshClientDisplays && !IsLocked && !_shuttingDown && _ready && ClientDisplays.Count == 0)
+            RefreshClientDisplays.Execute(null);
+    }
     private async Task RefreshClientDisplaysAsync()
     {
         if (IsLocked || _shuttingDown || !_ready) return;
@@ -220,7 +230,10 @@ public sealed partial class ShellViewModel
         if (!CanArrangeClients || _monitor is not IClientWindowArranger windows
             || SelectedClientDisplay is not { } display || !ClientDisplays.Contains(display))
         { ClientWindowStatus = "Refresh monitors and check clients, or select one client, before arranging."; return; }
-        var options = ReadClientLayoutDraft().Tile!;
+        // A bad Layout preferences value is a typing mistake, not an operation failure: show it inline, like resizing.
+        ClientWindowTileOptions options;
+        try { options = ReadClientLayoutDraft().Tile!; }
+        catch (ArgumentException error) { ClientWindowStatus = error.Message; return; }
         // Recipient identities and geometry preferences are immutable for this operation.
         var selected = PinClientWindowSelection();
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);

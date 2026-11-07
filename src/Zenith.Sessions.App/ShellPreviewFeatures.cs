@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
@@ -10,6 +11,8 @@ public sealed partial class ShellViewModel
     private string _previewPage="";
     private CancellationTokenSource? _overviewFocusStop;
     private long _overviewFocusEpoch;
+    // The selected tile whose CanFocus the shell follows; owned here and released on reselection and disposal.
+    private ClientOverviewRow? _overviewFocusRow;
     public ClientPreviewsViewModel ClientPreviews {get;private set;}=null!;
     public Command StartClientPreviews {get;private set;}=null!;
     public Command StopClientPreviews {get;private set;}=null!;
@@ -22,16 +25,21 @@ public sealed partial class ShellViewModel
     public bool IsClientTableMode=>!_clientPreviewMode&&!_clientHistoryMode;
     public bool CanStartClientPreviews=>_clientPreviewAllowed && IsSessions && _clientPreviewMode && ClientPreviews.IsAvailable && FreshPreviewResources();
     public bool CanStartWindowsOverview=>_clientPreviewAllowed && IsWindows && ClientPreviews.IsAvailable && FreshPreviewResources();
-    public bool CanFocusOverviewClient=>_ready && !_shuttingDown && !IsLocked && !IsSample && IsWindows && _clientPreviewWindowVisible
-        && ClientPreviews.SelectedOverviewRow is {CanFocus:true};
+    public bool CanFocusOverviewClient=>OverviewFocusGatesOpen && ClientPreviews.SelectedOverviewRow is {CanFocus:true};
+    private bool OverviewFocusGatesOpen=>_ready && !_shuttingDown && !IsLocked && !IsSample && IsWindows && _clientPreviewWindowVisible;
+    // The lock screen covers the page, so a locked dashboard has no visible roster either.
+    private bool OverviewRosterVisible=>IsWindows && _clientPreviewWindowVisible && !IsLocked;
 
     private void InitializeClientPreviews(IClientPreviewProvider? provider)
     {
         ClientPreviews=new(provider??new WindowsClientPreviewProvider(),_dispatcher,()=>_clientPreviewAllowed,
-            error=>_diagnostics.RecordFailure(ManagerSubsystem.Previews,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Previews,error.GetType()),
+            // A defined subsystem keeps this thread-safe record from throwing on the capture worker.
+            captureFailed:type=>_diagnostics.RecordFailure(ManagerSubsystem.Previews,type));
+        ClientPreviews.SetRosterVisible(OverviewRosterVisible);
         ClientPreviews.PropertyChanged+=(_,args)=>
         {if(args.PropertyName==nameof(ClientPreviewsViewModel.IsAvailable)) {Raise(nameof(CanStartClientPreviews));Raise(nameof(CanStartWindowsOverview));}
-            if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) Raise(nameof(CanFocusOverviewClient));};
+            if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) {TrackOverviewFocusRow();Raise(nameof(CanFocusOverviewClient));}};
         ShowClientPreviewMode=new(_=>SetClientPreviewMode(true));
         ShowClientTableMode=new(_=>SetClientPreviewMode(false));
         StopClientPreviews=new(_=>ClientPreviews.Fence("Previews stopped. Start explicitly to resume."));
@@ -41,7 +49,7 @@ public sealed partial class ShellViewModel
         {
             RefreshClientPreviewContext();
             if(!CanStartWindowsOverview) {ClientPreviews.Fence("Overview previews need a visible unlocked Windows page and fresh healthy resources. Sample mode never captures real windows.");return;}
-            ClientPreviews.StartOverview(Volatile.Read(ref _latestDesktop)!.Resources.ObservedUtc.AddSeconds(3));
+            ClientPreviews.StartOverview(Volatile.Read(ref _latestDesktop)!.Resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
         });
         FocusOverviewClient=new(_=>FocusOverviewClientAsync(),error=>Fail(error,ManagerSubsystem.ClientWindows));
     }
@@ -51,7 +59,7 @@ public sealed partial class ShellViewModel
         var now=DateTimeOffset.UtcNow;
         return snapshot is not null && snapshot.Resources.IsValid && snapshot.Resources.ObservedUtc!=default
             && snapshot.Resources.ObservedUtc-now<=ClientPreviewLimits.MaximumFutureSkew
-            && now-snapshot.Resources.ObservedUtc<=TimeSpan.FromSeconds(3) && !_lastPressure.Held;
+            && now-snapshot.Resources.ObservedUtc<=CapacityPolicy.ResourceSampleExpiry && !Volatile.Read(ref _lastPressure).Held;
     }
     private void SetClientPreviewMode(bool previews)=>SetSessionPresentation(previews,false);
     private void SetSessionPresentation(bool previews,bool history)
@@ -76,6 +84,8 @@ public sealed partial class ShellViewModel
         _clientPreviewAllowed=_ready && !_shuttingDown && !IsLocked && !IsSample && (IsWindows || IsSessions && _clientPreviewMode)
             && _clientPreviewWindowVisible && FreshPreviewResources();
         if(wasAllowed && (!_clientPreviewAllowed || changedPage)) ClientPreviews?.Fence("Previews are off while hidden, locked, outside this page or waiting for healthy resources. Start again when ready.");
+        // The tile roster is reconciled only while someone can see it; showing it again applies the newest sample.
+        ClientPreviews?.SetRosterVisible(OverviewRosterVisible);
         if(!CanFocusOverviewClient) CancelOverviewFocus();
         Raise(nameof(CanStartClientPreviews));
         Raise(nameof(CanStartWindowsOverview));Raise(nameof(CanFocusOverviewClient));
@@ -85,7 +95,28 @@ public sealed partial class ShellViewModel
         ClientPreviews.ObserveInventory(snapshot);ClientPreviews.ValidateObservedTargets(snapshot);
         RefreshClientPreviewContext();
         if(_clientPreviewAllowed)
-            ClientPreviews.RenewResourceLease(snapshot.Resources.ObservedUtc.AddSeconds(3));
+            ClientPreviews.RenewResourceLease(snapshot.Resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
+    }
+    // The presenter applies each inventory after this sample's RefreshClientPreviewContext has already
+    // raised, so the shell follows the selected tile's own CanFocus. A removed tile clears the selection
+    // and is released through the same path; shutdown releases the last one.
+    private void TrackOverviewFocusRow()
+    {
+        var next=_shuttingDown?null:ClientPreviews.SelectedOverviewRow;
+        if(ReferenceEquals(next,_overviewFocusRow)) return;
+        if(_overviewFocusRow is { } prior) prior.PropertyChanged-=OverviewFocusRowChanged;
+        _overviewFocusRow=next;
+        if(next is not null) next.PropertyChanged+=OverviewFocusRowChanged;
+    }
+    // Raise only: this runs inside ApplyOverviewInventory, so a Fence, refresh or focus cancellation here would reenter the presenter.
+    private void OverviewFocusRowChanged(object? sender,PropertyChangedEventArgs args)
+    {if(args.PropertyName==nameof(ClientOverviewRow.CanFocus)) Raise(nameof(CanFocusOverviewClient));}
+    // Lock, Panic, shutdown, sample mode and a hidden page keep their own notices; only a tile that is
+    // no longer focusable while the page is usable explains the refused click.
+    private void ExplainRefusedOverviewFocus()
+    {
+        if(!OverviewFocusGatesOpen) return;
+        Notice=ClientPreviews.SelectedOverviewRow is { } row ? row.FocusRefusal() : "Focus not sent. Select a current client tile first.";
     }
     private void CancelOverviewFocus()
     {
@@ -95,7 +126,7 @@ public sealed partial class ShellViewModel
     }
     private async Task FocusOverviewClientAsync()
     {
-        if(!CanFocusOverviewClient || ClientPreviews.SelectedOverviewRow is not {CanFocus:true} row) return;
+        if(!CanFocusOverviewClient || ClientPreviews.SelectedOverviewRow is not {CanFocus:true} row) {ExplainRefusedOverviewFocus();return;}
         // Pin the exact observed process/window. Later tile selection cannot redirect this request.
         var observation=row.Observation;long epoch=Interlocked.Increment(ref _overviewFocusEpoch);
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -129,6 +160,6 @@ public sealed partial class ShellViewModel
         if(selected.Length>ClientPreviewLimits.MaximumTargets || selected.Any(row=>row.Window==0 || row.ProcessId<=0 || row.ProcessStartUtcTicks<=0 || row.Problem is not null))
         {ClientPreviews.Fence("Choose up to four current client windows with a valid process start time. No window was substituted.");return;}
         var resources=Volatile.Read(ref _latestDesktop)!.Resources;
-        ClientPreviews.Start(selected.Select(row=>new ClientPreviewTarget(new(null,row.ProcessId,row.ProcessStartUtcTicks),row.Window)).ToArray(),resources.ObservedUtc.AddSeconds(3));
+        ClientPreviews.Start(selected.Select(row=>new ClientPreviewTarget(new(null,row.ProcessId,row.ProcessStartUtcTicks),row.Window)).ToArray(),resources.ObservedUtc.Add(CapacityPolicy.ResourceSampleExpiry));
     }
 }

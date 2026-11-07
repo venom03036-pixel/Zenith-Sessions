@@ -39,7 +39,12 @@ public sealed class ClientOverviewRow : Observable
     internal bool SameIdentity(SessionObservation value)=>ProcessId==value.ProcessId && ProcessStartUtcTicks==value.ProcessStartUtcTicks && Window==value.Window;
     internal void Observe(SessionObservation observation,bool current)
     {
-        bool changed=_observation!=observation || _current!=current;
+        // Every sample re-reads time, memory and CPU. Those keep the pinned focus observation current
+        // but feed no tile binding, so only identity, window state, problem and currency notify.
+        var prior=_observation;
+        bool changed=_current!=current || prior.ProcessId!=observation.ProcessId || prior.ProcessStartUtcTicks!=observation.ProcessStartUtcTicks
+            || prior.Window!=observation.Window || prior.Minimized!=observation.Minimized || prior.Visible!=observation.Visible
+            || prior.Problem!=observation.Problem;
         _observation=observation;_current=current;
         if(!CanCapture) Clear(UnavailableStatus());
         if(changed) {Raise(nameof(CaptureTarget));Raise(nameof(CanFocus));Raise(nameof(AutomationName));}
@@ -51,6 +56,9 @@ public sealed class ClientOverviewRow : Observable
         _current=false;_frameCurrent=false;_status=message;if(HasImage) _freshness="Last-known image · not current";
         Raise(nameof(Status));Raise(nameof(Freshness));Raise(nameof(CanFocus));Raise(nameof(AutomationName));
     }
+    /// <summary>Why Focus client refuses this tile. A current minimized or hidden window can still be focused, so only identity and currency matter.</summary>
+    internal string FocusRefusal()=>ValidIdentity ? "Focus not sent. This tile is last-known; wait for a current process scan, then try again."
+        : "Focus not sent. "+UnavailableStatus();
     internal string UnavailableStatus()=>_observation.Problem is not null || !new SessionProcessKey(null,ProcessId,ProcessStartUtcTicks).IsValid ? "Process identity is unavailable; no capture or focus is permitted."
         : Window==0 ? "No client window is available." : _observation.Minimized ? "Client is minimized; no current image is available."
         : !_observation.Visible ? "Client is hidden; no current image is available." : !_current ? "Last-known process observation; waiting for a current scan." : "Waiting for a window image.";

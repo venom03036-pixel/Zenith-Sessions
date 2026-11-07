@@ -100,6 +100,21 @@ public sealed partial class ClientPreviewPresentationTests : IDisposable
         Assert.Equal(calls, provider.CaptureCalls); Assert.False(shell.ClientPreviews.IsRunning);
     });
 
+    [Fact]
+    public Task ShellRecordsOnlyTheCaptureFailureTypeAndKeepsPreviewsAvailable() => OnUi(async () =>
+    {
+        var provider = new PreviewProvider(); var monitor = new DesktopMonitor();
+        await using var shell = await Ready(monitor, provider);
+        ShowPreviews(shell); shell.SelectedSession = shell.Sessions[0]; shell.StartClientPreviews.Execute(null);
+        var call = await provider.NextAsync(); Task active = shell.ClientPreviews.ActiveCapture;
+        call.Reply.SetException(new TimeoutException("untrusted-provider-marker")); await active.WaitAsync(TimeSpan.FromSeconds(5));
+        shell.RefreshDiagnostics.Execute(null);
+        var failure = Assert.Single(shell.DiagnosticRows, row => row.Event.Kind == Zenith.Sessions.Windows.ManagerEventKind.OperationFailed
+            && row.Event.ErrorType == nameof(TimeoutException));
+        Assert.DoesNotContain("untrusted-provider-marker", failure.Event.Summary);
+        Assert.True(shell.ClientPreviews.IsAvailable); // A provider failure is not a presenter fault.
+    });
+
     [Theory]
     [InlineData("start")]
     [InlineData("window")]
@@ -148,6 +163,31 @@ public sealed partial class ClientPreviewPresentationTests : IDisposable
         clock.Advance(TimeSpan.FromSeconds(4));
         await DriveUntil(clock, () => !presenter.Rows[0].HasImage);
         Assert.Null(presenter.Rows[0].Image);
+    });
+
+    [Fact]
+    public Task PreviewConversionDoesNotCopyDetachedPixelsBeforeWpf() => OnUi(() =>
+    {
+        // The coordinator publishes a fresh exact-length array that nothing modifies; WPF copies it natively.
+        byte[] pixels = new byte[ClientPreviewLimits.MaximumFrameBytes];
+        for (int index = 0; index < pixels.Length; index++) pixels[index] = (byte)(index * 7);
+        var frame = new ClientPreviewFrame(Target(), 1, 320, 180, 1280, pixels, DateTimeOffset.UnixEpoch, 1920, 1080, 1);
+        ClientPreviewsViewModel.CreatePreviewImage(frame); // Warm up WPF type initialization and WIC factories.
+        long before = GC.GetAllocatedBytesForCurrentThread();
+        var image = ClientPreviewsViewModel.CreatePreviewImage(frame);
+        long allocated = GC.GetAllocatedBytesForCurrentThread() - before;
+        Assert.True(allocated < ClientPreviewLimits.MaximumFrameBytes,
+            $"Converting one detached 320x180 frame allocated {allocated} managed bytes; WPF already copies the pixels, so a frame-sized copy is not needed.");
+        Assert.True(image.IsFrozen); Assert.Equal(PixelFormats.Bgra32, image.Format);
+        Assert.Equal(320, image.PixelWidth); Assert.Equal(180, image.PixelHeight);
+        byte[] copied = new byte[pixels.Length]; image.CopyPixels(copied, 1280, 0);
+        Assert.Equal(pixels, copied);
+        // A slice of a larger buffer is not the published shape; it still converts its own bytes only.
+        byte[] padded = new byte[pixels.Length + 8]; pixels.CopyTo(padded, 4);
+        var sliced = ClientPreviewsViewModel.CreatePreviewImage(frame with { Pixels = new ReadOnlyMemory<byte>(padded, 4, pixels.Length) });
+        Array.Clear(copied); sliced.CopyPixels(copied, 1280, 0);
+        Assert.Equal(pixels, copied);
+        return Task.CompletedTask;
     });
 
     [Fact]

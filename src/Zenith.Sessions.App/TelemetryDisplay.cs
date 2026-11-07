@@ -40,7 +40,8 @@ public sealed class TelemetryDisplay(TelemetryHistory history) : Observable
     public string ClientStatus {get=>_clientStatus;private set=>Set(ref _clientStatus,value);}
     public string ClientIoStatus {get=>_clientIoStatus;private set=>Set(ref _clientIoStatus,value);}
 
-    public void Update(SessionProcessKey? selected,DateTimeOffset now)
+    /// <param name="ended">The selected process is no longer observed by a complete scan; its retained series is last-known only.</param>
+    public void Update(SessionProcessKey? selected,DateTimeOffset now,bool ended=false)
     {
         var system=history.GetSystemSnapshot();
         if(!ReferenceEquals(system,_system))
@@ -77,14 +78,18 @@ public sealed class TelemetryDisplay(TelemetryHistory history) : Observable
             ClientFaults="Page faults · "+Number(latest?.PageFaultsPerSecond,"0.0","/s")+" · soft + hard combined";
             foreach(var name in new[]{nameof(ClientCpuPoints),nameof(ClientWorkingPoints),nameof(ClientCommitPoints),nameof(ReadPoints),nameof(WritePoints),nameof(OtherPoints),nameof(ClientMemoryCeiling),nameof(IoCeiling),nameof(ClientMemoryRange),nameof(IoRange),nameof(ClientCpuValue),nameof(ClientWorkingValue),nameof(ClientCommitValue),nameof(ClientFaults)}) Raise(name);
         }
+        // An ended process is never "measured", even inside the sample lease, and its absence names no cause.
         ClientStatus=client?.Points.LastOrDefault() is { } measured
-            ? $"Client PID {client.Process.ProcessId} · last sample {measured.ObservedUtc.ToLocalTime():T} · {(Fresh(measured.ObservedUtc,now,TelemetryHistory.MaximumClientAge)&&!measured.IsGap?"measured":"last-known/unavailable")} · account unverified"
-            :selected is null?"Select an observed client to see its measured history.":"This process instance has no accepted measurements yet.";
+            ? ended
+                ? $"Client PID {client.Process.ProcessId} · no longer observed · cause unknown · last-known sample {measured.ObservedUtc.ToLocalTime():T} · account unverified"
+                : $"Client PID {client.Process.ProcessId} · last sample {measured.ObservedUtc.ToLocalTime():T} · {(Fresh(measured.ObservedUtc,now,TelemetryHistory.MaximumClientAge)&&!measured.IsGap?"measured":"last-known/unavailable")} · account unverified"
+            :selected is null?"Select an observed client to see its measured history."
+            :ended?$"Client PID {selected.Value.ProcessId} · no longer observed · cause unknown · no accepted measurements were kept.":"This process instance has no accepted measurements yet.";
         ClientIoStatus=client?.Points.LastOrDefault()?.IoRates is { } lastIo
-            ? $"Last process I/O sample {lastIo.ObservedUtc.ToLocalTime():T} · {(Fresh(lastIo.ObservedUtc,now,TelemetryHistory.MaximumClientAge)?"measured":"last-known/unavailable")}" : "No fresh process I/O rate was accepted for this sample.";
+            ? $"Last process I/O sample {lastIo.ObservedUtc.ToLocalTime():T} · {(!ended&&Fresh(lastIo.ObservedUtc,now,TelemetryHistory.MaximumClientAge)?"measured":"last-known/unavailable")}" : "No fresh process I/O rate was accepted for this sample.";
         // The row can still be fresh while its independently timed I/O reading expires.
         // Age headline values on every existing presentation tick, without rebuilding historical series.
-        ProcessIoRates? freshIo=client?.Points.LastOrDefault() is {IsGap:false,IoRates:{ } acceptedIo}
+        ProcessIoRates? freshIo=!ended && client?.Points.LastOrDefault() is {IsGap:false,IoRates:{ } acceptedIo}
             && Fresh(acceptedIo.ObservedUtc,now,TelemetryHistory.MaximumClientAge)?acceptedIo:null;
         ReadValue=Number(freshIo?.ReadBytesPerSecond/1024,"0.0"," KiB/s");
         WriteValue=Number(freshIo?.WriteBytesPerSecond/1024,"0.0"," KiB/s");

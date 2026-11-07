@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Threading.Channels;
 using Zenith.Sessions.Core;
 using Xunit;
@@ -411,6 +412,37 @@ public sealed class ClientPreviewCoordinatorTests
         Assert.DoesNotContain("untrusted-provider-marker", coordinator.GetSnapshot().Explanation);
     }
 
+    [Fact]
+    public async Task CaptureAndCleanupFailuresReportOnlyTheExceptionTypeOncePerGeneration()
+    {
+        var clock = new ManualClock(); var provider = new Provider { FailRelease = true }; var types = new ConcurrentQueue<Type>();
+        await using var coordinator = new ClientPreviewCoordinator(provider, clock, types.Enqueue);
+        coordinator.Start([Target()]); var first = await provider.NextAsync(); Task active = coordinator.ActiveOperation;
+        first.Reply.SetException(new NullReferenceException("untrusted-provider-marker")); await active.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { typeof(NullReferenceException) }, types.ToArray());
+        Assert.Equal(ClientPreviewStatus.Failed, Assert.Single(coordinator.GetSnapshot().Results).Status);
+        Assert.DoesNotContain("untrusted-provider-marker", coordinator.GetSnapshot().Explanation);
+        // A source that keeps failing for the same request records once, not once per batch interval.
+        await clock.NextTimerAsync(); clock.Advance(ClientPreviewLimits.MinimumBatchInterval);
+        var repeat = await provider.NextAsync(); active = coordinator.ActiveOperation;
+        Assert.Equal(first.Generation, repeat.Generation);
+        repeat.Reply.SetException(new NullReferenceException("untrusted-provider-marker")); await active.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(new[] { typeof(NullReferenceException) }, types.ToArray());
+        // Each failed release is recorded before StopAsync observes the failure.
+        await Assert.ThrowsAsync<ClientPreviewException>(() => coordinator.StopAsync());
+        Assert.Equal(new[] { typeof(NullReferenceException), typeof(InvalidOperationException) }, types.ToArray());
+    }
+
+    [Fact]
+    public async Task ShutdownFailureReportsTheProviderDisposalTypeBeforeTheFixedException()
+    {
+        var provider = new Provider { FailDispose = true }; var types = new ConcurrentQueue<Type>();
+        var coordinator = new ClientPreviewCoordinator(provider, new ManualClock(), types.Enqueue);
+        await Assert.ThrowsAsync<ClientPreviewException>(() => coordinator.DisposeAsync().AsTask());
+        Assert.Equal(new[] { typeof(NotSupportedException) }, types.ToArray());
+        Assert.Equal("Preview cleanup failed during shutdown.", coordinator.GetSnapshot().Explanation);
+    }
+
     private sealed record CaptureCall(IReadOnlyList<ClientPreviewTarget> Targets, long Generation, CancellationToken Token)
     {
         public TaskCompletionSource<IReadOnlyList<ClientPreviewResult>> Reply { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -420,7 +452,7 @@ public sealed class ClientPreviewCoordinatorTests
         private readonly Channel<CaptureCall> _calls = Channel.CreateBounded<CaptureCall>(16);
         private readonly Channel<bool> _releases = Channel.CreateBounded<bool>(16);
         private int _captures, _active, _releasing, _releaseCalls, _disposeCalls, _maximum;
-        public bool IgnoreCancellation, FailRelease;
+        public bool IgnoreCancellation, FailRelease, FailDispose;
         public Task? ReleaseGate;
         public bool OverlappedLifecycle;
         public int CaptureCalls => Volatile.Read(ref _captures);
@@ -453,7 +485,9 @@ public sealed class ClientPreviewCoordinatorTests
         public ValueTask DisposeAsync()
         {
             if (Volatile.Read(ref _active) != 0 || Volatile.Read(ref _releasing) != 0) OverlappedLifecycle = true;
-            Interlocked.Increment(ref _disposeCalls); return ValueTask.CompletedTask;
+            Interlocked.Increment(ref _disposeCalls);
+            if (FailDispose) throw new NotSupportedException("untrusted-provider-marker");
+            return ValueTask.CompletedTask;
         }
     }
 

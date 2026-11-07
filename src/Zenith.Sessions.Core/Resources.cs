@@ -29,6 +29,14 @@ public sealed record CapacityDecision(int MemoryOnlySlots, ulong PhysicalHeadroo
 public static class CapacityPolicy
 {
     public const ulong GiB = 1024UL * 1024 * 1024;
+    /// <summary>Essential RAM, commit and machine-CPU cadence. Fixed for every performance profile.</summary>
+    public static readonly TimeSpan EssentialResourceSampleInterval = TimeSpan.FromSeconds(1);
+    /// <summary>
+    /// The one age past which an essential resource sample is stale: admission, the pressure tracker's sample
+    /// continuity, telemetry history, the Overview and preview resource leases all read this value.
+    /// Process inventory, GPU and preview-frame ages are separate limits.
+    /// </summary>
+    public static readonly TimeSpan ResourceSampleExpiry = TimeSpan.FromSeconds(3);
     /// <summary>
     /// Candidate-independent spare-capacity health for the pressure latch. A default estimate,
     /// queued forecast or user count limit must not latch out a different candidate or charge
@@ -42,7 +50,7 @@ public static class CapacityPolicy
     {
         policy.Validated();
         var candidate = (candidateBudget ?? LaunchResourceBudget.FromSettings(policy)).Validated();
-        if (!sample.IsValid || sample.ObservedUtc > now.AddSeconds(1) || now - sample.ObservedUtc > TimeSpan.FromSeconds(3))
+        if (!sample.IsValid || sample.ObservedUtc > now.AddSeconds(1) || now - sample.ObservedUtc > ResourceSampleExpiry)
             return new(0, 0, 0, 0, 0, "Waiting for a fresh, valid memory and commit sample.", false);
         ulong physicalHeadroom = Math.Max(Bytes(policy.SparePhysicalGiB), (ulong)(sample.TotalPhysical * policy.SparePhysicalPercent / 100));
         ulong commitHeadroom = Math.Max(Bytes(policy.SpareCommitGiB), (ulong)(sample.CommitLimit * policy.SpareCommitPercent / 100));
@@ -78,6 +86,8 @@ public sealed record SessionObservation(int ProcessId, long ProcessStartUtcTicks
     ProcessIoRates? IoRates = null)
 {
     public string InstanceKey => $"{ProcessId}:{ProcessStartUtcTicks}";
+    /// <summary>The same identity as <see cref="InstanceKey"/> without building a string; use it for matching.</summary>
+    public SessionProcessKey ProcessKey => new(null, ProcessId, ProcessStartUtcTicks);
     public string ProcessLabel => $"PID {ProcessId}";
     public string Status => Problem is not null ? "Observation unavailable" : Minimized ? "Minimized" : Visible ? "Open · account unverified" : "No visible window";
     public string MemoryDisplay => $"{WorkingSetBytes / (double)CapacityPolicy.GiB:0.00} GiB";

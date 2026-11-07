@@ -117,6 +117,28 @@ public sealed class TelemetryPresentationTests
     }
 
     [Fact]
+    public void EndedClientKeepsItsSeriesAsLastKnownWithoutClaimingACauseOrACurrentRate()
+    {
+        var history = new TelemetryHistory(); var row = Row(Origin) with { IoRates = Io(Origin) };
+        history.Observe(Frame(Origin, row), Origin);
+        var display = new TelemetryDisplay(history); display.Update(Key(row), Origin);
+        var live = Series(display);
+        Assert.Contains("measured", display.ClientStatus); Assert.NotEqual("Unavailable", display.ReadValue);
+        // One second later the sample is still within its lease, but the process is no longer observed.
+        display.Update(Key(row), Origin.AddSeconds(1), ended: true);
+        var ended = Series(display);
+        for (int index = 0; index < live.Length; index++) Assert.Same(live[index], ended[index]);
+        Assert.Equal(25, Assert.Single(display.ClientCpuPoints).Value);
+        Assert.Contains("no longer observed", display.ClientStatus); Assert.Contains("cause unknown", display.ClientStatus);
+        Assert.Contains("last-known", display.ClientStatus); Assert.Contains("PID 1", display.ClientStatus);
+        Assert.DoesNotContain("· measured", display.ClientStatus); Assert.DoesNotContain("crash", display.ClientStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("exit", display.ClientStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("last-known", display.ClientIoStatus); Assert.DoesNotContain("· measured", display.ClientIoStatus);
+        Assert.Equal("Unavailable", display.ReadValue); Assert.Equal("Unavailable", display.WriteValue); Assert.Equal("Unavailable", display.OtherValue);
+        Assert.Contains("Unavailable", display.ClientOperations);
+    }
+
+    [Fact]
     public void IoChartsKeepTheirActualObservationTimeAndNeverRepeatAnOldRateInNewRows()
     {
         var history = new TelemetryHistory(); var ioAt = Origin.AddMilliseconds(-100);

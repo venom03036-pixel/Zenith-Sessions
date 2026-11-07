@@ -6,15 +6,17 @@ public sealed record PressureDecision(bool Held,string Explanation);
 public sealed class ResourcePressureTracker
 {
     private DateTimeOffset? _last,_cpuHighSince,_healthySince,_gpuObserved,_gpuHighSince;
-    private bool _held,_gpuHeld;
+    // False until one coherent sample is measured: a cold start (Windows CPU has no baseline yet) has lost nothing,
+    // so it holds that sample only and does not latch the thirty-second recovery hysteresis.
+    private bool _held,_gpuHeld,_measured;
     public PressureDecision Observe(ResourceSnapshot sample,CapacityDecision memory,DateTimeOffset now)
     {
         bool fresh=memory.SamplesHealthy && sample.CpuPercent is >=0 and <=100 && sample.ObservedUtc<=now.AddSeconds(1);
-        bool discontinuity=_last is { } previous && (sample.ObservedUtc<=previous || sample.ObservedUtc-previous>TimeSpan.FromSeconds(3));
+        bool discontinuity=_last is { } previous && (sample.ObservedUtc<=previous || sample.ObservedUtc-previous>CapacityPolicy.ResourceSampleExpiry);
         if(discontinuity || !fresh) { _cpuHighSince=null; _healthySince=null; _gpuHighSince=null; _gpuObserved=null; }
         if(!fresh || discontinuity)
-        { _held=true; _last=sample.ObservedUtc; return new(true,"Resource admission held: waiting for coherent memory, commit and CPU measurements."); }
-        _last=sample.ObservedUtc;
+        { _held|=_measured; _last=sample.ObservedUtc; return new(true,"Resource admission held: waiting for coherent memory, commit and CPU measurements."); }
+        _last=sample.ObservedUtc; _measured=true;
         if(sample.AvailablePhysical<Math.Max(CapacityPolicy.GiB,sample.TotalPhysical/20)
             || (UInt128)sample.CommitUsed*100>(UInt128)sample.CommitLimit*95)
         { _held=true; _healthySince=null; return new(true,"Critical memory pressure: new launches are held immediately. Existing clients remain under user control."); }
@@ -73,7 +75,7 @@ public sealed class ResourcePressureTracker
         static ulong Sum(ulong a,ulong b)=>a>ulong.MaxValue-b?ulong.MaxValue:a+b;
         ulong physicalBase=Sum(memory.PhysicalHeadroom,memory.ReservedPhysical);
         ulong commitBase=Sum(memory.CommitHeadroom,memory.ReservedCommit);
-        // At most512MiB or5% of the space above the configured guard/reservations.
+        // At most 512 MiB or 5% of the space above the configured guard/reservations.
         // The margin never asks a small machine to recover beyond its usable capacity.
         ulong physicalMargin=Math.Min(CapacityPolicy.GiB/2,sample.TotalPhysical>physicalBase?(sample.TotalPhysical-physicalBase)/20:0);
         ulong commitMargin=Math.Min(CapacityPolicy.GiB/2,sample.CommitLimit>commitBase?(sample.CommitLimit-commitBase)/20:0);

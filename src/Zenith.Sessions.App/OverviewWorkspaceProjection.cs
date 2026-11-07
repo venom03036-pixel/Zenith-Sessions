@@ -18,7 +18,7 @@ public sealed record OverviewWorkspaceData(int? SavedProfiles,string LibraryCapt
 public static class OverviewWorkspaceProjection
 {
     public const int MaximumProcessRows=128;
-    private static readonly TimeSpan ProcessAge=RecentClientHistoryReducer.MaximumInventoryAge,ResourceAge=TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan ProcessAge=RecentClientHistoryReducer.MaximumInventoryAge,ResourceAge=CapacityPolicy.ResourceSampleExpiry;
     public static OverviewWorkspaceData Create(OverviewWorkspaceInput input,DateTimeOffset now)
     {
         ArgumentNullException.ThrowIfNull(input);

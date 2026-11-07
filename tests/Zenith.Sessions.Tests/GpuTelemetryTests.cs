@@ -203,7 +203,66 @@ public sealed class GpuTelemetryTests
         Assert.Null(Assert.Single(reader.Read().Adapters).BusiestEnginePercent); api.EngineMissing = false;
         clock.Advance(31); Assert.Null(Assert.Single(reader.Read().Adapters).BusiestEnginePercent);
         clock.Advance(); Assert.Equal(20d, Assert.Single(reader.Read().Adapters).BusiestEnginePercent);
-        Assert.Equal(2, api.Opens); Assert.Equal(1, api.Closes);
+        // The missing counter is re-added to the open query; it is not closed and rebuilt.
+        Assert.Equal(1, api.Opens); Assert.Equal(0, api.Closes);
+    }
+
+    [Fact]
+    public void MissingMemoryGaugeRetryCannotLatchAnEstablishedGpuHold()
+    {
+        // Reader and pressure tracker together at the real 1 s system cadence. Only the Dedicated
+        // memory gauge is missing, so engine evidence is complete; the 30 s partial-counter retry
+        // must not turn into a periodic unknown engine sample that blocks GPU-hold recovery.
+        var clock = new Clock(); var api = new FakePdh(clock) { DedicatedMissing = true };
+        var engine = new Row(EngineName(1, 0), 90); api.Engines.Add(engine); api.Shared.Add(new(MemoryName(), Bytes: 10));
+        using var reader = new WindowsGpuTelemetryReader(clock, api); var tracker = new ResourcePressureTracker();
+        var unknownAfterWarmUp = new List<int>(); int step = 0;
+        PressureDecision Step()
+        {
+            var now = clock.GetUtcNow(); var gpu = reader.Read();
+            if (step++ > 0 && gpu.Adapters.Any(a => a.BusiestEnginePercent is null)) unknownAfterWarmUp.Add(step - 1);
+            var sample = new ResourceSnapshot(now, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB,
+                64 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 20, Gpu: gpu);
+            var decision = tracker.Observe(sample, CapacityPolicy.Evaluate(sample, new(), [], 0, now), now);
+            clock.Advance(); return decision;
+        }
+        PressureDecision last = null!;
+        for (int i = 0; i < 17; i++) last = Step();
+        Assert.True(last.Held);
+        api.Engines[0] = engine with { Percent = 10 };
+        for (int i = 0; i < 70; i++) last = Step();
+        Assert.False(last.Held, last.Explanation);
+        Assert.Empty(unknownAfterWarmUp);
+        Assert.Equal(1, api.Opens); Assert.Equal(0, api.Closes);
+    }
+
+    [Fact]
+    public void ReAddedEngineCounterWarmsUpAgainBeforeReportingLoadAtNormalCadence()
+    {
+        var clock = new Clock(); var api = new FakePdh(clock) { EngineMissing = true };
+        api.Engines.Add(new(EngineName(1, 0), 20)); api.Dedicated.Add(new(MemoryName(), Bytes: 100)); api.Shared.Add(new(MemoryName(), Bytes: 0));
+        using var reader = new WindowsGpuTelemetryReader(clock, api);
+        for (int second = 0; second < 30; second++)
+        { Assert.Null(Assert.Single(reader.Read().Adapters).BusiestEnginePercent); clock.Advance(); }
+        api.EngineMissing = false;
+        // The first collection that includes the newly added rate counter is its baseline, not load.
+        var reAdded = Assert.Single(reader.Read().Adapters);
+        Assert.Null(reAdded.BusiestEnginePercent); Assert.Equal(100UL, reAdded.DedicatedBytes);
+        clock.Advance(); Assert.Equal(20d, Assert.Single(reader.Read().Adapters).BusiestEnginePercent);
+        Assert.Equal(1, api.Opens); Assert.Equal(0, api.Closes);
+    }
+
+    [Fact]
+    public void CancelledMissingCounterRetryClosesTheQueryItWasAddingTo()
+    {
+        var clock = new Clock(); var api = new FakePdh(clock) { DedicatedMissing = true };
+        api.Engines.Add(new(EngineName(1, 0), 30)); api.Shared.Add(new(MemoryName(), Bytes: 10));
+        using var reader = new WindowsGpuTelemetryReader(clock, api); reader.Read();
+        clock.Advance(30); using var canceled = new CancellationTokenSource(); api.AfterAdd = canceled.Cancel;
+        Assert.Throws<OperationCanceledException>(() => reader.Read(canceled.Token)); Assert.Equal(1, api.Closes);
+        api.AfterAdd = null; clock.Advance(); Assert.Null(Assert.Single(reader.Read().Adapters).BusiestEnginePercent);
+        clock.Advance(); Assert.Equal(30d, Assert.Single(reader.Read().Adapters).BusiestEnginePercent);
+        Assert.Equal(2, api.Opens);
     }
 
     [Fact]
@@ -285,7 +344,7 @@ public sealed class GpuTelemetryTests
         public readonly List<Row> Engines = [], Dedicated = [], Shared = [];
         public int Opens, Adds, Closes, Collections, ArrayCalls, EngineFills;
         public uint EngineFormat, MaximumRequestedBuffer;
-        public bool AllCountersMissing, EngineMissing;
+        public bool AllCountersMissing, EngineMissing, DedicatedMissing;
         public uint CollectStatus;
         public DateTimeOffset? FixedTime;
         public Action? AfterCollect, AfterAdd;
@@ -296,7 +355,7 @@ public sealed class GpuTelemetryTests
             Adds++;
             counter = path == WindowsGpuTelemetryReader.EngineCounterPath ? 1 : path == WindowsGpuTelemetryReader.DedicatedCounterPath ? 2 : 3;
             AfterAdd?.Invoke();
-            if (AllCountersMissing || (EngineMissing && counter == 1)) { counter = 0; return 0xc0000bb8; } return 0;
+            if (AllCountersMissing || (EngineMissing && counter == 1) || (DedicatedMissing && counter == 2)) { counter = 0; return 0xc0000bb8; } return 0;
         }
         public uint Collect(nint query, out long fileTime)
         { Collections++; fileTime = (FixedTime ?? clock.GetUtcNow()).UtcDateTime.ToFileTimeUtc(); AfterCollect?.Invoke(); return CollectStatus; }

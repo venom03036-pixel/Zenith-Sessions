@@ -1,4 +1,5 @@
 using Zenith.Sessions.Core;
+using Zenith.Sessions.App;
 using Xunit;
 
 namespace Zenith.Sessions.Tests;
@@ -218,6 +219,58 @@ public sealed class PerformanceProfileTests
             Assert.Equal(0, stale.MemoryOnlySlots);
         }
         Assert.Equal(new CapacitySettings(SparePhysicalPercent: 25, SparePhysicalGiB: 4, SpareCommitPercent: 15, SpareCommitGiB: 3), capacity);
+    }
+
+    [Fact]
+    public void ResourceSampleExpiryIsOneSharedBoundary()
+    {
+        var expiry = CapacityPolicy.ResourceSampleExpiry;
+        Assert.Equal(TimeSpan.FromSeconds(1), CapacityPolicy.EssentialResourceSampleInterval);
+        Assert.Equal(TimeSpan.FromSeconds(3), expiry);
+        Assert.Equal(expiry, TelemetryHistory.MaximumSystemAge);
+        foreach (var profile in Enum.GetValues<ManagerPerformanceProfile>())
+        {
+            // The figures the Performance page shows are the enforced ones.
+            var policy = new ManagerPerformanceSettings(Profile: profile).Resolve();
+            Assert.Equal((int)CapacityPolicy.EssentialResourceSampleInterval.TotalMilliseconds, policy.EssentialResourceSampleMs);
+            Assert.Equal((int)expiry.TotalMilliseconds, policy.ResourceSampleExpiryMs);
+            Assert.Contains(" Essential RAM, commit and CPU safety sampling stays at 1000 ms with 3000 ms expiry. Resource headroom stays configured separately.", policy.Explanation);
+        }
+        // Each consumer of one essential sample agrees at the boundary and one tick past it.
+        var observed = new DateTimeOffset(2026, 1, 1, 0, 0, 0, TimeSpan.Zero);
+        var sample = new ResourceSnapshot(observed, 32 * CapacityPolicy.GiB, 16 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB, 16 * CapacityPolicy.GiB, 30);
+        var capacity = new CapacitySettings();
+        DateTimeOffset boundary = observed + expiry, past = boundary.AddTicks(1);
+
+        Assert.True(CapacityPolicy.Evaluate(sample, capacity, [], 0, boundary).SamplesHealthy);
+        Assert.False(CapacityPolicy.Evaluate(sample, capacity, [], 0, past).SamplesHealthy);
+
+        Assert.NotEqual("Unavailable", OverviewWorkspaceProjection.Create(new(Desktop: new(sample, [])), boundary).Physical);
+        Assert.Equal("Unavailable", OverviewWorkspaceProjection.Create(new(Desktop: new(sample, [])), past).Physical);
+
+        // Process inventory observed later stays fresh at both instants, so only the resource sample ages out.
+        var desktop = new DesktopSnapshot(sample, [], ProcessObservedUtc: boundary, ProcessRevision: 1, ProcessInventoryComplete: true);
+        var queue = new LaunchQueueSnapshot(false, []);
+        var fresh = LaunchReservationProjection.Evaluate(queue, desktop, capacity, boundary);
+        var stale = LaunchReservationProjection.Evaluate(queue, desktop, capacity, past);
+        Assert.True(fresh.FreshProcessInventory); Assert.True(stale.FreshProcessInventory);
+        Assert.StartsWith("Only unique exact process receipts", fresh.Explanation);
+        Assert.StartsWith("Full launch forecasts retained", stale.Explanation);
+
+        var systemOnly = new DesktopSnapshot(sample, [], Problem: "System sample only.");
+        Assert.True(new TelemetryHistory().Observe(systemOnly, boundary));
+        Assert.False(new TelemetryHistory().Observe(systemOnly, past));
+
+        // Consecutive samples one expiry apart stay continuous; one tick more is a discontinuity that holds admission.
+        PressureDecision Second(DateTimeOffset at)
+        {
+            var tracker = new ResourcePressureTracker();
+            Assert.False(tracker.Observe(sample, CapacityPolicy.Evaluate(sample, capacity, [], 0, observed), observed).Held);
+            var next = sample with { ObservedUtc = at };
+            return tracker.Observe(next, CapacityPolicy.Evaluate(next, capacity, [], 0, at), at);
+        }
+        Assert.False(Second(boundary).Held);
+        Assert.True(Second(past).Held);
     }
 
     [Fact]

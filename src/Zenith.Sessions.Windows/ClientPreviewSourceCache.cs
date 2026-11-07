@@ -52,6 +52,38 @@ internal sealed class ClientPreviewSourceCache<T> where T : class, IDisposable
         ct.ThrowIfCancellationRequested(); return true;
     }
 
+    /// <summary>
+    /// Evicts the shortest prefix of <paramref name="candidates"/> (absent ones are skipped) that lets
+    /// <paramref name="addition"/> fit. Nothing is evicted when even every candidate would not free enough room.
+    /// </summary>
+    public bool MakeRoom(PreviewSurfaceSize addition, IReadOnlyList<ClientPreviewTarget> candidates, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        ct.ThrowIfCancellationRequested(); RequireUsable();
+        if (!ClientPreviewBufferReader.FitsBudget([addition])) return false;
+        var removed = new HashSet<ClientPreviewTarget>(); int prefix = -1;
+        if (FitsWithout(removed, addition)) prefix = 0;
+        for (int index = 0; prefix < 0 && index < candidates.Count; index++)
+            if (_entries.ContainsKey(candidates[index]) && removed.Add(candidates[index]) && FitsWithout(removed, addition)) prefix = index + 1;
+        if (prefix < 0) return false;
+        for (int index = 0; index < prefix; index++)
+        {
+            ct.ThrowIfCancellationRequested();
+            Drop(candidates[index]);
+        }
+        ct.ThrowIfCancellationRequested(); return true;
+    }
+
+    public bool Contains(ClientPreviewTarget target) => _entries.ContainsKey(target);
+
+    private bool FitsWithout(HashSet<ClientPreviewTarget> removed, PreviewSurfaceSize addition)
+    {
+        var sizes = new List<PreviewSurfaceSize>(_entries.Count + 1);
+        foreach (var (target, entry) in _entries) if (!removed.Contains(target)) sizes.Add(entry.Size);
+        sizes.Add(addition);
+        return ClientPreviewBufferReader.FitsBudget(sizes);
+    }
+
     public void Add(ClientPreviewTarget target, PreviewSurfaceSize size, T source)
     {
         ArgumentNullException.ThrowIfNull(source); RequireUsable();

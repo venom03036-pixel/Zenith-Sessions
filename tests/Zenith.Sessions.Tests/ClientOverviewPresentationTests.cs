@@ -95,6 +95,31 @@ public sealed partial class ClientPreviewPresentationTests
     });
 
     [Fact]
+    public Task OverviewRosterGrowthKeepsUnchangedTileImagesAndNeverClaimsPreviewsAreOff()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>true,clock:clock);
+        try
+        {
+            vm.ObserveInventory(Inventory(clock,2));await Until(()=>vm.OverviewRows.Count==2);
+            vm.StartOverview(clock.GetUtcNow().AddMinutes(3));var call=await provider.NextAsync();
+            call.Reply.SetResult(Frames(call,clock.GetUtcNow()));await DriveUntil(clock,()=>vm.OverviewRows.All(row=>row.HasImage));
+            var first=vm.OverviewRows[0].Image;var second=vm.OverviewRows[1].Image;
+            // A third client appears: Core releases the previous sources but keeps both exact frames.
+            provider.ReleaseGate=release.Task;vm.ObserveInventory(Inventory(clock,3,2));
+            await DriveUntil(clock,()=>vm.IsReleasing && vm.OverviewRows.Count==3);
+            Assert.Same(first,vm.OverviewRows[0].Image);Assert.Same(second,vm.OverviewRows[1].Image);
+            Assert.Contains("not current",vm.OverviewRows[0].Freshness);
+            Assert.DoesNotContain("Previews are off",vm.RefreshSummary);
+            release.SetResult();await provider.NextReleaseAsync();
+            await DriveUntil(clock,()=>vm.IsRunning);
+            Assert.Same(first,vm.OverviewRows[0].Image);Assert.Same(second,vm.OverviewRows[1].Image);
+        }
+        finally {release.TrySetResult();provider.UnblockAll();}
+    });
+
+    [Fact]
     public Task OverviewReusesFrozenBitmapsWhenAnotherBatchChangesTheSnapshot()=>OnUi(async()=>
     {
         var clock=new Clock();var provider=new PreviewProvider();
@@ -291,6 +316,33 @@ public sealed partial class ClientPreviewPresentationTests
         finally {monitor.Reply.TrySetResult(false);}
     });
 
+    [Fact]
+    public Task FocusClientAvailabilityFollowsSelectedTileWhenAPartialScanMarksItLastKnown()=>OnUi(async()=>
+    {
+        var monitor=new PartialScanFocusMonitor();var provider=new PreviewProvider();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,monitor,new NoPublicDirectory(),new NoServerDirectory(),previewProvider:provider);
+        await shell.InitializeAsync();await Refresh(shell);shell.SetPreviewWindowVisible(true);shell.ShowWindowsOverview.Execute(null);
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);
+        var row=shell.ClientPreviews.OverviewRows.Single(tile=>tile.ProcessId==1);shell.ClientPreviews.SelectedOverviewRow=row;
+        Assert.True(shell.CanFocusOverviewClient);
+        // What the button's IsEnabled binding reads each time the shell announces the property.
+        var announced=new List<bool>();
+        shell.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ShellViewModel.CanFocusOverviewClient)) announced.Add(shell.CanFocusOverviewClient);};
+        // The next sample omits pid 1 from a partial scan; every later sample waits, so no shell refresh follows the apply.
+        monitor.ReportPartialScan();
+        await Until(()=>!row.CanFocus);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Same(row,shell.ClientPreviews.SelectedOverviewRow);Assert.False(shell.CanFocusOverviewClient);
+        Assert.NotEmpty(announced);Assert.False(announced[^1],"The last CanFocusOverviewClient notification still reported an enabled Focus client button.");
+        // A click that races the disabled state explains itself instead of doing nothing.
+        shell.FocusOverviewClient.Execute(null);await shell.FocusOverviewClient.Execution;
+        Assert.Contains("last-known",shell.Notice,StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0,monitor.FocusCalls);Assert.Equal(0,provider.CaptureCalls);
+        // Only the selected tile is followed, and disposal releases the subscription.
+        var other=shell.ClientPreviews.OverviewRows.Single(tile=>tile.ProcessId==2);shell.ClientPreviews.SelectedOverviewRow=other;
+        int count=announced.Count;row.Observe(row.Observation,true);Assert.Equal(count,announced.Count);
+        await shell.DisposeAsync();count=announced.Count;other.Observe(other.Observation,false);Assert.Equal(count,announced.Count);
+    });
+
     [Theory]
     [InlineData(false)] [InlineData(true)]
     public Task LockOrPanicDuringIgnoringFocusPreservesStopNoticeAndJoinsOwnership(bool panic)=>OnUi(async()=>
@@ -321,6 +373,62 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.False(shell.CanStartWindowsOverview);Assert.False(shell.CanFocusOverviewClient);Assert.Equal(0,provider.CaptureCalls);
     });
 
+    [Fact]
+    public Task OverviewTileRaisesNothingWhenOnlyMeasurementsChange()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>true,clock:clock);
+        vm.ObserveInventory(Inventory(clock,1));await Until(()=>vm.OverviewRows.Count==1);
+        var raised=new List<string?>();vm.OverviewRows[0].PropertyChanged+=(_,args)=>raised.Add(args.PropertyName);
+        int applied=0;vm.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) applied++;};
+        clock.Advance(TimeSpan.FromSeconds(1));var next=Inventory(clock,1,2);
+        // Same exact process and window: only the per-sample time, memory and CPU readings moved.
+        vm.ObserveInventory(next with {Sessions=new[]{next.Sessions[0] with {WorkingSetBytes=7,PrivateCommitBytes=9,CpuPercent=42}}});
+        await Until(()=>applied>0);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.DoesNotContain(nameof(ClientOverviewRow.CanFocus),raised);Assert.DoesNotContain(nameof(ClientOverviewRow.CaptureTarget),raised);
+        Assert.DoesNotContain(nameof(ClientOverviewRow.AutomationName),raised);
+        // Focus still pins the newest observation even though nothing was announced.
+        Assert.True(vm.OverviewRows[0].CanFocus);Assert.Equal(clock.GetUtcNow(),vm.OverviewRows[0].Observation.ObservedUtc);
+    });
+
+    [Fact]
+    public Task UnavailableTileKeepsItsOwnReasonWhilePreviewsAreOff()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>false,clock:clock);
+        var statuses=new List<string>();int applied=0;
+        vm.OverviewRows.CollectionChanged+=(_,args)=>
+        {if(args.NewItems is { } added) foreach(ClientOverviewRow row in added) row.PropertyChanged+=(_,change)=>{if(change.PropertyName==nameof(ClientOverviewRow.Status)) statuses.Add(row.Status);};};
+        vm.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) applied++;};
+        var first=Inventory(clock,1);vm.ObserveInventory(first with {Sessions=new[]{first.Sessions[0] with {Minimized=true}}});
+        await Until(()=>applied==1);
+        clock.Advance(TimeSpan.FromSeconds(1));var next=Inventory(clock,1,2);
+        vm.ObserveInventory(next with {Sessions=new[]{next.Sessions[0] with {Minimized=true}}});
+        await Until(()=>applied==2);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        // A minimized tile announces its reason once; "previews are off" must not flip it every sample.
+        Assert.Equal(new[]{"Client is minimized; no current image is available."},statuses);
+        Assert.Equal(0,provider.CaptureCalls);
+    });
+
+    [Theory]
+    [InlineData("tab")] [InlineData("hide")] [InlineData("lock")]
+    public Task HiddenWindowsRosterWaitsForTheNextShowInsteadOfReconcilingEverySample(string context)=>OnUi(async()=>
+    {
+        var provider=new PreviewProvider();var monitor=new DesktopMonitor(2);
+        await using var shell=await Ready(monitor,provider);shell.SetPreviewWindowVisible(true);shell.ShowWindowsOverview.Execute(null);
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);
+        switch(context) {case "tab":shell.Navigate.Execute("Sessions");break;case "hide":shell.SetPreviewWindowVisible(false);break;default:shell.LockDashboard();break;}
+        int reconciled=0;shell.ClientPreviews.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) reconciled++;};
+        monitor.Processes=Enumerable.Range(1,3).Select(pid=>new SessionObservation(pid,new DateTime(2026,1,1).Ticks,"Synthetic",pid+100,"Synthetic",false,true,1,1,0,DateTimeOffset.UtcNow)).ToArray();
+        await Refresh(shell);await Refresh(shell);
+        // Proving absence needs a bounded settle; an awake presenter reconciles within milliseconds.
+        for(int i=0;i<20 && reconciled==0;i++) {await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);await Task.Delay(10);}
+        Assert.Equal(0,reconciled);Assert.Equal(2,shell.ClientPreviews.OverviewRows.Count);
+        switch(context) {case "tab":shell.ShowWindowsOverview.Execute(null);break;case "hide":shell.SetPreviewWindowVisible(true);break;default:shell.Unlock.Execute(null);break;}
+        // Showing the roster again applies the newest pending inventory straight away, without another sample.
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==3);Assert.Equal(0,provider.CaptureCalls);
+    });
+
     private sealed class OverviewFocusMonitor:IDesktopMonitor
     {
         private long _revision;
@@ -335,6 +443,27 @@ public sealed partial class ClientPreviewPresentationTests
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)
         {Pinned=session;Token=ct;Entered.TrySetResult();return Reply.Task;}
+        public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No close operation expected.");
+    }
+
+    private sealed class PartialScanFocusMonitor:IDesktopMonitor
+    {
+        private long _revision;private int _partial,_partialServed;
+        public int FocusCalls;
+        private readonly TaskCompletionSource<DesktopSnapshot> _hold=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void ReportPartialScan()=>Volatile.Write(ref _partial,1);
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            bool partial=Volatile.Read(ref _partial)==1;
+            // Exactly one partial scan; later samples wait for disposal's cancellation.
+            if(partial && Interlocked.Exchange(ref _partialServed,1)==1) return _hold.Task.WaitAsync(ct);
+            var now=DateTimeOffset.UtcNow;int[] pids=partial?[2]:[1,2];
+            var rows=pids.Select(pid=>new SessionObservation(pid,new DateTime(2026,1,1).Ticks,"Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
+            return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows,ProcessObservedUtc:now,ProcessRevision:Interlocked.Increment(ref _revision),ProcessInventoryComplete:!partial));
+        }
+        public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)
+        {Interlocked.Increment(ref FocusCalls);return Task.FromResult(false);}
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No close operation expected.");
     }
 

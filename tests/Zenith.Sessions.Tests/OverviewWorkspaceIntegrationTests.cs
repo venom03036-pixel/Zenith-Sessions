@@ -42,6 +42,31 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         await Task.Delay(1100);Assert.Equal(calls,monitor.Calls);
     });
     [Fact]
+    public Task PresentationFaultDoesNotStopTheSafetySampler()=>OnUi(async()=>
+    {
+        var monitor=new Monitor();await using var shell=Create(monitor);
+        await shell.InitializeAsync();await Until(()=>shell.Overview.ObservedProcesses==8);
+        int thrown=0,presented=0;bool faulting=true;
+        // ProcessInventoryStatus is assigned inside the sampler's presentation step and carries each sample's time;
+        // its handler stands in for any display defect.
+        shell.PropertyChanged+=(_,e)=>
+        {
+            if(e.PropertyName!=nameof(ShellViewModel.ProcessInventoryStatus)) return;
+            if(faulting) {thrown++;throw new InvalidOperationException("Synthetic presentation fault.");}
+            presented++;
+        };
+        int Reports()=>shell.Events.Count(text=>text.Contains("Display update failed",StringComparison.Ordinal));
+        await Until(()=>thrown>=1);int calls=monitor.Calls;
+        await Task.Delay(2500);
+        Assert.True(monitor.Calls>calls+1,$"Sampling stopped after a presentation fault ({calls} -> {monitor.Calls} calls).");
+        Assert.DoesNotContain("monitoring stopped",shell.Overview.ResourceCaption);Assert.Equal(8,shell.Overview.ObservedProcesses);
+        Assert.True(thrown>=2,"The repeating fault was not retried on a later sample.");
+        // A repeating fault is surfaced once, not every second, and the notice says what still works.
+        Assert.Equal(1,Reports());Assert.Contains("Monitoring and launch safety checks continue",shell.Notice);
+        faulting=false;await Until(()=>presented>=1);
+        faulting=true;int before=thrown;await Until(()=>thrown>before && Reports()==2);
+    });
+    [Fact]
     public Task QueueStorageFailureMasksCachedCountsAndPreservesInterruptedMetadata()=>OnUi(async()=>
     {
         await using var shell=Create(new Monitor());await shell.InitializeAsync();await Until(()=>shell.Overview.QueuedRequests==0);

@@ -14,6 +14,14 @@ public sealed class DiagnosticsViewModelTests : IDisposable
     private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-diagnostic-ui-tests-"+Guid.NewGuid().ToString("N"));
     private string Data=>Path.Combine(_root,"data");
     [Fact]
+    public void EveryManagerSubsystemHasItsOwnFixedLabel()
+    {
+        // The enum is append-only. A member added without a label would read "Unrecognized subsystem" in the view and the report.
+        string[] labels=Enum.GetValues<ManagerSubsystem>().Select(subsystem=>DiagnosticRow.SubsystemLabel(subsystem)).ToArray();
+        Assert.DoesNotContain("Unrecognized subsystem",labels);
+        Assert.Equal(labels.Length,labels.Distinct(StringComparer.Ordinal).Count());
+    }
+    [Fact]
     public Task FiltersAndReportsExposeOnlyTypedEventsNotAccountOrExceptionText()=>OnUi(async ()=>
     {
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();

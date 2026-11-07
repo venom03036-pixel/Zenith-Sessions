@@ -47,6 +47,20 @@ public sealed class PressureAndDiagnosticsTests : IDisposable
         Assert.True(new ResourcePressureTracker().Observe(sample,old,sample.ObservedUtc.AddSeconds(4)).Held);
     }
     [Fact]
+    public void ColdStartWithoutACpuBaselineReleasesOnTheFirstMeasuredHealthySample()
+    {
+        // The first Windows CPU read only stores the GetSystemTimes baseline, so app start begins with CPU=null.
+        // No measurement was lost, so that sample must not latch the thirty-second recovery hysteresis.
+        var tracker=new ResourcePressureTracker();
+        Assert.True(Observe(tracker,0,null).Held);
+        var first=Observe(tracker,1);
+        Assert.False(first.Held,first.Explanation);
+        // After a measurement exists, a lost CPU sample still latches and needs thirty healthy seconds.
+        Assert.True(Observe(tracker,2,null).Held);
+        for(int t=3;t<=32;t++) Assert.True(Observe(tracker,t).Held);
+        Assert.False(Observe(tracker,33).Held);
+    }
+    [Fact]
     public async Task DiagnosticsAreBoundedStructuredAndAcceptNoFreeTextSecrets()
     {
         // Test bounded overflow and actual rotation deterministically, not disk throughput.

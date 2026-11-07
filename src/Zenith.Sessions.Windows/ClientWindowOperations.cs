@@ -8,9 +8,13 @@ internal interface IClientWindowAdapter
 {
     ClientDisplayList Displays(CancellationToken ct);
     ClientWindowCheck Check(SessionObservation session);
+    /// <summary>Places the window's visible frame on <paramref name="bounds"/> (the outer rect may extend into invisible borders).</summary>
     WindowPostStatus Move(SessionObservation session, PixelRectangle bounds, Func<bool> stopped);
     WindowPostStatus Change(SessionObservation session, ClientWindowAction action, Func<bool> stopped);
+    /// <summary>Outer window rect, including any invisible resize borders.</summary>
     PixelRectangle? Bounds(SessionObservation session);
+    /// <summary>Visible window frame that tiling confirms; equals <see cref="Bounds"/> for windows without invisible borders.</summary>
+    PixelRectangle? VisibleBounds(SessionObservation session) => Bounds(session);
     ClientWindowGeometry? Geometry(SessionObservation session) => null;
     WindowPostStatus Resize(SessionObservation session, ClientWindowGeometry expected, PixelRectangle bounds, Func<bool> stopped) => WindowPostStatus.Unsupported;
 }
@@ -135,29 +139,39 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
                 var currentDisplays = await DisplaysAsync(ct).ConfigureAwait(false);
                 if (!currentDisplays.Displays.Any(current => current.Id == display.Id && current.WorkArea == display.WorkArea && current.ScalePercent == display.ScalePercent))
                 { results.Add(new(session, bounds, ClientWindowPlacementStatus.DisplayUnavailable, "Display workarea or scale changed. Refresh displays before arranging again.")); continue; }
+                // A per-monitor-DPI-aware client moved onto a monitor with another scale may apply the WM_DPICHANGED
+                // suggested size instead of the requested one. Unknown source geometry (null) keeps the single post.
+                var source = await Task.Run(() => adapter.Geometry(session)).ConfigureAwait(false);
+                bool crossScale = source is { IsValid: true } && source.Display.ScalePercent != display.ScalePercent;
                 var posted = await Task.Run(() => adapter.Move(session, bounds, () => Stopped(generation, ct))).ConfigureAwait(false);
                 if (posted != WindowPostStatus.Accepted)
                 { results.Add(new(session, bounds, Map(posted), PostExplanation(posted))); continue; }
-                bool confirmed = false, invalid = false;
-                for (int attempt = 0; attempt < 20; attempt++)
+                var (confirmed, invalid) = await ConfirmBoundsAsync(session, bounds, display, generation, ct).ConfigureAwait(false);
+                if (crossScale && !confirmed && !invalid && !Stopped(generation, ct))
                 {
-                    if (Stopped(generation, ct)) break;
-                    var observed = await Task.Run(() => (State: adapter.Check(session), Bounds: adapter.Bounds(session))).ConfigureAwait(false);
-                    if (!observed.State.Current) { invalid = true; break; }
-                    if (observed.Bounds is { } actual && actual == bounds && display.WorkArea.Contains(actual))
+                    // Post the same rectangle exactly once more, only after the client reports the target monitor and scale
+                    // (so this post cannot cause another scale change) and behind the same display and panic checks.
+                    var landed = await Task.Run(() => adapter.Geometry(session)).ConfigureAwait(false);
+                    if (landed is { IsValid: true } && SameDisplay(landed.Display, display))
                     {
-                        var confirmedDisplays = await DisplaysAsync(ct).ConfigureAwait(false);
-                        confirmed = confirmedDisplays.Displays.Any(current => current.Id == display.Id && current.WorkArea == display.WorkArea
-                            && current.ScalePercent == display.ScalePercent && current.WorkArea.Contains(actual));
-                        break;
+                        if (!await DisplayStillCurrentAsync(display, ct).ConfigureAwait(false))
+                        { results.Add(new(session, bounds, ClientWindowPlacementStatus.DisplayUnavailable, "Display workarea or scale changed. Refresh displays before arranging again.")); continue; }
+                        if (!Stopped(generation, ct))
+                        {
+                            posted = await Task.Run(() => adapter.Move(session, bounds, () => Stopped(generation, ct))).ConfigureAwait(false);
+                            if (posted == WindowPostStatus.Accepted)
+                                (confirmed, invalid) = await ConfirmBoundsAsync(session, bounds, display, generation, ct).ConfigureAwait(false);
+                            else if (!Stopped(generation, ct))
+                            { results.Add(new(session, bounds, Map(posted), PostExplanation(posted))); continue; }
+                        }
                     }
-                    await Task.Delay(25, ct).ConfigureAwait(false);
                 }
                 results.Add(new(session, bounds, Stopped(generation, ct) ? ClientWindowPlacementStatus.Cancelled
                     : invalid ? ClientWindowPlacementStatus.InvalidClient : confirmed ? ClientWindowPlacementStatus.Applied : ClientWindowPlacementStatus.NotConfirmed,
                     Stopped(generation, ct) ? "The resize was posted before cancellation; completion is unconfirmed and cannot be recalled."
                         : invalid ? "The observed client or window changed after the request."
                         : confirmed ? "Physical window bounds confirmed without requesting activation."
+                        : crossScale ? "The client resized itself when it moved to a monitor with a different scale. Arrange again; if the size still differs, client size constraints may apply."
                         : "Windows accepted the request but did not confirm these bounds. Client size constraints may apply."));
             }
             return Finish();
@@ -178,6 +192,27 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
             new(Array.AsReadOnly(ordered.Select(session => new ClientWindowPlacementResult(session, null, status, message)).ToArray()), cancelled, message);
         ClientWindowArrangementResult Finish() => new(results.AsReadOnly(), results.Any(result => result.Status == ClientWindowPlacementStatus.Cancelled),
             $"{results.Count(result => result.Status == ClientWindowPlacementStatus.Applied)} of {ordered.Length} client window bounds confirmed. Each remaining result explains its state.");
+    }
+
+    // Bounded confirmation (20 × 25 ms) of one posted move: exact physical visible-frame bounds inside an unchanged target
+    // display. The outer rect is not compared: it includes invisible resize borders that may extend past the workarea.
+    private async Task<(bool Confirmed, bool Invalid)> ConfirmBoundsAsync(SessionObservation session, PixelRectangle bounds,
+        ClientDisplay display, long generation, CancellationToken ct)
+    {
+        for (int attempt = 0; attempt < 20; attempt++)
+        {
+            if (Stopped(generation, ct)) break;
+            var observed = await Task.Run(() => (State: adapter.Check(session), Bounds: adapter.VisibleBounds(session))).ConfigureAwait(false);
+            if (!observed.State.Current) return (false, true);
+            if (observed.Bounds is { } actual && actual == bounds && display.WorkArea.Contains(actual))
+            {
+                var confirmedDisplays = await DisplaysAsync(ct).ConfigureAwait(false);
+                return (confirmedDisplays.Displays.Any(current => current.Id == display.Id && current.WorkArea == display.WorkArea
+                    && current.ScalePercent == display.ScalePercent && current.WorkArea.Contains(actual)), false);
+            }
+            await Task.Delay(25, ct).ConfigureAwait(false);
+        }
+        return (false, false);
     }
 
     public async Task<ClientWindowArrangementResult> ResizeAsync(IReadOnlyList<SessionObservation> sessions, ClientContentSize size, CancellationToken ct)

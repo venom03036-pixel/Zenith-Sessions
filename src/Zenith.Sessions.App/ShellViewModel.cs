@@ -98,6 +98,7 @@ public sealed class SessionRow(SessionObservation observation) : Observable
     public void UpdateLog(SessionLogView value) { if (_log != value) { _log = value; Raise(nameof(Log)); } }
     public SessionObservation Observation { get; private set; } = observation;
     public string InstanceKey => Observation.InstanceKey;
+    public SessionProcessKey ProcessKey => Observation.ProcessKey;
     public string ProcessLabel => Observation.ProcessLabel;
     public string Status => Observation.Status;
     public string MemoryDisplay => Observation.Problem is null ? Observation.MemoryDisplay : "Unavailable";
@@ -164,6 +165,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private CancellationTokenSource? _authorizationStop;
     private Guid? _linkingProfile;
     private bool _preserveStopNotice;
+    // UI-thread only: set by ReportPresentationFault, cleared when a sample presentation completes.
+    private bool _presentationFaulted;
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
@@ -198,8 +201,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private GroupFilter _group=GroupFilter.All;
     private AccountOrder _order;
     private AccountRow? _selected;
-    private int _accountCount, _sessionCount;
-    private string _physical = "Measuring…", _commit = "Measuring…", _cpu = "Measuring…", _capacity = "Waiting for measurements", _sampleTime = "—";
+    private int _accountCount;
+    private string _capacity = "Waiting for measurements";
     private string _pageLabel = "0 accounts", _saveStatus = "Not loaded";
     public string DataRoot { get; }
     public bool IsSample { get; }
@@ -210,7 +213,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public ObservableCollection<AccountRow> Accounts { get; } = [];
     public ObservableCollection<SessionRow> Sessions { get; } = [];
     private SessionRow? _selectedSession;
-    public SessionRow? SelectedSession { get => _selectedSession; set { if (Set(ref _selectedSession,value)) { Raise(nameof(HasSelectedSession)); Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates));RefreshTelemetryPresentation(); } } }
+    public SessionRow? SelectedSession { get => _selectedSession; set { if (Set(ref _selectedSession,value)) { Raise(nameof(HasSelectedSession)); Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates));FollowSelectedSessionInHistory(value);RefreshTelemetryPresentation(); } } }
     public bool HasSelectedSession => SelectedSession is not null;
     public ObservableCollection<LaunchRow> Launches { get; }=[];
     public IReadOnlyList<GroupFilter> Groups { get; private set; } = [GroupFilter.All];
@@ -257,12 +260,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string PageLabel { get => _pageLabel; private set => Set(ref _pageLabel, value); }
     public string SaveStatus { get => _saveStatus; private set => Set(ref _saveStatus, value); }
     public int AccountCount { get => _accountCount; private set => Set(ref _accountCount, value); }
-    public int SessionCount { get => _sessionCount; private set => Set(ref _sessionCount, value); }
-    public string Physical { get => _physical; private set => Set(ref _physical, value); }
-    public string Commit { get => _commit; private set => Set(ref _commit, value); }
-    public string Cpu { get => _cpu; private set => Set(ref _cpu, value); }
     public string Capacity { get => _capacity; private set => Set(ref _capacity, value); }
-    public string SampleTime { get => _sampleTime; private set => Set(ref _sampleTime, value); }
     public bool Dense { get => _settings.DenseAccounts; set { if (_settings.DenseAccounts == value) return; _settings = _settings with { DenseAccounts = value }; Raise(); PreferencesEdited(); } }
     private string _spareRam = "3", _physicalPerClient = "2.5", _commitPerClient = "3", _maximumClients = "", _oauthClientId = "", _callbackPort="47635";
     public string SpareRam { get => _spareRam; set { if (Set(ref _spareRam, value)) PreferencesEdited(); } }
@@ -321,7 +319,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
-        TimeProvider? idleClock=null)
+        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -357,13 +355,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeDiagnosticsFeatures();
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
+        InitializeClientMemoryTrimFeatures(clientTrim);
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
@@ -454,10 +453,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             PreferencesEdited(); Notice = loaded.Notice ?? queueRecoveryNotice ?? projectionNotice ?? "Ready. Account metadata stays local; running processes require verified identity before automation.";
             AddEvent(IsSample ? "Isolated sample profile library opened; no sample session is shown as a live client." : "Local account library opened.");
             _diagnostics.Record(ManagerEventKind.Started);
+            LoadClientDisplaysOnce(); // After the Ready notice, so a monitor-read failure is not overwritten by it.
             // Start the owned diagnostic worker only after initialization succeeds. Isolated
             // sample/injected-monitor tests never inspect unrelated desktop logs.
             if (!IsSample && _monitor is WindowsDesktopMonitor) _logCorrelator = new();
-            _monitorTask = MonitorLoopAsync(_lifetime.Token);
+            // The safety sampler owns a pool loop; only its coalesced presentation step uses the dispatcher.
+            var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
         }
@@ -789,22 +790,35 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             while(!ct.IsCancellationRequested)
             {
-                await SampleAsync(ct);
-                // One owned loop, no catch-up bursts. Essential native measurements stay 1 Hz.
-                await Task.Delay(Math.Min(1000,Volatile.Read(ref _activePerformance).ProcessSampleMs),ct);
+                await SampleAsync(ct).ConfigureAwait(false);
+                // One owned loop, no catch-up bursts. Essential native measurements stay at the policy's fixed cadence.
+                var policy=Volatile.Read(ref _activePerformance);
+                await Task.Delay(Math.Min(policy.EssentialResourceSampleMs,policy.ProcessSampleMs),ct).ConfigureAwait(false);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { await _dispatcher.InvokeAsync(() => {MarkOverviewMonitorStopped();Fail(ex,ManagerSubsystem.Telemetry);}); }
+        catch (Exception ex)
+        {
+            // The loop runs on the pool; the stop and its explanation belong to the dispatcher. A closing shell records the type only.
+            if(Volatile.Read(ref _shuttingDown) || _dispatcher.HasShutdownStarted) _diagnostics.RecordFailure(ManagerSubsystem.Telemetry,ex.GetType());
+            else await _dispatcher.InvokeAsync(() => {MarkOverviewMonitorStopped();Fail(ex,ManagerSubsystem.Telemetry);});
+        }
     }
+    // The newest sample each dispatcher step still has to show. The serialized sampler writes them; ApplySampleUi takes them.
+    private sealed record SamplePresentation(DesktopSnapshot Snapshot,CapacityDecision Capacity,LaunchReservationProjectionResult Projection,PressureDecision Pressure,DateTimeOffset Now);
+    private DesktopSnapshot? _pendingSampleContext;
+    private SamplePresentation? _pendingSamplePresentation;
+    private int _sampleUiScheduled;
     private async Task SampleAsync(CancellationToken ct,bool forcePresentation=false)
     {
-        await _sampleSerial.WaitAsync(ct);
+        // The safety half never waits for the dispatcher: the loop runs it on the pool, so a busy UI cannot stretch the
+        // 1 Hz essential samples past the pressure tracker's three-second continuity limit and restart recovery.
+        await _sampleSerial.WaitAsync(ct).ConfigureAwait(false);
         try
         {
-        var snapshot = await _monitor.SampleAsync(ct);
+        var snapshot = await _monitor.SampleAsync(ct).ConfigureAwait(false);
         // One bounded, pure reducer on the existing sample lane; no row-owned task/timer.
-        await Task.Run(()=>_telemetryHistory.Observe(snapshot,DateTimeOffset.UtcNow),ct);
+        await Task.Run(()=>_telemetryHistory.Observe(snapshot,DateTimeOffset.UtcNow),ct).ConfigureAwait(false);
         _logCorrelator?.Offer(snapshot);
         var memory = snapshot.Resources;var now=DateTimeOffset.UtcNow;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;
@@ -814,7 +828,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // Cached half-second calls must not reset a one-second safety sample's recovery history.
         var systemHealth=CapacityPolicy.EvaluateSystemPressure(memory,limits,now);
         if(_pressureObserved!=memory || !systemHealth.SamplesHealthy)
-        {_lastPressure=_pressure.Observe(memory,systemHealth,now);_pressureObserved=memory;}
+        {Volatile.Write(ref _lastPressure,_pressure.Observe(memory,systemHealth,now));_pressureObserved=memory;}
         var pressure=_lastPressure;
         // Cache pressure/sample health only. Each start recomputes remaining reservations,
         // excluding its own not-yet-emitted forecast, at the final native boundary.
@@ -822,49 +836,85 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // critical-memory/CPU/GPU observation with the previous sample's healthy decision.
         Volatile.Write(ref _resourceAdmission,new ResourceAdmissionSnapshot(snapshot,new(systemHealth.SamplesHealthy && !pressure.Held,pressure.Explanation)));
         Volatile.Write(ref _latestDesktop,snapshot);
-        ObserveClientPreviewContext(snapshot);
         _launchQueue.Signal();
-        if(!PresentationDue(Volatile.Read(ref _activePerformance),forcePresentation || previousHold!=pressure.Held)) return;
-        await _dispatcher.InvokeAsync(() =>
-        {
-            Physical = memory.IsValid ? $"{memory.AvailablePhysical / (double)CapacityPolicy.GiB:0.0} / {memory.TotalPhysical / (double)CapacityPolicy.GiB:0.0} GiB free" : "Unavailable";
-            Commit = memory.IsValid ? $"{memory.CommitUsed / (double)CapacityPolicy.GiB:0.0} / {memory.CommitLimit / (double)CapacityPolicy.GiB:0.0} GiB used" : "Unavailable";
-            Cpu = memory.CpuPercent is { } percent ? $"{percent:0}%" : "Warming up";
-            Capacity=(projection.ForecastsKnown?capacity.Explanation+" ":"")+projection.Explanation;
-            RefreshNativeTrialFeatures();
-            PressureNotice=pressure.Explanation;RecordOverviewSample(snapshot,capacity,projection);
-            RefreshDiagnosticsView();
-            RefreshDestinationCapacity();
-            foreach(var account in Accounts) account.UpdateAuthorizationClock(DateTimeOffset.UtcNow);
-            SessionCount = snapshot.Sessions.Count; SampleTime = $"Updated {memory.ObservedUtc.LocalDateTime:T}";
-            ProcessInventoryStatus=snapshot.Problem is null && snapshot.ProcessInventoryComplete && snapshot.ProcessObservedUtc is { } at && at<=now.AddSeconds(1) && now-at<=RecentClientHistoryReducer.MaximumInventoryAge
-                ? $"Process inventory sampled {at.LocalDateTime:T} · complete scan. Account identity remains unverified."
-                : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
-            // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
-            bool clientRowsChanged=false;
-            for (int i = Sessions.Count - 1; i >= 0; i--) if (!snapshot.Sessions.Any(s => s.InstanceKey == Sessions[i].InstanceKey))
-            { Sessions[i].PropertyChanged-=SessionSelectionChanged; Sessions.RemoveAt(i);clientRowsChanged=true; }
-            foreach (var session in snapshot.Sessions)
-            {
-                int index = -1; for (int i = 0; i < Sessions.Count; i++) if (Sessions[i].InstanceKey == session.InstanceKey) { index = i; break; }
-                if (index < 0) { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;Sessions.Add(row);clientRowsChanged=true; } else Sessions[index].Update(session);
-            }
-            _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
-            // One registry snapshot per tick feeds both readers.
-            var evidence=_logProjection.EvidenceSnapshot(now);
-            RefreshLaunchEvidenceWith(evidence);
-            RecentClients.Observe(snapshot,evidence,now);
-            var logViews = _logProjection.Snapshot(now);
-            foreach (var row in Sessions)
-                row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
-                    ? log : SessionLogView.Unknown);
-            if (IsJoinGame) RefreshRecentlyPlayed();
-            if (SelectedSession is not null && !Sessions.Contains(SelectedSession)) SelectedSession = null;
-            if(clientRowsChanged) NotifyClientSelection();
-            RefreshTelemetryPresentation();
-        }, DispatcherPriority.Background, ct);
+        // The preview context follows every sample; the dashboard only when due. Both wait for the dispatcher outside this section.
+        Volatile.Write(ref _pendingSampleContext,snapshot);
+        if(PresentationDue(Volatile.Read(ref _activePerformance),forcePresentation || previousHold!=pressure.Held))
+            Volatile.Write(ref _pendingSamplePresentation,new SamplePresentation(snapshot,capacity,projection,pressure,now));
         }
         finally {_sampleSerial.Release();}
+        if(!forcePresentation) {ScheduleSampleUi();return;}
+        // A manual refresh waits for the newest presentation and surfaces its own failure through its command.
+        await _dispatcher.InvokeAsync(()=>ApplySampleUi(reportFault:false),DispatcherPriority.Background,ct);
+    }
+    // One coalesced dispatcher step at a time, as QueueChanged does. A busy UI skips intermediate samples, never the newest.
+    private void ScheduleSampleUi()
+    {
+        if(Interlocked.Exchange(ref _sampleUiScheduled,1)!=0 || Volatile.Read(ref _shuttingDown) || _dispatcher.HasShutdownStarted) return;
+        _dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>
+        {
+            Interlocked.Exchange(ref _sampleUiScheduled,0);
+            ApplySampleUi(reportFault:true);
+        }));
+    }
+    private void ApplySampleUi(bool reportFault)
+    {
+        var snapshot=Interlocked.Exchange(ref _pendingSampleContext,null);
+        var presentation=Interlocked.Exchange(ref _pendingSamplePresentation,null);
+        if(_shuttingDown) return;
+        // The sample, pressure and admission are already published. A display defect here must not end the safety
+        // sampler, so the loop's step reports it once and sampling continues.
+        try
+        {
+            if(snapshot is not null) ObserveClientPreviewContext(snapshot);
+            if(presentation is not null) PresentSample(presentation);
+        }
+        catch(Exception ex) when(reportFault) {ReportPresentationFault(ex);}
+    }
+    private void PresentSample(SamplePresentation sample)
+    {
+        // Resource headlines are the Overview projection's, which also checks freshness.
+        var (snapshot,capacity,projection,pressure,now)=sample;
+        Capacity=(projection.ForecastsKnown?capacity.Explanation+" ":"")+projection.Explanation;
+        RefreshNativeTrialFeatures();
+        PressureNotice=pressure.Explanation;RecordOverviewSample(snapshot,capacity,projection);
+        RefreshDiagnosticsView();
+        RefreshDestinationCapacity();
+        foreach(var account in Accounts) account.UpdateAuthorizationClock(DateTimeOffset.UtcNow);
+        ProcessInventoryStatus=snapshot.Problem is null && snapshot.ProcessInventoryComplete && snapshot.ProcessObservedUtc is { } at && at<=now.AddSeconds(1) && now-at<=RecentClientHistoryReducer.MaximumInventoryAge
+            ? $"Process inventory sampled {at.LocalDateTime:T} · complete scan. Account identity remains unverified."
+            : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
+        // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
+        bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
+        _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
+        // One registry snapshot per tick feeds both readers.
+        var evidence=_logProjection.EvidenceSnapshot(now);
+        RefreshLaunchEvidenceWith(evidence);
+        RecentClients.Observe(snapshot,evidence,now);
+        var logViews = _logProjection.Snapshot(now);
+        foreach (var row in Sessions)
+            row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
+                ? log : SessionLogView.Unknown);
+        if (IsJoinGame) RefreshRecentlyPlayed();
+        // Releases a departed row; in History its retained series stays viewable as an ended, last-known choice.
+        PresentHistoryChoices();
+        if(clientRowsChanged) NotifyClientSelection();
+        RefreshTelemetryPresentation();
+        _presentationFaulted=false;
+    }
+    // Dispatcher-thread only; created once so each presentation reuses its scratch sets and delegates.
+    private SessionRowReconciler? _sessionRows;
+    private SessionRow CreateSessionRow(SessionObservation session)
+    { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;return row; }
+    private void ReleaseSessionRow(SessionRow row)=>row.PropertyChanged-=SessionSelectionChanged;
+    private void ReportPresentationFault(Exception exception)
+    {
+        // Every fault reaches diagnostics (type only, Rule 10); the notice and event are latched until a presentation completes.
+        _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
+        if(_presentationFaulted) return;
+        _presentationFaulted=true;
+        Notice="The dashboard could not show the latest measurement. Monitoring and launch safety checks continue; restart Zenith Sessions if the display stays out of date.";
+        AddEvent($"Display update failed ({exception.GetType().Name}). Monitoring continues.");
     }
     private async Task SavePreferencesAsync()
     {
@@ -967,7 +1017,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopGroupChanges);
+        Step(_launchQueue.SignalPanic);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopGroupChanges);
         Step(CancelPerformanceTransfers);Step(CancelInstallationWork);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1040,6 +1090,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _shuttingDown=true;
         StopIdleLock();
         StopClientPriorityOperations();
+        StopClientTrimOperations();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
@@ -1069,6 +1120,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         BeginShutdown();
         await DisposeClientPriorityFeaturesAsync();
+        await DisposeClientMemoryTrimFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
@@ -1086,6 +1138,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(StopDirectoryFeaturesAsync);
         await StopOwnerAsync(()=>RecentClients.DisposeAsync());
         try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex,ManagerSubsystem.Previews);}
+        TrackOverviewFocusRow(); // _shuttingDown is set, so this releases the selected tile's subscription.
         await DisposeClientWindowFeaturesAsync();
         await _favoritesReloadTask;
         await StopOwnerAsync(()=>DestinationFavorites.DisposeAsync());

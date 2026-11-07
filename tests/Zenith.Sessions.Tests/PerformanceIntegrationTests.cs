@@ -140,12 +140,46 @@ public sealed partial class PerformanceIntegrationTests : IDisposable
         Assert.True(monitor.Calls>=3);Assert.Contains("healthy",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("waiting for coherent",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
     });
+    [Fact]
+    public Task SafetySamplingContinuesWhileTheDispatcherIsBusyAndDoesNotRestartRecovery()=>OnUi(async ()=>
+    {
+        var monitor=new FreshMonitor();await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,monitor);
+        await vm.InitializeAsync();
+        var healthyBy=DateTime.UtcNow.AddSeconds(5);
+        while(!vm.PressureNotice.Contains("healthy",StringComparison.OrdinalIgnoreCase) && DateTime.UtcNow<healthyBy) await Task.Delay(20);
+        Assert.Contains("healthy",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
+        monitor.Arm(2);
+        // Hold the dispatcher past the three-second continuity limit. The 1 Hz safety samples must not wait for it.
+        bool sampled=monitor.Sampled.Wait(TimeSpan.FromSeconds(5));
+        Assert.True(sampled,"No safety sample was taken while the dispatcher was busy.");
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;
+        Assert.Contains("healthy",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("coherent",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("recovering",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
+    });
+    // Each call is a new healthy measurement stamped now; once armed, the event is set after the given number of further calls.
+    private sealed class FreshMonitor : IDesktopMonitor, IDisposable
+    {
+        private int _calls,_target=int.MaxValue;
+        public ManualResetEventSlim Sampled {get;}=new(false);
+        public void Arm(int further)=>Volatile.Write(ref _target,Volatile.Read(ref _calls)+further);
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if(Interlocked.Increment(ref _calls)>=Volatile.Read(ref _target)) Sampled.Set();
+            return Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]));
+        }
+        public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
+        public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
+        public void Dispose()=>Sampled.Dispose(); // The shell disposes its monitor after the sampler has stopped.
+    }
     private sealed class FixedMonitor : IConfigurableDesktopMonitor
     {
         public DesktopSnapshot Snapshot=new(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]);
         public ManagerPerformancePolicy? Applied;public int Calls;
         public void ConfigurePerformance(ManagerPerformancePolicy policy)=>Applied=policy.Validated();
-        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) {ct.ThrowIfCancellationRequested();Calls++;return Task.FromResult(Snapshot);}
+        // The loop samples on the pool and Refresh on the dispatcher; the sampler serializes them, the count stays atomic.
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) {ct.ThrowIfCancellationRequested();Interlocked.Increment(ref Calls);return Task.FromResult(Snapshot);}
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
     }
