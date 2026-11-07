@@ -731,7 +731,21 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public void Inform(string message) => Notice = message;
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
     public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
+    // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
     private async Task DisposeCoreAsync()
+    {
+        try { await DisposeOwnersAsync(); }
+        catch(Exception ex) when(RecordShutdownFault(ex)) { } // Never entered: the filter records and the fault keeps propagating.
+        finally { _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); }
+        _lifetime.Dispose();
+    }
+    private bool RecordShutdownFault(Exception ex)
+    {
+        if(ex is not OperationCanceledException) _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+        return false;
+    }
+    private async Task DisposeOwnersAsync()
     {
         _shuttingDown=true;
         StopClientPriorityOperations();
@@ -775,7 +789,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(_signIn is IAsyncDisposable signInOwner) await signInOwner.DisposeAsync();
         _identityProjection.Dispose(); _vault.Dispose(); (_sessionClient as IDisposable)?.Dispose();
         (_accounts as IDisposable)?.Dispose(); (_monitor as IDisposable)?.Dispose(); _settingsStore.Dispose();_sampleSerial.Dispose();
-        _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); _lifetime.Dispose();
     }
     private async Task AuthorizeSelectedAsync(bool refresh)
     {

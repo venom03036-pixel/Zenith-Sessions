@@ -179,6 +179,25 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         foreach(string forbidden in new[]{Code[..^4],ShareCode,ShareUrl,"?code="})
         {Assert.DoesNotContain(forbidden,shown.ToString(),StringComparison.Ordinal);Assert.DoesNotContain(forbidden,written,StringComparison.Ordinal);}
     });
+    [Fact]
+    public Task ShutdownAndFaultAreJournaledWhenAnOwnerFailsDuringDispose()=>OnUi(async ()=>
+    {
+        var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor(),signIn:new FailingDisposeSignIn());
+        await vm.InitializeAsync();
+        // An owner whose cleanup cannot be confirmed fails exit the same way the launch queue's stop does.
+        await Assert.ThrowsAsync<InvalidOperationException>(()=>vm.DisposeAsync().AsTask());
+        string[] lines=(await File.ReadAllLinesAsync(Path.Combine(Data,"diagnostics","manager.jsonl"))).Where(l=>l.Length>0).ToArray();
+        Assert.True(lines.Length>=2,"The journal has no shutdown entries.");
+        using var fault=JsonDocument.Parse(lines[^2]);using var shutdown=JsonDocument.Parse(lines[^1]);
+        Assert.Equal("OperationFailed",fault.RootElement.GetProperty("Kind").GetString());
+        Assert.Equal("InvalidOperationException",fault.RootElement.GetProperty("ErrorType").GetString());
+        Assert.Equal("Shutdown",shutdown.RootElement.GetProperty("Kind").GetString());
+    });
+    private sealed class FailingDisposeSignIn : IRobloxSessionSignIn,IAsyncDisposable
+    {
+        public Task<RobloxSessionCredential> SignInAsync(Guid profileId,CancellationToken ct)=>throw new NotSupportedException("No sign-in expected.");
+        public ValueTask DisposeAsync()=>ValueTask.FromException(new InvalidOperationException("synthetic owner cleanup could not be confirmed"));
+    }
     private sealed class ShareClient(string code,string link) : IRobloxShareLinkClient
     {
         public int Calls;
