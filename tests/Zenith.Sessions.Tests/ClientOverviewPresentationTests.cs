@@ -346,6 +346,62 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.False(shell.CanStartWindowsOverview);Assert.False(shell.CanFocusOverviewClient);Assert.Equal(0,provider.CaptureCalls);
     });
 
+    [Fact]
+    public Task OverviewTileRaisesNothingWhenOnlyMeasurementsChange()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>true,clock:clock);
+        vm.ObserveInventory(Inventory(clock,1));await Until(()=>vm.OverviewRows.Count==1);
+        var raised=new List<string?>();vm.OverviewRows[0].PropertyChanged+=(_,args)=>raised.Add(args.PropertyName);
+        int applied=0;vm.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) applied++;};
+        clock.Advance(TimeSpan.FromSeconds(1));var next=Inventory(clock,1,2);
+        // Same exact process and window: only the per-sample time, memory and CPU readings moved.
+        vm.ObserveInventory(next with {Sessions=new[]{next.Sessions[0] with {WorkingSetBytes=7,PrivateCommitBytes=9,CpuPercent=42}}});
+        await Until(()=>applied>0);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.DoesNotContain(nameof(ClientOverviewRow.CanFocus),raised);Assert.DoesNotContain(nameof(ClientOverviewRow.CaptureTarget),raised);
+        Assert.DoesNotContain(nameof(ClientOverviewRow.AutomationName),raised);
+        // Focus still pins the newest observation even though nothing was announced.
+        Assert.True(vm.OverviewRows[0].CanFocus);Assert.Equal(clock.GetUtcNow(),vm.OverviewRows[0].Observation.ObservedUtc);
+    });
+
+    [Fact]
+    public Task UnavailableTileKeepsItsOwnReasonWhilePreviewsAreOff()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>false,clock:clock);
+        var statuses=new List<string>();int applied=0;
+        vm.OverviewRows.CollectionChanged+=(_,args)=>
+        {if(args.NewItems is { } added) foreach(ClientOverviewRow row in added) row.PropertyChanged+=(_,change)=>{if(change.PropertyName==nameof(ClientOverviewRow.Status)) statuses.Add(row.Status);};};
+        vm.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) applied++;};
+        var first=Inventory(clock,1);vm.ObserveInventory(first with {Sessions=new[]{first.Sessions[0] with {Minimized=true}}});
+        await Until(()=>applied==1);
+        clock.Advance(TimeSpan.FromSeconds(1));var next=Inventory(clock,1,2);
+        vm.ObserveInventory(next with {Sessions=new[]{next.Sessions[0] with {Minimized=true}}});
+        await Until(()=>applied==2);await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        // A minimized tile announces its reason once; "previews are off" must not flip it every sample.
+        Assert.Equal(new[]{"Client is minimized; no current image is available."},statuses);
+        Assert.Equal(0,provider.CaptureCalls);
+    });
+
+    [Theory]
+    [InlineData("tab")] [InlineData("hide")] [InlineData("lock")]
+    public Task HiddenWindowsRosterWaitsForTheNextShowInsteadOfReconcilingEverySample(string context)=>OnUi(async()=>
+    {
+        var provider=new PreviewProvider();var monitor=new DesktopMonitor(2);
+        await using var shell=await Ready(monitor,provider);shell.SetPreviewWindowVisible(true);shell.ShowWindowsOverview.Execute(null);
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);
+        switch(context) {case "tab":shell.Navigate.Execute("Sessions");break;case "hide":shell.SetPreviewWindowVisible(false);break;default:shell.LockDashboard();break;}
+        int reconciled=0;shell.ClientPreviews.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(ClientPreviewsViewModel.InventoryStatus)) reconciled++;};
+        monitor.Processes=Enumerable.Range(1,3).Select(pid=>new SessionObservation(pid,new DateTime(2026,1,1).Ticks,"Synthetic",pid+100,"Synthetic",false,true,1,1,0,DateTimeOffset.UtcNow)).ToArray();
+        await Refresh(shell);await Refresh(shell);
+        // Proving absence needs a bounded settle; an awake presenter reconciles within milliseconds.
+        for(int i=0;i<20 && reconciled==0;i++) {await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);await Task.Delay(10);}
+        Assert.Equal(0,reconciled);Assert.Equal(2,shell.ClientPreviews.OverviewRows.Count);
+        switch(context) {case "tab":shell.ShowWindowsOverview.Execute(null);break;case "hide":shell.SetPreviewWindowVisible(true);break;default:shell.Unlock.Execute(null);break;}
+        // Showing the roster again applies the newest pending inventory straight away, without another sample.
+        await Until(()=>shell.ClientPreviews.OverviewRows.Count==3);Assert.Equal(0,provider.CaptureCalls);
+    });
+
     private sealed class OverviewFocusMonitor:IDesktopMonitor
     {
         private long _revision;

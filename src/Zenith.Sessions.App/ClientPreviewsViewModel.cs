@@ -230,7 +230,14 @@ public sealed partial class ClientPreviewsViewModel : Observable,IAsyncDisposabl
                         foreach(var row in Rows)
                             if(row.ImageTime is { } at && (!Fresh(at)||!_canUse())) row.Clear("Old image removed. Waiting for a fresh window image.");
                         foreach(var row in OverviewRows)
-                        {if(!_canUse()) row.Clear("Overview previews are off.");else row.UpdateClock(_clock.GetUtcNow());if(epoch!=Volatile.Read(ref _presentationEpoch)) return;}
+                        {
+                            // A tile that cannot capture already shows its own reason (minimized, hidden,
+                            // last-known); only drop its pixels, so its status never flips each sample.
+                            if(_canUse()) row.UpdateClock(_clock.GetUtcNow());
+                            else if(row.CanCapture) row.Clear("Overview previews are off.");
+                            else if(row.HasImage) row.Clear(row.UnavailableStatus());
+                            if(epoch!=Volatile.Read(ref _presentationEpoch)) return;
+                        }
                     }
                 },DispatcherPriority.Background,ct).Task.ConfigureAwait(false);
                 var current=_coordinator.GetSnapshot();

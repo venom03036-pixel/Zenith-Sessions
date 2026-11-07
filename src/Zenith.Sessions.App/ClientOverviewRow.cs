@@ -39,7 +39,12 @@ public sealed class ClientOverviewRow : Observable
     internal bool SameIdentity(SessionObservation value)=>ProcessId==value.ProcessId && ProcessStartUtcTicks==value.ProcessStartUtcTicks && Window==value.Window;
     internal void Observe(SessionObservation observation,bool current)
     {
-        bool changed=_observation!=observation || _current!=current;
+        // Every sample re-reads time, memory and CPU. Those keep the pinned focus observation current
+        // but feed no tile binding, so only identity, window state, problem and currency notify.
+        var prior=_observation;
+        bool changed=_current!=current || prior.ProcessId!=observation.ProcessId || prior.ProcessStartUtcTicks!=observation.ProcessStartUtcTicks
+            || prior.Window!=observation.Window || prior.Minimized!=observation.Minimized || prior.Visible!=observation.Visible
+            || prior.Problem!=observation.Problem;
         _observation=observation;_current=current;
         if(!CanCapture) Clear(UnavailableStatus());
         if(changed) {Raise(nameof(CaptureTarget));Raise(nameof(CanFocus));Raise(nameof(AutomationName));}

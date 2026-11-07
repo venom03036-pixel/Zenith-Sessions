@@ -12,6 +12,8 @@ public sealed partial class ClientPreviewsViewModel
     private bool _isOverview;
     private long _presentationEpoch;
     private long _overviewLeaseUtcTicks;
+    // The shell reports whether anyone can see the Windows-page roster. Standalone use stays visible.
+    private volatile bool _rosterVisible=true;
     private string _inventoryStatus="Waiting for a process inventory.",_refreshSummary="Previews are off; all observed clients remain listed.";
     private readonly Dictionary<ClientPreviewTarget,PreparedImage> _images=[];
     public ObservableCollection<ClientOverviewRow> OverviewRows {get;}=[];
@@ -36,7 +38,17 @@ public sealed partial class ClientPreviewsViewModel
                 || Volatile.Read(ref _overviewInventory) is { } shown && OlderInventory(owned,shown)) return;
             Interlocked.Exchange(ref _pendingInventory,owned);
         }
-        Wake();
+        // A hidden roster keeps only the newest inventory pending; SetRosterVisible applies it on show.
+        if(_rosterVisible) Wake();
+    }
+    /// <summary>
+    /// Whether the observed tile roster is on screen. While hidden, samples replace one pending
+    /// inventory instead of waking the presenter; becoming visible wakes it once to apply the newest.
+    /// </summary>
+    public void SetRosterVisible(bool visible)
+    {
+        bool was=_rosterVisible;_rosterVisible=visible;
+        if(visible && !was) Wake();
     }
     public void StartOverview(DateTimeOffset eligibilityExpiresUtc)
     {
@@ -62,6 +74,9 @@ public sealed partial class ClientPreviewsViewModel
     private ClientPreviewTarget[] OverviewTargets()=>OverviewRows.Where(row=>row.CanCapture).Select(row=>row.CaptureTarget!).ToArray();
     private void ApplyOverviewInventory()
     {
+        // Other wakes (pinned previews on the Sessions page, Fence) must not reconcile a hidden roster.
+        // An overview cannot run while hidden: the shell fences it and _canUse() is false.
+        if(!_rosterVisible) return;
         var incoming=Interlocked.Exchange(ref _pendingInventory,null);
         var now=_clock.GetUtcNow();
         if(incoming is not null)

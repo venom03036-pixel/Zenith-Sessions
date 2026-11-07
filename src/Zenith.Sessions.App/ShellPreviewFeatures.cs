@@ -24,11 +24,14 @@ public sealed partial class ShellViewModel
     public bool CanStartWindowsOverview=>_clientPreviewAllowed && IsWindows && ClientPreviews.IsAvailable && FreshPreviewResources();
     public bool CanFocusOverviewClient=>_ready && !_shuttingDown && !IsLocked && !IsSample && IsWindows && _clientPreviewWindowVisible
         && ClientPreviews.SelectedOverviewRow is {CanFocus:true};
+    // The lock screen covers the page, so a locked dashboard has no visible roster either.
+    private bool OverviewRosterVisible=>IsWindows && _clientPreviewWindowVisible && !IsLocked;
 
     private void InitializeClientPreviews(IClientPreviewProvider? provider)
     {
         ClientPreviews=new(provider??new WindowsClientPreviewProvider(),_dispatcher,()=>_clientPreviewAllowed,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+        ClientPreviews.SetRosterVisible(OverviewRosterVisible);
         ClientPreviews.PropertyChanged+=(_,args)=>
         {if(args.PropertyName==nameof(ClientPreviewsViewModel.IsAvailable)) {Raise(nameof(CanStartClientPreviews));Raise(nameof(CanStartWindowsOverview));}
             if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) Raise(nameof(CanFocusOverviewClient));};
@@ -76,6 +79,8 @@ public sealed partial class ShellViewModel
         _clientPreviewAllowed=_ready && !_shuttingDown && !IsLocked && !IsSample && (IsWindows || IsSessions && _clientPreviewMode)
             && _clientPreviewWindowVisible && FreshPreviewResources();
         if(wasAllowed && (!_clientPreviewAllowed || changedPage)) ClientPreviews?.Fence("Previews are off while hidden, locked, outside this page or waiting for healthy resources. Start again when ready.");
+        // The tile roster is reconciled only while someone can see it; showing it again applies the newest sample.
+        ClientPreviews?.SetRosterVisible(OverviewRosterVisible);
         if(!CanFocusOverviewClient) CancelOverviewFocus();
         Raise(nameof(CanStartClientPreviews));
         Raise(nameof(CanStartWindowsOverview));Raise(nameof(CanFocusOverviewClient));
