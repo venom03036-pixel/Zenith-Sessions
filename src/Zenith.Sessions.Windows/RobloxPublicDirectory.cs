@@ -257,13 +257,14 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         return true;
     }
 
+    // A non-null jsonBody turns the request into an anonymous POST; it takes the same slot, pause and bounded read.
     private async Task<PublicDirectoryResult<T>> ReadJsonAsync<T>(Uri uri, Func<JsonElement, PublicDirectoryResult<T>> parse,
-        CancellationToken ct, bool restrictedIsUnknown = false) where T : class
+        CancellationToken ct, bool restrictedIsUnknown = false, byte[]? jsonBody = null) where T : class
     {
         if (!TryStart<T>(uri, null, out var unavailable)) return unavailable!;
         try
         {
-            using var response = await SendAsync(uri, "application/json", ct).ConfigureAwait(false);
+            using var response = await SendAsync(uri, "application/json", ct, jsonBody).ConfigureAwait(false);
             if (StatusResult<T>(response, uri, restrictedIsUnknown) is { } failure) return failure;
             string? mediaType = response.Content.Headers.ContentType?.MediaType;
             if (mediaType is not "application/json" and not "text/json") return Failure<T>("Roblox returned an unsupported public directory response.");
@@ -316,9 +317,15 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         lock (_gate) { _activeRequests--; if (imageKey is { } key) _inFlightImages.Remove(key); }
     }
 
-    private async Task<HttpResponseMessage> SendAsync(Uri uri, string accept, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendAsync(Uri uri, string accept, CancellationToken ct, byte[]? jsonBody = null)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, uri);
+        // The request owns its body content and disposes it with the request.
+        using var request = new HttpRequestMessage(jsonBody is null ? HttpMethod.Get : HttpMethod.Post, uri);
+        if (jsonBody is not null)
+        {
+            request.Content = new ByteArrayContent(jsonBody);
+            request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
+        }
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue(accept));
         return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);
     }
