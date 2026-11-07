@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Compiles and packages the public, shippable release of Zenith Macros
     without developer privileges (clean Free tier default, no admin bypass).

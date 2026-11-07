@@ -17,8 +17,9 @@ if ($RunNativeProbe) {
     $start.CreateNoWindow = $true
     $start.RedirectStandardOutput = $true
     $start.RedirectStandardError = $true
-    $start.ArgumentList.Add('--output')
-    $start.ArgumentList.Add($nativeReport)
+    # Under Windows PowerShell 5.1 (.NET Framework) ProcessStartInfo has no ArgumentList. A Windows path cannot contain a quote,
+    # and this one ends in a file name rather than a backslash, so plain quoting reaches the probe unchanged.
+    $start.Arguments = '--output "' + $nativeReport + '"'
     $launchedUtc = [DateTime]::UtcNow
     $probe = [System.Diagnostics.Process]::Start($start)
     try {

@@ -3,6 +3,7 @@ using System.IO;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Xunit;
 
 namespace Zenith.Sessions.Tests;
@@ -69,6 +70,33 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         Assert.Contains(" owned-experience server checks.",text,StringComparison.Ordinal);
         Assert.Contains("PASS ",run.Output,StringComparison.Ordinal);
         Assert.False(Directory.Exists(Path.Combine(processDirectory,"bridge-output")),"The runner resolved the relative output folder against the process directory instead of the shell location.");
+    }
+
+    [Fact]
+    public void ScriptsAvoidWhatWindowsPowerShell51CannotRun()
+    {
+        // Windows PowerShell 5.1 runs on .NET Framework 4.x, which lacks these .NET Core members, and it reads a script that has no
+        // UTF-8 byte-order mark in the ANSI code page, so any non-ASCII text in such a script reaches its output as mojibake.
+        var missingFromNetFramework=new (string Api,Regex Use)[]
+        {
+            ("ProcessStartInfo.ArgumentList",new Regex(@"\.ArgumentList\b")),
+            ("Path.GetRelativePath",new Regex(@"\bGetRelativePath\s*\(")),
+            ("String.Contains(string, StringComparison)",new Regex(@"\.Contains\s*\([^)]*StringComparison\]")),
+            ("-Encoding utf8NoBOM/utf8BOM",new Regex(@"-Encoding\s+['""]?utf8(No)?BOM\b",RegexOptions.IgnoreCase)),
+        };
+        var problems=new List<string>();
+        foreach(string path in Directory.EnumerateFiles(Path.Combine(RepositoryRoot,"scripts"),"*.ps1").Order(StringComparer.Ordinal))
+        {
+            byte[] bytes=File.ReadAllBytes(path);
+            bool bom=bytes.AsSpan().StartsWith(new byte[]{0xEF,0xBB,0xBF});
+            string text=Encoding.UTF8.GetString(bytes,bom?3:0,bytes.Length-(bom?3:0)),name=Path.GetFileName(path);
+            // A script that declares PowerShell 7 stops at once with a clear message instead of failing part-way.
+            if(Regex.IsMatch(text,@"^#Requires\s+-Version\s+([6-9]|\d\d)",RegexOptions.IgnoreCase|RegexOptions.Multiline))continue;
+            foreach(var (api,use) in missingFromNetFramework)
+                foreach(Match match in use.Matches(text))problems.Add($"{name}:{text.AsSpan(0,match.Index).Count('\n')+1} uses {api}");
+            if(!bom&&bytes.Any(value=>value>0x7F))problems.Add($"{name} has non-ASCII text but no UTF-8 byte-order mark");
+        }
+        Assert.True(problems.Count==0,"Windows PowerShell 5.1 cannot run these scripts as written:"+Environment.NewLine+string.Join(Environment.NewLine,problems));
     }
 
     internal static async Task<(int ExitCode,string Output,string Errors)> RunWindowsPowerShell(string workingDirectory,IReadOnlyDictionary<string,string> environment,params string[] arguments)

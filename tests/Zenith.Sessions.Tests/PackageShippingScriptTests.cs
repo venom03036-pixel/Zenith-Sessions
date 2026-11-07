@@ -28,7 +28,11 @@ public sealed class PackageShippingScriptTests : IDisposable
         string package="ZenithMacros-v"+AppVersion,zip=package+"-win-x64.zip";
         Assert.Equal(new[]{package,zip},Directory.GetFileSystemEntries(Dist).Select(Path.GetFileName).Order(StringComparer.Ordinal).ToArray());
         Assert.Contains("-p:Version="+AppVersion,await File.ReadAllTextAsync(PublishLog),StringComparison.Ordinal);
-        Assert.Contains("(Version "+AppVersion+")",await File.ReadAllTextAsync(Path.Combine(Dist,package,"README.txt")),StringComparison.Ordinal);
+        string readme=await File.ReadAllTextAsync(Path.Combine(Dist,package,"README.txt"));
+        Assert.Contains("(Version "+AppVersion+")",readme,StringComparison.Ordinal);
+        // Windows PowerShell 5.1 reads a script without a UTF-8 byte-order mark as ANSI; the heading dash and key arrows must survive.
+        Assert.Contains("ZENITH MACROS "+(char)0x2014+" AUTOMATION SUITE",readme,StringComparison.Ordinal);
+        Assert.Contains((char)0x2191+" (Up)",readme,StringComparison.Ordinal);
         Assert.Equal("new build",(await File.ReadAllTextAsync(Path.Combine(Dist,package,"MacroSuite.App.exe"))).Trim());
         using var archive=ZipFile.OpenRead(Path.Combine(Dist,zip));
         Assert.Contains(archive.Entries,entry=>entry.FullName=="MacroSuite.App.exe");
