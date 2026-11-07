@@ -568,7 +568,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)=>OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows));
     private async Task DeleteAccountsCoreAsync(IReadOnlyList<AccountRow> rows)
     {
-        _launchQueue.SignalPanic();
+        string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a profile was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
         if(QueueReady)
         {
             foreach(var row in rows)await _launchQueue.InvalidateAuthorizationAsync(row.Profile.Id,_lifetime.Token);
@@ -578,7 +578,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
-        Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}"; AddEvent("Selected profiles removed.");
+        Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}{queueStopped}"; AddEvent("Selected profiles removed.");
         _diagnostics.Record(ManagerEventKind.ProfilesRemoved);
     }
     public Task ExportAsync(string path)=>OwnProfileOperation(()=>ExportCoreAsync(path));
@@ -867,13 +867,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         if(IsLocked || SelectedAccount is not { } selected) return;
         _preserveStopNotice=false;
-        _launchQueue.SignalPanic();
+        string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a saved sign-in was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
         if(QueueReady) await _launchQueue.InvalidateAuthorizationAsync(selected.Profile.Id,_lifetime.Token);
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution);
         await Task.Run(()=>_linkService.DisconnectAsync(selected.Profile.Id,_lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token);
-        if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices.";
+        if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices."+queueStopped;
         _diagnostics.Record(ManagerEventKind.AuthorizationDisconnected);
     }
     private async Task CleanupCredentialsAsync()
