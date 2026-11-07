@@ -141,6 +141,34 @@ public sealed class ViewModelTests : IDisposable
         Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }));
     }
     [Fact]
+    public async Task AnAliasOfTheOwnersDataFolderCannotStartASecondOwner()
+    {
+        string library=Path.Combine(_root,"library"),alias=Path.Combine(_root,"alias"); Directory.CreateDirectory(library);
+        await CreateJunctionAsync(alias,library);
+        try
+        {
+            using var owner=new SingleInstanceCoordinator(library); Assert.True(owner.IsOwner);
+            // GetFullPath leaves "\\?\" text as it is and does not follow junctions, so path text alone would give each spelling its own mutex.
+            foreach(string spelling in new[]{@"\\?\"+library,alias,library.ToUpperInvariant()})
+                Assert.False(OnOwnThread(()=> { using var second=new SingleInstanceCoordinator(spelling); return second.IsOwner; }),
+                    "Another spelling of the owner's data folder became a second owner.");
+        }
+        finally { if(Directory.Exists(alias)) Directory.Delete(alias,false); }
+    }
+    [Fact]
+    public void ALaunchThatCannotTakeTheLibraryLockIsNotTheOwnerAndLeavesNoPhantomOwner()
+    {
+        Directory.CreateDirectory(_root);
+        // Stands in for an owner the mutex cannot see: a spelling no canonical form unifies (\\localhost\C$) or another sign-in session.
+        var other=new FileStream(Path.Combine(_root,"instance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        using var blocked=new SingleInstanceCoordinator(_root);
+        try { Assert.False(blocked.IsOwner,"A launch became the owner while another process held the library lock."); }
+        finally { other.Dispose(); }
+        // blocked is still alive on this thread, so a mutex it kept would refuse this next launch.
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The refused launch kept the instance mutex, so the next launch could not open.");
+    }
+    [Fact]
     public Task RestoreListenerSurvivesAFailedRestoreAndStopsCleanly()=>OnDispatcherAsync(async ()=>
     {
         using var owner=new SingleInstanceCoordinator(_root);
@@ -268,6 +296,26 @@ public sealed class ViewModelTests : IDisposable
         Assert.Equal(Path.GetFullPath(_root),options.DataRoot); Assert.True(options.SampleProfiles);
     }
     [Fact]
+    public async Task TestModesRejectAnAliasOfThePersonalLibrary()
+    {
+        // A temporary folder stands in for %LOCALAPPDATA%\ZenithSessions\Personal.
+        string personal=Path.Combine(_root,"personal"),alias=Path.Combine(_root,"alias"),samples=Path.Combine(_root,"samples");
+        Directory.CreateDirectory(personal);
+        Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",@"\\?\"+personal,"--sample-profiles"],personal));
+        Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",@"\\?\"+samples],personal));
+        await CreateJunctionAsync(alias,personal);
+        try
+        {
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",alias,"--sample-profiles"],personal));
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",alias,"--self-check"],personal));
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",personal.ToUpperInvariant()+"\\","--sample-profiles"],personal));
+        }
+        finally { if(Directory.Exists(alias)) Directory.Delete(alias,false); }
+        var options=StartupOptions.Parse(["--data-root",samples,"--sample-profiles"],personal);
+        Assert.Equal(samples,options.DataRoot); Assert.True(options.SampleProfiles);
+        Assert.Equal(personal,StartupOptions.Parse([],personal).DataRoot);
+    }
+    [Fact]
     public void AuthorizationRowsExpireWithoutKeepingTokensOrReloadingTheVault()
     {
         var row=new AccountRow(AccountProfile.Create("A")); var now=DateTimeOffset.UtcNow;
@@ -355,6 +403,19 @@ public sealed class ViewModelTests : IDisposable
         T? value=default; System.Runtime.ExceptionServices.ExceptionDispatchInfo? error=null;
         var thread=new Thread(()=> { try { value=create(); } catch(Exception ex) { error=System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); } });
         thread.Start(); thread.Join(); error?.Throw(); return value!;
+    }
+    // A real directory junction (no elevation needed) built from literal synthetic paths inside this test's folder.
+    private static async Task CreateJunctionAsync(string link,string target)
+    {
+        static string Quote(string path)=>"'"+path.Replace("'","''")+"'";
+        string script="$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path "+Quote(link)+" -Target "+Quote(target)+" | Out-Null";
+        var start=new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32/WindowsPowerShell/v1.0/powershell.exe")) { UseShellExecute=false,CreateNoWindow=true };
+        start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-NonInteractive"); start.ArgumentList.Add("-EncodedCommand");
+        start.ArgumentList.Add(Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)));
+        using var process=System.Diagnostics.Process.Start(start)!;
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try { await process.WaitForExitAsync(deadline.Token); Assert.Equal(0,process.ExitCode); }
+        finally { if(!process.HasExited) { process.Kill(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } }
     }
     private static Task OnDispatcherAsync(Func<Task> work)
     {

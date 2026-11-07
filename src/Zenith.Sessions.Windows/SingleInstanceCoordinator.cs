@@ -24,19 +24,49 @@ public sealed class SingleInstanceCoordinator : IDisposable
     public bool IsListenerFaulted => _listenerFaulted;
     internal string PipeName => _pipe;
     internal string MutexName => "Local\\" + _pipe;
+    /// <summary>Held open without sharing by the owner for its whole life, so one data folder has one manager whatever its path spelling.</summary>
+    public const string InstanceLockFileName = "instance.lock";
+    private readonly FileStream? _instanceLock;
+    /// <summary>Creates the data folder if needed. Throws an I/O or access error when the folder cannot be created, identified or locked.</summary>
     public SingleInstanceCoordinator(string root)
     {
         using var identity = WindowsIdentity.GetCurrent();
-        string scope = (identity.User?.Value ?? throw new InvalidOperationException("Windows identity is unavailable.")) + "|" + Path.GetFullPath(root).TrimEnd('\\').ToUpperInvariant();
+        string user = identity.User?.Value ?? throw new InvalidOperationException("Windows identity is unavailable.");
+        // The folder's identity, not its path text: "\\?\", subst-drive, 8.3 and junction spellings of one data folder
+        // share one mutex and restore pipe. The folder exists first so every spelling resolves all the way down.
+        Directory.CreateDirectory(root);
+        string scope = user + "|" + DirectoryIdentity.Canonical(root).TrimEnd('\\').ToUpperInvariant();
         _pipe = "ZenithSessions." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(scope)))[..24];
         // Ownership means acquiring the mutex, not creating it: a lingering second launch (for example its "already
         // starting" box) keeps the named object alive after the owner exits, and "created" would then refuse every launch.
         // Ownership is held by the constructing thread, which must also run Dispose (EntryPoint's Main thread does both).
         _mutex = new Mutex(initiallyOwned:false, MutexName);
-        try { IsOwner = _mutex.WaitOne(0); }
+        bool acquired;
+        try { acquired = _mutex.WaitOne(0); }
         // The previous owner ended without releasing (a crash); Windows hands ownership to this thread, so this launch opens.
-        catch (AbandonedMutexException) { IsOwner = true; }
+        catch (AbandonedMutexException) { acquired = true; }
+        if (!acquired) return;
+        // The folder lock backs the mutex up for what it cannot see: a share spelling such as \\localhost\C$ that has no
+        // common final path, or the same folder opened from another sign-in session. Without it this launch is not the owner,
+        // and the mutex is released at once so it never stands in for a phantom owner.
+        bool completed = false;
+        try { _instanceLock = TryLockFolder(root); IsOwner = _instanceLock is not null; completed = true; }
+        finally { if (!IsOwner) { _mutex.ReleaseMutex(); if (!completed) { _mutex.Dispose(); _lifetime.Dispose(); } } }
     }
+    private static FileStream? TryLockFolder(string root)
+    {
+        string path = Path.Combine(root, InstanceLockFileName);
+        FileAttributes attributes = 0;
+        try { attributes = File.GetAttributes(path); }
+        catch (FileNotFoundException) { /* The first launch on this folder: the lock file is created below. */ }
+        // A link would move the lock somewhere else and create a file there.
+        if ((attributes & FileAttributes.ReparsePoint) != 0)
+            throw new IOException("The data folder's instance lock is a filesystem link. Remove the link, then start Zenith Sessions again.");
+        try { return new FileStream(path, FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None, 1); }
+        // Another process holds the lock: another manager already owns this folder.
+        catch (IOException ex) when (ex.HResult is SharingViolation or LockViolation) { return null; }
+    }
+    private const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
     public void Listen(Func<CancellationToken, Task> restore)
     { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _lastListenerFault = null; _listenerFaulted = false; _server = ListenAsync(restore, _lifetime.Token); }
     private async Task ListenAsync(Func<CancellationToken, Task> restore, CancellationToken ct)
@@ -91,7 +121,12 @@ public sealed class SingleInstanceCoordinator : IDisposable
         _lifetime.Cancel();
         if (!_server.IsCompleted) throw new InvalidOperationException("Stop the restore listener before disposing its owner.");
         _disposed = true;
-        try { if (IsOwner) _mutex.ReleaseMutex(); }
-        finally { _mutex.Dispose(); _lifetime.Dispose(); }
+        // The folder lock goes first, so a launch that then gets the mutex can also take the lock.
+        try { _instanceLock?.Dispose(); }
+        finally
+        {
+            try { if (IsOwner) _mutex.ReleaseMutex(); }
+            finally { _mutex.Dispose(); _lifetime.Dispose(); }
+        }
     }
 }
