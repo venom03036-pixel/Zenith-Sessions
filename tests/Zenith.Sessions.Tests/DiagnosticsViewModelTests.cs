@@ -98,6 +98,22 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
     });
     [Fact]
+    public Task ExportFailureInTheChosenReportFolderDoesNotBlameTheDataFolder()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        try {vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;}
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+        Assert.DoesNotContain("data folder",vm.Notice);Assert.Contains("chosen folder",vm.Notice);Assert.DoesNotContain(folder,vm.Notice,StringComparison.OrdinalIgnoreCase);
+        // A chosen folder that no longer exists is named as such, still without its path, and is not recreated.
+        string gone=Path.Combine(_root,"gone");
+        vm.ExportDiagnostics.Execute(Path.Combine(gone,"report.json"));await vm.ExportDiagnostics.Execution;
+        Assert.DoesNotContain("data folder",vm.Notice);Assert.Contains("chosen folder",vm.Notice);Assert.DoesNotContain(gone,vm.Notice,StringComparison.OrdinalIgnoreCase);
+        Assert.False(Directory.Exists(gone));
+    });
+    [Fact]
     public Task StartupFailureDoesNotLeaveDiagnosticsStartingOrClaimALiveView()=>OnUi(async ()=>
     {
         Directory.CreateDirectory(Data);await File.WriteAllTextAsync(Path.Combine(Data,"settings.json"),"damaged settings");

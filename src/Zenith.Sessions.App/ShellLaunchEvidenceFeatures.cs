@@ -197,7 +197,7 @@ public sealed partial class ShellViewModel
             await Task.Run(()=>
             {
                 byte[] bytes=Encoding.UTF8.GetBytes(report);if(bytes.Length>65536)throw new InvalidDataException("The launch evidence report exceeds its size limit.");
-                return ExplicitReportFile.WriteAsync(path,bytes,candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),stop.Token);
+                return ExplicitReportFile.WriteReportAsync(path,bytes,dataRoot,applicationRoot,stop.Token);
             },stop.Token);
             if(epoch==Interlocked.Read(ref _nativeTrialEpoch)&&!IsLocked&&!_shuttingDown)Notice="Launch evidence saved. It contains player/place/server IDs and timestamps; no credentials, raw logs or executable paths.";
         }

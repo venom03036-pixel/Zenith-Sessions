@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using System.IO;
 
 namespace Zenith.Sessions.Windows;
@@ -39,6 +40,22 @@ public static class ExplicitReportFile
         finally {if(File.Exists(temporary)) File.Delete(temporary);}
     }
 
+    /// <summary>
+    /// Writes a report the user chose outside the app and its data folder. Path rules still throw
+    /// <see cref="ArgumentException"/> and cancellation still throws <see cref="OperationCanceledException"/>;
+    /// a disk, permission or folder failure becomes a <see cref="ReportFileException"/> that names the chosen folder.
+    /// </summary>
+    public static async Task WriteReportAsync(string path,byte[] bytes,string dataRoot,string applicationRoot,CancellationToken ct)
+    {
+        try {await WriteAsync(path,bytes,candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),ct).ConfigureAwait(false);}
+        catch(Exception error) when(error is IOException or UnauthorizedAccessException or Win32Exception) {throw new ReportFileException(error);}
+    }
+
     // 32 sharing violation, 33 lock violation, 1175 ERROR_UNABLE_TO_REMOVE_REPLACED.
     private static bool IsTransientSharingFailure(IOException ex)=>(ex.HResult&0xffff) is 32 or 33 or 1175;
 }
+
+/// <summary>A chosen report could not be written. The message never contains a path; the cause stays as the inner exception.</summary>
+public sealed class ReportFileException(Exception cause) : IOException(cause is DirectoryNotFoundException
+    ? "The chosen folder is no longer available. Choose an existing folder, then retry. Existing files were kept."
+    : "The report could not be saved in the chosen folder. Close programs using that file, check that folder's permissions, then retry. Existing files were kept.",cause);

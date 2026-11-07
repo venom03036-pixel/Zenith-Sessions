@@ -720,7 +720,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public void Fail(Exception exception)
     {
         Notice = exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
-            :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException ? exception.Message
+            :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException or ReportFileException ? exception.Message
             : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.";
         AddEvent($"Operation failed ({exception.GetType().Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());

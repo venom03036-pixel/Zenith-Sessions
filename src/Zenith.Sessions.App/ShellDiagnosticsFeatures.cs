@@ -77,8 +77,7 @@ public sealed partial class ShellViewModel
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_diagnosticExportStop=stop;
         try
         {
-            await Task.Run(()=>ExplicitReportFile.WriteAsync(path,Encoding.UTF8.GetBytes(report),
-                candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),stop.Token),stop.Token);
+            await Task.Run(()=>ExplicitReportFile.WriteReportAsync(path,Encoding.UTF8.GetBytes(report),dataRoot,applicationRoot,stop.Token),stop.Token);
             // Panic, Lock and shutdown own the notice once they land; a write that already committed stays on disk silently.
             if(!stop.IsCancellationRequested && !IsLocked && !_shuttingDown)
                 Notice="Redacted diagnostic report saved. No account names, credentials, game links, paths or raw exception messages were included.";
