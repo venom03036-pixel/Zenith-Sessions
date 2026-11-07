@@ -6,7 +6,9 @@ public enum RobloxDestinationStatus { Resolved, Unresolved, Invalid }
 public enum RobloxDestinationKind
 {
     Place, ServerInstance, UnresolvedShareLink, UnresolvedPrivateServer,
-    UnresolvedReservedServer, UnresolvedFollowUser, UnresolvedUnknownLink, Invalid
+    UnresolvedReservedServer, UnresolvedFollowUser, UnresolvedUnknownLink, Invalid,
+    // Appended so the existing numeric values keep their meaning: a server (job) ID pasted without its place.
+    UnresolvedJobWithoutPlace
 }
 public enum RobloxServerKind { Unknown, Public }
 
@@ -54,32 +56,61 @@ public sealed record RobloxDestinationParseResult(RobloxDestinationStatus Status
 public static class RobloxDestinationParser
 {
     public const int MaximumInputLength = 4096;
+    // An AppsFlyer ro.blox.com link may carry the Roblox link it opens in one of these fields, tried in this order.
+    private static readonly string[] DeferredLinkFields = ["af_dp", "deep_link_value", "af_web_dp"];
+
     // Roblox documents these legacy deep-link parameters at:
     // https://create.roblox.com/docs/production/promotion/deeplinks
     // Share links supersede public deep links, but opaque share codes cannot be resolved locally.
-    public static RobloxDestinationParseResult Parse(string? input)
+    public static RobloxDestinationParseResult Parse(string? input) => Parse(input, unwrapDeferredLink: true);
+
+    /// <summary>The Roblox website hosts whose pages this parser reads. Exact names only: no other subdomain or suffix.</summary>
+    internal static bool IsWebHost(string host) => host is "www.roblox.com" or "roblox.com" or "web.roblox.com" or "m.roblox.com";
+
+    /// <summary>
+    /// The page a website path names: "/de/games/1" and "/pt-br/share" are the pages "/games/1" and "/share". One leading
+    /// language segment (two letters, optionally a 2–4 character region) is dropped, and only before a page this parser reads.
+    /// </summary>
+    internal static string WithoutLanguagePrefix(string path)
+    {
+        int end = path.IndexOf('/', 1);
+        if (end < 0 || !IsLanguage(path.AsSpan(1, end - 1))) return path;
+        string rest = path[end..];
+        int next = rest.IndexOf('/', 1);
+        string page = next < 0 ? rest[1..] : rest[1..next];
+        return page.Equals("games", StringComparison.OrdinalIgnoreCase) || page.Equals("share", StringComparison.OrdinalIgnoreCase)
+            || page.Equals("users", StringComparison.OrdinalIgnoreCase) ? rest : path;
+    }
+
+    private static RobloxDestinationParseResult Parse(string? input, bool unwrapDeferredLink)
     {
         if (string.IsNullOrWhiteSpace(input) || input.Length > MaximumInputLength || input.Any(char.IsControl))
             return Invalid("Enter a place ID or a Roblox link of at most 4,096 readable characters.");
         string text = input.Trim();
         if (text.All(char.IsAsciiDigit))
             return TryPlaceId(text, out long id) ? Resolved(id, null) : Invalid("Place IDs must be positive Int64 values.");
+        // A server (job) ID names a server but not its game, and the game cannot be worked out locally.
+        if (RobloxRequestedDestination.TryNormalizeJobId(text, out _))
+            return Unresolved(RobloxDestinationKind.UnresolvedJobWithoutPlace,
+                "That is a server ID without its game. Paste the game link or place ID instead, or a roblox.com/games/start?placeId=...&gameInstanceId=... link that has both.");
         if (text.Any(char.IsWhiteSpace) || text.Contains('\\') || !ValidEscapes(text))
             return Invalid("The link contains whitespace, invalid escaping, or an unsupported path separator.");
 
         if (text.StartsWith("roblox://", StringComparison.OrdinalIgnoreCase))
         {
             string fields = text[9..];
+            // roblox://experiences/start?placeId=... carries the same fields as the documented roblox://placeId=... form.
+            if (fields.StartsWith("experiences/start?", StringComparison.OrdinalIgnoreCase)) fields = fields[18..];
             // The documented protocol form puts fields directly after //, not in a URL host.
             if (fields.IndexOfAny(['/', '?', '#', '@', ':']) >= 0)
-                return Invalid("Use the documented roblox://placeId=... deep-link format.");
+                return Invalid("Use the documented roblox://placeId=... or roblox://experiences/start?placeId=... deep-link format.");
             if (!TryQuery(fields, out var nativeQuery)) return InvalidQuery();
             return ParseFields(nativeQuery, null, true);
         }
 
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
             || uri.UserInfo.Length != 0 || uri.Port != 443 || uri.Fragment.Length != 0
-            || uri.Host is not ("www.roblox.com" or "roblox.com" or "ro.blox.com"))
+            || !IsWebHost(uri.Host) && uri.Host != "ro.blox.com")
             return Invalid("Only exact-host HTTPS Roblox links and the documented Roblox deep-link format are accepted.");
         // Do not let Uri path/host normalization turn a different input into an allowlisted destination.
         int authorityEnd = text.IndexOfAny(['/', '?', '#'], text.IndexOf("://", StringComparison.Ordinal) + 3);
@@ -95,19 +126,43 @@ public static class RobloxDestinationParser
             return Invalid("The link contains an ambiguous or unsupported path.");
         if (!TryQuery(uri.Query.TrimStart('?'), out var query)) return InvalidQuery();
 
-        if (uri.Host == "ro.blox.com" || uri.AbsolutePath.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase))
-            return Unresolved(RobloxDestinationKind.UnresolvedShareLink, "This opaque share or deferred link needs official Roblox resolution. Its code was discarded; no place or job ID was inferred.");
-        if (uri.AbsolutePath.TrimEnd('/').Equals("/games/start", StringComparison.OrdinalIgnoreCase))
+        if (uri.Host == "ro.blox.com")
+            return unwrapDeferredLink ? ParseDeferredLink(query) : OpaqueShareLink();
+        string route = WithoutLanguagePrefix(uri.AbsolutePath);
+        if (route.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase))
+            return OpaqueShareLink();
+        if (route.TrimEnd('/').Equals("/games/start", StringComparison.OrdinalIgnoreCase))
             return ParseFields(query, null, true);
 
-        string[] path = uri.AbsolutePath.Split('/');
+        string[] path = route.Split('/');
         if (path.Length is >= 3 and <= 5 && path[0] == "" && path[1].Equals("games", StringComparison.OrdinalIgnoreCase)
             && TryPlaceId(path[2], out long placeId)
             && (path.Length < 5 || path[4] == "" && path[3].Length > 0) && (path.Length < 4 || path[3].Length <= 500))
             return ParseFields(query, placeId, false);
         if (path.Length >= 3 && path[1].Equals("games", StringComparison.OrdinalIgnoreCase) && IsNumericLike(path[2]))
             return Invalid("The game link has an invalid or overflowing place ID.");
+        // A profile page (/users/{id} or /users/{id}/profile, one trailing slash at most) asks to follow that user.
+        string[] user = (route.EndsWith('/') ? route[..^1] : route).Split('/');
+        if (user.Length is 3 or 4 && user[1].Equals("users", StringComparison.OrdinalIgnoreCase)
+            && (user.Length == 3 || user[3].Equals("profile", StringComparison.OrdinalIgnoreCase)))
+        {
+            if (TryPlaceId(user[2], out _)) return FollowUser();
+            if (IsNumericLike(user[2])) return Invalid("The profile link has an invalid or overflowing user ID.");
+        }
         return Unresolved(RobloxDestinationKind.UnresolvedUnknownLink, "This Roblox URL format is not supported. No destination was inferred.");
+    }
+
+    // The wrapped link is decoded once (by the query reader) and parsed here; it is never fetched, and a wrapper inside it is
+    // not unwrapped again. A wrapped link that is foreign, unreadable or unsupported leaves the wrapper an opaque deferred link.
+    private static RobloxDestinationParseResult ParseDeferredLink(Dictionary<string, string> query)
+    {
+        foreach (string field in DeferredLinkFields)
+        {
+            if (!query.TryGetValue(field, out string? wrapped) || wrapped.Length == 0) continue;
+            var inner = Parse(wrapped, unwrapDeferredLink: false);
+            if (inner.Status != RobloxDestinationStatus.Invalid && inner.Kind != RobloxDestinationKind.UnresolvedUnknownLink) return inner;
+        }
+        return OpaqueShareLink();
     }
 
     private static RobloxDestinationParseResult ParseFields(Dictionary<string, string> query, long? pathPlaceId, bool isStartLink)
@@ -135,8 +190,7 @@ public static class RobloxDestinationParser
             return Unresolved(RobloxDestinationKind.UnresolvedPrivateServer, "A private server link or access code needs an authorized Roblox flow. Its code was discarded; private versus reserved access was not inferred.");
         if (query.ContainsKey("code") || query.ContainsKey("shareCode"))
             return Unresolved(RobloxDestinationKind.UnresolvedShareLink, "This link has an opaque share code. Its code was discarded; no destination was inferred.");
-        if (query.ContainsKey("userId"))
-            return Unresolved(RobloxDestinationKind.UnresolvedFollowUser, "Following a user needs current authorized Roblox resolution. No destination was inferred.");
+        if (query.ContainsKey("userId")) return FollowUser();
         if (query.Keys.Any(k => !k.Equals("placeId", StringComparison.OrdinalIgnoreCase) && !k.Equals("gameInstanceId", StringComparison.OrdinalIgnoreCase)))
             return Unresolved(RobloxDestinationKind.UnresolvedUnknownLink, "This link contains unsupported parameters, including any launch data. Their values were discarded; no destination was inferred.");
         if (!placeId.HasValue) return Invalid("A place ID is required for a place or server destination.");
@@ -172,6 +226,18 @@ public static class RobloxDestinationParser
     private static bool TryPlaceId(string value, out long id) => long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out id)
         && value.All(char.IsAsciiDigit) && id > 0;
     private static bool IsNumericLike(string value) => value.Length == 0 || value[0] is '+' or '-' || value.All(char.IsAsciiDigit);
+    private static bool IsLanguage(ReadOnlySpan<char> segment)
+    {
+        if (segment.Length is not (2 or (>= 5 and <= 7)) || !char.IsAsciiLetter(segment[0]) || !char.IsAsciiLetter(segment[1])) return false;
+        if (segment.Length == 2) return true;
+        if (segment[2] != '-') return false;
+        foreach (char c in segment[3..]) if (!char.IsAsciiLetterOrDigit(c)) return false;
+        return true;
+    }
+    private static RobloxDestinationParseResult OpaqueShareLink() => Unresolved(RobloxDestinationKind.UnresolvedShareLink,
+        "This opaque share or deferred link needs official Roblox resolution. Its code was discarded; no place or job ID was inferred.");
+    private static RobloxDestinationParseResult FollowUser() => Unresolved(RobloxDestinationKind.UnresolvedFollowUser,
+        "Following a user needs current authorized Roblox resolution. No destination was inferred.");
     private static RobloxDestinationParseResult Resolved(long placeId, string? jobId) => new(RobloxDestinationStatus.Resolved,
         jobId is null ? RobloxDestinationKind.Place : RobloxDestinationKind.ServerInstance, new(placeId, jobId),
         "Requested destination parsed. Account identity, server availability, and arrival remain unverified.");

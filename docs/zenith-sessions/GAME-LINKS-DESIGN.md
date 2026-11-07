@@ -143,6 +143,13 @@ name, creator line, playing + rating, accent border and check when it is the cur
   `type` or `v=v2`; anything else is refused. `ProtectedShareCode` holds the code in a
   pinned char array, redacts `ToString()`, is disposed after use and is never serialized, logged, put in a favorite
   or bundle, or shown again. `ro.blox.com` deferred links stay unresolved (no code to resolve).
+- Forms copied from other Roblox surfaces (R-launch-5): the exact hosts `web.roblox.com` and `m.roblox.com`; one
+  leading language segment (`/de/`, `/pt-br/`) before `games`, `share` or `users`; `roblox://experiences/start?placeId=…`
+  (same fields as `roblox://placeId=…`); `/users/{id}` and `/users/{id}/profile` as a follow-user request (unresolved);
+  a bare server (job) ID as "needs its game" (unresolved, never a name search). An `ro.blox.com` link's `af_dp`,
+  `deep_link_value` or `af_web_dp` value is decoded once and parsed locally, never fetched and never unwrapped twice;
+  if none is a link Zenith reads, the wrapper stays an opaque deferred link. The share parser accepts the same hosts
+  and language prefix; it still does not read share codes out of `ro.blox.com` wrappers.
 - The text box is cleared as soon as a share link is recognised.
 
 ### 4.2 Resolution

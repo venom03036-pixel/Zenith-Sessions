@@ -40,6 +40,7 @@ public sealed class PublicGameSearchContractsTests
     [InlineData("share code synthetic")]
     [InlineData(".ROBLOSECURITY=synthetic")]
     [InlineData("Cookie: synthetic")]
+    [InlineData("12345678-1234-4234-8234-123456789abc")]
     public void DestinationOrSessionSyntaxCanNeverBecomeANameQuery(string text)
     {
         var query = new PublicRobloxGameSearchQuery(text, Session);

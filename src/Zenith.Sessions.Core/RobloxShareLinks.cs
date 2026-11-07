@@ -175,7 +175,8 @@ public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, I
 /// </summary>
 /// <remarks>
 /// One definition of a safe roblox.com link: input is first classified by <see cref="RobloxDestinationParser.Parse"/>, so its
-/// readable-input, HTTPS, exact-host, authority, userinfo, port, fragment, escape, path and query rules apply here unchanged.
+/// readable-input, HTTPS, exact-host, authority, userinfo, port, fragment, escape, path and query rules apply here unchanged,
+/// and so do its web hosts and one language prefix (m.roblox.com/share, roblox.com/de/share).
 /// This parser only narrows that result, by design: ro.blox.com, roblox:// fields, a code on another path (or as shareCode)
 /// and any extra query field are not share links it can resolve.
 /// </remarks>
@@ -189,8 +190,8 @@ public static class RobloxShareLinkParser
         link = null;
         if (input is null || RobloxDestinationParser.Parse(input).Kind != RobloxDestinationKind.UnresolvedShareLink) return false;
         if (!Uri.TryCreate(input.Trim(), UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
-            || uri.Host is not ("www.roblox.com" or "roblox.com")) return false;
-        if (!uri.AbsolutePath.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase)) return false;
+            || !RobloxDestinationParser.IsWebHost(uri.Host)) return false;
+        if (!RobloxDestinationParser.WithoutLanguagePrefix(uri.AbsolutePath).TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase)) return false;
         if (!RobloxDestinationParser.TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2
             || !query.TryGetValue("code", out string? code)) return false;
         if (code.Length is 0 or > MaximumCodeLength || !code.All(char.IsAsciiLetterOrDigit)) return false;

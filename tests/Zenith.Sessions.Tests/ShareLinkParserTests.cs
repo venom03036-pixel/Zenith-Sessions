@@ -36,6 +36,21 @@ public sealed class ShareLinkParserTests
         Assert.Equal(Code, revealed); Assert.DoesNotContain(Code, owned.ToString(), StringComparison.Ordinal);
     }
 
+    // The share parser accepts the same web hosts and one language prefix as the destination parser that classifies it.
+    [Theory]
+    [InlineData("https://m.roblox.com/share?code=" + Code + "&type=Server")]
+    [InlineData("https://web.roblox.com/share?code=" + Code + "&type=Server")]
+    [InlineData("https://www.roblox.com/de/share?code=" + Code + "&type=Server")]
+    [InlineData("https://roblox.com/pt-br/share/?type=Server&code=" + Code)]
+    public void AcceptsTheDestinationParsersWebHostsAndLanguagePrefix(string input)
+    {
+        Assert.Equal(RobloxDestinationKind.UnresolvedShareLink, RobloxDestinationParser.Parse(input).Kind);
+        Assert.True(RobloxShareLinkParser.TryParse(input, out var link)); using var owned = link!;
+        Assert.Equal(RobloxShareLinkType.Server, owned.Type);
+        string revealed = ""; owned.Code.Reveal(code => revealed = new string(code));
+        Assert.Equal(Code, revealed);
+    }
+
     [Theory]
     [InlineData("https://www.roblox.com/share?code=abc&v=v3")]
     [InlineData("https://www.roblox.com/share?code=abc&v=")]
@@ -73,6 +88,9 @@ public sealed class ShareLinkParserTests
     [InlineData("https://www.roblox.com/share?code=abc&type=Server#fragment")]
     [InlineData("https://www.roblox.com/share?code=abc&type=Server extra")]
     [InlineData("roblox://share?code=abc&type=Server")]
+    [InlineData("https://www.roblox.com/deu/share?code=abc&type=Server")]
+    [InlineData("https://www.roblox.com/de/fr/share?code=abc&type=Server")]
+    [InlineData("https://m.roblox.com.evil.invalid/share?code=abc&type=Server")]
     [InlineData("")]
     [InlineData("   ")]
     public void RejectsOtherHostsHttpExtraParametersAndBadCodes(string input)

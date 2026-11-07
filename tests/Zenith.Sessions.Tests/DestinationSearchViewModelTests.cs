@@ -121,6 +121,7 @@ public sealed class DestinationSearchViewModelTests
     [InlineData("9223372036854775808")]
     [InlineData("cookie:synthetic-secret")]
     [InlineData("private code synthetic-private")]
+    [InlineData("12345678-1234-4234-8234-123456789abc")]
     public Task RejectedNameSyntaxUsesOnlyThePureParserAndNeverFallsBackToNameHttp(string input)=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();f.Browser.LinkInput=input;await f.Search.SearchOrUseAsync();
