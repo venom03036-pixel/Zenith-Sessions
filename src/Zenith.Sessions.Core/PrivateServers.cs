@@ -10,17 +10,14 @@ public sealed record SavedPrivateServer(Guid Id, string Name, long PlaceId, long
 {
     public const int MaximumNameLength = 80;
     public const int MaximumCount = 100;
-    private const char LineSeparator = (char)0x2028, ParagraphSeparator = (char)0x2029;
-    private static readonly string[] SensitiveNameMarkers = ["privateServerLinkCode=", "reservedServerAccessCode=", "accessCode=", "linkCode=",
-        "code=", "://", ".ROBLOSECURITY", "Bearer ", "refresh_token", "access_token", "client_secret", "authorization="];
 
     public static string NormalizeName(string? name) => (name ?? "").Trim();
 
     public SavedPrivateServer Validated()
     {
-        if (Id == Guid.Empty || string.IsNullOrWhiteSpace(Name) || Name.Length > MaximumNameLength || Name != Name.Trim()
-            || Name.Any(c => char.IsControl(c) || c == LineSeparator || c == ParagraphSeparator)
-            || SensitiveNameMarkers.Any(marker => Name.Contains(marker, StringComparison.OrdinalIgnoreCase))
+        // A new server's name meets the whole shared rule. A saved revision keeps the name it was saved under (names never change).
+        bool plain = Revision == 0 ? DisplayNameRules.IsPlain(Name, MaximumNameLength) : DisplayNameRules.IsReadable(Name, MaximumNameLength);
+        if (Id == Guid.Empty || !plain || Name != Name.Trim()
             || PlaceId <= 0 || UniverseId <= 0 || OwnerUserId is <= 0 || Last4 is not { Length: 4 } || !Last4.All(char.IsAsciiLetterOrDigit) || Revision < 0)
             throw new ArgumentException("A saved private server needs a short plain name (no links or codes), positive place and universe IDs and a four-character code suffix.");
         return this;

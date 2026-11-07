@@ -138,9 +138,31 @@ name, creator line, playing + rating, accent border and check when it is the cur
 
 - `RobloxDestinations` keeps classifying `roblox.com/share?code=…&type=…` as a share link, but instead of discarding
   the code it returns a `RobloxShareLink(ProtectedShareCode Code, RobloxShareLinkType Type)` alongside the
-  unresolved result. `Type` ∈ `ExperienceDetails`, `Server`, `Other`. `ProtectedShareCode` holds the code in a
+  unresolved result. `Type` ∈ `ExperienceDetails`, `Server`, `ExperienceInvite`, `NotificationExperienceInvite`,
+  `Other`, plus `DeepLinkV2` for `share?code=…&v=v2` links (no type). The query must hold exactly `code` and either
+  `type` or `v=v2`; anything else is refused. `ProtectedShareCode` holds the code in a
   pinned char array, redacts `ToString()`, is disposed after use and is never serialized, logged, put in a favorite
-  or bundle, or shown again. `ro.blox.com` deferred links stay unresolved (no code to resolve).
+  or bundle, or shown again. The short `ro.blox.com` form (no link field) stays unresolved: it has no code to resolve.
+- Forms copied from other Roblox surfaces (R-launch-5): the exact hosts `web.roblox.com` and `m.roblox.com`; one
+  leading language segment (`/de/`, `/pt-br/`) before `games`, `share` or `users`; `roblox://experiences/start?placeId=…`
+  (same fields as `roblox://placeId=…`); `/users/{id}` and `/users/{id}/profile` as a follow-user request (unresolved);
+  a bare server (job) ID as "needs its game" (unresolved, never a name search). An `ro.blox.com` link's `af_dp`,
+  `deep_link_value` or `af_web_dp` value is decoded once and parsed locally, never fetched and never unwrapped twice;
+  only a value that is a link (`roblox://` or `https://`) is read, so a bare number or GUID there is never taken as a
+  place or server ID; if none is a link Zenith reads, the wrapper stays an opaque deferred link. The share parser accepts the same hosts
+  and language prefix.
+- Share links in the forms Roblox itself produces (R-research-1): a recorded `roblox.com/share` request redirects (302)
+  to a long `ro.blox.com` link whose `af_dp` and `deep_link_value` carry `roblox://navigation/share_links?code=…&type=…`
+  and whose `af_web_dp` carries `https://www.roblox.com/share-links?code=…&type=…`, so that long form does carry the
+  code. Both parsers accept the `/share-links` page and the `roblox://navigation/share_links?` app form as share links.
+  For a wrapper, the share parser reads the code from the same field the destination parser reads (decoded once, never
+  fetched), and only when that field is itself a share link on an exact Roblox host or in the app form; a wrapper inside
+  it, a foreign host, plain HTTP or a still-encoded value is refused. The type is read in any letter case (`server` is
+  `Server`), matching how Roblox answers it.
+- A website page tab (R-research-2): a link copied from a game page's Servers or About tab ends in `#!/game-instances` or
+  `#!/about`. That part never reaches Roblox, so on an exact Roblox website host a final `#!/` followed by 1-32
+  lowercase letters or hyphens is dropped and the rest of the link is read as usual. Every other fragment, and a tab on
+  `ro.blox.com` or a `roblox://` link, is still refused, with a message saying to remove the part after `#`.
 - The text box is cleared as soon as a share link is recognised.
 
 ### 4.2 Resolution
@@ -159,13 +181,35 @@ name, creator line, playing + rating, accent border and check when it is the cur
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF
   retry (403 with `x-csrf-token` → repeat once with the token), then stop. 401 → SignInRequired.
+- The CSRF token Roblox last accepted is kept in memory for that profile and its verified Roblox user ID (never another
+  profile or account; never saved or logged) and sent first, so a repeat check is normally one request instead of two.
+  A refused token still gets only the one retry. Any failure drops it; disconnecting the saved sign-in drops that
+  profile's token; Lock, Panic and shutdown drop all of them; at most 256 are kept, and one more drops them all.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
-  `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
+  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
+- `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
+  (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
+  `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
+  request after the signed-in resolve has finished. A restricted, missing or failed lookup is `Unavailable`.
+- Friend invites (`ExperienceInvite`, `NotificationExperienceInvite`) read `experienceInviteData` /
+  `notificationExperienceInviteData`: `status`, a required `placeId`, an optional `universeId` and `instanceId`. Only a
+  `Valid` invite whose `instanceId` is a nonempty dashed GUID becomes `ServerInstance(placeId, jobId)`, with the job ID
+  in canonical form; a `Valid` invite naming a malformed server is `Unavailable`. `Expired` and
+  `InviterNotInExperience` (and a `Valid` invite without a server) fall back to `Experience(placeId)` without a job, as
+  Roblox's web page opens the game. `inviterId` and `launchData` are never read or kept.
+- v2 links `POST https://apis.roblox.com/deeplinks/v2/resolve` `{ "linkId": code }` under the same cookie, CSRF, redirect
+  and size rules. Only `linkType` `Experience` with a positive `targetId` (the place ID) becomes `Experience`; other link
+  types are `Invalid`; `customData` is never read. Profile links stay `Other` (no request) until the launcher can follow
+  a user.
 
 ### 4.3 Using the result
 
-- `Experience` → becomes the requested destination (place) and loads the game panel, like a pasted game link.
+- `Experience` → becomes the requested destination (place) and loads the game panel, like a pasted game link. When the
+  link was an invite, the result says its server can no longer be joined.
+- `ServerInstance` → the requested destination is that place plus the inviter's job ID, exactly like a pasted
+  `/games/start?placeId=…&gameInstanceId=…` link. It is a request: room, access, account identity and arrival stay
+  unverified (HANDOFF.md).
 - `PrivateServer` → the 05c result row: game name/icon (public lookup), owner when known, "Link code …{last 4}".
   **Save as favorite** stores it in a new `PrivateServerStore`: DPAPI `CurrentUser` protected JSON in the writable
   data folder, at most 100 entries, per-record revision like favorite destinations, code bytes only inside the

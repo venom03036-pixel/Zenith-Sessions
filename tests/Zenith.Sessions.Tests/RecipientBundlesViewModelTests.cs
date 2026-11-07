@@ -106,7 +106,9 @@ public sealed class RecipientBundlesViewModelTests:IDisposable
             queue:(_,_,_)=>{queued++;return Task.FromResult("Unexpected automatic request");});
         await vm.LoadAsync();await vm.SaveCheckedAsync("Valid");var saved=vm.SelectedBundle;
         await vm.RenameSelectedAsync("https://roblox.com/?accessCode=secret-marker");Assert.Same(saved,vm.SelectedBundle);Assert.True(vm.CanUseSelected);
-        Assert.DoesNotContain("secret-marker",vm.Status);selected=[];await vm.ReplaceSelectedRecipientsAsync();
+        Assert.DoesNotContain("secret-marker",vm.Status);
+        await vm.RenameSelectedAsync("cookie=secret-marker");Assert.Same(saved,vm.SelectedBundle);Assert.True(vm.CanUseSelected); // A saved bundle's rename meets the whole name rule up front.
+        Assert.Contains("bundle name",vm.Status);Assert.DoesNotContain("secret-marker",vm.Status);selected=[];await vm.ReplaceSelectedRecipientsAsync();
         Assert.Equal(new[]{profile.Id},vm.SelectedBundle!.ProfileIds);Assert.Equal(0,queued);
     }
     [Fact]

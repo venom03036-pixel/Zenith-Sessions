@@ -8,7 +8,7 @@ namespace Zenith.Sessions.Tests;
 public sealed class ShareLinkViewModelTests
 {
     private static readonly Guid ProfileA=Guid.Parse("11111111-1111-4111-8111-111111111111");
-    private const string ShareCode="4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e",LinkCode="98765432109876543210";
+    private const string ShareCode="4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e",LinkCode="98765432109876543210",Job="0f8fad5b-d9cb-469f-a165-70867728950e";
     private static string Link(string type)=>"https://www.roblox.com/share?code="+ShareCode+"&type="+type;
     private static RobloxShareLinkResolution Private()=>new(RobloxShareLinkOutcome.PrivateServer,5,6,7,new ProtectedPrivateServerCode(LinkCode));
 
@@ -36,6 +36,48 @@ public sealed class ShareLinkViewModelTests
         Assert.False(vm.CanJoinPrivate);Assert.Equal("Joining private servers needs launcher support (coming next)",vm.JoinNote);
         Assert.Null(f.Browser.Destination); // A private invitation is never silently turned into a public game request.
         Assert.Equal(0,f.Servers.Calls);
+    });
+
+    [Fact]
+    public Task UniverseOnlyLinksUseTheRootPlaceAndCanBeSaved()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();var rootPlaces=new RootPlaces(6,100);
+        var resolver=new Resolver{Response=_=>new(RobloxShareLinkOutcome.Experience,null,6)};
+        await using var vm=new ShareLinkViewModel(new RootPlaceShareLinkResolver(resolver,rootPlaces),store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("ExperienceDetails");await vm.CheckAsync();
+        Assert.True(vm.HasResult);Assert.Equal(100,f.Browser.Destination!.PlaceId);Assert.Contains("Place 100",vm.ResultTitle);Assert.Equal(1,rootPlaces.Calls);
+        resolver.Response=_=>new(RobloxShareLinkOutcome.PrivateServer,null,6,null,new ProtectedPrivateServerCode(LinkCode));
+        vm.LinkInput=Link("Server");await vm.CheckAsync();Assert.True(vm.HasPrivateResult);Assert.Contains("Place 100",vm.ResultTitle);
+        await vm.SaveAsFavoriteAsync();
+        var saved=Assert.Single(store.Items);Assert.Equal(100,saved.PlaceId);Assert.Equal(6,saved.UniverseId);Assert.Equal(LinkCode,store.Codes[saved.Id]);
+    });
+
+    // A friend's invite names their server: it becomes the requested server (place + job), never a claim of arrival.
+    [Theory]
+    [InlineData("ExperienceInvite")]
+    [InlineData("NotificationExperienceInvite")]
+    public Task AnInviteToAServerMakesThatServerTheRequestedDestination(string type)=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();
+        var resolver=new Resolver{Response=_=>new(RobloxShareLinkOutcome.ServerInstance,5,null,jobId:Job)};
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link(type);await vm.CheckAsync();
+        Assert.Equal(1,resolver.Calls);Assert.True(vm.HasResult);Assert.False(vm.HasPrivateResult);Assert.False(vm.CanSave);
+        Assert.Equal(5,f.Browser.Destination!.PlaceId);Assert.Equal(Job,f.Browser.Destination.JobId);Assert.Contains("Synthetic details",vm.ResultTitle);
+        Assert.Equal("Server invite. The inviter's server is now the requested destination for the accounts you launch; nothing has launched.",vm.ResultDetail);
+        Assert.Equal("Invite checked. The inviter's server is the requested destination; Roblox decides whether it still has room.",vm.Status);
+        Assert.DoesNotContain(ShareCode,vm.Status+vm.ResultTitle+vm.ResultDetail,StringComparison.Ordinal);Assert.Equal(0,f.Servers.Calls);
+    });
+
+    [Fact]
+    public Task AnInviteWithoutAUsableServerOpensItsGameAndSaysSo()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();var resolver=new Resolver{Response=_=>new(RobloxShareLinkOutcome.Experience,5)};
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("ExperienceInvite");await vm.CheckAsync();
+        Assert.True(vm.HasResult);Assert.Equal(5,f.Browser.Destination!.PlaceId);Assert.Null(f.Browser.Destination.JobId);
+        Assert.Equal("Game invite. It no longer names a server you can join, so the game is the requested destination; nothing has launched.",vm.ResultDetail);
+        Assert.Equal("Invite checked. Its server cannot be joined, so the game is the requested destination; choose Quick join or Browse servers.",vm.Status);
     });
 
     [Fact]
@@ -167,6 +209,16 @@ public sealed class ShareLinkViewModelTests
         public void Release()=>_release.TrySetResult();
         public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId,RobloxShareLink link,CancellationToken ct)
         {Calls++;LastProfile=profileId;LastToken=ct;Entered.TrySetResult();if(Hold)await _release.Task;return Response?.Invoke(link)??new(RobloxShareLinkOutcome.Experience,5,6);}
+    }
+    private sealed class RootPlaces(long universeId,long rootPlaceId):IPublicRobloxGameBatchDirectory
+    {
+        public int Calls;
+        public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>> LookupGamesAsync(IReadOnlyList<long> universeIds,CancellationToken ct)
+        {
+            Calls++;Assert.Equal(new[]{universeId},universeIds.ToArray());
+            IReadOnlyList<PublicRobloxGame> games=[new(rootPlaceId,universeId,rootPlaceId,"Synthetic root",7,"Creator",PublicRobloxCreatorKind.User,3,20,DateTimeOffset.UnixEpoch)];
+            return Task.FromResult(SearchTest.Ok(games));
+        }
     }
     private sealed class Store:IPrivateServerStore
     {

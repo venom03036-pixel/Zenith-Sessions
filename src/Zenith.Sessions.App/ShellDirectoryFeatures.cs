@@ -76,7 +76,9 @@ public sealed partial class ShellViewModel
         ServerBrowser=new(serverDirectory,CanUseDirectories);_publicPresentation=new(publicDirectory);
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
-        ShareLink=new(_linkService,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
+        // A universe-only share link opens the universe's root place, read anonymously after the signed-in resolve.
+        var shareLinkResolver=new RootPlaceShareLinkResolver(_linkService,publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory);
+        ShareLink=new(shareLinkResolver,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory);
         DestinationSearch=new(publicDirectory as IPublicRobloxGameSearchDirectory ?? gameDirectory as IPublicRobloxGameSearchDirectory,
             ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),
@@ -293,6 +295,7 @@ public sealed partial class ShellViewModel
         RobloxFavorites.Cancel();
         RecentlyPlayed.Cancel();
         ShareLink.Cancel();
+        _shareLinkClient.ForgetAllTokens(); // Lock and Panic: the next share-link resolve starts with a fresh handshake.
     }
     private async Task StopDirectoryFeaturesAsync()
     {

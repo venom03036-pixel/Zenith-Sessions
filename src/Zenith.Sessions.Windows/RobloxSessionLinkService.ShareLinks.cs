@@ -27,7 +27,9 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
             if (record.Provider != RobloxSessionIdentity.Provider || record.Health != AuthorizationHealth.Linked
                 || record.SessionCookie.Length == 0 || record.ExpiresUtc <= DateTimeOffset.UtcNow) return new(RobloxShareLinkOutcome.SignInRequired);
             using var credential = new RobloxSessionCredential(record.SessionCookie, record.ExpiresUtc == DateTimeOffset.MaxValue ? null : record.ExpiresUtc);
-            try { return await shareLinks.ResolveAsync(link, credential, operation.Token).ConfigureAwait(false); }
+            // The scope binds any kept anti-forgery token to this profile and its verified account, never another identity.
+            var scope = new RobloxShareLinkTokenScope(profileId, record.VerifiedUserId);
+            try { return await shareLinks.ResolveAsync(link, credential, scope, operation.Token).ConfigureAwait(false); }
             catch (OperationCanceledException) { Ensure(operation); return new(RobloxShareLinkOutcome.Cancelled); }
             catch (Exception) { Ensure(operation); return new(RobloxShareLinkOutcome.Unavailable); } // A transport exception may quote a code: never forward it.
         }

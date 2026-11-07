@@ -50,6 +50,8 @@ public sealed record PublicRobloxGameSearchQuery(string Text, Guid SessionId, st
     private static bool DestinationOrSessionSyntax(string text)
     {
         if (text.IndexOfAny(['/', '\\', '?', '#', '%']) >= 0 || text.StartsWith("www.", StringComparison.OrdinalIgnoreCase)) return true;
+        // A server (job) ID: the destination parser explains that it needs its game.
+        if (RobloxRequestedDestination.TryNormalizeJobId(text, out _)) return true;
         bool numeric = true, digit = false;
         foreach (char character in text)
         {

@@ -1,5 +1,4 @@
 using System.IO;
-using System.Text;
 
 namespace Zenith.Sessions.Core;
 
@@ -12,7 +11,7 @@ public sealed record RecipientBundle(Guid Id, string Name, IReadOnlyList<Guid> P
     {
         if (Id == Guid.Empty || Revision < 0 || (Revision == 0) != (ChangeId == Guid.Empty))
             throw new ArgumentException("The recipient bundle identity, revision or change identity is invalid.");
-        string name = ValidateName(Name);
+        string name = Revision == 0 ? ValidateName(Name) : ValidateSavedName(Name);
         if (ProfileIds is null || ProfileIds.Count is < 1 or > MaximumRecipients)
             throw new ArgumentException("Choose 1 to 1,000 saved profile references for a recipient bundle.");
         int count = ProfileIds.Count; var ids = new Guid[count]; var unique = new HashSet<Guid>();
@@ -24,20 +23,11 @@ public sealed record RecipientBundle(Guid Id, string Name, IReadOnlyList<Guid> P
         }
         return this with { Name = name, ProfileIds = Array.AsReadOnly(ids) };
     }
-    public static string ValidateName(string name)
-    {
-        if (name is null || name.Length > MaximumNameLength || string.IsNullOrWhiteSpace(name)
-            || name.Any(value => char.IsControl(value) || value is '\u2028' or '\u2029'))
-            throw new ArgumentException("Use a bundle name of 1 to 80 characters without line breaks or controls.");
-        try { new UTF8Encoding(false, true).GetByteCount(name); }
-        catch (EncoderFallbackException) { throw new ArgumentException("The bundle name contains invalid Unicode."); }
-        if (name.Contains("://", StringComparison.Ordinal) || name.Contains("www.", StringComparison.OrdinalIgnoreCase)
-            || SensitiveNameMarkers.Any(marker => name.Contains(marker, StringComparison.OrdinalIgnoreCase)))
-            throw new ArgumentException("Use a display name without links, access codes or credentials.");
-        return name.Trim();
-    }
-    private static readonly string[] SensitiveNameMarkers = ["roblox:", "roblox-player:", ".ROBLOSECURITY", "Bearer ", "cookie=",
-        "privateServerLinkCode=", "reservedServerAccessCode=", "accessCode=", "linkCode=", "refresh_token", "access_token", "client_secret", "authorization="];
+    /// <summary>Checks a new or changed bundle name against the shared display-name rule and returns it trimmed.</summary>
+    public static string ValidateName(string name) => DisplayNameRules.IsPlain(name, MaximumNameLength) ? name.Trim() : throw new ArgumentException(NameRule);
+    // A saved revision keeps the name it was saved under; a rename goes through ValidateName.
+    private static string ValidateSavedName(string name) => DisplayNameRules.IsReadable(name, MaximumNameLength) ? name.Trim() : throw new ArgumentException(NameRule);
+    private const string NameRule = "Use a bundle name of 1 to 80 characters on one line, without links, access codes or credentials.";
 
     /// <summary>Call with existence results for these references, not a credential/identity inventory. Missing references remain saved until explicitly edited.</summary>
     public RecipientBundleResolution ResolveRecipients(IReadOnlySet<Guid> existingProfileIds)

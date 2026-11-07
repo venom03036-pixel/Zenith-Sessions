@@ -74,6 +74,12 @@ public sealed class DestinationTests
     [InlineData("https://www.roblox.com/games/start?placeId=123&x=%ZZ")]
     [InlineData("https://www.roblox.com/games/start?placeId=123&x=%0a")]
     [InlineData("https://www.roblox.com/games/start?placeId=123&&x=1")]
+    [InlineData("https://m.roblox.com/de/games/-1")]
+    [InlineData("https://www.roblox.com/users/0/profile")]
+    [InlineData("https://www.roblox.com/de/users/9223372036854775808")]
+    [InlineData("roblox://experiences/start?placeId=0")]
+    [InlineData("roblox://experiences/start?placeId=123&gameInstanceId=not-a-job")]
+    [InlineData("00000000-0000-0000-0000-000000000000")]
     public void InvalidAndAmbiguousIdsNeverBecomeTargets(string? input)
     {
         var parsed = RobloxDestinationParser.Parse(input);
@@ -100,11 +106,43 @@ public sealed class DestinationTests
     [InlineData("https://www.roblox.com/games%2f123")]
     [InlineData("roblox://user@placeId=123")]
     [InlineData("roblox-player:1+launchmode:play")]
+    [InlineData("http://m.roblox.com/games/123")]
+    [InlineData("https://m.roblox.com.evil.invalid/games/123")]
+    [InlineData("https://web.roblox.com@evil.invalid/games/123")]
+    [InlineData("https://web.roblox.com:444/games/123")]
+    [InlineData("https://mobile.roblox.com/games/123")]
+    [InlineData("roblox://experiences/start/?placeId=123")]
+    [InlineData("roblox://experiences/start?placeId=123#fragment")]
+    [InlineData("roblox://experiences/join?placeId=123")]
+    [InlineData("roblox://experiences/start/../start?placeId=123")]
+    [InlineData("roblox://experiences/start?placeId=123&x=/../")]
+    // Only a page tab (#!/ then 1-32 lowercase letters or hyphens) on a Roblox website page is ignored; every other fragment is refused.
+    [InlineData("https://www.roblox.com/games/123#!/")]
+    [InlineData("https://www.roblox.com/games/123#/game-instances")]
+    [InlineData("https://www.roblox.com/games/123#!/Game-Instances")]
+    [InlineData("https://www.roblox.com/games/123#!/game-instances/")]
+    [InlineData("https://www.roblox.com/games/123#!/game%2Dinstances")]
+    [InlineData("https://www.roblox.com/games/123#!/game-instances#!/about")]
+    [InlineData("https://www.roblox.com/games/123#!/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("https://www.roblox.com.evil.invalid/games/123#!/game-instances")]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2FplaceId%3D123#!/about")]
+    [InlineData("roblox://placeId=123#!/game-instances")]
     public void UntrustedUrlsAreRejectedWithoutBeingOpened(string input)
     {
         var parsed = RobloxDestinationParser.Parse(input);
         Assert.Equal(RobloxDestinationStatus.Invalid, parsed.Status);
         Assert.Null(parsed.RequestedDestination);
+    }
+
+    [Theory]
+    [InlineData("https://www.roblox.com/games/123#redirect")]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2FplaceId%3D123#!/about")]
+    public void ARefusedFragmentSaysWhichPartOfTheLinkToRemove(string input)
+    {
+        var parsed = RobloxDestinationParser.Parse(input);
+        Assert.Equal(RobloxDestinationStatus.Invalid, parsed.Status);
+        Assert.Contains("after #", parsed.Explanation);
+        Assert.Contains("#!/game-instances", parsed.Explanation);
     }
 
     [Theory]
@@ -126,6 +164,91 @@ public sealed class DestinationTests
         Assert.DoesNotContain("synthetic-sensitive-value", parsed.ToString());
         Assert.DoesNotContain("synthetic-sensitive-value", JsonSerializer.Serialize(parsed));
         Assert.DoesNotContain(input, parsed.Explanation);
+    }
+
+    // Forms copied from other Roblox surfaces: the web. and m. hosts, one language prefix, the path form of the deep link,
+    // and an AppsFlyer ro.blox.com wrapper whose Roblox link is decoded once and parsed here, never fetched.
+    [Theory]
+    [InlineData("https://web.roblox.com/games/123/An-Experience", null)]
+    [InlineData("https://m.roblox.com/games/123", null)]
+    [InlineData("https://www.roblox.com/de/games/123/Ein-Erlebnis", null)]
+    [InlineData("https://roblox.com/PT-BR/games/123/", null)]
+    [InlineData("https://www.roblox.com/zh-hans/games/start?placeId=123&gameInstanceId=" + Job, Job)]
+    [InlineData("roblox://experiences/start?placeId=123", null)]
+    [InlineData("ROBLOX://Experiences/Start?placeId=123&gameInstanceId=" + Job, Job)]
+    [InlineData("https://ro.blox.com/Ebh5?pid=share&af_dp=roblox%3A%2F%2FplaceId%3D123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fm.roblox.com%2Fde%2Fgames%2F123%2FAn-Experience", null)]
+    [InlineData("https://ro.blox.com/Ebh5?deep_link_value=roblox%3A%2F%2Fexperiences%2Fstart%3FplaceId%3D123%26gameInstanceId%3D" + Job, Job)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2Fnavigation%2Fgame_details%3FgameId%3D9&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    // Only a link is read from a wrapper field: a bare number or server ID in af_dp is not a link, so af_web_dp's game is.
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=999&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=" + Job + "&deep_link_value=roblox%3A%2F%2FplaceId%3D123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=ROBLOX%3A%2F%2FplaceId%3D123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=HTTPS%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    // A website page's tab (#!/game-instances, #!/about) stays in the browser and never reaches Roblox: it names the same page.
+    [InlineData("https://www.roblox.com/games/123/An-Experience#!/game-instances", null)]
+    [InlineData("https://www.roblox.com/de/games/123/Ein-Erlebnis#!/game-instances", null)]
+    [InlineData("https://web.roblox.com/games/123#!/about", null)]
+    [InlineData("https://www.roblox.com/games/start?placeId=123&gameInstanceId=" + Job + "#!/game-instances", Job)]
+    public void OtherRobloxSurfaceFormsResolveTheSameRequestedDestination(string input, string? job)
+    {
+        var parsed = RobloxDestinationParser.Parse(input);
+        Assert.Equal(RobloxDestinationStatus.Resolved, parsed.Status);
+        Assert.Equal(job is null ? RobloxDestinationKind.Place : RobloxDestinationKind.ServerInstance, parsed.Kind);
+        Assert.Equal(123, parsed.RequestedDestination!.PlaceId);
+        Assert.Equal(job, parsed.RequestedDestination.JobId);
+        Assert.Equal(RobloxServerKind.Unknown, parsed.RequestedDestination.ServerKind);
+    }
+
+    [Theory]
+    [InlineData("https://www.roblox.com/users/456/profile", RobloxDestinationKind.UnresolvedFollowUser)]
+    [InlineData("https://m.roblox.com/users/456/", RobloxDestinationKind.UnresolvedFollowUser)]
+    [InlineData("https://www.roblox.com/de/users/456/profile?friendshipSourceType=synthetic-sensitive-value", RobloxDestinationKind.UnresolvedFollowUser)]
+    [InlineData("https://www.roblox.com/fr/share?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://web.roblox.com/share?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    // The page and app forms Roblox's own share redirect produces are share links too; their codes are discarded here.
+    [InlineData("https://www.roblox.com/share-links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://www.roblox.com/de/share-links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("roblox://navigation/share_links?code=synthetic-sensitive-value&type=Server", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2Fnavigation%2Fshare_links%3Fcode%3Dsynthetic-sensitive-value%26type%3DServer", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123%3FprivateServerLinkCode%3Dsynthetic-sensitive-value", RobloxDestinationKind.UnresolvedPrivateServer)]
+    // A wrapper inside a wrapper is not unwrapped again; a wrapped foreign, unreadable or unsupported link leaves the wrapper opaque.
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=https%3A%2F%2Fro.blox.com%2FEbh5%3Faf_dp%3D123", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fevil.invalid%2Fgames%2F123", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fhome&af_dp=synthetic-sensitive-value", RobloxDestinationKind.UnresolvedShareLink)]
+    // A wrapper field that is not a link (AppsFlyer's deep_link_value is often a plain value) names nothing: a bare number
+    // is not read as a place ID, nor a bare GUID as a server ID, so the wrapper stays opaque.
+    [InlineData("https://ro.blox.com/Ebh5?deep_link_value=4483381587", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=123", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=" + Job, RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=%20roblox%3A%2F%2FplaceId%3D123", RobloxDestinationKind.UnresolvedShareLink)]
+    // Only one leading language segment, only before a page this parser reads.
+    [InlineData("https://www.roblox.com/deu/games/123", RobloxDestinationKind.UnresolvedUnknownLink)]
+    [InlineData("https://www.roblox.com/de/fr/games/123", RobloxDestinationKind.UnresolvedUnknownLink)]
+    [InlineData("https://www.roblox.com/de/catalog/123", RobloxDestinationKind.UnresolvedUnknownLink)]
+    public void OtherRobloxSurfaceFormsThatNameNoDestinationStayUnresolved(string input, RobloxDestinationKind expected)
+    {
+        var parsed = RobloxDestinationParser.Parse(input);
+        Assert.Equal(RobloxDestinationStatus.Unresolved, parsed.Status);
+        Assert.Equal(expected, parsed.Kind);
+        Assert.Null(parsed.RequestedDestination);
+        Assert.DoesNotContain("synthetic-sensitive-value", parsed.ToString());
+        Assert.DoesNotContain("synthetic-sensitive-value", JsonSerializer.Serialize(parsed));
+        Assert.DoesNotContain("synthetic-sensitive-value", parsed.Explanation);
+    }
+
+    // A server (job) ID names a server but not its game, and the game cannot be worked out locally.
+    [Theory]
+    [InlineData(Job)]
+    [InlineData(" 12345678-1234-4234-8234-123456789ABC ")]
+    public void ABareServerIdAsksForItsGameInsteadOfGuessing(string input)
+    {
+        var parsed = RobloxDestinationParser.Parse(input);
+        Assert.Equal(RobloxDestinationStatus.Unresolved, parsed.Status);
+        Assert.Equal(RobloxDestinationKind.UnresolvedJobWithoutPlace, parsed.Kind);
+        Assert.Null(parsed.RequestedDestination);
+        Assert.Contains("server ID", parsed.Explanation);
+        Assert.Contains("place ID", parsed.Explanation);
     }
 
     [Fact]

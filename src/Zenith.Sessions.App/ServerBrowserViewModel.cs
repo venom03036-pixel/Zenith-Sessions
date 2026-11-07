@@ -127,6 +127,12 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
             ?"Preferred place selected as a request. No account was launched or joined."
             :"Choose a positive place ID before browsing.");
     }
+    /// <summary>A checked friend invite's server: a request for that exact server, never evidence of room, access or arrival.</summary>
+    public void UseInvitedServer(long placeId,string jobId)
+    {
+        if(_replacingDestination || _stopping || !_canUse() || _lifetime.IsCancellationRequested) return;
+        ReplaceDestination(new RobloxRequestedDestination(placeId,jobId),"Server invite selected as a requested destination. Access, capacity, account identity and arrival remain unverified.");
+    }
     public bool UseFavoriteDestination(FavoriteDestination favorite)
     {
         if(_replacingDestination || _stopping || !_canUse() || _lifetime.IsCancellationRequested) return false;

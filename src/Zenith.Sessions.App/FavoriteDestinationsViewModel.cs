@@ -82,7 +82,7 @@ public sealed class FavoriteDestinationsViewModel : Observable,IAsyncDisposable
         if(!CanStart()) return Task.CompletedTask;
         if(SelectedFavorite is not { } selected || !Favorites.Contains(selected)) {Status="Select a saved favorite before renaming it.";return Task.CompletedTask;}
         FavoriteDestination draft;
-        try {draft=(selected with {Name=name}).Validated();}
+        try {draft=(selected with {Name=FavoriteDestination.ValidateName(name)}).Validated();}
         catch(ArgumentException ex) {ReportFailure(ex);return Task.CompletedTask;}
         return StartAsync(async token=>
         {
