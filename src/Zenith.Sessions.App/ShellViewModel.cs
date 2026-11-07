@@ -341,6 +341,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RefreshAuthorization=new(_=>AuthorizeSelectedAsync(true),Fail);
         DisconnectAccount=new(_=>DisconnectSelectedAsync(),Fail);
         CancelAuthorization=new(_=>_authorizationStop?.Cancel());
+        InitializeAccountHealthFeatures();
         CleanupCredentials=new(async _=> { if(!_ready) throw new AccountLinkException("Resolve the library startup error before retrying credential cleanup."); await CleanupCredentialsAsync(); },Fail);
         InitializeHandoffProbe(handoffProbe);
         InitializeNativeTrialFeatures();
@@ -530,7 +531,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         if(_linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
-        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,InspectNativeHandoff.Execution); }
+        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
         Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}"; AddEvent("Selected profiles removed.");
@@ -765,7 +766,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
         await _executableTrust.DisposeAsync();
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
-            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
+            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
         await DisposeRecipientBundlesAsync();
         await StopDirectoryFeaturesAsync();
@@ -825,7 +826,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _launchQueue.SignalPanic();
         if(QueueReady) await _launchQueue.InvalidateAuthorizationAsync(selected.Profile.Id,_lifetime.Token);
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
-        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,InspectNativeHandoff.Execution);
+        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution);
         await Task.Run(()=>_linkService.DisconnectAsync(selected.Profile.Id,_lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token);
         if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices.";
