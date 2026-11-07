@@ -37,6 +37,14 @@ public sealed partial class AccountRow
     }
     public void ClearPublicPresentation()
     {_publicData=null;Raise(nameof(Avatar));Raise(nameof(HasAvatar));Raise(nameof(PublicDisplayName));Raise(nameof(PublicProfileEvidence));}
+    private (long PlaceId,string Name)? _preferredGame;
+    /// <summary>Show the public name found for this row's preferred place. A name for any other place is ignored.</summary>
+    public void SetPreferredGameName(long placeId,string name)
+    {
+        if(placeId!=Profile.PreferredPlaceId || string.IsNullOrWhiteSpace(name)) return;
+        _preferredGame=(placeId,name);Raise(nameof(Destination));
+    }
+    public void ClearPreferredGameName() {if(_preferredGame is null) return;_preferredGame=null;Raise(nameof(Destination));}
     public void SetLaunchStatus(LaunchOperation? operation)
     {
         _launchState=operation?.State;_launchProblem=operation?.Problem??LaunchProblem.None;
@@ -54,6 +62,15 @@ public sealed partial class ShellViewModel
     /// <summary>Set by Panic and Lock; cleared only when Join a game is opened again or the account changes there, as favorites resume.</summary>
     private bool _recentlyPlayedSuspended;
     public Task PublicImageOperation=>_publicImageLoader.ActiveOperation;
+    /// <summary>A page holds 100 rows; past this many places the remembered names are dropped and asked again when selected.</summary>
+    private const int MaximumPreferredGameNames=100;
+    private IPublicRobloxGameDirectory? _preferredGameDirectory;
+    private readonly Dictionary<long,string> _preferredGameNames=new();
+    private readonly List<Task> _preferredGameRuns=[];
+    private CancellationTokenSource? _preferredGameStop;
+    private long _preferredGamePlace;
+    /// <summary>Every tracked preferred-game name lookup; completes once all started lookups have finished or been fenced out.</summary>
+    public Task PreferredGameNameOperation {get {_preferredGameRuns.RemoveAll(run=>run.IsCompleted);return _preferredGameRuns.Count==0?Task.CompletedTask:Task.WhenAll(_preferredGameRuns);}}
     private CancellationTokenSource? _publicRefreshStop;
     private long _directoryGeneration;
     private bool _favoritesReloadRequested, _favoritesReloadRunning;
@@ -76,6 +93,7 @@ public sealed partial class ShellViewModel
         if(serverDirectory is null) {_serverHttp=RobloxServerDirectory.CreatePublicHttpClient();serverDirectory=new RobloxServerDirectory(_serverHttp);}
         if(publicDirectory is null) {_publicHttp=RobloxPublicDirectory.CreateAnonymousHttpClient();publicDirectory=new RobloxPublicDirectory(_publicHttp,maximumEncodedMemoryBytes:32L*1024*1024);}
         ServerBrowser=new(serverDirectory,CanUseDirectories);_publicPresentation=new(publicDirectory);
+        _preferredGameDirectory=gameDirectory??publicDirectory as IPublicRobloxGameDirectory;
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
         ShareLink=new(_linkService,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
@@ -217,7 +235,51 @@ public sealed partial class ShellViewModel
         bool allowed=CanAutomaticallyLoadPublicImages();
         if(allowed==_publicImagesAllowed) return;
         _publicImagesAllowed=allowed;
-        if(allowed) QueueCurrentPublicImages(); else _publicImageLoader.CancelWork();
+        if(allowed) {QueueCurrentPublicImages();RefreshPreferredGameName();} else {_publicImageLoader.CancelWork();StopPreferredGameLookup();}
+    }
+    /// <summary>
+    /// Name the selected account's preferred game through the public game directory, as Join a game does. Only the selected
+    /// row asks, one place at a time, under the automatic headshot rule: runtime composition, Accounts page and window
+    /// visible, not after Panic or Lock. Found names stay in memory until Lock or Panic; a failure keeps "Place {id}".
+    /// </summary>
+    private void RefreshPreferredGameName()
+    {
+        if(_preferredGameDirectory is null) return;
+        var row=SelectedAccount;long place=row?.Profile.PreferredPlaceId??0;string? name=null;
+        bool known=place>0 && _preferredGameNames.TryGetValue(place,out name);
+        if(known) row!.SetPreferredGameName(place,name!);
+        bool ask=place>0 && !known && CanAutomaticallyLoadPublicImages();
+        if(ask && _preferredGameStop is not null && _preferredGamePlace==place) return; // The running lookup already covers this place.
+        StopPreferredGameLookup();
+        if(!ask) return;
+        var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _preferredGameStop=stop;_preferredGamePlace=place;
+        _preferredGameRuns.RemoveAll(run=>run.IsCompleted);
+        _preferredGameRuns.Add(LookupPreferredGameAsync(_preferredGameDirectory,place,_directoryGeneration,stop));
+    }
+    private void StopPreferredGameLookup()
+    {
+        var stop=_preferredGameStop;_preferredGameStop=null;_preferredGamePlace=0;
+        stop?.Cancel(); // The lookup disposes its own token source when it ends.
+    }
+    private async Task LookupPreferredGameAsync(IPublicRobloxGameDirectory games,long place,long epoch,CancellationTokenSource stop)
+    {
+        try
+        {
+            var result=await games.LookupGameAsync(place,stop.Token);
+            if(stop.IsCancellationRequested || epoch!=_directoryGeneration || !CanUseDirectories()
+                || result.State!=PublicDirectoryState.Success || result.Value is not { } game || game.RequestedPlaceId!=place || string.IsNullOrWhiteSpace(game.Name)) return;
+            if(_preferredGameNames.Count>=MaximumPreferredGameNames) _preferredGameNames.Clear();
+            _preferredGameNames[place]=game.Name;
+            if(SelectedAccount is { } row && Accounts.Contains(row) && row.Profile.PreferredPlaceId==place) row.SetPreferredGameName(place,game.Name);
+        }
+        catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        catch(Exception error) {_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());} // The name is decoration; "Place {id}" stands without it.
+        finally
+        {
+            if(ReferenceEquals(_preferredGameStop,stop)) {_preferredGameStop=null;_preferredGamePlace=0;}
+            stop.Dispose();
+        }
     }
     private void QueueCurrentPublicImages()
     {
@@ -304,6 +366,7 @@ public sealed partial class ShellViewModel
         RecipientBundles.CancelWork(clear);
         GameDetails.CancelWork(clear:true,clearCache:true);
         _publicPresentation.Clear();foreach(var row in Accounts) row.ClearPublicPresentation();
+        StopPreferredGameLookup();_preferredGameNames.Clear();foreach(var row in Accounts) row.ClearPreferredGameName();
         DestinationSearch.CancelWork(clearInput:true);
         RobloxFavorites.Cancel();
         _recentlyPlayedSuspended=true;RecentlyPlayed.Cancel();
@@ -313,7 +376,7 @@ public sealed partial class ShellViewModel
     {
         DisposeDestinationCapacity();
         CancelDirectoryFeatures(true);
-        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,AccountPower.Execution);
+        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,AccountPower.Execution,PreferredGameNameOperation);
         await _publicImageLoader.DisposeAsync();
         await DestinationSearch.DisposeAsync();
         await RobloxFavorites.DisposeAsync();

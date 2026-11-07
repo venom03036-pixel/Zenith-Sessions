@@ -41,11 +41,9 @@ public sealed partial class AccountRow(AccountProfile profile) : Observable
     }
     public void UpdateAuthorizationClock(DateTimeOffset now)
     { if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity));Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); } }
-    public string Destination => Profile.PreferredPlaceId switch
-    {
-        6564161046 => "Coloseum sword-fight", 110829983956014 => "Anime Card Clash", 2512643572 => "Bubble Gum Simulator",
-        85896571713843 => "Bubble Gum Simulator INFINITY", null => "No game selected", _ => $"Place {Profile.PreferredPlaceId}"
-    };
+    /// <summary>The preferred game: the public directory's name when one was found for this place (selected row only), else the place ID.</summary>
+    public string Destination => Profile.PreferredPlaceId is not { } place ? "No game selected"
+        : _preferredGame is { } game && game.PlaceId==place ? $"{game.Name} · Place {place}" : $"Place {place}";
     private bool _checked;
     public bool IsChecked { get => _checked; set => Set(ref _checked, value); }
 }
@@ -215,7 +213,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string Search { get => _search; set { if (Set(ref _search, value)) ScheduleQuery(); } }
     public GroupFilter Group { get => _group; set { if(_updatingGroups && value is null) return;if (Set(ref _group, value ?? GroupFilter.All) && !_updatingGroups) ScheduleQuery(); } }
     public AccountOrder Order { get => _order; set { if (Set(ref _order, value)) { Raise(nameof(SortChoice)); ScheduleQuery(); } } }
-    public AccountRow? SelectedAccount { get => _selected; set { if (Set(ref _selected, value)) { Raise(nameof(HasSelection)); RefreshDestinationCapacity(); RefreshJoinGameSources(); } } }
+    public AccountRow? SelectedAccount { get => _selected; set { if (Set(ref _selected, value)) { Raise(nameof(HasSelection)); RefreshDestinationCapacity(); RefreshJoinGameSources(); RefreshPreferredGameName(); } } }
     public bool HasSelection => SelectedAccount is not null;
     public bool CanNext => (_page + 1L) * 100 < _filteredTotal;
     public bool CanPrevious => _page > 0;
