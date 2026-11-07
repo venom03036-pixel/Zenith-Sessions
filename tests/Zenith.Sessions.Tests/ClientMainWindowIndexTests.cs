@@ -97,7 +97,8 @@ public sealed class ClientMainWindowIndexTests
     public async Task SampleProcessesUsesOneWindowEnumerationPerTick(int selfCopies)
     {
         // Stand-in clients: copies of this test process under the first client name, plus one child process of
-        // ours under the second. Their windows come from the synthetic desktop. No Roblox client is involved.
+        // ours under the second. Each is read through the native one-handle reader. Their windows come from the
+        // synthetic desktop. No Roblox client is involved.
         using var child = StartIdleChild();
         try
         {
@@ -105,13 +106,11 @@ public sealed class ClientMainWindowIndexTests
             nint selfWindow = 0x7A10, childWindow = 0x7A20;
             var windows = new FakeWindows((0x7A00, child.Id, true, true), (selfWindow, self, false, true),
                 (0x7A11, self, false, true), (childWindow, child.Id, false, true));
-            Process[] Find(string name) => name switch
-            {
-                "RobloxPlayerBeta" => Enumerable.Range(0, selfCopies).Select(_ => Process.GetProcessById(self)).ToArray(),
-                "RobloxPlayer" => [Process.GetProcessById(child.Id)],
-                _ => [],
-            };
-            using var monitor = new WindowsDesktopMonitor(TimeProvider.System, null, Find, windows);
+            var native = new NativeClientProcessSource("RobloxPlayerBeta", "RobloxPlayer", "Roblox");
+            var source = new FakeClientProcessSource { Reader = native.Read };
+            for (int copy = 0; copy < selfCopies; copy++) source.Clients.Add(new(self, 0, 1, 1, 1));
+            source.Clients.Add(new(child.Id, 1, 1, 1, 1));
+            using var monitor = new WindowsDesktopMonitor(TimeProvider.System, null, source, windows);
 
             var first = monitor.SampleProcesses(default);
 
@@ -130,7 +129,7 @@ public sealed class ClientMainWindowIndexTests
     public void SampleProcessesWithoutClientsScansNoWindows()
     {
         var windows = new FakeWindows((0x7A10, Environment.ProcessId, false, true));
-        using var monitor = new WindowsDesktopMonitor(TimeProvider.System, null, _ => [], windows);
+        using var monitor = new WindowsDesktopMonitor(TimeProvider.System, null, new FakeClientProcessSource(), windows);
         Assert.Empty(monitor.SampleProcesses(default).Sessions);
         Assert.Equal(0, windows.Enumerations);
     }

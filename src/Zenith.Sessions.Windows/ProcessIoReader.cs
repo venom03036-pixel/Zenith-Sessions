@@ -23,10 +23,17 @@ public static class ProcessIoReader
         ct.ThrowIfCancellationRequested();
         if (handle.IsInvalid || !SameInstance(handle, processId, expectedStartUtcTicks)) return null;
         ct.ThrowIfCancellationRequested();
-        bool read = Native.GetProcessIoCounters(handle, out var counters);
+        var counters = Read(handle);
         ct.ThrowIfCancellationRequested();
-        if (!read || !SameInstance(handle, processId, expectedStartUtcTicks)) return null;
+        if (counters is null || !SameInstance(handle, processId, expectedStartUtcTicks)) return null;
         ct.ThrowIfCancellationRequested();
+        return counters;
+    }
+
+    /// <summary>Counters through a caller-owned handle with PROCESS_QUERY_LIMITED_INFORMATION. The caller checks which process it is.</summary>
+    internal static ProcessIoCounters? Read(SafeProcessHandle handle)
+    {
+        if (!Native.GetProcessIoCounters(handle, out var counters)) return null;
         return new(counters.ReadTransferCount, counters.WriteTransferCount, counters.OtherTransferCount,
             counters.ReadOperationCount, counters.WriteOperationCount, counters.OtherOperationCount);
     }

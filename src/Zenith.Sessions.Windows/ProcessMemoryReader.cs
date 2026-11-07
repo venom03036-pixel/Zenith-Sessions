@@ -13,6 +13,12 @@ public static class ProcessMemoryReader
         if(processId<=0 || expectedStartUtcTicks<=0) return null;
         using var handle=Native.OpenProcess(0x1000,false,processId);
         if(handle.IsInvalid || !SameStart(handle,expectedStartUtcTicks)) return null;
+        var measured=Read(handle);
+        return measured is not null && SameStart(handle,expectedStartUtcTicks)?measured:null;
+    }
+    /// <summary>Counters through a caller-owned handle with PROCESS_QUERY_LIMITED_INFORMATION. The caller checks which process it is.</summary>
+    internal static ProcessMemoryReading? Read(SafeProcessHandle handle)
+    {
         uint full=(uint)Marshal.SizeOf<Native.MemoryCounters>();
         var memory=new Native.MemoryCounters { Size=full };
         bool extended=Native.K32GetProcessMemoryInfo(handle,ref memory,full);
@@ -21,7 +27,7 @@ public static class ProcessMemoryReader
             memory=new() { Size=(uint)(8+9*IntPtr.Size) };
             if(!Native.K32GetProcessMemoryInfo(handle,ref memory,memory.Size)) return null;
         }
-        if(!SameStart(handle,expectedStartUtcTicks) || (ulong)memory.WorkingSet>long.MaxValue || (ulong)memory.PrivateUsage>long.MaxValue
+        if((ulong)memory.WorkingSet>long.MaxValue || (ulong)memory.PrivateUsage>long.MaxValue
             || extended && (ulong)memory.PrivateWorkingSet>long.MaxValue) return null;
         return new((long)memory.WorkingSet,(long)memory.PrivateUsage,extended?(long)memory.PrivateWorkingSet:null,memory.PageFaultCount);
     }
