@@ -183,7 +183,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly SemaphoreSlim _preferencesWriter = new(1, 1);
     private int _pendingSaves;
     private bool _saveFailed;
-    private bool _panicRegistered;
     private string _pressureNotice="Waiting for a coherent resource sample.",_diagnosticsStatus="Diagnostics starting";
     private string _credentialCleanupStatus="Credential cleanup has not run.";
     // Set once by the startup sign-in folder sweep; empty when nothing was kept. Kept with each credential cleanup status.
@@ -191,13 +190,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string CredentialCleanupStatus { get=>_credentialCleanupStatus; private set=>Set(ref _credentialCleanupStatus,value); }
     public string PressureNotice { get=>_pressureNotice; private set=>Set(ref _pressureNotice,value); }
     public string DiagnosticsStatus { get=>_diagnosticsStatus; private set=>Set(ref _diagnosticsStatus,value); }
-    public string PanicLabel=>_panicRegistered?"Panic stop · F12":"Panic stop";
-    public string PanicShortcutStatus=>IsSample?"Isolated sample previews do not register global shortcuts. F12 works while this preview is focused; Panic stop is also available.":_panicRegistered?"F12 is registered globally for this manager.":"Global F12 is unavailable, usually because Zenith already owns it. The Panic button and focused F12 remain available; existing shortcuts are preserved.";
     private int _queryGeneration, _page;
     private int _filteredTotal;
     private bool _updatingGroups;
     private bool _ready, _locked;
-    private string _tab = "Overview", _search = "", _notice = "Starting local services…";
+    private string _tab = "Overview", _search = "", _notice = "Starting local services…", _errorNotice = "";
     private GroupFilter _group=GroupFilter.All;
     private AccountOrder _order;
     private AccountRow? _selected;
@@ -206,6 +203,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private string _pageLabel = "0 accounts", _saveStatus = "Not loaded";
     public string DataRoot { get; }
     public bool IsSample { get; }
+    // Several managers can run at once (one per data folder), so the tray, window and taskbar say which one this is.
+    public string InstanceTitle { get; }
     public bool IsReady=>_ready;
     public string ProductLabel => IsSample ? "ISOLATED SAMPLE LIBRARY" : "PERSONAL · LOCAL STORAGE";
     public ObservableCollection<AccountRow> Accounts { get; } = [];
@@ -224,13 +223,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public IReadOnlyList<AccountOrder> Orders { get; } = Enum.GetValues<AccountOrder>();
     public IReadOnlyList<AccountSortChoice> SortChoices { get; } = [new("Name",AccountOrder.Name),new("Priority",AccountOrder.Priority),new("Recently updated",AccountOrder.RecentlyUpdated),new("Favorites first",AccountOrder.FavoritesFirst)];
     public AccountSortChoice SortChoice { get=>SortChoices.First(c=>c.Value==Order); set { if(value is not null) Order=value.Value; } }
-    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources();if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
+    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources();if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
     public bool IsOverview => Tab == "Overview"; public bool IsAccounts => Tab == "Accounts"; public bool IsSessions => Tab == "Sessions";
     public bool IsAutomation => Tab == "Automation"; public bool IsSettings => Tab == "Settings"; public bool IsGuide => Tab == "Guide";
     public bool IsJoinGame=>Tab=="JoinGame";
     public bool IsSessionWorkspace=>IsSessions || IsJoinGame;
     public bool IsDiagnostics=>Tab=="Diagnostics";
     public bool IsWindows=>Tab=="Windows";
+    // The open page as the sidebar names it. The window title leads with it (taskbar, Alt-Tab) and the window announces it to
+    // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
+    public string PageName=>IsJoinGame?"Join a game":Tab;
+    public string WindowTitle=>PageName+" · "+InstanceTitle;
     public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
     public bool CompactLayout { get=>_compactLayout; set=>Set(ref _compactLayout,value); }
@@ -244,6 +247,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string EmptyAccountsText => !_ready?(_libraryUnavailable?"Library unavailable. Existing files were preserved; open Settings for recovery.":"Opening your local library…")
         :AccountCount == 0 ? "Add your first account profile to get started." : "No profiles match this search or group.";
     public string Notice { get => _notice; private set => Set(ref _notice, value); }
+    /// <summary>
+    /// The last failure, shown beside <see cref="Notice"/> in the error colour until it is dismissed, replaced by a newer
+    /// failure or cleared by Panic or Lock, so a later notice cannot hide it. Empty when there is none.
+    /// </summary>
+    public string ErrorNotice => _errorNotice;
+    public bool HasErrorNotice => _errorNotice.Length > 0;
+    public Command DismissError { get; }
     public string PageLabel { get => _pageLabel; private set => Set(ref _pageLabel, value); }
     public string SaveStatus { get => _saveStatus; private set => Set(ref _saveStatus, value); }
     public int AccountCount { get => _accountCount; private set => Set(ref _accountCount, value); }
@@ -262,6 +272,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string OAuthClientId { get => _oauthClientId; set { if (Set(ref _oauthClientId, value)) PreferencesEdited(); } }
     public string CallbackPort { get => _callbackPort; set { if (Set(ref _callbackPort,value)) PreferencesEdited(); } }
     public string CallbackUrl => int.TryParse(CallbackPort,out int port) ? $"http://localhost:{port}/zenith/oauth/" : "Enter a valid callback port";
+    private bool _closeButtonExits;
+    /// <summary>Settings draft: the window's close button exits this manager instead of hiding it to the tray. Applies after Save settings.</summary>
+    public bool CloseButtonExits { get => _closeButtonExits; set { if (Set(ref _closeButtonExits, value)) PreferencesEdited(); } }
+    /// <summary>The close button's name and tooltip: what it does with the saved choice, never an unsaved draft.</summary>
+    public string CloseButtonLabel => _savedSettings.CloseButtonExits ? "Exit manager" : "Close to tray";
+    /// <summary>
+    /// UI thread, when the window is asked to close: true when the saved choice is to exit and this manager is not already
+    /// stopping (tray Exit under way, or Windows ending the session), so a close never starts a second exit. False keeps the
+    /// default, hide to the tray.
+    /// </summary>
+    internal bool CloseButtonExitsNow => _savedSettings.CloseButtonExits && !_shuttingDown;
     public bool IsAuthorizing => _authorizationStop is not null;
     public string ThemeName => ThemeCatalog.Resolve(_settings.Theme).Name;
     public Command Navigate { get; }
@@ -299,9 +320,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxSessionClient? sessionClient=null,IClientExecutableTrustVerifier? executableTrust=null,IRecipientBundleStore? recipientBundleStore=null,
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
-        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null)
+        IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
+        TimeProvider? idleClock=null)
     {
-        DataRoot = root; IsSample = sample; _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        _idleLock=new(idleClock);
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
@@ -338,8 +361,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
+        DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
@@ -372,8 +396,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeSettingsSearch();
     }
 
+    // Once shutdown has begun the workspace never opens: the window's Loaded event can still arrive late, for example
+    // while a startup-failure message is open, and an initialization started then would run outside DisposeAsync's wait.
     public Task InitializeAsync()
-    { if(!_initializationStarted) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
+    { if(!_initializationStarted && !_shuttingDown) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
     private async Task InitializeCoreAsync()
     {
         // The startup catch-all names the stage that was running, so a failure says which subsystem stopped startup.
@@ -386,9 +412,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             SpareRam = limits.SparePhysicalGiB.ToString(CultureInfo.CurrentCulture); PhysicalPerClient = limits.NewClientPhysicalGiB.ToString(CultureInfo.CurrentCulture);
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
+            _closeButtonExits=_settings.CloseButtonExits;
+            _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
+            _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
@@ -433,7 +462,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             await RecipientBundles.LoadAsync(_lifetime.Token);
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _ready=false; _libraryUnavailable=true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
+        catch (Exception ex) { _ready=false; _libraryUnavailable=true; ApplySavedPanicShortcut(); RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
     }
     private void ScheduleQuery()
     {
@@ -847,12 +876,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if (!string.IsNullOrWhiteSpace(MaximumClients)) { if (!int.TryParse(MaximumClients, out int value) || value < 1) throw new ArgumentException("The optional client limit must be a positive whole number."); maximum = value; }
         var limits = (_savedSettings.Capacity! with { SparePhysicalGiB = spare, NewClientPhysicalGiB = physical, NewClientCommitGiB = commit, UserMaximum = maximum }).Validated();
         var performance=ReadPerformanceDraft();
+        if(!PanicShortcut.TryParse(PanicShortcutText,out var panicShortcut,out string panicProblem)) throw new ArgumentException(panicProblem);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft() }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString() }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         await SaveCurrentSettingsAsync(requested);
+        ShowSavedPanicShortcut(panicShortcut);
     }
     private void PreferencesEdited()
     {
@@ -863,6 +894,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
+            && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -870,27 +902,46 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
     {
-        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;
+        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
         try
         {
             await _preferencesWriter.WaitAsync(_lifetime.Token);
             try
             {
-                // Appearance autosaves merge with the latest successful explicit save,
+                // Appearance and window-position autosaves merge with the latest successful explicit save,
                 // even when they waited behind it. Never persist uncommitted field drafts.
-                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense };
+                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
-                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts };
+                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
+                Raise(nameof(CloseButtonLabel));
+                if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
+                // Only Save settings registers the saved panic shortcut, or tries a refused one again; autosaves leave it alone.
+                if (requested is not null && !ApplySavedPanicShortcut()) Notice = "Preferences saved. " + PanicShortcutStatus;
             }
             finally { _preferencesWriter.Release(); }
         }
         catch { _saveFailed = true; throw; }
         finally { _pendingSaves--; PreferencesEdited(); }
+    }
+    /// <summary>UI thread, before the window is first shown: where it was left last time, or null. Read-only; see SettingsStore.ReadManagerWindow.</summary>
+    internal ManagerWindowPlacement? ReadSavedManagerWindow()=>_settingsStore.ReadManagerWindow();
+    /// <summary>
+    /// UI thread, at exit before <see cref="DisposeAsync"/>: keeps where the window was left through the same merge as the theme
+    /// autosave, so unsaved setting edits are never written. Skipped when nothing changed, when startup did not finish, and while
+    /// recovered settings wait for review, because an exit must not repair them silently. A failed save is recorded by type only
+    /// (Rule 10) and never stops the exit.
+    /// </summary>
+    internal async Task SaveManagerWindowAsync(ManagerWindowPlacement? placement)
+    {
+        if(placement is null || !placement.IsValid || !_ready || _shuttingDown || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
+        _settings=_settings with { ManagerWindow=placement };
+        try { await SaveCurrentSettingsAsync(); }
+        catch(Exception ex) { _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType()); }
     }
     public async Task RequestCloseAsync(SessionObservation session)
     {
@@ -899,23 +950,107 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(requested) RecentClients.RecordCloseRequest(new(null,session.ProcessId,session.ProcessStartUtcTicks),requestedAt);
         Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
     }
-    public void LockDashboard() { StopOperations("Controls locked. Monitoring continues; automation requires explicit restart.",ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
-    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelDiagnosticExport();CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
-    private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
-    public void Fail(Exception exception,ManagerSubsystem subsystem)
+    public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
+    private void LockControls(string reason)=>StopOperations(reason,ManagerEventKind.ControlsLocked);
+    /// <summary>
+    /// Panic and Lock are absolute (Rule 11). Every step runs on its own, in the same order as before, so one that throws (a
+    /// cancellation callback or a property-changed handler, for example) never skips the launch-queue stop, the pause, the lock
+    /// or the notice after it. A failed step is kept by type only (Rule 10) and shown as an error once every step has run.
+    /// </summary>
+    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic)
     {
-        Notice = exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
+        bool locking=kind==ManagerEventKind.ControlsLocked;
+        List<Type>? failed=null;
+        void Step(Action step) { try { step(); } catch(Exception ex) { (failed??=[]).Add(ex.GetType()); } }
+        Step(HoldQueuePresentation);Step(()=>MacroAssignments.CancelWork());Step(()=>MacroHostCatalog.CancelWork());
+        Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;
+        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
+        Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
+        Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
+        Step(_launchQueue.SignalPanic);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopGroupChanges);
+        Step(CancelPerformanceTransfers);Step(CancelInstallationWork);Step(()=>CancelDirectoryFeatures(locking));
+        _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
+        Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
+        // Every listener hears Panic, even after an earlier one throws.
+        if(PanicRequested is {} listeners) foreach(Action listener in listeners.GetInvocationList()) Step(listener);
+        Step(ClearError);Step(()=>Notice=reason);Step(()=>AddEvent(reason));_diagnostics.Record(kind);
+        if(locking) { Step(()=>ClearSettingsSearch.Execute(null));Step(()=>IsLocked=true); }
+        if(failed is null) return;
+        // Every step has run. The stop notice stays; the error says the stop may be incomplete and how to recover.
+        string stop=locking?"Lock":"Panic";
+        foreach(var type in failed) _diagnostics.RecordFailure(ManagerSubsystem.Lifecycle,type);
+        foreach(var type in failed) AddEvent($"{stop} step failed ({type.Name}).");
+        ShowError($"{stop} ran every stop step, but {failed.Count} failed. Only the error types were saved to Diagnostics. Restart Zenith Sessions before starting automation again.");
+    }
+    private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
+    /// <summary>Shows the standard message for <paramref name="exception"/> as the error and records the failure, by type only, against <paramref name="subsystem"/>.</summary>
+    public void Fail(Exception exception,ManagerSubsystem subsystem)=>Fail(exception,subsystem,
+        exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
             :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException or ReportFileException ? exception.Message
-            : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.";
+            : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.");
+    /// <summary>Shows <paramref name="message"/> as the error and records the failure by type only, naming the subsystem that failed. The message is shown as given, so it must carry no secrets (Rule 10).</summary>
+    public void Fail(Exception exception,ManagerSubsystem subsystem,string message)
+    {
+        ShowError(message);
         AddEvent($"Operation failed ({exception.GetType().Name}).");
         _diagnostics.RecordFailure(subsystem,exception.GetType());
         // After a startup failure or monitor fault no sample loop refreshes diagnostics, so the
         // failure itself updates the status and, when the tab is open, the visible rows.
         RefreshDiagnosticsView();
     }
-    public void Inform(string message) => Notice = message;
-    public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
+    // Raised even when the text is unchanged, so the footer's live region announces a repeated failure again.
+    private void ShowError(string message) { _errorNotice=message; Raise(nameof(ErrorNotice)); Raise(nameof(HasErrorNotice)); }
+    private void ClearError() { if(_errorNotice.Length>0) ShowError(""); }
+    // Last-chance seam for UnhandledExceptionGuard. Only a Type crosses it: exception messages can carry
+    // links, share codes or account names (Rule 10), so it never goes through Fail(), which echoes some messages.
+    internal bool IsShuttingDown=>_shuttingDown;
+    /// <summary>UI thread only. Shows a fixed error for a fault that escaped every handler; Panic and Lock notices stay.</summary>
+    internal void ContainUnhandled(Type errorType)
+    {
+        if(!IsLocked && !_preserveStopNotice)
+            ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
+        AddEvent($"Unexpected error caught ({errorType.Name}).");
+        _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);
+    }
+    /// <summary>Any thread. False once this shell's log has begun closing, so the caller must keep its own record.</summary>
+    internal bool TryRecordUnhandled(Type errorType)=>_diagnostics.TryRecord(ManagerEventKind.OperationFailed,errorType);
+    /// <summary>Flushes and closes this shell's log; idempotent, and later records are ignored. Used only when nothing else will flush it.</summary>
+    internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
+    // Raised even when the text is unchanged, so the footer's live region announces a repeated notice, such as a second copy, again.
+    public void Inform(string message) { if(!Set(ref _notice,message,nameof(Notice))) Raise(nameof(Notice)); }
+    /// <summary>
+    /// UI thread only. Windows is signing out, restarting or shutting down, and WPF closes every window next without
+    /// the tray Exit path, so <see cref="DisposeAsync"/> never runs. Stops all work exactly as exit does, records
+    /// Shutdown and waits at most <paramref name="flushBudget"/> for the log to reach disk; true when it did. Safe to
+    /// repeat and safe before, during or after DisposeAsync: the log takes one Shutdown record and ignores later ones.
+    /// </summary>
+    internal bool PrepareForSessionEnd(TimeSpan flushBudget)
+    {
+        BeginShutdown();
+        _diagnostics.Record(ManagerEventKind.Shutdown);
+        // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
+        return _diagnostics.DisposeAsync().AsTask().Wait(flushBudget);
+    }
     public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    // First, synchronous stage of every exit (tray Exit and Windows session end), once: nothing new may start
+    // and every in-flight operation is cancelled, in this order, before any owner is awaited.
+    private void BeginShutdown()
+    {
+        if(_shuttingDown) return;
+        _shuttingDown=true;
+        StopIdleLock();
+        StopClientPriorityOperations();
+        DestinationSearch?.CancelWork(clearInput:true);
+        MacroAssignments.CancelWork();
+        MacroHostCatalog.CancelWork();
+        DisposeSettingsSearch();
+        RefreshClientPreviewContext();
+        CancelPerformanceTransfers();
+        CancelInstallationWork();
+        RecipientBundles.CancelWork();
+        _launchQueue.SignalPanic();
+        _lifetime.Cancel(); _queryCancellation?.Cancel(); _authorizationStop?.Cancel();
+    }
     // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
     // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
     private async Task DisposeCoreAsync()
@@ -932,48 +1067,53 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task DisposeOwnersAsync()
     {
-        _shuttingDown=true;
-        StopClientPriorityOperations();
-        DestinationSearch?.CancelWork(clearInput:true);
-        MacroAssignments.CancelWork();
-        MacroHostCatalog.CancelWork();
-        DisposeSettingsSearch();
-        RefreshClientPreviewContext();
-        CancelPerformanceTransfers();
-        CancelInstallationWork();
-        RecipientBundles.CancelWork();
-        _launchQueue.SignalPanic();
-        _lifetime.Cancel(); _queryCancellation?.Cancel(); _authorizationStop?.Cancel();
+        BeginShutdown();
         await DisposeClientPriorityFeaturesAsync();
         await _initializeTask;
-        await DisposeMacroAssignmentsAsync();
-        await MacroHostCatalog.DisposeAsync();
+        // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
+        // the Shutdown record, or exit's warning about client priorities Windows could not restore.
+        await StopOwnerAsync(DisposeMacroAssignmentsAsync);
+        await StopOwnerAsync(()=>MacroHostCatalog.DisposeAsync());
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
-        await _executableTrust.DisposeAsync();
+        await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
-        await DisposeRecipientBundlesAsync();
-        await StopDirectoryFeaturesAsync();
-        await RecentClients.DisposeAsync();
+        await StopOwnerAsync(DisposeRecipientBundlesAsync);
+        await StopOwnerAsync(StopDirectoryFeaturesAsync);
+        await StopOwnerAsync(()=>RecentClients.DisposeAsync());
         try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex,ManagerSubsystem.Previews);}
         await DisposeClientWindowFeaturesAsync();
         await _favoritesReloadTask;
-        await DestinationFavorites.DisposeAsync();
+        await StopOwnerAsync(()=>DestinationFavorites.DisposeAsync());
         await Task.WhenAll(DestinationFavorites.Refresh.Execution,DestinationFavorites.SaveCurrent.Execution,DestinationFavorites.Rename.Execution,DestinationFavorites.Delete.Execution);
-        (_favoriteStore as IDisposable)?.Dispose();
+        StopOwner(_favoriteStore as IDisposable);
         if (_logCorrelator is not null)
             try { await _logCorrelator.DisposeAsync(); }
             catch (Exception ex) { Fail(ex,ManagerSubsystem.Telemetry); } // Optional diagnostics must not prevent vault/queue/native owner cleanup.
-        await _launchQueue.DisposeAsync();_launchQueue.Changed-=QueueChanged;_launchQueue.Faulted-=QueueFaulted;_queueStore.Dispose();
-        await DisposeNativeTrialFeaturesAsync();
-        _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); _credentialCleanup.Dispose(); await _linkService.DisposeAsync();
-        if(_signIn is IAsyncDisposable signInOwner) await signInOwner.DisposeAsync();
-        _identityProjection.Dispose(); _vault.Dispose(); (_sessionClient as IDisposable)?.Dispose();
-        (_accounts as IDisposable)?.Dispose(); (_monitor as IDisposable)?.Dispose(); _settingsStore.Dispose();_sampleSerial.Dispose();
+        // A launch queue that cannot confirm its native provider stopped still lets the native trial, sign-in and vault owners stop.
+        await StopOwnerAsync(()=>_launchQueue.DisposeAsync());_launchQueue.Changed-=QueueChanged;_launchQueue.Faulted-=QueueFaulted;StopOwner(_queueStore);
+        await StopOwnerAsync(DisposeNativeTrialFeaturesAsync);
+        _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); StopOwner(_credentialCleanup); await StopOwnerAsync(()=>_linkService.DisposeAsync());
+        if(_signIn is IAsyncDisposable signInOwner) await StopOwnerAsync(()=>signInOwner.DisposeAsync());
+        StopOwner(_identityProjection); StopOwner(_vault); StopOwner(_sessionClient as IDisposable);
+        StopOwner(_accounts as IDisposable); StopOwner(_monitor as IDisposable); StopOwner(_settingsStore);_sampleSerial.Dispose();
+    }
+    // Shutdown only. Cancellation is expected while stopping (Error Handling Standards); any other fault keeps its type only (Rule 10, via Fail).
+    private async Task StopOwnerAsync(Func<ValueTask> stop)
+    {
+        try { await stop(); }
+        catch (OperationCanceledException) { }
+        catch (Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
+    }
+    private Task StopOwnerAsync(Func<Task> stop)=>StopOwnerAsync(()=>new ValueTask(stop()));
+    private void StopOwner(IDisposable? owner)
+    {
+        try { owner?.Dispose(); }
+        catch (Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
     }
     private async Task AuthorizeSelectedAsync(bool refresh)
     {

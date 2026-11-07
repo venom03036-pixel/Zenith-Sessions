@@ -137,8 +137,8 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(original, await File.ReadAllBytesAsync(destination));
             Assert.DoesNotContain("Launch evidence saved", shell.Notice, StringComparison.OrdinalIgnoreCase);
             // The held file is in the folder the user chose, so the notice points there, not at the data folder.
-            Assert.Contains("chosen folder", shell.Notice, StringComparison.Ordinal);
-            Assert.DoesNotContain("data folder", shell.Notice, StringComparison.Ordinal);
+            Assert.Contains("chosen folder", shell.ErrorNotice, StringComparison.Ordinal);
+            Assert.DoesNotContain("data folder", shell.ErrorNotice, StringComparison.Ordinal);
             Assert.Empty(Directory.EnumerateFiles(output.Path, "*.tmp", SearchOption.TopDirectoryOnly));
         }
         shell.ExportLaunchEvidence.Execute(destination); await shell.ExportLaunchEvidence.Execution;
@@ -159,7 +159,7 @@ public sealed partial class ClientWindowIntegrationTests
         byte[] original = await File.ReadAllBytesAsync(settings);
         shell.ExportLaunchEvidence.Execute(settings); await shell.ExportLaunchEvidence.Execution;
         Assert.Equal(original, await File.ReadAllBytesAsync(settings));
-        Assert.Contains("outside the app", shell.Notice, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("outside the app", shell.ErrorNotice, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("Launch evidence saved", shell.Notice, StringComparison.OrdinalIgnoreCase);
         Assert.Empty(Directory.EnumerateFiles(_root, "settings.json.*.tmp", SearchOption.TopDirectoryOnly));
     });

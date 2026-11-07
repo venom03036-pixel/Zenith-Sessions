@@ -48,10 +48,12 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         _writer=Task.Run(()=>WriteAsync(_stop.Token));
     }
     /// <summary>Records without waiting for disk. Valid calls after disposal are ignored; invalid kinds are rejected.</summary>
-    public void Record(ManagerEventKind kind,Type? errorType=null)
+    public void Record(ManagerEventKind kind,Type? errorType=null)=>TryRecord(kind,errorType);
+    /// <summary>Same as <see cref="Record"/>, but reports whether this log took the event (false once disposal has begun).</summary>
+    public bool TryRecord(ManagerEventKind kind,Type? errorType=null)
     {
         if(!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
-        Append(kind,errorType,null);
+        return Append(kind,errorType,null);
     }
     /// <summary>Records an <see cref="ManagerEventKind.OperationFailed"/> event that names the subsystem that failed.</summary>
     public void RecordFailure(ManagerSubsystem subsystem,Type? errorType=null)
@@ -59,12 +61,12 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         if(!Enum.IsDefined(subsystem)) throw new ArgumentOutOfRangeException(nameof(subsystem));
         Append(ManagerEventKind.OperationFailed,errorType,subsystem);
     }
-    private void Append(ManagerEventKind kind,Type? errorType,ManagerSubsystem? subsystem)
+    private bool Append(ManagerEventKind kind,Type? errorType,ManagerSubsystem? subsystem)
     {
         string? safeError=SafeErrorType(errorType);
         lock(_gate)
         {
-            if(_disposed || _sequence==long.MaxValue) return;
+            if(_disposed || _sequence==long.MaxValue) return false;
             var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError,Subsystem:subsystem);
             _journal[_nextJournal]=entry;_nextJournal=(_nextJournal+1)%JournalCapacity;
             if(_journalCount<JournalCapacity) _journalCount++;
@@ -75,6 +77,7 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
                 case DiagnosticLevel.Error:_errorCount++;break;
             }
             if(!_events.Writer.TryWrite(entry)) _dropped++;
+            return true;
         }
     }
     public ManagerDiagnosticSnapshot GetSnapshot()

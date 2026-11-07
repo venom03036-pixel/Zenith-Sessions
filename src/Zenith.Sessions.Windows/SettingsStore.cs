@@ -15,14 +15,21 @@ public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = 
 
 public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-mint", bool DenseAccounts = false,
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
-    ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null)
+    ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
+    ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12")
 {
+    // ManagerWindow, CloseButtonExits, IdleLockMinutes and PanicShortcut are optional within schema 1: files without them load
+    // unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the
+    // tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without PanicShortcut the global
+    // panic shortcut is F12.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
-            || OAuthCallbackPort is < 1024 or > 65535) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
+            || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes)
+            || !global::Zenith.Sessions.Core.PanicShortcut.TryParse(PanicShortcut, out _, out _)) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
         (Capacity ?? new()).Validated();
         (Performance ?? new()).Validated();
+        ManagerWindow?.Validated();
         return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated() };
     }
 }
@@ -67,6 +74,39 @@ public sealed class SettingsStore(string root) : IDisposable
             }
         }
         finally { _writer.Release(); }
+    }
+    /// <summary>
+    /// UI thread, before the manager window is first shown: the window placement in the main settings file, or null when there
+    /// is none or the file cannot be read right now. Read-only and best effort, so the window opens at its default place instead;
+    /// it never creates, repairs or recovers files, and any real settings problem is still reported by <see cref="LoadAsync"/>.
+    /// </summary>
+    public ManagerWindowPlacement? ReadManagerWindow()
+    {
+        if (!_writer.Wait(0)) return null;
+        try { return ReadMainBeforeShow(Path)?.ManagerWindow; }
+        finally { _writer.Release(); }
+    }
+    /// <summary>
+    /// UI thread, at startup before the workspace and its store exist (so nothing in this process writes settings yet): the theme
+    /// id saved in the main settings file under <paramref name="root"/>, or null, so the first frame uses the saved palette.
+    /// Same best-effort rules as <see cref="ReadManagerWindow"/>: one bounded read of the main file only (never the backup or
+    /// temporary copy), null on any problem, and never creates, repairs or recovers files. <see cref="LoadAsync"/> still decides.
+    /// </summary>
+    public static string? ReadTheme(string root) => ReadMainBeforeShow(System.IO.Path.Combine(root, "settings.json"))?.Theme;
+    private static SessionsSettings? ReadMainBeforeShow(string path)
+    {
+        try
+        {
+            if (!Exists(path)) return null;
+            byte[] bytes;
+            using (var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (file.Length > MaximumBytes) return null;
+                bytes = new byte[(int)file.Length]; file.ReadExactly(bytes);
+            }
+            return Decode(bytes, CancellationToken.None).Settings;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidDataException) { return null; }
     }
     private static string? Notice(SettingsRead read, string? notice)
     {

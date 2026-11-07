@@ -269,6 +269,30 @@ public sealed partial class ClientPreviewPresentationTests
     });
 
     [Fact]
+    public Task ShellDisposeFinishesCleanupAndKeepsPendingRestoreWhenALaterOwnerDisposalThrows()=>OnUi(async ()=>
+    {
+        var control=new PriorityControlProbe{RestoreFails=true};var monitor=new PriorityDesktopMonitor(1);var signIn=new FailingSignInOwner();
+        var shell=await ReadyPriority(monitor,control,signIn:signIn);shell.SelectedSession=shell.Sessions[0];
+        shell.SetClientsBelowNormalPriority.Execute(null);await shell.SetClientsBelowNormalPriority.Execution;
+        Assert.Equal(1,shell.PendingPriorityRestoreCount);
+        var diagnostics=(ManagerDiagnostics)typeof(ShellViewModel).GetField("_diagnostics",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        long errorsBefore=diagnostics.GetSnapshot().ErrorCount;
+
+        var escaped=await Record.ExceptionAsync(()=>shell.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+
+        Assert.Null(escaped);
+        Assert.Equal(1,signIn.Disposals);
+        // The sign-in owner stops before the monitor, so the monitor's disposal proves the later owners still ran.
+        Assert.True(monitor.Disposed,"The desktop monitor was not disposed after the sign-in owner failed to stop.");
+        // Exit reads this after DisposeAsync to warn which client priorities Windows could not restore.
+        Assert.Equal(1,shell.PendingPriorityRestoreCount);
+        var snapshot=diagnostics.GetSnapshot();
+        Assert.True(snapshot.ErrorCount>errorsBefore);
+        Assert.Contains(snapshot.Events,row=>row.Kind==ManagerEventKind.OperationFailed && row.ErrorType=="InvalidOperationException");
+        Assert.Equal(ManagerEventKind.Shutdown,snapshot.Events[^1].Kind);
+    });
+
+    [Fact]
     public Task PrioritySampleAllowsAnExplicitInjectedControl()=>OnUi(async ()=>
     {
         var control=new PriorityControlProbe();var monitor=new PriorityDesktopMonitor(1);
@@ -286,11 +310,11 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Empty(shell.ClientPriorityResults);Assert.Equal(0,shell.PendingPriorityRestoreCount);
     });
 
-    private async Task<ShellViewModel> ReadyPriority(PriorityDesktopMonitor monitor,PriorityControlProbe? control,bool sample=false)
+    private async Task<ShellViewModel> ReadyPriority(PriorityDesktopMonitor monitor,PriorityControlProbe? control,bool sample=false,IRobloxSessionSignIn? signIn=null)
     {
         var capture=new PreviewProvider();
         var shell=new ShellViewModel(_root,sample,Dispatcher.CurrentDispatcher,monitor,
-            new NoPublicDirectory(),new NoServerDirectory(),previewProvider:capture,clientPriority:control);
+            new NoPublicDirectory(),new NoServerDirectory(),previewProvider:capture,signIn:signIn,clientPriority:control);
         try
         {
             await shell.InitializeAsync();await Refresh(shell);Assert.True(shell.IsReady,shell.Notice);
@@ -353,10 +377,17 @@ public sealed partial class ClientPreviewPresentationTests
             finally{Order.Enqueue("dispose-terminal");}
         }
     }
-    private sealed class PriorityDesktopMonitor(int count):IDesktopMonitor
+    private sealed class FailingSignInOwner:IRobloxSessionSignIn,IAsyncDisposable
+    {
+        internal int Disposals;
+        public Task<RobloxSessionCredential> SignInAsync(Guid profileId,CancellationToken ct)=>throw new InvalidOperationException("No sign-in expected.");
+        public ValueTask DisposeAsync(){Disposals++;throw new InvalidOperationException("Synthetic sign-in owner could not stop.");}
+    }
+    private sealed class PriorityDesktopMonitor(int count):IDesktopMonitor,IDisposable
     {
         internal string? Invalid;
-        internal bool Windowless;
+        internal bool Windowless,Disposed;
+        public void Dispose()=>Disposed=true;
         private long _revision;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {

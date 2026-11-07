@@ -234,6 +234,17 @@ public sealed class AccountsWorkspaceTests
         public Command SetSelectedAsMain {get;}=new(_=>{});
         public Command RefreshPublicAccount {get;}=new(_=>{});
     }
+    [Fact]
+    public void LockOverlayDoesNotPromiseReconnectWhileReconnectIsUnavailable()
+    {
+        var reconnect=Assert.Single(ProviderCapabilities.Current,capability=>capability.Name=="Named-account launch & reconnect");
+        Assert.Equal(CapabilityState.Unavailable,reconnect.State);
+        var overlay=Assert.Single(Document().Descendants(Ui+"TextBlock"),element=>((string?)element.Attribute("Text"))?.StartsWith("Account details are hidden",StringComparison.Ordinal)==true);
+        Assert.Contains(overlay.Ancestors(Ui+"Border"),border=>((string?)border.Attribute("Visibility"))?.Contains("IsLocked",StringComparison.Ordinal)==true);
+        string text=(string)overlay.Attribute("Text")!;
+        Assert.DoesNotContain("reconnect",text,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("automation requires an explicit restart",text,StringComparison.Ordinal);
+    }
     private static XDocument Document(){using var input=typeof(AccountsWorkspaceTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;return XDocument.Load(input);}
     private static T Named<T>(DependencyObject root,string name) where T:FrameworkElement=>Visual(root).OfType<T>().Single(element=>element.Name==name);
     private static IEnumerable<DependencyObject> Visual(DependencyObject root)

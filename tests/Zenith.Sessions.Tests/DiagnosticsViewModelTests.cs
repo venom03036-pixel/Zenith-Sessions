@@ -101,9 +101,9 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
         string settings=Path.Combine(Data,"settings.json");byte[] originalSettings=await File.ReadAllBytesAsync(settings);
         vm.ExportDiagnostics.Execute(settings);await vm.ExportDiagnostics.Execution;
-        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("outside the app",vm.Notice);
+        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("outside the app",vm.ErrorNotice);
         vm.ExportDiagnostics.Execute("\\\\?\\"+settings);await vm.ExportDiagnostics.Execution;
-        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("normal, nonredirected",vm.Notice);
+        Assert.Equal(originalSettings,await File.ReadAllBytesAsync(settings));Assert.Contains("normal, nonredirected",vm.ErrorNotice);
         string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
         await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
         try {vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;Assert.Equal("old report",await File.ReadAllTextAsync(report));}
@@ -150,11 +150,11 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         try {vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;}
         finally {File.SetAttributes(report,FileAttributes.Normal);}
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
-        Assert.DoesNotContain("data folder",vm.Notice);Assert.Contains("chosen folder",vm.Notice);Assert.DoesNotContain(folder,vm.Notice,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(folder,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
         // A chosen folder that no longer exists is named as such, still without its path, and is not recreated.
         string gone=Path.Combine(_root,"gone");
         vm.ExportDiagnostics.Execute(Path.Combine(gone,"report.json"));await vm.ExportDiagnostics.Execution;
-        Assert.DoesNotContain("data folder",vm.Notice);Assert.Contains("chosen folder",vm.Notice);Assert.DoesNotContain(gone,vm.Notice,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(gone,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(gone));
     });
     [Fact]
@@ -316,14 +316,19 @@ public sealed class DiagnosticsViewModelTests : IDisposable
     {
         var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor(),signIn:new FailingDisposeSignIn());
         await vm.InitializeAsync();
-        // An owner whose cleanup cannot be confirmed fails exit the same way the launch queue's stop does.
-        await Assert.ThrowsAsync<InvalidOperationException>(()=>vm.DisposeAsync().AsTask());
+        // An owner whose cleanup cannot be confirmed no longer ends exit early: its stop is recorded by type, the owners after it
+        // still stop, and Shutdown is still the last record on disk.
+        await vm.DisposeAsync();
         string[] lines=(await File.ReadAllLinesAsync(Path.Combine(Data,"diagnostics","manager.jsonl"))).Where(l=>l.Length>0).ToArray();
         Assert.True(lines.Length>=2,"The journal has no shutdown entries.");
-        using var fault=JsonDocument.Parse(lines[^2]);using var shutdown=JsonDocument.Parse(lines[^1]);
-        Assert.Equal("OperationFailed",fault.RootElement.GetProperty("Kind").GetString());
-        Assert.Equal("InvalidOperationException",fault.RootElement.GetProperty("ErrorType").GetString());
-        Assert.Equal("Shutdown",shutdown.RootElement.GetProperty("Kind").GetString());
+        var records=lines.Select(l=>JsonDocument.Parse(l)).ToArray();
+        try
+        {
+            Assert.Contains(records,r=>r.RootElement.GetProperty("Kind").GetString()=="OperationFailed"
+                && r.RootElement.GetProperty("ErrorType").GetString()=="InvalidOperationException"); // The disk format keeps four properties; the subsystem stays in memory.
+            Assert.Equal("Shutdown",records[^1].RootElement.GetProperty("Kind").GetString());
+        }
+        finally { foreach(var record in records) record.Dispose(); }
     });
     private sealed class FailingDisposeSignIn : IRobloxSessionSignIn,IAsyncDisposable
     {

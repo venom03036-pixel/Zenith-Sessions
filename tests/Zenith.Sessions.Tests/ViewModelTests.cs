@@ -1,5 +1,7 @@
 using System.Windows.Threading;
 using System.IO;
+using System.IO.Pipes;
+using System.Security.AccessControl;
 using Microsoft.Data.Sqlite;
 using Xunit;
 using Zenith.Sessions.App;
@@ -106,17 +108,185 @@ public sealed class ViewModelTests : IDisposable
         using var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
         var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
-        using var second=new SingleInstanceCoordinator(_root); Assert.False(second.IsOwner);
+        // Ownership is held per thread, so a second launch (another process in production) is built off the owner's thread.
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root)); Assert.False(second.IsOwner);
         Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
         // Mirrors EntryPoint's final synchronous teardown, after the dispatcher has stopped pumping.
         owner.StopAsync().GetAwaiter().GetResult();
     }).WaitAsync(TimeSpan.FromSeconds(5));
     [Fact]
+    public void SecondLaunchAgainstAnInstanceMutexItMayNotUseExplainsDifferentPermissions()
+    {
+        string name; using(var probe=new SingleInstanceCoordinator(_root)) name=probe.MutexName;
+        // Stands in for a copy started as administrator: its mutex's security refuses this launch's token.
+        var refuseAll=new MutexSecurity(); refuseAll.SetSecurityDescriptorSddlForm("D:");
+        using var elevated=MutexAcl.Create(false,name,out bool created,refuseAll); Assert.True(created);
+        Assert.True(EntryPoint.TryOpen(_root,out var second,out string? problem),$"The second launch stopped with: {problem}");
+        using(second)
+        {
+            Assert.False(second.IsOwner);
+            Assert.Equal(EntryPoint.DifferentPermissionsMessage,EntryPoint.RestoreOrExplain(second));
+        }
+    }
+    [Fact]
+    public void SecondLaunchRefusedByTheRestorePipeExplainsInsteadOfThrowing()
+    {
+        using var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        // Stands in for the owner's restore pipe when the two copies run with different permissions: Windows refuses the connection.
+        var refuseAll=new PipeSecurity(); refuseAll.SetSecurityDescriptorSddlForm("D:");
+        using var refusing=NamedPipeServerStreamAcl.Create(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.None,0,0,refuseAll);
+        using var second=OnOwnThread(()=>new SingleInstanceCoordinator(_root)); Assert.False(second.IsOwner);
+        Assert.Equal(EntryPoint.DifferentPermissionsMessage,EntryPoint.RestoreOrExplain(second));
+    }
+    [Fact]
+    public void ALingeringSecondLaunchCannotKeepTheAppFromOpeningAfterTheOwnerExits()
+    {
+        var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        // A second launch's "already starting" box stays open, so its process keeps a handle to the instance mutex.
+        using var lingering=OnOwnThread(()=>new SingleInstanceCoordinator(_root)); Assert.False(lingering.IsOwner);
+        owner.Dispose(); // No listener was started, so Dispose is the whole owner exit here.
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The next launch could not take ownership after the owner exited.");
+    }
+    [Fact]
+    public void ACrashedOwnerCannotKeepTheAppFromOpening()
+    {
+        string name; using(var probe=new SingleInstanceCoordinator(_root)) name=probe.MutexName;
+        // The owner's thread ends without releasing (a crash) while an open handle keeps the named mutex alive.
+        bool created=false;
+        using var crashed=OnOwnThread(()=>new Mutex(true,name,out created)); Assert.True(created);
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The next launch could not take over an abandoned instance.");
+    }
+    [Fact]
+    public void DisposingTheInstanceCoordinatorTwiceIsHarmless()
+    {
+        var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        owner.Dispose(); owner.Dispose();
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }));
+    }
+    [Fact]
+    public async Task AnAliasOfTheOwnersDataFolderCannotStartASecondOwner()
+    {
+        string library=Path.Combine(_root,"library"),alias=Path.Combine(_root,"alias"); Directory.CreateDirectory(library);
+        await CreateJunctionAsync(alias,library);
+        try
+        {
+            using var owner=new SingleInstanceCoordinator(library); Assert.True(owner.IsOwner);
+            // GetFullPath leaves "\\?\" text as it is and does not follow junctions, so path text alone would give each spelling its own mutex.
+            foreach(string spelling in new[]{@"\\?\"+library,alias,library.ToUpperInvariant()})
+                Assert.False(OnOwnThread(()=> { using var second=new SingleInstanceCoordinator(spelling); return second.IsOwner; }),
+                    "Another spelling of the owner's data folder became a second owner.");
+        }
+        finally { if(Directory.Exists(alias)) Directory.Delete(alias,false); }
+    }
+    [Fact]
+    public void ALaunchThatCannotTakeTheLibraryLockIsNotTheOwnerAndLeavesNoPhantomOwner()
+    {
+        Directory.CreateDirectory(_root);
+        // Stands in for an owner the mutex cannot see: a spelling no canonical form unifies (\\localhost\C$) or another sign-in session.
+        var other=new FileStream(Path.Combine(_root,"instance.lock"),FileMode.OpenOrCreate,FileAccess.ReadWrite,FileShare.None);
+        using var blocked=new SingleInstanceCoordinator(_root);
+        try { Assert.False(blocked.IsOwner,"A launch became the owner while another process held the library lock."); }
+        finally { other.Dispose(); }
+        // blocked is still alive on this thread, so a mutex it kept would refuse this next launch.
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The refused launch kept the instance mutex, so the next launch could not open.");
+    }
+    [Fact]
+    public Task RestoreListenerSurvivesAFailedRestoreAndStopsCleanly()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        int calls=0; var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The first restore fails like Window.Show() on a closing window; later launches must still be served.
+        owner.Listen(_=>
+        {
+            if(Interlocked.Increment(ref calls)==1) throw new InvalidOperationException("Synthetic restore failure.");
+            restored.TrySetResult(); return Task.CompletedTask;
+        });
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
+        Assert.True(await second.RestoreExistingAsync(default));
+        Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(typeof(InvalidOperationException),owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task AnIdlePeerThatKeepsItsHandleCannotEndTheRestoreListener()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
+        // A same-user peer connects, never writes and keeps its handle past the listener's 2 s read deadline.
+        using(var idle=new NamedPipeClientStream(".",owner.PipeName,PipeDirection.Out,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly))
+        {
+            await idle.ConnectAsync(1500); await Task.Delay(TimeSpan.FromSeconds(2.5));
+            using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
+            Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        Assert.Null(owner.LastListenerFault);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task RestoreListenerRetriesWhileItsPipeCannotBeCreated()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Another instance briefly holds the pipe name, so the listener's first-instance creation is refused.
+        using(new NamedPipeServerStream(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly))
+        {
+            owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+        }
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
+        Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task APersistentListenerFaultStopsRetryingAndIsReportedWithoutFailingExit()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        using var squatter=new NamedPipeServerStream(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
+        var started=DateTime.UtcNow;
+        owner.Listen(_=>Task.CompletedTask);
+        while(!owner.IsListenerFaulted)
+        { if(DateTime.UtcNow-started>TimeSpan.FromSeconds(12)) throw new TimeoutException("The listener kept retrying a persistent fault."); await Task.Delay(50); }
+        // Bounded: the retry pause keeps the consecutive-fault cap from spinning.
+        Assert.True(DateTime.UtcNow-started>=TimeSpan.FromSeconds(3));
+        Assert.NotNull(owner.LastListenerFault);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(15));
+    [Fact]
     public Task IsolatedSamplePreviewCannotClaimAGlobalDesktopShortcut()=>OnDispatcherAsync(async ()=>
     {
         await using var vm=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
-        vm.SetPanicRegistration(true);Assert.Equal("Panic stop",vm.PanicLabel);Assert.Contains("do not register global shortcuts",vm.PanicShortcutStatus);
+        bool asked=false;vm.AttachGlobalPanicShortcut(_=>asked=true);Assert.False(asked);
+        Assert.Equal("Panic stop",vm.PanicLabel);Assert.Contains("do not register global shortcuts",vm.PanicShortcutStatus);
         Assert.Equal(16,vm.AccountCount);
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task InstanceTitleDistinguishesPersonalSampleAndOtherLibrariesWithinTrayLimit()=>OnDispatcherAsync(async ()=>
+    {
+        // Personal, sample and other-folder managers can run side by side, so each tray icon and window says which one it is.
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(StartupOptions.DefaultRoot,false));
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(StartupOptions.DefaultRoot+Path.DirectorySeparatorChar,false));
+        Assert.Equal("Sample preview",StartupOptions.DescribeInstance(_root,true));
+        string other=StartupOptions.DescribeInstance(_root,false);
+        Assert.Contains(Path.GetFileName(_root),other); Assert.NotEqual("Personal",other);
+        // A separate folder that happens to be named Personal is not the personal library.
+        Assert.Equal("Library Personal",StartupOptions.DescribeInstance(Path.Combine(_root,"Personal"),false));
+        string personal=Path.Combine(_root,"personal-stand-in"); Directory.CreateDirectory(personal);
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(personal.ToUpperInvariant()+"\\",false,personal));
+        await using(var sample=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new SyntheticMonitor()))
+            Assert.Equal("Zenith Sessions · Sample preview",sample.InstanceTitle);
+        await using var library=new ShellViewModel(Path.Combine(_root,new string('n',200)),false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
+        Assert.InRange(library.InstanceTitle.Length,1,127); Assert.StartsWith("Zenith Sessions · Library nnn",library.InstanceTitle);
+        // The real tray icon refuses text over its limit, which would stop the window from opening.
+        using var tray=new System.Windows.Forms.NotifyIcon { Text=library.InstanceTitle };
+        // Taskbar and Alt-Tab entries use the window title, so it carries the same name as the tray icon after the open page.
+        Assert.Equal("Overview · "+library.InstanceTitle,library.WindowTitle);
+        using var xaml=typeof(ViewModelTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        Assert.Equal("{Binding WindowTitle}",(string?)System.Xml.Linq.XDocument.Load(xaml).Root!.Attribute("Title"));
     }).WaitAsync(TimeSpan.FromSeconds(10));
     [Fact]
     public Task FavoritesAndNotesRoundTripThroughTheActualMetadataCommands()=>CheckAsync(async vm=>
@@ -193,6 +363,26 @@ public sealed class ViewModelTests : IDisposable
         Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--unknown"]));
         var options=StartupOptions.Parse(["--data-root",_root,"--sample-profiles"]);
         Assert.Equal(Path.GetFullPath(_root),options.DataRoot); Assert.True(options.SampleProfiles);
+    }
+    [Fact]
+    public async Task TestModesRejectAnAliasOfThePersonalLibrary()
+    {
+        // A temporary folder stands in for %LOCALAPPDATA%\ZenithSessions\Personal.
+        string personal=Path.Combine(_root,"personal"),alias=Path.Combine(_root,"alias"),samples=Path.Combine(_root,"samples");
+        Directory.CreateDirectory(personal);
+        Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",@"\\?\"+personal,"--sample-profiles"],personal));
+        Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",@"\\?\"+samples],personal));
+        await CreateJunctionAsync(alias,personal);
+        try
+        {
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",alias,"--sample-profiles"],personal));
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",alias,"--self-check"],personal));
+            Assert.Throws<ArgumentException>(()=>StartupOptions.Parse(["--data-root",personal.ToUpperInvariant()+"\\","--sample-profiles"],personal));
+        }
+        finally { if(Directory.Exists(alias)) Directory.Delete(alias,false); }
+        var options=StartupOptions.Parse(["--data-root",samples,"--sample-profiles"],personal);
+        Assert.Equal(samples,options.DataRoot); Assert.True(options.SampleProfiles);
+        Assert.Equal(personal,StartupOptions.Parse([],personal).DataRoot);
     }
     [Fact]
     public void AuthorizationRowsExpireWithoutKeepingTokensOrReloadingTheVault()
@@ -325,6 +515,26 @@ public sealed class ViewModelTests : IDisposable
         Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("is damaged",vm.CredentialCleanupStatus);
         Assert.DoesNotContain("Check storage access",vm.CredentialCleanupStatus);
     });
+    // A dedicated thread stands in for another process: mutex ownership is per thread, and this thread ends before it returns.
+    private static T OnOwnThread<T>(Func<T> create)
+    {
+        T? value=default; System.Runtime.ExceptionServices.ExceptionDispatchInfo? error=null;
+        var thread=new Thread(()=> { try { value=create(); } catch(Exception ex) { error=System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); } });
+        thread.Start(); thread.Join(); error?.Throw(); return value!;
+    }
+    // A real directory junction (no elevation needed) built from literal synthetic paths inside this test's folder.
+    private static async Task CreateJunctionAsync(string link,string target)
+    {
+        static string Quote(string path)=>"'"+path.Replace("'","''")+"'";
+        string script="$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path "+Quote(link)+" -Target "+Quote(target)+" | Out-Null";
+        var start=new System.Diagnostics.ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32/WindowsPowerShell/v1.0/powershell.exe")) { UseShellExecute=false,CreateNoWindow=true };
+        start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-NonInteractive"); start.ArgumentList.Add("-EncodedCommand");
+        start.ArgumentList.Add(Convert.ToBase64String(System.Text.Encoding.Unicode.GetBytes(script)));
+        using var process=System.Diagnostics.Process.Start(start)!;
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        try { await process.WaitForExitAsync(deadline.Token); Assert.Equal(0,process.ExitCode); }
+        finally { if(!process.HasExited) { process.Kill(); await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } }
+    }
     private static Task OnDispatcherAsync(Func<Task> work)
     {
         var completion=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

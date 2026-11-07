@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using MacroSuite.App.Themes;
 using Microsoft.Win32;
 using Zenith.Sessions.Core;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private bool _exiting, _exitStarted;
     private HwndSource? _source;
     private readonly GlobalPanicRegistration _panicKey=new();
+    private readonly ManagerWindowPlacement? _startPlacement;
     public MainWindow(ShellViewModel vm) : this(vm, false) { }
     // Resolve the shipped view without creating a tray owner or registering shortcuts.
     internal static MainWindow CreateForLayoutCheck(ShellViewModel vm) => new(vm, true);
@@ -24,31 +26,41 @@ public partial class MainWindow : Window
     {
         _vm = vm; DataContext = vm; InitializeComponent();
         if (layoutCheckOnly) return;
+        // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
+        _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
+        if (_startPlacement is not null) WindowStartupLocation = WindowStartupLocation.Manual;
         vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
         PreviewKeyDown+=SettingsPagePreviewKeyDown;
         IsVisibleChanged+=(_,_)=>UpdatePreviewVisibility();
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
         vm.ThemeChanged += SetTheme;
+        vm.PropertyChanged += AnnouncePageChange;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Zenith_Macros_Teal.ico")).Stream;
         using var original = new System.Drawing.Icon(stream);
-        _tray = new Forms.NotifyIcon { Text = "Zenith Sessions · Personal", Icon = (System.Drawing.Icon)original.Clone(), Visible = true };
+        // Tray Panic, Lock and Exit act on this manager only, so its icon names it (personal, sample preview or another library).
+        _tray = new Forms.NotifyIcon { Text = vm.InstanceTitle, Icon = (System.Drawing.Icon)original.Clone(), Visible = true };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open Zenith Sessions", null, (_, _) => Dispatcher.Invoke(Restore));
         menu.Items.Add("Panic stop", null, (_, _) => Dispatcher.Invoke(() => vm.Panic.Execute(null)));
         menu.Items.Add("Lock controls", null, (_, _) => Dispatcher.Invoke(vm.LockDashboard));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, async (_, _) => await Dispatcher.InvokeAsync(RequestExitAsync).Task.Unwrap());
-        _tray.ContextMenuStrip = menu; _tray.DoubleClick += (_, _) => Dispatcher.Invoke(Restore);
+        _tray.ContextMenuStrip = menu; _tray.MouseClick += TrayMouseClick;
         Loaded += async (_, _) => await vm.InitializeAsync();
         Closing += OnClosing;
         SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(this).Handle; _source = HwndSource.FromHwnd(handle); _source.AddHook(OnMessage);
+            // The window exists but is not shown yet, so it appears in place. Maximizing after the move keeps it on that display.
+            if (_startPlacement is { } placement && ManagerWindowNative.Place(handle, placement.Bounds) && placement.Maximized)
+                WindowState = WindowState.Maximized;
+            // The shell registers the saved panic shortcut (F12 by default) once settings load, and again after Save settings.
             // Isolated sample previews must not take a real desktop transport shortcut.
-            vm.SetPanicRegistration(!vm.IsSample && _panicKey.RegisterF12(handle));
+            if (!vm.IsSample) vm.AttachGlobalPanicShortcut(shortcut => _panicKey.Register(handle, shortcut));
         };
         SystemEvents.SessionSwitch += OnSessionSwitch;
+        InputManager.Current.PostProcessInput += NoteUserInput;
     }
     private void ContentSizeChanged(object sender,SizeChangedEventArgs e)
     {
@@ -63,17 +75,39 @@ public partial class MainWindow : Window
     private void UpdatePreviewVisibility()=>_vm.SetPreviewWindowVisible(IsVisible && WindowState!=WindowState.Minimized);
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     { if (e.Reason == SessionSwitchReason.SessionLock) Dispatcher.BeginInvoke(_vm.LockDashboard); }
+    // The optional idle lock counts only real keyboard and mouse input in this manager's windows (dialogs included). WPF
+    // repeats a still pointer's position when the layout under it changes, so a move counts only when the position differs.
+    // This runs for every input event, so it only stores a timestamp (Rule 7).
+    private void NoteUserInput(object sender, ProcessInputEventArgs e)
+    {
+        switch (e.StagingItem.Input)
+        {
+            case KeyEventArgs or MouseButtonEventArgs or MouseWheelEventArgs: _vm.NoteUserInput(); break;
+            case MouseEventArgs move when move.RoutedEvent == Mouse.MouseMoveEvent: var at = move.GetPosition(null); _vm.NotePointer(at.X, at.Y); break;
+        }
+    }
     private nint OnMessage(nint window, int message, nint w, nint l, ref bool handled)
     {
-        if (message == GlobalPanicRegistration.Message && w == GlobalPanicRegistration.Identifier) { _vm.Panic.Execute(null); handled = true; }
+        if (message == GlobalPanicRegistration.Message && GlobalPanicRegistration.IsPanic(w)) { _vm.Panic.Execute(null); handled = true; }
         return 0;
     }
-    private void OnClosing(object? sender, CancelEventArgs e)
-    { if (!_exiting) { e.Cancel = true; Hide(); } }
+    // A single left click on the tray icon reopens the window (a double click starts with one); the right button opens the menu.
+    private void TrayMouseClick(object? sender, Forms.MouseEventArgs e)
+    { if (e.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(Restore); }
+    // The close button, Alt+F4 and the taskbar's Close all arrive here. Hide to the tray by default; with the saved
+    // "Close button exits the manager" choice, run the same exit as tray Exit. RequestExitAsync ends with Close(), which WPF
+    // refuses while this window is closing, so it is queued to run after this handler returns, exactly like the tray command.
+    private async void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_exiting) return;
+        e.Cancel = true;
+        if (_vm.CloseButtonExitsNow) await Dispatcher.InvokeAsync(RequestExitAsync).Task.Unwrap();
+        else Hide();
+    }
     protected override void OnClosed(EventArgs e)
     {
         _panicKey.Dispose();
-        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; _vm.ThemeChanged -= SetTheme;
+        _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
         _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;PreviewKeyDown-=SettingsPagePreviewKeyDown;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
@@ -82,7 +116,13 @@ public partial class MainWindow : Window
         if (_exitStarted) return; _exitStarted = true;
         try
         {
-            await _vm.DisposeAsync();
+            // Remember where the window was left while the shell can still save; this never stops the exit (type only, Rule 10).
+            try { await _vm.SaveManagerWindowAsync(CaptureManagerWindow()); }
+            catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
+            // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
+            // and still give the priority warning and stop the instance coordinator.
+            try { await _vm.DisposeAsync(); }
+            catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             if (_vm.PendingPriorityRestoreCount > 0)
                 MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
                     + " original client priorities. Review those clients in Task Manager. The settings last until you change them or the clients exit.",
@@ -91,13 +131,41 @@ public partial class MainWindow : Window
         }
         finally { _exiting = true; Close(); }
     }
-    private void Restore() { Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
+    // RestoreBounds is the normal (not maximized) rectangle in DIPs at the window's current display scale, so multiplying by that
+    // scale gives physical pixels, the unit that stays correct across displays with different scaling.
+    private ManagerWindowPlacement? CaptureManagerWindow()
+    {
+        var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
+        return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
+    }
+    // The footer's error (assertive) and status (polite) texts are live regions. WPF does not raise LiveRegionChanged when a
+    // bound text changes, so each update of either binding announces it; Fail and Inform notify even for identical text.
+    private void AnnounceNotice(object sender, System.Windows.Data.DataTransferEventArgs e)
+    { if (e.Property == System.Windows.Controls.TextBlock.TextProperty && sender is System.Windows.Controls.TextBlock text) AnnounceLiveRegion(text); }
+    /// <summary>Asks screen readers to read <paramref name="text"/> by its live setting. Empty text, such as a dismissed error, is not announced.</summary>
+    internal static void AnnounceLiveRegion(System.Windows.Controls.TextBlock text)
+    {
+        if (text.Text.Length == 0) return;
+        (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(text) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(text))
+            ?.RaiseAutomationEvent(System.Windows.Automation.Peers.AutomationEvents.LiveRegionChanged);
+    }
+    // The title follows the page through its binding; the page name is raised only when the page actually changes.
+    private void AnnouncePageChange(object? sender, PropertyChangedEventArgs e)
+    { if (e.PropertyName == nameof(ShellViewModel.PageName)) AnnouncePage(this, _vm.PageName); }
+    /// <summary>Tells screen readers which page opened. Not important and only the latest is kept, like a polite live region, so
+    /// quick page changes do not queue up or interrupt other speech.</summary>
+    internal static void AnnouncePage(UIElement window, string page) =>
+        (System.Windows.Automation.Peers.UIElementAutomationPeer.FromElement(window) ?? System.Windows.Automation.Peers.UIElementAutomationPeer.CreatePeerForElement(window))
+            ?.RaiseNotificationEvent(System.Windows.Automation.AutomationNotificationKind.ActionCompleted,
+                System.Windows.Automation.AutomationNotificationProcessing.MostRecent, page + " page", "ZenithPageChanged");
+    // Reopening from the tray or a second launch is the user returning, so the idle lock counts it as input.
+    private void Restore() { _vm.NoteUserInput(); Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
     public void RestoreFromLaunch() => Restore();
     private void DragHeader(object sender, MouseButtonEventArgs e)
     { if (e.ChangedButton == MouseButton.Left) { if (e.ClickCount == 2) WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; else DragMove(); } }
     private void MinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void MaximizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-    private void CloseToTray(object sender, RoutedEventArgs e) => Close();
+    private void CloseWindow(object sender, RoutedEventArgs e) => Close();
     private void StartNativeTrialClick(object sender,RoutedEventArgs e)
     {
         var review = _vm.CaptureNativeTrialReview();
@@ -160,6 +228,9 @@ public partial class MainWindow : Window
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,
+                "close-button"=>SettingsCloseButtonExits,
+                "idle-lock"=>SettingsIdleLock,
+                "panic-shortcut"=>SettingsPanicShortcut,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
@@ -203,7 +274,7 @@ public partial class MainWindow : Window
         // Only the public game page ever leaves the app: never a server, share or private code.
         if(!link.StartsWith("https://www.roblox.com/games/",StringComparison.Ordinal)) return;
         try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link) {UseShellExecute=true});_vm.Inform("Opened the public game page in your browser. No account was launched or signed in.");}
-        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex,ManagerSubsystem.Directory);_vm.Inform("The browser could not be opened. Use Copy link instead.");}
+        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex,ManagerSubsystem.Directory,"The browser could not be opened. Use Copy link instead.");}
     }
     private void CopyGamePageLinkClick(object sender,RoutedEventArgs e)
     {
@@ -225,7 +296,7 @@ public partial class MainWindow : Window
         JoinGamePage.ScrollToTop();
     }
     private void ClipboardUnavailable(Exception error,ManagerSubsystem subsystem)
-    { _vm.Fail(error,subsystem);_vm.Inform("The clipboard is busy or unavailable. Try copying again."); }
+    { _vm.Fail(error,subsystem,"The clipboard is busy or unavailable. Try copying again."); }
     private void CopyPerformanceShareCode(object sender, RoutedEventArgs e)
     {
         try

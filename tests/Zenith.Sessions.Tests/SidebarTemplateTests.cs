@@ -61,6 +61,32 @@ public sealed class SidebarTemplateTests
             finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
         }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
     }
+    [Fact]
+    public void ControlDigitShortcutsFollowTheRailOrderAndGuideMatchesCurrentControls()
+    {
+        using var input=typeof(SidebarTemplateTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var document=XDocument.Load(input);XNamespace ui="http://schemas.microsoft.com/winfx/2006/xaml/presentation",x="http://schemas.microsoft.com/winfx/2006/xaml";
+        var rail=document.Descendants(ui+"Border").Single(e=>(string?)e.Attribute(x+"Name")=="NavigationRail");
+        var railTargets=rail.Descendants(ui+"Button").Select(Target).ToArray();
+        var digitShortcuts=document.Root!.Element(ui+"Window.InputBindings")!.Elements(ui+"KeyBinding")
+            .Where(e=>(string?)e.Attribute("Modifiers")=="Control" && (string?)e.Attribute("Key") is {Length:2} key && key[0]=='D' && key[1] is >='1' and <='9')
+            .OrderBy(e=>(string)e.Attribute("Key")!,StringComparer.Ordinal).ToArray();
+        // Ctrl+N must open the Nth sidebar item through the same command (and lock/shutdown guard) the rail button uses.
+        Assert.Equal(railTargets,digitShortcuts.Select(Target));
+        Assert.Equal(("{Binding ShowWindowsOverview}",(string?)null),Target(digitShortcuts[3]));
+        char dash=(char)0x2013,arrow=(char)0x2192;
+        var texts=document.Descendants(ui+"TextBlock").Select(e=>(string?)e.Attribute("Text")).OfType<string>().ToArray();
+        Assert.Contains(texts,t=>t.Contains($"Ctrl+1{dash}{railTargets.Length} switches the "));
+        Assert.DoesNotContain(texts,t=>t.Contains("seven sidebar sections"));
+        // The Guide names only controls that exist: result cards replaced the Use selected experience button,
+        // and bundle editing lives under Who is launching > Edit bundles.
+        Assert.DoesNotContain(texts,t=>t.Contains("Use selected experience"));
+        Assert.DoesNotContain(texts,t=>t.Contains($"Join a game {arrow} Account bundles"));
+        Assert.Contains("Who is launching",texts);
+        Assert.Contains(document.Descendants(ui+"Expander"),e=>(string?)e.Attribute("Header")=="Edit bundles");
+        Assert.Contains(texts,t=>t.Contains($"Join a game {arrow} Who is launching {arrow} Edit bundles"));
+        static (string? Command,string? Parameter) Target(XElement e)=>((string?)e.Attribute("Command"),(string?)e.Attribute("CommandParameter"));
+    }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
     {
         for(int i=0;i<VisualTreeHelper.GetChildrenCount(parent);i++)

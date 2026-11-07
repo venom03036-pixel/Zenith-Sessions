@@ -49,7 +49,7 @@ public sealed partial class PerformanceIntegrationTests : IDisposable
         vm.SelectedPerformanceProfile=vm.PerformanceProfiles.Single(p=>p.Profile==ManagerPerformanceProfile.Custom);
         vm.CustomProcessSample="invalid";vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;
         Assert.Equal(ManagerPerformanceProfile.MainAccountPriority,monitor.Applied.Profile);
-        Assert.Contains("whole number",vm.Notice);Assert.NotEqual("Settings saved",vm.SaveStatus);
+        Assert.Contains("whole number",vm.ErrorNotice);Assert.NotEqual("Settings saved",vm.SaveStatus);
         vm.ResetCustomPerformance.Execute(null);vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;
         Assert.Equal(ManagerPerformanceProfile.Custom,monitor.Applied.Profile);
         string file=Path.Combine(_root,"settings.json");File.SetAttributes(file,FileAttributes.ReadOnly);
@@ -76,7 +76,7 @@ public sealed partial class PerformanceIntegrationTests : IDisposable
         {
             await vm.InitializeAsync();Assert.Equal(main,vm.MainAccountProfileId);Assert.Equal("Main alias",vm.MainAccountDisplay);
             await vm.DeleteAccountsAsync(vm.Accounts.ToArray());Assert.Contains("unavailable",vm.MainAccountDisplay);
-            vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;Assert.Contains("no longer exists",vm.Notice);
+            vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;Assert.Contains("no longer exists",vm.ErrorNotice);
             vm.ClearMainAccount.Execute(null);vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;
             Assert.Equal("Settings saved",vm.SaveStatus);Assert.Null(vm.MainAccountProfileId);
         }

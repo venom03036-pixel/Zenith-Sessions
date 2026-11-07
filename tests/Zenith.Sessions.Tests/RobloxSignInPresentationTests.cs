@@ -248,9 +248,9 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         await shell.SaveAccountAsync(AccountProfile.Create("My test alias"));
         shell.SelectedAccount = Assert.Single(shell.Accounts);
         shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution;
-        Assert.Contains("signin-browser-data", shell.Notice);
-        Assert.Contains("Close Zenith Sessions", shell.Notice);
-        Assert.DoesNotContain("permissions", shell.Notice);
+        Assert.Contains("signin-browser-data", shell.ErrorNotice);
+        Assert.Contains("Close Zenith Sessions", shell.ErrorNotice);
+        Assert.DoesNotContain("permissions", shell.ErrorNotice);
         Assert.True(File.Exists(Path.Combine(unknown, "keep.txt")), "Unrecognized data was not preserved for review.");
         Assert.Null(Assert.Single(shell.Accounts).KnownUserId);
     });
