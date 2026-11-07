@@ -726,6 +726,21 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         AddEvent($"Operation failed ({exception.GetType().Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
     }
+    // Last-chance seam for UnhandledExceptionGuard. Only a Type crosses it: exception messages can carry
+    // links, share codes or account names (Rule 10), so it never goes through Fail(), which echoes some messages.
+    internal bool IsShuttingDown=>_shuttingDown;
+    /// <summary>UI thread only. Shows a fixed notice for a fault that escaped every handler; Panic and Lock notices stay.</summary>
+    internal void ContainUnhandled(Type errorType)
+    {
+        if(!IsLocked && !_preserveStopNotice)
+            Notice="Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.";
+        AddEvent($"Unexpected error caught ({errorType.Name}).");
+        _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);
+    }
+    /// <summary>Any thread. False once this shell's log has begun closing, so the caller must keep its own record.</summary>
+    internal bool TryRecordUnhandled(Type errorType)=>_diagnostics.TryRecord(ManagerEventKind.OperationFailed,errorType);
+    /// <summary>Flushes and closes this shell's log; idempotent, and later records are ignored. Used only when nothing else will flush it.</summary>
+    internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
     public void Inform(string message) => Notice = message;
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
     public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());

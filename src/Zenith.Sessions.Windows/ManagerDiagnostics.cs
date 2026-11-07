@@ -39,13 +39,15 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         _writer=Task.Run(()=>WriteAsync(_stop.Token));
     }
     /// <summary>Records without waiting for disk. Valid calls after disposal are ignored; invalid kinds are rejected.</summary>
-    public void Record(ManagerEventKind kind,Type? errorType=null)
+    public void Record(ManagerEventKind kind,Type? errorType=null)=>TryRecord(kind,errorType);
+    /// <summary>Same as <see cref="Record"/>, but reports whether this log took the event (false once disposal has begun).</summary>
+    public bool TryRecord(ManagerEventKind kind,Type? errorType=null)
     {
         if(!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
         string? safeError=SafeErrorType(errorType);
         lock(_gate)
         {
-            if(_disposed || _sequence==long.MaxValue) return;
+            if(_disposed || _sequence==long.MaxValue) return false;
             var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError);
             _journal[_nextJournal]=entry;_nextJournal=(_nextJournal+1)%JournalCapacity;
             if(_journalCount<JournalCapacity) _journalCount++;
@@ -56,6 +58,7 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
                 case DiagnosticLevel.Error:_errorCount++;break;
             }
             if(!_events.Writer.TryWrite(entry)) _dropped++;
+            return true;
         }
     }
     public ManagerDiagnosticSnapshot GetSnapshot()
