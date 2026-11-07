@@ -16,6 +16,7 @@ public class PanicE2ETests
     {
         public bool IsPlaying => false;
         public int ReleaseAllHeldKeysCallCount { get; private set; }
+        public TaskCompletionSource FirstClick { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public Task PlayAsync(IReadOnlyList<InputEvent> events, PlaybackOptions? options = null, CancellationToken ct = default)
         {
@@ -27,11 +28,14 @@ public class PanicE2ETests
             ReleaseAllHeldKeysCallCount++;
         }
 
-        public void SendClick(MouseButton button = MouseButton.Left, int x = -1, int y = -1, bool doubleClick = false) { }
+        public void SendClick(MouseButton button = MouseButton.Left, int x = -1, int y = -1, bool doubleClick = false)
+            => FirstClick.TrySetResult();
         public void SendRelativeMove(int dx, int dy) { }
 
         public void Dispose() { }
     }
+
+    private static readonly TimeSpan AutoClickerDeadline = TimeSpan.FromSeconds(2);
 
     private sealed class StubCaptureService : IScreenCaptureService
     {
@@ -141,26 +145,50 @@ public class PanicE2ETests
         act.Should().NotThrow();
     }
 
+    // The Auto Clicker releases only input it owns (Rule 13): the run that sent clicks releases
+    // them in its finally. An idle clicker owns nothing, so it must not release keys another
+    // owner (for example macro playback on the shared input player) is still holding.
     [Fact]
-    public void AutoClicker_StopClicker_CallsReleaseAllHeldKeys()
+    public async Task AutoClicker_StopClicker_CallsReleaseAllHeldKeys()
     {
         var inputPlayer = new TrackingInputPlayer();
-        using var autoClickerVM = new MacroSuite.App.ViewModels.AutoClickerViewModel(inputPlayer);
+        using var autoClickerVM = new MacroSuite.App.ViewModels.AutoClickerViewModel(inputPlayer) { ClicksPerSecond = 0.1 };
 
         autoClickerVM.StopClicker();
+        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(0, "an idle Auto Clicker owns no input to release");
 
-        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(1);
+        autoClickerVM.ToggleRun();
+        await inputPlayer.FirstClick.Task.WaitAsync(AutoClickerDeadline);
+        autoClickerVM.StopClicker();
+        await autoClickerVM.RunCompletion.WaitAsync(AutoClickerDeadline);
+
+        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(1, "stopping a clicker that sent input releases it exactly once");
+        autoClickerVM.IsRunning.Should().BeFalse();
+        await autoClickerVM.ShutdownAsync().WaitAsync(AutoClickerDeadline);
+        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(1, "shutdown after the run ended has nothing left to release");
     }
 
     [Fact]
-    public void AutoClicker_Dispose_CallsReleaseAllHeldKeys()
+    public async Task AutoClicker_Dispose_CallsReleaseAllHeldKeys()
     {
+        var idlePlayer = new TrackingInputPlayer();
+        var idleVM = new MacroSuite.App.ViewModels.AutoClickerViewModel(idlePlayer);
+        idleVM.Dispose();
+        await idleVM.ShutdownAsync().WaitAsync(AutoClickerDeadline);
+        idlePlayer.ReleaseAllHeldKeysCallCount.Should().Be(0, "an idle Auto Clicker owns no input to release");
+
         var inputPlayer = new TrackingInputPlayer();
-        var autoClickerVM = new MacroSuite.App.ViewModels.AutoClickerViewModel(inputPlayer);
+        var autoClickerVM = new MacroSuite.App.ViewModels.AutoClickerViewModel(inputPlayer) { ClicksPerSecond = 0.1 };
+        autoClickerVM.ToggleRun();
+        await inputPlayer.FirstClick.Task.WaitAsync(AutoClickerDeadline);
 
         autoClickerVM.Dispose();
+        // Dispose starts the tracked shutdown; ShutdownAsync returns that same task.
+        await autoClickerVM.ShutdownAsync().WaitAsync(AutoClickerDeadline);
 
-        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(1);
+        inputPlayer.ReleaseAllHeldKeysCallCount.Should().Be(1, "disposing a running clicker releases its input exactly once");
+        autoClickerVM.RunCompletion.IsCompleted.Should().BeTrue();
+        autoClickerVM.IsRunning.Should().BeFalse();
     }
 
     [Fact]
