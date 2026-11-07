@@ -42,7 +42,10 @@ public sealed class LaunchQueueRecoveryTests : IDisposable
         await using var queue = new LaunchCoordinator(store, provider, (_, _) => throw new InvalidOperationException("No authorization expected."), _ => new(true, "Fixture"));
         await queue.InitializeAsync(default); var recovered = await store.LoadAsync(default);
         Assert.True(recovered.Paused); var row = Assert.Single(recovered.Operations);
-        Assert.Equal(LaunchState.ReviewRequired, row.State); Assert.Equal(LaunchProblem.Interrupted, row.Problem);
+        // CAP-14-03: a receipted, budgeted started client stays itself (still reserving and
+        // reviewable) so a fresh exact PID/creation observation can reconcile it after restart.
+        Assert.Equal(LaunchState.ClientStartedUnverified, row.State); Assert.Equal(LaunchProblem.ClientStartedUnverified, row.Problem);
+        Assert.True(LaunchDescriptions.HasUnresolvedReservation(row)); Assert.Equal(operation.UpdatedUtc, row.UpdatedUtc);
         Assert.Equal(operation.Intent, row.Intent); Assert.Equal(operation.ProcessReceipt, row.ProcessReceipt); Assert.Equal(operation.ResourceBudget, row.ResourceBudget);
         Assert.Equal(original, await File.ReadAllBytesAsync(Primary + ".bak")); Assert.Equal(0, provider.Calls);
         await queue.SetPausedAsync(false,default); await queue.SetPausedAsync(true,default); Assert.Equal(0, provider.Calls);

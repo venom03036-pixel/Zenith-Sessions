@@ -29,11 +29,12 @@ public sealed class ShellQueueRecoveryTests : IDisposable
         Assert.Contains(shell.Events, message => message.Contains("no client was restarted", StringComparison.OrdinalIgnoreCase));
         using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
         while (shell.Launches.Count == 0) await Task.Delay(5, stop.Token);
-        var row = Assert.Single(shell.Launches); Assert.Equal(LaunchState.ReviewRequired, row.Operation.State);
+        // CAP-14-03: the receipted, budgeted started client keeps its state and stays reviewable.
+        var row = Assert.Single(shell.Launches); Assert.Equal(LaunchState.ClientStartedUnverified, row.Operation.State); Assert.True(row.CanReview);
         Assert.Equal(operation.ProcessReceipt, row.Operation.ProcessReceipt); Assert.Equal(operation.ResourceBudget, row.Operation.ResourceBudget);
         Assert.Contains("Paused", shell.QueueStatus); Assert.Equal(backup, await File.ReadAllBytesAsync(QueuePath + ".bak"));
         using var store = new LaunchQueueStore(_root); var repaired = await store.LoadAsync(default);
-        Assert.True(repaired.Paused); Assert.Equal(LaunchState.ReviewRequired, Assert.Single(repaired.Operations).State);
+        Assert.True(repaired.Paused); Assert.Equal(LaunchState.ClientStartedUnverified, Assert.Single(repaired.Operations).State);
         Assert.Empty(shell.Sessions);
     });
 

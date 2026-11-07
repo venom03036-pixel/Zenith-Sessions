@@ -322,6 +322,40 @@ public sealed class LaunchResourceBudgetQueueTests
         Assert.Equal(LaunchState.Queued, store.Row(fresh.Intent.OperationId)!.State); Assert.NotNull(fresh.ResourceBudget);
     }
 
+    // CAP-14-03: a restart keeps a receipted, budgeted started client as that started client, so
+    // the same fresh exact PID/creation-time observation that clears the single-start barrier
+    // within a session still clears it afterwards. Absence, or an uncertain start, keeps it held.
+    [Theory]
+    [InlineData(LaunchState.ClientStartedUnverified, true, true)]
+    [InlineData(LaunchState.ClientStartedUnverified, false, false)]
+    [InlineData(LaunchState.Uncertain, true, false)]
+    public async Task RecoveredStartedClientClearsTheSingleStartBarrierOnlyWhenExactlyObserved(LaunchState saved, bool observed, bool starts)
+    {
+        var at = DateTimeOffset.UtcNow;
+        var intent = new LaunchIntent(Guid.NewGuid(), Guid.NewGuid(), 1, 456, 42, 0, at.AddMinutes(-2), 7);
+        var receipt = new LaunchProcessReceipt(890777, at.AddMinutes(-1).UtcTicks, at);
+        var problem = saved == LaunchState.ClientStartedUnverified ? LaunchProblem.ClientStartedUnverified : LaunchProblem.ArrivalUnverified;
+        var recovered = new LaunchOperation(intent, saved, problem, at, receipt, Budget(4, 5));
+        var store = new Store(new(false, [recovered])); var provider = new Provider();
+        await using var queue = new LaunchCoordinator(store, provider, (_, _) => Task.FromResult(true), _ => new(true, "Synthetic resources"),
+            stabilization: TimeSpan.Zero, stagger: TimeSpan.Zero,
+            observedReservations: _ => observed ? new HashSet<Guid> { intent.OperationId } : new HashSet<Guid>(),
+            budgetResolver: _ => Budget());
+        await queue.InitializeAsync(default);
+        Assert.True(store.Last.Paused); Assert.Empty(provider.Started);
+        await Assert.ThrowsAsync<LaunchQueueException>(() => queue.CancelAsync(intent.OperationId, default));
+        var fresh = await queue.EnqueueAsync(Profile("Next request"), default, Binding); await queue.SetPausedAsync(false, default);
+        if (starts) await Task.WhenAny(provider.Entered.Task, Task.Delay(TimeSpan.FromSeconds(4))); else await Settle();
+        await queue.WaitForActiveCleanupAsync(default);
+        if (starts) Assert.Equal(fresh.Intent.OperationId, Assert.Single(provider.Started).OperationId);
+        else { Assert.Empty(provider.Started); Assert.Equal(LaunchState.Queued, store.Row(fresh.Intent.OperationId)!.State); }
+        var row = store.Row(intent.OperationId)!;
+        Assert.Equal(saved == LaunchState.ClientStartedUnverified ? saved : LaunchState.ReviewRequired, row.State);
+        Assert.Equal(saved == LaunchState.ClientStartedUnverified ? problem : LaunchProblem.Interrupted, row.Problem);
+        Assert.Equal(receipt, row.ProcessReceipt); Assert.Equal(Budget(4, 5), row.ResourceBudget);
+        Assert.True(LaunchDescriptions.HasUnresolvedReservation(row));
+    }
+
     [Theory]
     [InlineData(0UL, 1UL)]
     [InlineData(1UL, 0UL)]

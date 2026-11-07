@@ -174,6 +174,13 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         // have moved on, reaches here as ReviewRequired from the store instead.
         if(operation.State is LaunchState.Queued or LaunchState.Blocked)
             return operation with { State=LaunchState.Blocked,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
+        // A started client with its exact PID/creation receipt and pinned budget is already a
+        // reserving, reviewable possible client. Keep it as saved so the same fresh exact
+        // observation that clears the single-start barrier within a session can reconcile it
+        // after a restart too (CAP-14-03). This establishes no account or arrival, and the
+        // queue still restarts paused. Uncertain and legacy unbudgeted rows still need review.
+        if(operation is {State:LaunchState.ClientStartedUnverified,ProcessReceipt.IsValid:true,ResourceBudget.IsValid:true})
+            return operation;
         return operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
     }
     public Task<LaunchOperation> EnqueueAsync(AccountProfile profile,CancellationToken ct,LaunchAccountBinding? binding=null,

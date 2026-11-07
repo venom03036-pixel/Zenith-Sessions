@@ -257,8 +257,10 @@ public sealed class LaunchPacingTests
         var reopenedProvider = new Provider(clock); await using var reopened = Queue(store, reopenedProvider, clock); await reopened.InitializeAsync(default);
         Assert.True(reopened.ReadPacing().Ready); Assert.Null(reopened.ReadPacing().OperationId); Assert.True(store.Last.Paused);
         clock.Advance(TimeSpan.FromMinutes(2)); reopened.Signal(); await Settle(); Assert.Empty(reopenedProvider.Starts);
-        // The started client needs closure review; the never-started request stays a cancellable recovered row.
-        Assert.Equal(LaunchState.ReviewRequired, store.Row(first.Intent.OperationId)!.State);
+        // The receipted, budgeted started client keeps its reviewable reserving state (CAP-14-03);
+        // the never-started request stays a cancellable recovered row. Neither starts anything.
+        Assert.Equal(LaunchState.ClientStartedUnverified, store.Row(first.Intent.OperationId)!.State);
+        Assert.True(LaunchDescriptions.HasUnresolvedReservation(store.Row(first.Intent.OperationId)!));
         Assert.Equal(LaunchState.Blocked, store.Row(second.Intent.OperationId)!.State);
         Assert.Equal(LaunchProblem.Interrupted, store.Row(second.Intent.OperationId)!.Problem);
     }
