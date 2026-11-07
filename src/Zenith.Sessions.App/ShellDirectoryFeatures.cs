@@ -87,7 +87,6 @@ public sealed partial class ShellViewModel
             ServerBrowser,CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
         RecentlyPlayed=new(publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory,
             gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
-        RecentClients.Rows.CollectionChanged+=(_,_)=>{if(!_shuttingDown && IsJoinGame) RefreshRecentlyPlayed();};
         _publicImageLoader=new(_publicPresentation,CanUseDirectories,PublishPublicImageAsync,
             error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
         RefreshPublicAccount=new(async parameter=>
@@ -180,8 +179,9 @@ public sealed partial class ShellViewModel
         return ShareLink.CheckAsync(link);
     }
     /// <summary>
-    /// A new client or history observation while Join a game is open: rebuild the recently played chips from what the logs
-    /// reported. After Panic or Lock the chips stay stopped; a desktop sample is not a user action.
+    /// Join a game opened, or one desktop presentation while it is open: rebuild the recently played chips from what the logs
+    /// reported, once, after the history rows and the client log views are both current. History row changes do not call
+    /// this one by one. After Panic or Lock the chips stay stopped; a desktop sample is not a user action.
     /// </summary>
     private void RefreshRecentlyPlayed()
     {

@@ -69,8 +69,8 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
         _runs.RemoveAll(run=>run.IsCompleted);
         if(Chips.Count==ordered.Length && Chips.Select(chip=>chip.PlaceId).SequenceEqual(ordered.Select(source=>source.PlaceId)))
         {
-            // Same games: keep the chips and the naming already in flight for them. Desktop samples repeat the same
-            // observations every few seconds; restarting here would cancel and re-send the lookup on every sample.
+            // Same games: keep the chips and the naming already in flight for them. Desktop presentations repeat the same
+            // observations about every 0.5-1 s; restarting here would cancel and re-send the lookup on every presentation.
             if(_stop is not null) return _current;
             for(int index=0;index<ordered.Length;index++) entries.Add((Chips[index],ordered[index]));
         }

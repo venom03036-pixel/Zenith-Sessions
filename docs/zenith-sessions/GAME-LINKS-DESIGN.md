@@ -120,8 +120,9 @@ name, creator line, playing + rating, accent border and check when it is the cur
   `LookupGameAsync(placeId)` for an entry without one. Unnamed entries show "Place {id}".
 - Chips are labelled **Recently played** with the tooltip "From your Roblox clients' logs on this PC. Not verified."
   Clicking one sets the requested destination (place only, never the old server).
-- Rebuilt when Join a game opens and whenever the shell publishes a new session/history snapshot while the page is
-  open; names are fetched only for places not already named this visit. No polling or timer is added.
+- Rebuilt when Join a game opens and once each time the shell publishes a new session/history snapshot while the page
+  is open, after the history rows and log views are both updated (never once per history row); names are fetched only
+  for places not already named this visit. No polling or timer is added.
 - Panic and Lock clear the chips and keep Recently played stopped, even after Unlock, until Join a game is opened again
   or the selected account changes, the same actions that reload Roblox favorites and saved private servers. A desktop
   sample alone never restarts the name lookups. The favorites row then reads "Stopped. Choose Refresh to load
