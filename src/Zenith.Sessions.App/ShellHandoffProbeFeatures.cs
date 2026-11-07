@@ -45,7 +45,10 @@ public sealed partial class ShellViewModel
             if(!_lifetime.IsCancellationRequested)await LoadAccountsAsync(_lifetime.Token);
             stop.Token.ThrowIfCancellationRequested();if(IsLocked||_shuttingDown)return;
             HandoffInspectionStatus=DescribeHandoffResult(result,place);Notice=HandoffInspectionStatus;
-            _diagnostics.Record(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented?ManagerEventKind.AuthorizationLinked:ManagerEventKind.OperationFailed);
+            // A cancel from the inspection window is expected, like the shell's own Cancel below: not an error.
+            // TimedOut, refusals and failures still need review, and a cancel whose cleanup failed arrives as CleanupFailed.
+            if(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented)_diagnostics.Record(ManagerEventKind.AuthorizationLinked);
+            else if(result.Outcome!=RobloxHandoffProbeOutcome.Cancelled)_diagnostics.Record(ManagerEventKind.OperationFailed);
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested)
         {

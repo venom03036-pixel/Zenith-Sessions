@@ -154,6 +154,22 @@ public sealed partial class ClientWindowIntegrationTests
             probe.Refusal=RobloxHandoffProbeOutcome.CleanupFailed;Assert.False(shell.CanInspectNativeHandoff);
         }
     });
+    [Fact]
+    public Task WindowCancelledInspectionIsNotRecordedAsADiagnosticError()=>OnUi(async()=>
+    {
+        var probe=new HandoffBrowser();
+        await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe);
+        await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
+        shell.ServerBrowser.UsePreferredPlace(6564161046);
+        shell.RefreshDiagnostics.Execute(null);string before=shell.DiagnosticErrors;
+        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        // The window's Cancel button or close box: the probe reports Cancelled while the shell's own stop token is untouched.
+        probe.Finish.TrySetResult(new(new(RobloxHandoffProbeOutcome.Cancelled)));
+        await shell.InspectNativeHandoff.Execution.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Contains("Inspection cancelled",shell.HandoffInspectionStatus);
+        // AGENTS.md: cancellation is expected, not an error. The shell's own Cancel already records nothing.
+        shell.RefreshDiagnostics.Execute(null);Assert.Equal(before,shell.DiagnosticErrors);
+    });
     // Owner-level tests: the real probe admits its folder, then waits behind a gated UI thread. Every case ends
     // before any window or WebView2 environment exists, so no browser, network, account or runtime is needed.
     [Fact]
