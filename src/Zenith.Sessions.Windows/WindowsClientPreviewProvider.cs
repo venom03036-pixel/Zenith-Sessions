@@ -80,7 +80,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         // No per-window task/timer: each native call is joined, and the soft budget is checked
         // only between targets. The native operation may itself take longer than this budget.
         return await RunOverviewBatchAsync(targets,
-            target => CaptureOneAsync(target, generation, epoch, ct, evictForOverview: true),
+            target => CaptureOneAsync(target, generation, epoch, ct),
             TimeProvider.System, ct).ConfigureAwait(false);
     }
 
@@ -118,7 +118,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
                 : await CaptureOneAsync(targets[index], generation, epoch, ct).ConfigureAwait(false);
         return Array.AsReadOnly(results);
     }
-    private async Task<ClientPreviewResult> CaptureOneAsync(ClientPreviewTarget target, long generation, long epoch, CancellationToken ct, bool evictForOverview = false)
+    private async Task<ClientPreviewResult> CaptureOneAsync(ClientPreviewTarget target, long generation, long epoch, CancellationToken ct)
     {
         bool drop = false;
         try
@@ -136,9 +136,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
                 {
                     item = CreateItem(target.Window); var nativeSize = item.Size;
                     var size = new PreviewSurfaceSize(nativeSize.Width, nativeSize.Height);
-                    bool fits = evictForOverview ? _sources.MakeRoom(size, ct) : _sources.Fits(size);
-                    if (!fits)
-                        return Result(target, ClientPreviewStatus.Deferred);
+                    if (!Admit(_sources, size, ct)) return Result(target, ClientPreviewStatus.Deferred);
                     if (Stopped(epoch, ct)) return Result(target, ClientPreviewStatus.Cancelled);
                     source = new Source(item, size); _sources.Add(target, size, source); item = null;
                     try { EnsureDevice(); source.Start(_device!); }
@@ -207,6 +205,13 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         { drop = true; return Result(target, error is NotSupportedException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException ? ClientPreviewStatus.Unsupported : ClientPreviewStatus.Failed); }
         finally { if (drop) Drop(target); }
     }
+    /// <summary>
+    /// One admission policy for selected and overview batches. A set that already fits evicts nothing; an
+    /// over-budget set evicts least-recently-used completed sources, so a fixed selected order cannot leave the
+    /// same rows deferred forever. Runs only on the readback lane, after the previous borrowed frame ended.
+    /// </summary>
+    internal static bool Admit<T>(ClientPreviewSourceCache<T> cache, PreviewSurfaceSize size, CancellationToken ct) where T : class, IDisposable
+        => cache.MakeRoom(size, ct);
     private bool Stopped(long epoch, CancellationToken ct) => ct.IsCancellationRequested || Volatile.Read(ref _disposing) != 0 || epoch != Volatile.Read(ref _epoch);
     private static ClientPreviewStatus CheckTarget(ClientPreviewTarget target)
     {

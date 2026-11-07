@@ -25,6 +25,56 @@ public sealed class WindowsClientPreviewOverviewTests
     }
 
     [Fact]
+    public void SharedBudgetCannotHoldThreeLargeWindowsOrA4KWindowWithA1080pWindow()
+    {
+        PreviewSurfaceSize large = new(2560, 1400);
+        Assert.True(ClientPreviewBufferReader.FitsBudget([large, large]));
+        Assert.False(ClientPreviewBufferReader.FitsBudget([large, large, large]));
+        Assert.True(ClientPreviewBufferReader.FitsBudget([new(3840, 2160)]));
+        Assert.False(ClientPreviewBufferReader.FitsBudget([new(3840, 2160), new(1920, 1080)]));
+    }
+
+    [Theory]
+    [InlineData(3)]
+    [InlineData(4)]
+    public void SelectedLargeSourcesAreEachAdmittedWithinTwoBatches(int count)
+    {
+        // Mirrors the selected-mode loop: the same fixed target order every batch, hits reuse the cached
+        // source and misses go through the provider's admission decision before taking ownership.
+        var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(count);
+        PreviewSurfaceSize size = new(2560, 1400); const int allowed = 2;
+        var admitted = new HashSet<ClientPreviewTarget>(); var created = new List<OwnedSource>();
+        for (int batch = 0; batch < 2; batch++)
+            foreach (var target in targets)
+            {
+                if (cache.TryGet(target, out _)) continue;
+                if (!WindowsClientPreviewProvider.Admit(cache, size, default)) continue;
+                var source = new OwnedSource(); created.Add(source);
+                cache.Add(target, size, source); admitted.Add(target);
+                Assert.InRange(cache.Count, 1, allowed);
+            }
+        Assert.All(targets, target => Assert.Contains(target, admitted));
+        Assert.Equal(created.Count - cache.Count, created.Count(source => source.Disposed == 1));
+        cache.ReleaseAll(); Assert.All(created, source => Assert.Equal(1, source.Disposed));
+    }
+
+    [Fact]
+    public void SelectedSourcesWithinTheBudgetAreKeptAcrossBatches()
+    {
+        var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(2);
+        PreviewSurfaceSize size = new(2560, 1400); var created = new List<OwnedSource>();
+        for (int batch = 0; batch < 3; batch++)
+            foreach (var target in targets)
+            {
+                if (cache.TryGet(target, out _)) continue;
+                Assert.True(WindowsClientPreviewProvider.Admit(cache, size, default));
+                var source = new OwnedSource(); created.Add(source); cache.Add(target, size, source);
+            }
+        Assert.Equal(2, created.Count); Assert.All(created, source => Assert.Equal(0, source.DisposeAttempts));
+        cache.ReleaseAll(); Assert.All(created, source => Assert.Equal(1, source.Disposed));
+    }
+
+    [Fact]
     public void CacheEvictsTheLeastRecentlyUsedSourceAndNeverExceedsFour()
     {
         var cache = new ClientPreviewSourceCache<OwnedSource>(); var targets = Targets(5);
