@@ -48,6 +48,17 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     }
     public bool IsBusy { get { lock (_gate) return _active is not null; } }
 
+    /// <summary>
+    /// True when <see cref="Configure"/> would accept this candidate as the trial installation. It runs the
+    /// same check (direct-player filename, Roblox-only evidence, safe full path, readable metadata), so a
+    /// caller can tell an inspect-only row (the launcher, a bootstrapper-managed player) from a real change.
+    /// </summary>
+    public static bool CanSelect(ClientInstallationCandidate? candidate)
+    {
+        if (candidate is null) return false;
+        try { CopySelection(candidate); return true; }
+        catch (ArgumentException) { return false; }
+    }
     public void Configure(ClientInstallationCandidate? candidate)
     {
         var selected = candidate is null ? null : CopySelection(candidate); Owner? active;
@@ -352,9 +363,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         try
         {
             if (!Path.IsPathFullyQualified(path) || !Path.GetFullPath(path).Equals(path, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(invalid);
-            string name = Path.GetFileName(path);
-            if (!name.Equals("RobloxPlayerBeta.exe", StringComparison.OrdinalIgnoreCase) && !name.Equals("RobloxPlayer.exe", StringComparison.OrdinalIgnoreCase))
-                throw new ArgumentException(invalid);
+            if (!RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { throw new ArgumentException(invalid); }
         if (!Metadata(candidate.ProductName) || !Metadata(candidate.FileVersion)) throw new ArgumentException(invalid);

@@ -85,6 +85,37 @@ public sealed partial class ClientWindowIntegrationTests
         await AssertBlockedTrialCommandAsync(shell); Assert.Equal(notice, shell.Notice); Assert.Empty(shell.Launches);
     });
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task PanicOrLockKeepsTheTrialStopReasonInTheTrialPanel(bool lockDashboard) => OnUi(async () =>
+    {
+        await using var shell = await NativeTrialShellAsync(); Assert.True(shell.CanRunNativeTrial);
+        if (lockDashboard) shell.LockDashboard(); else shell.Panic.Execute(null);
+        Assert.False(shell.CanRunNativeTrial); Assert.Null(shell.SelectedInstallation);
+        Assert.Contains("Panic or Lock", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
+        await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+        // Unlock does not restart the trial, so the stop guidance stays until the user acts.
+        if (lockDashboard) { shell.Unlock.Execute(null); Assert.False(shell.IsLocked); }
+        Assert.Contains("Panic or Lock", shell.NativeTrialStatus, StringComparison.Ordinal);
+        // No check was running, so the cleared Settings list must not claim a check was stopped.
+        Assert.Empty(shell.InstallationCandidates); Assert.Equal("Not checked", shell.InstallationObserved);
+        Assert.DoesNotContain("check stopped", shell.InstallationStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("Refresh", shell.InstallationStatus, StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task ClearingTheInstallationSelectionShowsANeutralTrialStatus() => OnUi(async () =>
+    {
+        await using var shell = await NativeTrialShellAsync(); Assert.True(shell.CanRunNativeTrial);
+        shell.CancelInstallationDiscovery.Execute(null);
+        Assert.Null(shell.SelectedInstallation); Assert.False(shell.CanRunNativeTrial);
+        Assert.DoesNotContain("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No native installation is selected", shell.NativeTrialStatus, StringComparison.Ordinal);
+        await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+    });
+
     [Fact]
     public Task DiscoveryValidLauncherSelectionRemainsVisibleWithoutThrowingOrEnablingANativeTrial() => OnUi(async () =>
     {
@@ -97,6 +128,32 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Null(error); Assert.Same(launcher, shell.SelectedInstallation); Assert.Contains(launcher, shell.InstallationCandidates);
         Assert.False(shell.CanRunNativeTrial); Assert.Contains("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
         await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+    });
+
+    [Fact]
+    public Task BootstrapperManagedPlayerSelectionExplainsOwnershipAndIsNotShownAsTheTrialInstallation() => OnUi(async () =>
+    {
+        await using var shell = await NativeTrialShellAsync(installation: false);
+        var row = new InstallationCandidateRow(new(ClientInstallationProduct.Roblox,
+            Path.Combine(_root, "never-created", "Bloxstrap", "Versions", "version-x", "RobloxPlayerBeta.exe"), "Synthetic", "0.0.0",
+            ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Bloxstrap)]));
+        shell.InstallationCandidates.Add(row);
+        shell.SelectedInstallation = row;
+        Assert.Equal(ClientInstallationProduct.Bloxstrap, row.ManagedBy);
+        Assert.Contains("Bloxstrap", row.Product, StringComparison.Ordinal);
+        Assert.Contains("Bloxstrap version folder", row.Evidence, StringComparison.Ordinal);
+        Assert.NotEqual(row.ExecutablePath, shell.NativeTrialInstallation);
+        Assert.Contains("see the trial status", shell.NativeTrialInstallation, StringComparison.Ordinal);
+        Assert.Contains("managed by Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.Contains("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.False(shell.CanRunNativeTrial);
+        await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+
+        // A native row owned by Roblox keeps its plain label and becomes the trial installation.
+        var native = NativeTrialMetadataOnlyInstallation();
+        Assert.Null(native.ManagedBy); Assert.Equal("Roblox", native.Product); Assert.Equal("roblox-player registration", native.Evidence);
+        shell.SelectedInstallation = native;
+        Assert.Equal(native.ExecutablePath, shell.NativeTrialInstallation);
     });
 
     [Theory]

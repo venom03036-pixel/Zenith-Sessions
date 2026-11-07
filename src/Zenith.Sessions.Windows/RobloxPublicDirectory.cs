@@ -259,7 +259,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
 
     // A non-null jsonBody turns the request into an anonymous POST; it takes the same slot, pause and bounded read.
     private async Task<PublicDirectoryResult<T>> ReadJsonAsync<T>(Uri uri, Func<JsonElement, PublicDirectoryResult<T>> parse,
-        CancellationToken ct, bool restrictedIsUnknown = false, byte[]? jsonBody = null) where T : class
+        CancellationToken ct, bool restrictedIsUnknown = false, byte[]? jsonBody = null, int maximumBytes = MaximumJsonBytes) where T : class
     {
         if (!TryStart<T>(uri, null, out var unavailable)) return unavailable!;
         try
@@ -268,7 +268,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
             if (StatusResult<T>(response, uri, restrictedIsUnknown) is { } failure) return failure;
             string? mediaType = response.Content.Headers.ContentType?.MediaType;
             if (mediaType is not "application/json" and not "text/json") return Failure<T>("Roblox returned an unsupported public directory response.");
-            byte[] bytes = await ReadBoundedAsync(response.Content, MaximumJsonBytes, ct).ConfigureAwait(false);
+            byte[] bytes = await ReadBoundedAsync(response.Content, Math.Min(maximumBytes, MaximumJsonBytes), ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
             try
             {

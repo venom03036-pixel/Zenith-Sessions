@@ -317,7 +317,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
-        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null)
+        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
+        IPublicRobloxClientReleaseDirectory? clientReleases=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -350,7 +351,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeRecipientBundles(recipientBundleStore);
         InitializePerformanceFeatures();
         InitializePerformanceTransfer(performanceTransferStore);
-        InitializeInstallationFeatures(installationDiscovery,executableTrust);
+        InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
         InitializeDiagnosticsFeatures();
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
@@ -1016,11 +1017,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         void Step(Action step) { try { step(); } catch(Exception ex) { (failed??=[]).Add(ex.GetType()); } }
         Step(HoldQueuePresentation);Step(()=>MacroAssignments.CancelWork());Step(()=>MacroHostCatalog.CancelWork());
         Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;
+        // The installation stop clears the selection first, so the trial fence below keeps the Panic/Lock reason (Z1600).
+        Step(CancelInstallationWork);
         Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopGroupChanges);
-        Step(CancelPerformanceTransfers);Step(CancelInstallationWork);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.

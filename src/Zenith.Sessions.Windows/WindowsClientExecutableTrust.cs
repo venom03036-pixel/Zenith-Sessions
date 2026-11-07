@@ -78,10 +78,9 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
         if (candidate.Product != ClientInstallationProduct.Roblox)
             return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
         if (!TryPath(candidate.ExecutablePath, out string path)) return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.UnsafePath);
-        string name = Path.GetFileName(path);
-        if (name.Equals("RobloxPlayerLauncher.exe", StringComparison.OrdinalIgnoreCase))
+        if (RobloxNativePlayerFiles.IsLauncher(path))
             return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
-        if (!name.Equals("RobloxPlayerBeta.exe", StringComparison.OrdinalIgnoreCase) && !name.Equals("RobloxPlayer.exe", StringComparison.OrdinalIgnoreCase))
+        if (!RobloxNativePlayerFiles.IsDirectPlayer(path))
             return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
         ClientExecutableFileSnapshot? before = null;
         string? hash = null;

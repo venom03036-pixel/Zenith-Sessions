@@ -20,8 +20,10 @@ public sealed partial class ShellViewModel
     public string NativeTrialSelection=>ServerBrowser.HasDestinationDraft?"Search / Use the pending destination draft before reviewing a trial.":SelectedAccount is {KnownUserId:>0} row&&ServerBrowser.ReadyDestination is { } destination
         ?$"{row.Label} · expected player {row.KnownUserId} · place {destination.PlaceId}"+(destination.JobId is { } job?$" · server {job}":" · any server")
         :"Select a saved, signed-in account and an explicit game or server in Sessions → Join a game.";
-    public string NativeTrialInstallation=>SelectedInstallation?.Candidate is {Product:ClientInstallationProduct.Roblox} candidate
-        ?candidate.ExecutablePath:"Choose a native Roblox installation in Settings first.";
+    // Only the file the provider accepted is the trial installation; a rejected row is never shown as one.
+    public string NativeTrialInstallation=>SelectedInstallation?.Candidate is not { } candidate?"Choose a native Roblox installation in Settings first."
+        :candidate.Product==ClientInstallationProduct.Roblox&&_nativeLaunch.Selected?candidate.ExecutablePath
+        :"The selected installation is not usable for a native trial; see the trial status.";
     public bool CanRunNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
         &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
         &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0}&&ServerBrowser.ReadyDestination is {PlaceId:>0};
@@ -91,22 +93,48 @@ public sealed partial class ShellViewModel
     {Interlocked.Increment(ref _nativeReviewVersion);Interlocked.Exchange(ref _nativeTrialReview,null);_nativeReviewStop?.Cancel();}
     private void ConfigureNativeTrialInstallation()
     {
-        InvalidateNativeTrialReview();
-        Interlocked.Increment(ref _nativeTrialEpoch);
-        _launchQueue.SignalPanic();
+        // A cleared selection (Refresh, Cancel check, Panic or Lock) is not a rejected row;
+        // only a row that is still selected may be described as unsupported.
+        var selection=SelectedInstallation?.Candidate;
+        // The provider's own acceptance rule, not a looser copy: the launcher and bootstrapper-managed
+        // players are present Roblox rows that Configure would reject, so they are never eligible.
+        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)?selection:null;
+        // Revoke trial permission (and pause the queue) only when the trial installation can
+        // actually change: off a selected native file, or onto a row the provider accepts. Moving
+        // between rows that can never be the trial installation only updates the status text.
+        bool interrupted=false;
+        if(_nativeLaunch.Selected||eligible is not null)
+        {
+            interrupted=HasNativeTrialInProgress();
+            InvalidateNativeTrialReview();
+            Interlocked.Increment(ref _nativeTrialEpoch);
+            _launchQueue.SignalPanic();
+        }
         try
         {
-            _nativeLaunch.Configure(SelectedInstallation?.Candidate is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null);
+            _nativeLaunch.Configure(eligible);
             NativeTrialStatus=_nativeLaunch.Selected?"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified."
-                :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
+                :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation(SelectedInstallation);
         }
         catch(ArgumentException)
         {
             _nativeLaunch.Configure(null);
-            NativeTrialStatus="This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
+            NativeTrialStatus=UnsupportedNativeInstallation(SelectedInstallation);
         }
+        // The fence above is intended; replace the selection text and the stale "Trial queued" banner
+        // so the user knows the trial stopped. A Panic or Lock reason keeps priority.
+        if(interrupted&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice)NativeTrialStatus=Notice=NativeTrialStoppedBySelection;
         RefreshNativeTrialFeatures();
     }
+    private const string NativeTrialStoppedBySelection="Trial stopped because the installation selection changed, and the launch queue is paused. Review any process-start receipt in the queue before retrying; existing Roblox clients remain open.";
+    // Read before the fence: the queue's Panic signal ends IsTrialOperation for the current request.
+    private bool HasNativeTrialInProgress()=>_nativeLaunch.IsBusy||StartNativeTrial is {Execution.IsCompleted:false}
+        ||Volatile.Read(ref _latestQueue).Operations.Any(operation=>(operation.State is LaunchState.Queued or LaunchState.Validating or LaunchState.Preparing
+            or LaunchState.Launching or LaunchState.Stabilizing)&&_launchQueue.IsTrialOperation(operation.Intent.OperationId));
+    private const string NoNativeInstallationSelected="No native installation is selected. In Settings, choose Refresh installation, then select a present native Roblox player file.";
+    private static string UnsupportedNativeInstallation(InstallationCandidateRow? row)=>row?.ManagedBy is { } owner
+        ?$"This Roblox player is managed by {owner}. Native trials are not supported for players managed by a bootstrapper; select a Roblox player that Roblox installed itself. The inventory row remains available for inspection."
+        :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
     private void FenceNativeTrial(string reason)
     {
         InvalidateNativeTrialReview();
@@ -126,7 +154,7 @@ public sealed partial class ShellViewModel
     }
     private void RefreshNativeTrialFeatures()
     {
-        Raise(nameof(CanRunNativeTrial));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));
+        Raise(nameof(CanRunNativeTrial));Raise(nameof(CanRefreshInstallations));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));
         if(!_ready||IsLocked||_shuttingDown||_nativeLaunch.IsBusy||IsAuthorizing||!_nativeMetadataRefresh.IsCompleted
             ||Interlocked.Exchange(ref _nativeMetadataPending,0)==0)return;
         // Reopen only the nonsecret projection after an owned preparation may rotate a session.

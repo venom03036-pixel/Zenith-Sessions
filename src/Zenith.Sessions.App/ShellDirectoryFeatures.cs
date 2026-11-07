@@ -57,6 +57,8 @@ public sealed partial class AccountRow
 public sealed partial class ShellViewModel
 {
     private HttpClient? _serverHttp,_publicHttp;
+    // The public directory's release reader; installation features decide whether to use it (never beside injected discovery).
+    private IPublicRobloxClientReleaseDirectory? _publicClientReleases;
     private PublicAccountPresentation _publicPresentation=null!;
     private PublicAccountPageLoader _publicImageLoader=null!;
     private readonly bool _enableAutomaticPublicImages;
@@ -99,6 +101,7 @@ public sealed partial class ShellViewModel
     {
         if(serverDirectory is null) {_serverHttp=RobloxServerDirectory.CreatePublicHttpClient();serverDirectory=new RobloxServerDirectory(_serverHttp);}
         if(publicDirectory is null) {_publicHttp=RobloxPublicDirectory.CreateAnonymousHttpClient();publicDirectory=new RobloxPublicDirectory(_publicHttp,maximumEncodedMemoryBytes:32L*1024*1024);}
+        _publicClientReleases=publicDirectory as IPublicRobloxClientReleaseDirectory;
         ServerBrowser=new(serverDirectory,CanUseDirectories);_publicPresentation=new(publicDirectory);
         _preferredGameDirectory=gameDirectory??publicDirectory as IPublicRobloxGameDirectory;
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,

@@ -14,19 +14,31 @@ namespace Zenith.Sessions.Windows;
 public sealed class WindowsClientInstallationInventorySource : IClientInstallationInventorySource
 {
     public const int MaximumRegistryValueBytes=4096,MaximumVersionResourceBytes=65536;
-    public const long MaximumExecutableBytes=256L*1024*1024;
+    // Only the version resource is read (bounded above), so this cap guards nothing of its own: it must never mark a file
+    // too large that the publisher verifier would still check, or Verify and the native trial go dark for that row.
+    public const long MaximumExecutableBytes=WindowsClientExecutableTrust.MaximumFileBytes;
     private readonly string? _localOverride;
     private readonly bool _includeRegistry;
     private readonly Func<string,uint> _driveType;
+    private readonly Func<RegistryKey> _openRegistryRoot;
+    private static readonly UnicodeEncoding StrictUtf16=new(false,false,true);
     /// <summary>Tests may provide an owned application-data root and disable registry reads. No registry or filesystem write API is used.</summary>
     public WindowsClientInstallationInventorySource(string? localAppDataOverride=null,bool includeCurrentUserRegistry=true)
-        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType) { }
+        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType,OpenCurrentUserRoot) { }
     internal WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<string,uint> driveType)
+        :this(localAppDataOverride,includeCurrentUserRegistry,driveType,OpenCurrentUserRoot) { }
+    /// <summary>Points the real RegQueryValueEx read at an owned root (tests use a private application hive). The opener must
+    /// return a fresh key on every call: each read owns and disposes the root it opened. The fixed relative paths are unchanged.</summary>
+    internal WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<RegistryKey> openRegistryRoot)
+        :this(localAppDataOverride,includeCurrentUserRegistry,GetDriveType,openRegistryRoot) { }
+    private WindowsClientInstallationInventorySource(string? localAppDataOverride,bool includeCurrentUserRegistry,Func<string,uint> driveType,Func<RegistryKey> openRegistryRoot)
     {
         if(localAppDataOverride is not null && !WindowsClientInstallationDiscovery.TryNormalizeDirectory(localAppDataOverride,out _))
             throw new ArgumentException("Use a fully qualified local metadata root.",nameof(localAppDataOverride));
         _localOverride=localAppDataOverride;_includeRegistry=includeCurrentUserRegistry;_driveType=driveType??throw new ArgumentNullException(nameof(driveType));
+        _openRegistryRoot=openRegistryRoot??throw new ArgumentNullException(nameof(openRegistryRoot));
     }
+    private static RegistryKey OpenCurrentUserRoot()=>RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,RegistryView.Default);
     public string? GetLocalAppData(CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();string path=_localOverride??Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
@@ -39,19 +51,28 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();
         (string path,string? name)=RegistryLocation(hint);if(!_includeRegistry) return null;
-        using var root=RegistryKey.OpenBaseKey(RegistryHive.CurrentUser,RegistryView.Default);
+        using var root=_openRegistryRoot();
         using var key=root.OpenSubKey(path,writable:false);if(key is null) return null;
         uint bytes=0;int error=RegQueryValueEx(key.Handle,name,IntPtr.Zero,out uint kind,null,ref bytes);
         if(error==2) return null;
         if(error!=0) throw new Win32Exception(error);
-        // REG_EXPAND_SZ is deliberately not expanded; only an actual bounded REG_SZ is accepted.
-        if(kind!=1 || bytes>MaximumRegistryValueBytes || bytes%2!=0) throw new InvalidDataException("The installation registry value has an unsupported shape.");
+        if(!IsBoundedRegSz(kind,bytes)) throw UnsupportedShape();
         var buffer=new byte[bytes];ct.ThrowIfCancellationRequested();
         error=RegQueryValueEx(key.Handle,name,IntPtr.Zero,out kind,buffer,ref bytes);ct.ThrowIfCancellationRequested();
         if(error!=0 || kind!=1 || bytes>buffer.Length || bytes%2!=0) throw new InvalidDataException("The installation registry value changed during its bounded read.");
-        try {return new UnicodeEncoding(false,false,true).GetString(buffer,0,(int)bytes).TrimEnd('\0');}
+        return DecodeRegistryString(kind,buffer.AsSpan(0,(int)bytes));
+    }
+    /// <summary>Accepts only a bounded, even-length REG_SZ of strict UTF-16LE and trims trailing NULs. An embedded NUL is kept so the
+    /// command/path parsers reject it. Throws <see cref="InvalidDataException"/> for any other shape.</summary>
+    internal static string DecodeRegistryString(uint kind,ReadOnlySpan<byte> data)
+    {
+        if(!IsBoundedRegSz(kind,(uint)data.Length)) throw UnsupportedShape();
+        try {return StrictUtf16.GetString(data).TrimEnd('\0');}
         catch(DecoderFallbackException) {throw new InvalidDataException("The installation registry value is not valid Unicode.");}
     }
+    // REG_EXPAND_SZ is deliberately not expanded; only an actual bounded REG_SZ (type 1) is accepted.
+    private static bool IsBoundedRegSz(uint kind,uint bytes)=>kind==1 && bytes<=MaximumRegistryValueBytes && bytes%2==0;
+    private static InvalidDataException UnsupportedShape()=>new("The installation registry value has an unsupported shape.");
     private static (string Path,string? Name) RegistryLocation(ClientInstallationRegistryHint hint)=>hint switch
     {
         ClientInstallationRegistryHint.RobloxProtocol=>(@"Software\Classes\roblox\shell\open\command",null),
@@ -61,6 +82,9 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
         ClientInstallationRegistryHint.FroststrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Froststrap","InstallLocation"),
         _=>throw new ArgumentOutOfRangeException(nameof(hint))
     };
+    /// <summary>Returns at most <paramref name="maximumEntries"/> plain version-* folder names, newest last-write time first (name breaks ties).
+    /// Loose files, reparse points and other folders never use a slot. At most <see cref="WindowsClientInstallationDiscovery.MaximumVersionScanEntries"/>
+    /// raw entries are examined; Truncated is set when that bound is passed or more version folders exist than were returned.</summary>
     public ClientInstallationVersionDirectories ReadVersionDirectories(string root,int maximumEntries,CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();EnsureWindows();
@@ -72,15 +96,24 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
         catch(FileNotFoundException) {return new([]);}
         catch(DirectoryNotFoundException) {return new([]);}
         if(HasReparseAncestor(normalized!)) throw new InvalidDataException("Redirected installation metadata folders are skipped.");
-        var names=new List<string>();int examined=0;bool truncated=false;
+        // Version folder names are random hashes, so enumeration (name) order says nothing about age: rank by last-write time instead.
+        var folders=new List<(string Name,DateTime Written)>();int examined=0;bool truncated=false;
         using var entries=Directory.EnumerateFileSystemEntries(normalized!,"*",SearchOption.TopDirectoryOnly).GetEnumerator();
         while(entries.MoveNext())
         {
-            ct.ThrowIfCancellationRequested();if(++examined>maximumEntries) {truncated=true;break;}
+            ct.ThrowIfCancellationRequested();if(++examined>WindowsClientInstallationDiscovery.MaximumVersionScanEntries) {truncated=true;break;}
+            string name=Path.GetFileName(entries.Current);
+            if(!WindowsClientInstallationDiscovery.ValidVersionName(name)) continue;
             var attributes=File.GetAttributes(entries.Current);
-            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))==FileAttributes.Directory) names.Add(Path.GetFileName(entries.Current));
+            if((attributes&(FileAttributes.Directory|FileAttributes.ReparsePoint))!=FileAttributes.Directory) continue;
+            folders.Add((name,Directory.GetLastWriteTimeUtc(entries.Current)));
         }
-        ct.ThrowIfCancellationRequested();return new(Array.AsReadOnly(names.ToArray()),truncated);
+        ct.ThrowIfCancellationRequested();
+        folders.Sort((left,right)=>{int byTime=right.Written.CompareTo(left.Written);return byTime!=0?byTime:StringComparer.OrdinalIgnoreCase.Compare(left.Name,right.Name);});
+        if(folders.Count>maximumEntries) truncated=true;
+        var names=new string[Math.Min(folders.Count,maximumEntries)];
+        for(int index=0;index<names.Length;index++) names[index]=folders[index].Name;
+        return new(Array.AsReadOnly(names),truncated);
     }
     public ClientInstallationFileMetadata InspectExecutable(string path,CancellationToken ct)
     {

@@ -23,6 +23,29 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(CapabilityState.Unavailable,shell.SelectedInstallation.Candidate.NamedAccountLaunch);
     });
 
+    [Fact]
+    public Task PublisherCheckIsUnavailableForTheRobloxLauncherRow()=>OnUi(async()=>
+    {
+        // Discovery lists RobloxPlayerLauncher.exe as a Roblox row, but the verifier never checks a launcher's
+        // publisher, so the button must not offer a check that can only answer "not evaluated".
+        var trust=new TrustProbe();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),
+            installationDiscovery:new InstallationProbe{ExtraPath="C:\\Synthetic\\RobloxPlayerLauncher.exe"},executableTrust:trust);
+        await shell.InitializeAsync();shell.RefreshInstallations.Execute(null);await shell.RefreshInstallations.Execution;
+        var launcher=shell.InstallationCandidates.Single(row=>row.ExecutablePath.EndsWith("RobloxPlayerLauncher.exe",StringComparison.OrdinalIgnoreCase));
+        var player=shell.InstallationCandidates.Single(row=>row.ExecutablePath.EndsWith("RobloxPlayerBeta.exe",StringComparison.OrdinalIgnoreCase));
+        Assert.Equal(ClientInstallationProduct.Roblox,launcher.Candidate.Product);
+        shell.SelectedInstallation=launcher;
+        Assert.False(shell.CanVerifyInstallationPublisher);
+        Assert.Contains("launcher",shell.PublisherVerificationStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("RobloxPlayerBeta.exe",shell.PublisherVerificationStatus,StringComparison.Ordinal);
+        shell.VerifyInstallationPublisher.Execute(null);await shell.VerifyInstallationPublisher.Execution;
+        Assert.Equal(0,trust.Calls);Assert.DoesNotContain(launcher.ExecutablePath,shell.NativeTrialInstallation);
+        shell.SelectedInstallation=player;
+        Assert.True(shell.CanVerifyInstallationPublisher);
+        Assert.Equal("Select a native Roblox installation, then explicitly verify its publisher.",shell.PublisherVerificationStatus);
+    });
+
     [Theory]
     [InlineData(false)] [InlineData(true)]
     public Task ChangingSelectionOrLockingDiscardsLatePublisherSuccess(bool useLock)=>OnUi(async()=>
@@ -43,6 +66,35 @@ public sealed partial class ClientWindowIntegrationTests
         await shell.VerifyInstallationPublisher.Execution;
         Assert.DoesNotContain("SHA-256",shell.PublisherVerificationStatus);Assert.Empty(shell.Launches);
         if(useLock)Assert.Contains("Panic stop",shell.Notice);
+    });
+
+    [Theory]
+    [InlineData("button")] [InlineData("select")] [InlineData("panic")]
+    public Task CancelledPublisherCheckSettlesStatusWhenTheOwnedCheckEnds(string cancelPath)=>OnUi(async()=>
+    {
+        var trust=new TrustProbe{Gate=new(TaskCreationOptions.RunContinuationsAsynchronously)};
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),installationDiscovery:new InstallationProbe(),executableTrust:trust);
+        await shell.InitializeAsync();shell.RefreshInstallations.Execute(null);await shell.RefreshInstallations.Execution;
+        shell.SelectedInstallation=shell.InstallationCandidates[0];shell.VerifyInstallationPublisher.Execute(null);
+        try
+        {
+            if(cancelPath=="button")shell.CancelPublisherVerification.Execute(null);
+            else if(cancelPath=="select")shell.SelectedInstallation=shell.InstallationCandidates[1];
+            else shell.Panic.Execute(null);
+            Assert.True(trust.Token.IsCancellationRequested);Assert.True(shell.IsPublisherVerificationBusy);
+            Assert.Contains("Waiting",shell.PublisherVerificationStatus);
+        }
+        finally{trust.Gate.TrySetResult(TrustProbe.Result(trust.Candidate!));}
+        await shell.VerifyInstallationPublisher.Execution;
+        Assert.False(shell.IsPublisherVerificationBusy);Assert.Empty(shell.Launches);
+        Assert.DoesNotContain("Waiting",shell.PublisherVerificationStatus);Assert.DoesNotContain("SHA-256",shell.PublisherVerificationStatus);
+        if(cancelPath=="button")
+        {
+            Assert.Equal("Verification cancelled. Trust remains unknown; verify again to check this file.",shell.PublisherVerificationStatus);
+            Assert.True(shell.CanVerifyInstallationPublisher);
+        }
+        else Assert.Equal("Select a native Roblox installation, then explicitly verify its publisher.",shell.PublisherVerificationStatus);
+        if(cancelPath=="panic")Assert.Contains("Panic stop",shell.Notice);
     });
 
     [Fact]

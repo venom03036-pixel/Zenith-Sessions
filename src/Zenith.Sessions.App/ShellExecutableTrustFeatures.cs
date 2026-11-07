@@ -9,16 +9,22 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _publisherStop;
     private long _publisherGeneration;
     private bool _publisherBusy;
-    private string _publisherStatus = "Select a native Roblox installation, then explicitly verify its publisher.";
+    private const string PublisherIdleStatus = "Select a native Roblox installation, then explicitly verify its publisher.";
+    private string _publisherStatus = PublisherIdleStatus;
     public string PublisherVerificationStatus { get => _publisherStatus; private set => Set(ref _publisherStatus, value); }
     public bool IsPublisherVerificationBusy
     {
         get => _publisherBusy;
         private set { if (Set(ref _publisherBusy, value)) { Raise(nameof(CanVerifyInstallationPublisher)); Raise(nameof(CanRefreshInstallations)); } }
     }
+    private const string PublisherLauncherStatus = "This row is the Roblox launcher (RobloxPlayerLauncher.exe), which installs and updates Roblox. Its publisher is not checked here; select a RobloxPlayerBeta.exe row to verify the player.";
+    // The verifier checks only the direct player files; a launcher row would always answer "not evaluated".
     public bool CanVerifyInstallationPublisher => _ready && !IsLocked && !_shuttingDown && !IsSample
         && !IsInstallationDiscoveryBusy && !IsPublisherVerificationBusy
-        && SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox, FileState: ClientInstallationFileState.PresentUnverified };
+        && SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox, FileState: ClientInstallationFileState.PresentUnverified } candidate
+        && RobloxNativePlayerFiles.IsDirectPlayer(candidate.ExecutablePath);
+    private string PublisherIdleText() => SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox } candidate
+        && RobloxNativePlayerFiles.IsLauncher(candidate.ExecutablePath) ? PublisherLauncherStatus : PublisherIdleStatus;
     public AsyncCommand VerifyInstallationPublisher { get; private set; } = null!;
     public Command CancelPublisherVerification { get; private set; } = null!;
 
@@ -49,7 +55,7 @@ public sealed partial class ShellViewModel
                 || result.Status == ClientExecutableTrustStatus.VerifiedRobloxPublisher
                     && (result.Reason != ClientExecutableTrustReason.Verified || result.File is null || result.Signer is null
                         || !string.Equals(result.File.FullPath,selected.ExecutablePath,StringComparison.OrdinalIgnoreCase)
-                        || result.File.Length is <=0 or >536870912 || result.File.FileId.Length!=32 || !result.File.FileId.All(char.IsAsciiHexDigit)
+                        || result.File.Length is <=0 or >WindowsClientExecutableTrust.MaximumFileBytes || result.File.FileId.Length!=32 || !result.File.FileId.All(char.IsAsciiHexDigit)
                         || !string.Equals(result.Signer.Organization,"Roblox Corporation",StringComparison.OrdinalIgnoreCase) || result.Signer.CertificateSha256.Length!=64 || !result.Signer.CertificateSha256.All(char.IsAsciiHexDigit)
                         || result.Signer.NotAfterUtc<=result.Signer.NotBeforeUtc
                         || result.Sha256 is not { Length: 64 } hash || !hash.All(char.IsAsciiHexDigit)))
@@ -66,6 +72,13 @@ public sealed partial class ShellViewModel
         finally
         {
             if (ReferenceEquals(_publisherStop, stop)) _publisherStop = null;
+            // Only CancelPublisherVerificationWork changes the generation, and it left the "waiting for
+            // Windows" text up while this owned check finished. Busy blocks a newer check until the line
+            // below runs, so settling here cannot overwrite a newer result. Shutdown leaves it alone.
+            if (generation != _publisherGeneration && !_shuttingDown)
+                PublisherVerificationStatus = ReferenceEquals(SelectedInstallation, selected)
+                    ? "Verification cancelled. Trust remains unknown; verify again to check this file."
+                    : PublisherIdleText();
             IsPublisherVerificationBusy = false;
         }
     }
@@ -81,6 +94,6 @@ public sealed partial class ShellViewModel
         Interlocked.Increment(ref _publisherGeneration); _publisherStop?.Cancel();
         PublisherVerificationStatus = IsPublisherVerificationBusy
             ? "Verification cancelled. Waiting for Windows to finish its owned check; late results are discarded."
-            : "Select a native Roblox installation, then explicitly verify its publisher.";
+            : PublisherIdleText();
     }
 }
