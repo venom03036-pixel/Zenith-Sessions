@@ -21,13 +21,16 @@ public sealed class PanicShortcutTests : IDisposable
 
     [Theory]
     [InlineData("F12", "F12", PanicShortcutModifiers.None, 0x7B)]
-    [InlineData("f1", "F1", PanicShortcutModifiers.None, 0x70)]
+    [InlineData("f2", "F2", PanicShortcutModifiers.None, 0x71)]
+    [InlineData("ctrl+f1", "Ctrl+F1", Ctrl, 0x70)]
     [InlineData("F24", "F24", PanicShortcutModifiers.None, 0x87)]
-    [InlineData("ctrl+alt+p", "Ctrl+Alt+P", Ctrl | Alt, 0x50)]
+    [InlineData("ctrl+alt+shift+p", "Ctrl+Alt+Shift+P", Ctrl | Alt | Shift, 0x50)]
     [InlineData(" Shift + F9 ", "Shift+F9", Shift, 0x78)]
     [InlineData("Control+Shift+5", "Ctrl+Shift+5", Ctrl | Shift, 0x35)]
     [InlineData("Shift+Alt+Ctrl+z", "Ctrl+Alt+Shift+Z", Ctrl | Alt | Shift, 0x5A)]
-    [InlineData("Alt+0", "Alt+0", Alt, 0x30)]
+    [InlineData("Ctrl+P", "Ctrl+P", Ctrl, 0x50)]
+    [InlineData("Ctrl+0", "Ctrl+0", Ctrl, 0x30)]
+    [InlineData("Ctrl+F10", "Ctrl+F10", Ctrl, 0x79)]
     [InlineData("Alt+Shift+F4", "Alt+Shift+F4", Alt | Shift, 0x73)]
     public void AcceptedShortcutsReadAsOneCanonicalForm(string text, string canonical, PanicShortcutModifiers modifiers, int key)
     {
@@ -42,9 +45,31 @@ public sealed class PanicShortcutTests : IDisposable
     [Theory]
     [InlineData(null, "Enter a panic shortcut")]
     [InlineData("  ", "Enter a panic shortcut")]
-    [InlineData("P", "needs Ctrl or Alt")]
-    [InlineData("7", "needs Ctrl or Alt")]
-    [InlineData("Shift+P", "needs Ctrl or Alt")]
+    [InlineData("P", "needs Ctrl, so ordinary typing")]
+    [InlineData("7", "needs Ctrl, so ordinary typing")]
+    [InlineData("Shift+P", "needs Ctrl, so ordinary typing")]
+    // Editing commands in most programs, with or without Shift (Ctrl+Shift+C and V copy and paste in terminals).
+    [InlineData("Ctrl+C", "copies, pastes")]
+    [InlineData("ctrl+v", "copies, pastes")]
+    [InlineData("Ctrl+X", "copies, pastes")]
+    [InlineData("Ctrl+Z", "copies, pastes")]
+    [InlineData("Ctrl+Y", "copies, pastes")]
+    [InlineData("Ctrl+S", "copies, pastes")]
+    [InlineData("Ctrl+A", "copies, pastes")]
+    [InlineData("Ctrl+Shift+V", "copies, pastes")]
+    [InlineData("Ctrl+Shift+Z", "copies, pastes")]
+    // Menu access keys (Alt+Shift+letter is also a page shortcut in browsers).
+    [InlineData("Alt+P", "Alt with a letter or digit opens menus")]
+    [InlineData("Alt+0", "Alt with a letter or digit opens menus")]
+    [InlineData("Alt+Shift+P", "Alt with a letter or digit opens menus")]
+    // Ctrl+Alt is AltGr on many layouts: German AltGr+Q is @ and AltGr+7 is {; Polish AltGr+A is a letter.
+    [InlineData("Ctrl+Alt+Q", "AltGr")]
+    [InlineData("Ctrl+Alt+7", "AltGr")]
+    [InlineData("Ctrl+Alt+A", "AltGr")]
+    [InlineData("ctrl+alt+p", "AltGr")]
+    [InlineData("F1", "opens Help")]
+    [InlineData("F10", "open the menu bar")]
+    [InlineData("Shift+F10", "open the menu bar")]
     [InlineData("Win+F12", "Windows key")]
     [InlineData("Ctrl+Windows+P", "Windows key")]
     [InlineData("Alt+F4", "Alt+F4 closes windows")]
@@ -66,15 +91,15 @@ public sealed class PanicShortcutTests : IDisposable
     public async Task TheSavedShortcutSurvivesLoadAndSaveAndOlderFilesKeepF12()
     {
         Directory.CreateDirectory(_root);
-        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"PanicShortcut\":\"Ctrl+Alt+P\"}");
+        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"PanicShortcut\":\"Ctrl+Alt+Shift+P\"}");
         using (var store = new SettingsStore(_root))
         {
             var loaded = await store.LoadAsync(default);
             Assert.Null(loaded.Notice);
-            Assert.Equal("Ctrl+Alt+P", loaded.Settings.PanicShortcut);
+            Assert.Equal("Ctrl+Alt+Shift+P", loaded.Settings.PanicShortcut);
             await store.SaveAsync(loaded.Settings, default);
         }
-        Assert.Equal("Ctrl+Alt+P", SavedShortcut());
+        Assert.Equal("Ctrl+Alt+Shift+P", SavedShortcut());
 
         // A schema-1 file from before this setting loads without a notice and keeps F12.
         await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\"}");
@@ -88,6 +113,62 @@ public sealed class PanicShortcutTests : IDisposable
         Assert.Throws<InvalidDataException>(() => new SessionsSettings(PanicShortcut: "Win+F12").Validated());
         Assert.Throws<InvalidDataException>(() => new SessionsSettings(PanicShortcut: null!).Validated());
     }
+
+    [Theory]
+    [InlineData("Ctrl+Alt+Q", "AltGr")]
+    [InlineData("Ctrl+C", "copies, pastes")]
+    [InlineData("Alt+0", "opens menus")]
+    [InlineData("F1", "opens Help")]
+    public async Task ASavedShortcutEarlierVersionsAllowedLoadsAsF12WithANoticeAndTheOtherSettingsStay(string retired, string reason)
+    {
+        // Earlier versions accepted these. A file holding one keeps its other settings instead of being treated as damaged.
+        Assert.True(PanicShortcut.IsNoLongerAllowed(retired), $"'{retired}' is not recognized as a shortcut earlier versions allowed.");
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"IdleLockMinutes\":15,\"PanicShortcut\":\"" + retired + "\"}");
+        using (var store = new SettingsStore(_root))
+        {
+            var loaded = await store.LoadAsync(default);
+            Assert.Equal("F12", loaded.Settings.PanicShortcut);
+            Assert.Equal("ocean-blue", loaded.Settings.Theme);
+            Assert.Equal(15, loaded.Settings.IdleLockMinutes);
+            Assert.NotNull(loaded.Notice);
+            Assert.Contains("The saved panic shortcut is no longer allowed, so F12 is used", loaded.Notice, StringComparison.Ordinal);
+            Assert.Contains(reason, loaded.Notice, StringComparison.Ordinal);
+            await store.SaveAsync(loaded.Settings, default);
+        }
+        // Saving repairs the file normally: the old copy becomes the backup, not a damaged original.
+        Assert.Equal("F12", SavedShortcut());
+        Assert.False(File.Exists(Primary + ".damaged"), "A file holding an earlier allowed shortcut was preserved as damaged.");
+        using (var store = new SettingsStore(_root)) Assert.Null((await store.LoadAsync(default)).Notice);
+    }
+
+    [Fact]
+    public void OnlyShortcutsEarlierVersionsAllowedCountAsNoLongerAllowed()
+    {
+        Assert.False(PanicShortcut.IsNoLongerAllowed("Ctrl+Alt+Shift+Q"));
+        Assert.False(PanicShortcut.IsNoLongerAllowed("F12"));
+        // Never allowed: a saved file holding one is still invalid.
+        Assert.False(PanicShortcut.IsNoLongerAllowed("P"));
+        Assert.False(PanicShortcut.IsNoLongerAllowed("Win+F12"));
+        Assert.False(PanicShortcut.IsNoLongerAllowed("Alt+F4"));
+        Assert.False(PanicShortcut.IsNoLongerAllowed(null));
+        Assert.Throws<InvalidDataException>(() => new SessionsSettings(PanicShortcut: "Ctrl+Alt+Q").Validated());
+    }
+
+    [Fact]
+    public Task TheManagerSaysWhyAnEarlierAllowedShortcutWasReplacedAndRegistersF12() => OnDispatcherAsync(async () =>
+    {
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"PanicShortcut\":\"Ctrl+Alt+Q\"}");
+        var registrar = new FakeRegistrar();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor());
+        vm.AttachGlobalPanicShortcut(registrar.Register);
+        await vm.InitializeAsync();
+        Assert.Equal(["F12"], registrar.Attempts);
+        Assert.Equal("F12", vm.PanicShortcutText);
+        Assert.Contains("The saved panic shortcut is no longer allowed", vm.Notice, StringComparison.Ordinal);
+        Assert.Equal("Recovered settings — save to repair", vm.SaveStatus);
+    });
 
     [Fact]
     public Task WindowsGivesAnUnusualCombinationToOneWindowAndAReplacedOneIsReleased() => OnStaAsync(() =>
@@ -142,45 +223,45 @@ public sealed class PanicShortcutTests : IDisposable
             Assert.Equal("F12 is registered globally for this manager.", vm.PanicShortcutStatus);
 
             // An unsaved draft registers nothing.
-            vm.PanicShortcutText = "ctrl+alt+p";
+            vm.PanicShortcutText = "ctrl+alt+shift+p";
             Assert.Equal("Unsaved settings", vm.SaveStatus);
             Assert.Single(registrar.Attempts);
 
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
             Assert.Equal("Settings saved", vm.SaveStatus);
-            Assert.Equal(["F12", "Ctrl+Alt+P"], registrar.Attempts);
-            Assert.Equal("Ctrl+Alt+P", SavedShortcut());
-            Assert.Equal("Ctrl+Alt+P", vm.PanicShortcutText);
-            Assert.Equal("Panic stop · Ctrl+Alt+P", vm.PanicLabel);
-            Assert.Equal("Ctrl+Alt+P", vm.PanicKeyCap);
-            Assert.Equal("Ctrl+Alt+P is registered globally for this manager. F12 also works while this window is focused.", vm.PanicShortcutStatus);
+            Assert.Equal(["F12", "Ctrl+Alt+Shift+P"], registrar.Attempts);
+            Assert.Equal("Ctrl+Alt+Shift+P", SavedShortcut());
+            Assert.Equal("Ctrl+Alt+Shift+P", vm.PanicShortcutText);
+            Assert.Equal("Panic stop · Ctrl+Alt+Shift+P", vm.PanicLabel);
+            Assert.Equal("Ctrl+Alt+Shift+P", vm.PanicKeyCap);
+            Assert.Equal("Ctrl+Alt+Shift+P is registered globally for this manager. F12 also works while this window is focused.", vm.PanicShortcutStatus);
 
             // An unsafe draft is refused with its reason and changes nothing.
             vm.PanicShortcutText = "P";
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
-            Assert.Contains("needs Ctrl or Alt", vm.ErrorNotice, StringComparison.Ordinal);
-            Assert.Equal("Ctrl+Alt+P", SavedShortcut());
+            Assert.Contains("needs Ctrl", vm.ErrorNotice, StringComparison.Ordinal);
+            Assert.Equal("Ctrl+Alt+Shift+P", SavedShortcut());
             Assert.Equal(2, registrar.Attempts.Count);
             Assert.Equal("Unsaved settings", vm.SaveStatus);
 
             // Windows refuses a combination another program holds: the choice is saved and the working shortcut stays.
-            registrar.Refused.Add("Ctrl+Alt+Q");
-            vm.PanicShortcutText = "Ctrl+Alt+Q";
+            registrar.Refused.Add("Ctrl+Alt+Shift+Q");
+            vm.PanicShortcutText = "Ctrl+Alt+Shift+Q";
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
-            Assert.Equal("Ctrl+Alt+Q", SavedShortcut());
-            Assert.Equal(["F12", "Ctrl+Alt+P", "Ctrl+Alt+Q"], registrar.Attempts);
-            Assert.Equal("Panic stop · Ctrl+Alt+P", vm.PanicLabel);
-            Assert.Contains("Ctrl+Alt+Q is unavailable", vm.PanicShortcutStatus, StringComparison.Ordinal);
-            Assert.Contains("Ctrl+Alt+P stays registered globally", vm.PanicShortcutStatus, StringComparison.Ordinal);
-            Assert.Contains("Ctrl+Alt+Q is unavailable", vm.Notice, StringComparison.Ordinal);
+            Assert.Equal("Ctrl+Alt+Shift+Q", SavedShortcut());
+            Assert.Equal(["F12", "Ctrl+Alt+Shift+P", "Ctrl+Alt+Shift+Q"], registrar.Attempts);
+            Assert.Equal("Panic stop · Ctrl+Alt+Shift+P", vm.PanicLabel);
+            Assert.Contains("Ctrl+Alt+Shift+Q is unavailable", vm.PanicShortcutStatus, StringComparison.Ordinal);
+            Assert.Contains("Ctrl+Alt+Shift+P stays registered globally", vm.PanicShortcutStatus, StringComparison.Ordinal);
+            Assert.Contains("Ctrl+Alt+Shift+Q is unavailable", vm.Notice, StringComparison.Ordinal);
 
             // A theme autosave does not retry the refused shortcut; Save settings does.
             vm.ApplyTheme.Execute("ocean-blue"); await vm.ApplyTheme.Execution;
             Assert.Equal(3, registrar.Attempts.Count);
             registrar.Refused.Clear();
             vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
-            Assert.Equal(["F12", "Ctrl+Alt+P", "Ctrl+Alt+Q", "Ctrl+Alt+Q"], registrar.Attempts);
-            Assert.Equal("Panic stop · Ctrl+Alt+Q", vm.PanicLabel);
+            Assert.Equal(["F12", "Ctrl+Alt+Shift+P", "Ctrl+Alt+Shift+Q", "Ctrl+Alt+Shift+Q"], registrar.Attempts);
+            Assert.Equal("Panic stop · Ctrl+Alt+Shift+Q", vm.PanicLabel);
         }
         finally { await vm.DisposeAsync(); }
 
@@ -189,9 +270,9 @@ public sealed class PanicShortcutTests : IDisposable
         await using var reopened = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor());
         reopened.AttachGlobalPanicShortcut(next.Register);
         await reopened.InitializeAsync();
-        Assert.Equal(["Ctrl+Alt+Q"], next.Attempts);
-        Assert.Equal("Ctrl+Alt+Q", reopened.PanicShortcutText);
-        Assert.Equal("Panic stop · Ctrl+Alt+Q", reopened.PanicLabel);
+        Assert.Equal(["Ctrl+Alt+Shift+Q"], next.Attempts);
+        Assert.Equal("Ctrl+Alt+Shift+Q", reopened.PanicShortcutText);
+        Assert.Equal("Panic stop · Ctrl+Alt+Shift+Q", reopened.PanicLabel);
     });
 
     [Fact]
@@ -209,6 +290,13 @@ public sealed class PanicShortcutTests : IDisposable
         Assert.InRange(all.IndexOf(field), appearance + 1, performance - 1);
         // Settings shows whether Windows accepted the saved choice.
         Assert.Contains(all.Skip(appearance).Take(performance - appearance), e => (string?)e.Attribute("Text") == "{Binding PanicShortcutStatus}");
+        // The help names the combinations that are refused because they type or edit in other programs.
+        string? help = all.Skip(appearance).Take(performance - appearance).Select(e => (string?)e.Attribute("Text"))
+            .FirstOrDefault(text => text?.StartsWith("F12 by default.", StringComparison.Ordinal) == true);
+        Assert.True(help is not null, "Settings has no help text for the panic shortcut.");
+        Assert.Contains("AltGr", help, StringComparison.Ordinal);
+        Assert.Contains("Ctrl+C", help, StringComparison.Ordinal);
+        Assert.Contains("every program", help, StringComparison.Ordinal);
 
         // The header key cap shows the registered shortcut; the focused F12 binding stays as a fallback.
         var keyCap = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "Border" && (string?)e.Attribute("ToolTip") == "Panic stop shortcut"));

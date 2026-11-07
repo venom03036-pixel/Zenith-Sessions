@@ -14,7 +14,7 @@ public sealed partial class ShellViewModel
     private PanicShortcut? _activePanicShortcut;
     private string _panicShortcutText = PanicShortcut.Default.ToString();
 
-    /// <summary>Settings draft for the global panic shortcut, such as F12 or Ctrl+Alt+P. Applies after Save settings.</summary>
+    /// <summary>Settings draft for the global panic shortcut, such as F12 or Ctrl+Alt+Shift+P. Applies after Save settings.</summary>
     public string PanicShortcutText { get => _panicShortcutText; set { if (Set(ref _panicShortcutText, value ?? "")) PreferencesEdited(); } }
     public string PanicLabel => _activePanicShortcut is { } active ? "Panic stop · " + active : "Panic stop";
     /// <summary>The header key cap: the registered global shortcut, otherwise F12, which works while this window is focused.</summary>

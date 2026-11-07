@@ -21,7 +21,8 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     // ManagerWindow, CloseButtonExits, IdleLockMinutes and PanicShortcut are optional within schema 1: files without them load
     // unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the
     // tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without PanicShortcut the global
-    // panic shortcut is F12.
+    // panic shortcut is F12. A PanicShortcut that earlier builds saved but that is no longer allowed (such as Ctrl+Alt+Q, which is
+    // AltGr+Q) is read as F12 with a notice by SettingsStore; any other refused value makes the settings invalid.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
@@ -38,7 +39,8 @@ public sealed class SettingsStore(string root) : IDisposable
 {
     private const int MaximumBytes = 65536;
     private sealed class UnsupportedSettingsFormatException : Exception { }
-    private sealed record SettingsRead(SessionsSettings Settings, bool ImplicitVersion);
+    // RetiredPanicShortcut is why the saved panic shortcut was replaced by F12, or null when it was kept.
+    private sealed record SettingsRead(SessionsSettings Settings, bool ImplicitVersion, string? RetiredPanicShortcut);
     private readonly SemaphoreSlim _writer = new(1);
     public string Path { get; } = System.IO.Path.Combine(root, "settings.json");
     public async Task<(SessionsSettings Settings, string? Notice)> LoadAsync(CancellationToken ct)
@@ -110,9 +112,11 @@ public sealed class SettingsStore(string root) : IDisposable
     }
     private static string? Notice(SettingsRead read, string? notice)
     {
-        if (!read.ImplicitVersion) return notice;
-        const string legacy = "Legacy settings without a version were read as schema 1. Review and save to add an explicit version.";
-        return notice is null ? legacy : notice + " " + legacy;
+        if (read.RetiredPanicShortcut is { } reason)
+            notice = Join(notice, "The saved panic shortcut is no longer allowed, so F12 is used until you choose another in Settings → Panic shortcut and save. " + reason);
+        if (read.ImplicitVersion) notice = Join(notice, "Legacy settings without a version were read as schema 1. Review and save to add an explicit version.");
+        return notice;
+        static string Join(string? first, string second) => first is null ? second : first + " " + second;
     }
     private static bool Exists(string path)
     {
@@ -150,8 +154,17 @@ public sealed class SettingsStore(string root) : IDisposable
         using var document = JsonDocument.Parse(json);
         if (document.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Settings are invalid.");
         ct.ThrowIfCancellationRequested();
-        var settings = (document.RootElement.Deserialize<SessionsSettings>() ?? throw new InvalidDataException("Settings are empty.")).Validated();
-        ct.ThrowIfCancellationRequested(); return new(settings, implicitVersion);
+        var settings = document.RootElement.Deserialize<SessionsSettings>() ?? throw new InvalidDataException("Settings are empty.");
+        // Earlier builds accepted some panic shortcuts that type or edit in other programs. Such a choice is replaced by F12 with
+        // a notice, so the other settings and the backup stay usable; the next save writes F12 or the user's new choice.
+        string? retired = null;
+        if (PanicShortcut.IsNoLongerAllowed(settings.PanicShortcut))
+        {
+            PanicShortcut.TryParse(settings.PanicShortcut, out _, out string reason);
+            retired = reason; settings = settings with { PanicShortcut = PanicShortcut.Default.ToString() };
+        }
+        settings = settings.Validated();
+        ct.ThrowIfCancellationRequested(); return new(settings, implicitVersion, retired);
     }
     private static bool PreflightVersion(ReadOnlySpan<byte> json, CancellationToken ct)
     {
