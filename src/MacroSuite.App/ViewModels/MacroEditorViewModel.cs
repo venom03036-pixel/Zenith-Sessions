@@ -540,12 +540,12 @@ public sealed partial class MacroEditorViewModel : ObservableObject, IDropTarget
     private bool _isScriptHotkeyBoxFocused;
     private string _selectedCenterTab = "SCRIPTS";
     private int _totalRunsCount = 0;
-    private string _recordHotkey = "F6";
-    private string _stopHotkey = "F8";
-    private string _playHotkey = "F4";
-    private string _pauseHotkey = "F5";
-    private string _panicHotkey = "F12";
-    private string _miniToolbarClickThroughHotkey = "Ctrl+Alt+F10";
+    private string _recordHotkey = TransportHotkeyDefaults.Record;
+    private string _stopHotkey = TransportHotkeyDefaults.Stop;
+    private string _playHotkey = TransportHotkeyDefaults.Play;
+    private string _pauseHotkey = TransportHotkeyDefaults.Pause;
+    private string _panicHotkey = TransportHotkeyDefaults.Panic;
+    private string _miniToolbarClickThroughHotkey = TransportHotkeyDefaults.MiniClickThrough;
     private bool _isMiniToolbarVisible;
     public bool IsMiniToolbarVisible
     {
@@ -1996,12 +1996,6 @@ public sealed partial class MacroEditorViewModel : ObservableObject, IDropTarget
     public int EventsCapturedCount => _totalEventsCaptured;
     /// <summary>Telemetry diagnostic: current queue backlog length.</summary>
     public int QueueLength => _recordedStagingQueue.Count;
-
-    public List<string> CommonHotkeyPresets { get; } = new()
-    {
-        "F1", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
-        "Ctrl+1", "Ctrl+2", "Ctrl+3", "Ctrl+I", "Ctrl+E", "Ctrl+R", "Space"
-    };
 
     public event Action<string>? StatusChanged;
     public event Action? HotkeysUpdated;

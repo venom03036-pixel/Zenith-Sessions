@@ -194,7 +194,9 @@ public sealed partial class GlobalHotkeyService : IDisposable
     }
 
     /// <summary>
-    /// Unregisters a previously registered hotkey with Win32 <c>UnregisterHotKey</c>.
+    /// Removes a hotkey from this app and releases its Win32 registration with <c>UnregisterHotKey</c>
+    /// when Windows granted one. A local-only binding (the combo is owned by another app) has no
+    /// Win32 registration to release, so removing it succeeds on its own (Rule 13).
     /// </summary>
     public bool Unregister(int hotkeyId)
     {
@@ -204,22 +206,23 @@ public sealed partial class GlobalHotkeyService : IDisposable
             {
                 _idByCombo.Remove((binding.Modifiers, binding.Vk));
                 _lastTriggerTicks.Remove((binding.Modifiers, binding.Vk));
-                return _registration.Unregister(_hWnd, hotkeyId);
+                return !binding.IsGlobal || _registration.Unregister(_hWnd, hotkeyId);
             }
             return false;
         }
     }
 
     /// <summary>
-    /// Unregisters all currently registered hotkeys.
+    /// Unregisters all currently registered hotkeys, releasing only the Win32 registrations Windows granted.
     /// </summary>
     public void UnregisterAll()
     {
         lock (_lock)
         {
-            foreach (var id in _hotkeysById.Keys)
+            foreach (var binding in _hotkeysById.Values)
             {
-                _registration.Unregister(_hWnd, id);
+                if (binding.IsGlobal)
+                    _registration.Unregister(_hWnd, binding.Id);
             }
             _hotkeysById.Clear();
             _idByCombo.Clear();

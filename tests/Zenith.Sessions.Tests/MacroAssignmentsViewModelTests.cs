@@ -72,6 +72,44 @@ public sealed class MacroAssignmentsViewModelTests
     }
 
     [Fact]
+    public async Task CredentialLikeTargetNameIsExplainedAtCaptureAndNotCaptured()
+    {
+        await using var f = await Fixture.Create(); f.Choice = new(Target(0), "Roblox: main");
+        await f.Vm.RefreshAsync(); f.Vm.ChooseAccount.Execute(null);
+        Assert.Null(f.Vm.ChosenTarget); Assert.False(f.Vm.CanAssign);
+        Assert.Contains("link, access code or credential", f.Vm.Status); Assert.Contains("Rename", f.Vm.Status);
+        Assert.DoesNotContain("Roblox: main", f.Vm.Status); Assert.DoesNotContain("Roblox: main", f.Vm.TargetSummary);
+        Assert.Empty(f.Failures); Assert.Equal(0, f.ResolveCalls);
+    }
+
+    [Fact]
+    public async Task RenamedTargetWithCredentialLikeNameIsRejectedWithSpecificStatusAndNoWrite()
+    {
+        await using var f = await Fixture.Create(Row(1)); await f.Vm.RefreshAsync(); f.Vm.ChooseAccount.Execute(null);
+        f.Resolve = (_, _) => Task.FromResult<string?>("Roblox: main"); int hostCalls = f.Client.Calls; var rows = f.Vm.Assignments;
+        await f.Vm.AssignAsync();
+        Assert.Equal(0, f.Store.Saves); Assert.Equal(hostCalls, f.Client.Calls); Assert.Same(rows, f.Vm.Assignments);
+        Assert.Contains("target", f.Vm.Status); Assert.Contains("link, access code or credential", f.Vm.Status);
+        Assert.DoesNotContain("could not be confirmed", f.Vm.Status); Assert.DoesNotContain("Roblox: main", f.Vm.Status);
+        Assert.False(f.Vm.IsStale); Assert.True(f.Vm.CanAssign); Assert.Empty(f.Failures);
+        f.Resolve = (_, _) => Task.FromResult<string?>("Main account"); await f.Vm.AssignAsync();
+        Assert.Equal(1, f.Store.Saves); Assert.Contains(f.Store.Rows, row => row.TargetName == "Main account");
+    }
+
+    [Fact]
+    public async Task SavedMacroWithLinkLikeNameIsRejectedWithSpecificStatusAndNoWrite()
+    {
+        await using var f = await Fixture.Create(); f.Client.Describe = index => Macro(index) with { Name = "Visit www.example" };
+        await f.Host.RefreshAsync(); f.Host.SelectedMacro = f.Host.Macros[0];
+        await f.Vm.RefreshAsync(); f.Vm.ChooseAccount.Execute(null); Assert.NotNull(f.Vm.ChosenTarget);
+        int hostCalls = f.Client.Calls; await f.Vm.AssignAsync();
+        Assert.Equal(0, f.Store.Saves); Assert.Equal(hostCalls, f.Client.Calls);
+        Assert.Contains("saved macro", f.Vm.Status); Assert.Contains("link, access code or credential", f.Vm.Status);
+        Assert.DoesNotContain("target", f.Vm.Status); Assert.DoesNotContain("www.example", f.Vm.Status);
+        Assert.DoesNotContain("could not be confirmed", f.Vm.Status); Assert.False(f.Vm.IsStale); Assert.Empty(f.Failures);
+    }
+
+    [Fact]
     public async Task ChangedHostDuringReviewRejectsTheWriteWithoutCallingItMissing()
     {
         await using var f = await Fixture.Create(); await f.Vm.RefreshAsync(); f.Vm.ChooseAccount.Execute(null);
@@ -340,11 +378,12 @@ public sealed class MacroAssignmentsViewModelTests
     {
         private readonly Guid _session = Guid.NewGuid(); public int Calls; public bool Disposed;
         public Func<MacroCatalogQuery, CancellationToken, Task<MacroCatalogPage>>? Read;
+        public Func<int, SavedMacroDescriptor> Describe = Macro;
         public Task<MacroCatalogPage> GetPageAsync(MacroCatalogQuery query, CancellationToken ct = default)
         {
             Calls++; if (Read is not null) return Read(query, ct);
             return Task.FromResult(new MacroCatalogPage(MacroCatalogState.Ready, _session, 1, "owned-fixture",
-                Enumerable.Range(query.Offset, Math.Min(query.Limit, 2 - query.Offset)).Select(Macro).ToArray(), 2, null, MacroCatalogMessages.For(MacroCatalogState.Ready)));
+                Enumerable.Range(query.Offset, Math.Min(query.Limit, 2 - query.Offset)).Select(Describe).ToArray(), 2, null, MacroCatalogMessages.For(MacroCatalogState.Ready)));
         }
         public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
     }

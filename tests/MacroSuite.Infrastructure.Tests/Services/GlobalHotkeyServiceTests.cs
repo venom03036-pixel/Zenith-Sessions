@@ -119,16 +119,51 @@ public sealed class GlobalHotkeyServiceTests
             using var source = new HwndSource(parameters);
             using var service = new GlobalHotkeyService(source.Handle);
 
+            // Whether Windows grants Alt+Shift+F10 depends on the other apps running on this PC:
+            // Success when it is free, LocalOnly when another app already owns it. Either way,
+            // Unregister must free the combo here and release any global registration, so the
+            // second attempt gets the same result as the first.
             var res1 = service.TryRegister(NativeMethods.MOD_ALT | NativeMethods.MOD_SHIFT, 0x79, () => { }, "First");
-            if (res1.IsSuccess)
-            {
-                service.Unregister(res1.HotkeyId);
+            res1.Status.Should().BeOneOf(HotkeyRegistrationStatus.Success, HotkeyRegistrationStatus.LocalOnly);
+            service.Unregister(res1.HotkeyId).Should().BeTrue();
 
-                // Now re-registering should succeed without conflict
-                var res2 = service.TryRegister(NativeMethods.MOD_ALT | NativeMethods.MOD_SHIFT, 0x79, () => { }, "Second");
-                res2.Status.Should().Be(HotkeyRegistrationStatus.Success);
-            }
+            var res2 = service.TryRegister(NativeMethods.MOD_ALT | NativeMethods.MOD_SHIFT, 0x79, () => { }, "Second");
+            res2.Status.Should().Be(res1.Status);
         });
+    }
+
+    private sealed class FakeRegistration : IHotkeyRegistrationApi
+    {
+        public HashSet<uint> Refused { get; } = [];
+        public Dictionary<int, uint> Active { get; } = [];
+        public List<int> Released { get; } = [];
+        public bool Register(IntPtr window, int id, uint modifiers, uint key)
+        { if (Refused.Contains(key)) return false; Active[id] = key; return true; }
+        public bool Unregister(IntPtr window, int id) { Released.Add(id); return Active.Remove(id); }
+    }
+
+    [Theory]
+    [InlineData(true, HotkeyRegistrationStatus.Success)]
+    [InlineData(false, HotkeyRegistrationStatus.LocalOnly)]
+    public void Unregister_ReleasesOnlyWhatWindowsGranted_AndReRegistrationGetsTheSameAvailability(
+        bool windowsGrantsCombo, HotkeyRegistrationStatus expected)
+    {
+        var native = new FakeRegistration();
+        if (!windowsGrantsCombo) native.Refused.Add(0x79);
+        using var service = new GlobalHotkeyService((IntPtr)1, native);
+        const uint modifiers = NativeMethods.MOD_ALT | NativeMethods.MOD_SHIFT;
+
+        var first = service.TryRegister(modifiers, 0x79, () => { }, "First");
+        first.Status.Should().Be(expected);
+        service.Unregister(first.HotkeyId).Should().BeTrue("the binding was removed from this app");
+
+        var second = service.TryRegister(modifiers, 0x79, () => { }, "Second");
+        second.Status.Should().Be(expected);
+        service.UnregisterAll();
+
+        native.Active.Should().BeEmpty();
+        native.Released.Should().Equal(windowsGrantsCombo ? [first.HotkeyId, second.HotkeyId] : Array.Empty<int>(),
+            "only registrations Windows granted are released");
     }
 
     [Fact]

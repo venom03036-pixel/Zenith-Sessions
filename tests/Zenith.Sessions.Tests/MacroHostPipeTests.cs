@@ -145,6 +145,28 @@ public sealed class MacroHostPipeTests
     }
 
     [Fact]
+    public async Task ConnectedHostThatMissesTheDeadlineIsBusyNotDisconnected()
+    {
+        // A running host that stalls past the request deadline is present, so it must not be reported as absent.
+        string name = Name(); var entered = Gate(); int calls = 0;
+        var source = new Source(async (_, ct) =>
+        {
+            if (Interlocked.Increment(ref calls) == 1) { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, ct); }
+            return Ready();
+        });
+        await using var server = new MacroCatalogPipeServer(source, name);
+        await using var client = new MacroCatalogPipeClient(name);
+        var pending = client.GetPageAsync(new(), default);
+        await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var stalled = await pending.WaitAsync(TimeSpan.FromSeconds(6));
+        Assert.Equal(MacroCatalogState.Busy, stalled.State); Assert.Empty(stalled.Items);
+        Assert.Equal(MacroCatalogMessages.For(MacroCatalogState.Busy), stalled.Explanation);
+        // The same client and endpoint answer the next explicit refresh once the host responds again.
+        var again = await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(MacroCatalogState.Ready, again.State); Assert.Equal(2, source.Calls);
+    }
+
+    [Fact]
     public async Task SecondServerCannotTakeTheOwnedEndpointAndOriginalStillWorks()
     {
         string name = Name(); await using var owner = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name);
@@ -323,6 +345,39 @@ public sealed class MacroHostPipeTests
     {
         Assert.Throws<ArgumentException>(() => new MacroCatalogPipeClient(name));
         Assert.Throws<ArgumentException>(() => new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name));
+    }
+
+    [Fact]
+    public async Task ClientThatClosesBeforeFirstAcceptDoesNotKillTheEndpoint()
+    {
+        string name = Name(); var source = new Source((_, _) => Task.FromResult(Ready())); var firstAccept = Gate();
+        var server = new MacroCatalogPipeServer(source, name, firstAccept.Task);
+        MacroCatalogPage page; bool workerEnded; Exception? shutdown;
+        try
+        {
+            // Connect and close before the first ConnectNamedPipe: that accept then fails with ERROR_NO_DATA.
+            using (var early = RawClient(name)) await early.ConnectAsync(1000);
+            firstAccept.TrySetResult();
+            await using var client = new MacroCatalogPipeClient(name);
+            page = await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5));
+            workerEnded = server.Completion.IsCompleted;
+        }
+        finally
+        {
+            firstAccept.TrySetResult();
+            shutdown = await Record.ExceptionAsync(() => server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        Assert.Equal(MacroCatalogState.Ready, page.State); Assert.Equal(1, source.Calls);
+        Assert.False(workerEnded); Assert.Null(shutdown);
+    }
+
+    [Fact]
+    public async Task StopWhileWaitingForFirstAcceptEndsCleanly()
+    {
+        var firstAccept = Gate();
+        var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), Name(), firstAccept.Task);
+        server.SignalStop(); await server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(server.Completion.IsCompletedSuccessfully);
     }
 
     [Fact]

@@ -150,7 +150,7 @@ public sealed partial class AutoClickerViewModel : ObservableObject, IDisposable
     private DateTime _testStartTime;
 
     // ── Hotkeys ───────────────────────────────────────────────────────────────
-    private string _startHotkey = "F1";
+    private string _startHotkey = TransportHotkeyDefaults.AutoClicker;
 
     public static IReadOnlyList<string> MouseButtons { get; } = ["Left", "Right", "Middle"];
     public static IReadOnlyList<string> ClickTypes { get; } = ["Single", "Double"];

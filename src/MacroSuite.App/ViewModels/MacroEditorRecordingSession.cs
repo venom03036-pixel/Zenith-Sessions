@@ -199,7 +199,22 @@ public sealed partial class MacroEditorViewModel
     }
     public async Task PauseForEditorFocusAsync()
     {
-        if (_activeController != null && IsRunning) { await _activeController.PauseAsync(); if (_playbackSession != null) await _playbackSession.AwaitReleasedAsync(); IsPaused = true; }
+        // Playback cleanup disposes and then retracts these off the UI thread, so read them once.
+        MacroController? controller; PlaybackSessionContext? session;
+        lock (_playbackSync) { controller = _activeController; session = _playbackSession; }
+        if (controller is not null && IsRunning)
+        {
+            bool retiring = false;
+            // A controller is disposed only while its run retires (cleanup or editor shutdown); that run owns IsPaused.
+            try { await controller.PauseAsync(); }
+            catch (ObjectDisposedException) { retiring = true; }
+            if (!retiring)
+            {
+                if (session is not null) await session.AwaitReleasedAsync();
+                bool current; lock (_playbackSync) current = ReferenceEquals(_activeController, controller);
+                if (current && IsRunning) IsPaused = true;
+            }
+        }
         if (IsRecording && _ownedRecording is { } recording && Volatile.Read(ref recording.Closed) == 0 && recording.Target?.Rule.Mode is { } mode && mode != MacroTargetMode.Screen)
         {
             lock (recording.AdmissionSync)

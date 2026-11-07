@@ -33,6 +33,7 @@ namespace MacroSuite.Infrastructure.Tests.AI;
 public sealed class AIVisionLiveActionTests
 {
     private const string TargetWindowTitle = "Zenith AI Vision Target";
+    private static readonly TimeSpan ForegroundWaitTimeout = TimeSpan.FromSeconds(2);
     private readonly ITestOutputHelper _output;
 
     public AIVisionLiveActionTests(ITestOutputHelper output) => _output = output;
@@ -49,7 +50,9 @@ public sealed class AIVisionLiveActionTests
         var vault = new MemoryVault();
         vault.SetSecret("screenshot-vision", "local-test");
         var provider = new GreenButtonScreenshotProvider();
-        await RunLiveClickAsync(provider, vault, "screenshot-vision").ConfigureAwait(true);
+        if (!await RunLiveClickAsync(provider, vault, "screenshot-vision").ConfigureAwait(true))
+            return;
+
         _output.WriteLine("AI Vision pipeline captured the target window and clicked the green button.");
     }
 
@@ -83,7 +86,8 @@ public sealed class AIVisionLiveActionTests
         await RunLiveClickAsync(provider, vault, providerId, provider.DefaultModel).ConfigureAwait(true);
     }
 
-    private static async Task RunLiveClickAsync(
+    /// <summary>Returns false when the test was skipped because the target window could not take the foreground.</summary>
+    private async Task<bool> RunLiveClickAsync(
         IAIVisionProvider provider,
         ISecretVault vault,
         string providerId,
@@ -108,11 +112,16 @@ public sealed class AIVisionLiveActionTests
             modelId: modelId,
             providerId: providerId)
         {
-            Timeout = TimeSpan.FromSeconds(90)
+            Timeout = TimeSpan.FromSeconds(90),
+            // Input-producing AI actions must name the window they may act on (Rule 8).
+            ExpectedWindow = TargetWindowTitle
         };
 
         var context = new MacroContext(capture, controller)
         {
+            // Same foreground-title reader the app wires for playback, so the validator
+            // checks the real foreground window against ExpectedWindow.
+            ForegroundWindow = Win32ForegroundWindowInfo.Default,
             InputPlayer = player,
             VisionRouter = router,
             ApprovalGate = new ApprovalGate(ApprovalPolicy.AutoApprove),
@@ -123,6 +132,15 @@ public sealed class AIVisionLiveActionTests
             ApprovalTimeout = TimeSpan.FromSeconds(5)
         };
 
+        // The validator rejects input unless the target really is the foreground window.
+        // Windows' foreground lock can refuse SetForegroundWindow during a long run, so retry
+        // for a bounded time and skip (no input sent) rather than fail on machine state.
+        if (!await target.TryTakeForegroundAsync(ForegroundWaitTimeout).ConfigureAwait(true))
+        {
+            _output.WriteLine("Skipped: the target window could not take the foreground.");
+            return false;
+        }
+
         await step.ExecuteAsync(context).ConfigureAwait(true);
 
         target.WaitForClick(TimeSpan.FromSeconds(3)).Should().BeTrue(
@@ -130,6 +148,7 @@ public sealed class AIVisionLiveActionTests
         target.ClickCount.Should().BeGreaterThan(0);
         File.Exists(target.MarkerPath).Should().BeTrue();
         File.ReadAllText(target.MarkerPath).Should().Be("clicked");
+        return true;
     }
 
     private static bool CanRunLiveInput()
@@ -305,6 +324,7 @@ public sealed class AIVisionLiveActionTests
         private readonly ManualResetEventSlim _clicked = new(false);
         private Dispatcher? _dispatcher;
         private Window? _window;
+        private IntPtr _hwnd;
         private Exception? _startupError;
         private int _clickCount;
 
@@ -337,6 +357,38 @@ public sealed class AIVisionLiveActionTests
         }
 
         public bool WaitForClick(TimeSpan timeout) => _clicked.Wait(timeout);
+
+        /// <summary>
+        /// Waits up to <paramref name="timeout"/> for this window to be the real foreground
+        /// window, re-requesting SetForegroundWindow and Activate on its UI thread between checks.
+        /// </summary>
+        public Task<bool> TryTakeForegroundAsync(TimeSpan timeout) =>
+            LiveForegroundWait.TryAcquireAsync(
+                () => Win32WindowActivation.IsForeground(_hwnd),
+                RequestForeground,
+                timeout,
+                TimeSpan.FromMilliseconds(100),
+                CancellationToken.None);
+
+        private void RequestForeground()
+        {
+            Dispatcher? dispatcher = _dispatcher;
+            Window? window = _window;
+            if (dispatcher is null || window is null || dispatcher.HasShutdownStarted)
+                return;
+
+            // Focus is thread-owned: ask the window's own UI thread, bounded so a stuck
+            // dispatcher cannot hold the test past its foreground deadline.
+            dispatcher.Invoke(
+                () =>
+                {
+                    SetForegroundWindow(_hwnd);
+                    window.Activate();
+                },
+                DispatcherPriority.Send,
+                CancellationToken.None,
+                TimeSpan.FromSeconds(1));
+        }
 
         public void Dispose()
         {
@@ -407,6 +459,7 @@ public sealed class AIVisionLiveActionTests
                         var hwnd = new WindowInteropHelper(window).Handle;
                         NativeMethods.GetWindowRect(hwnd, out var rect);
                         WindowRect = new Rectangle(rect.Left, rect.Top, rect.Width, rect.Height);
+                        _hwnd = hwnd;
                         ShowWindow(hwnd, 9);
                         SetForegroundWindow(hwnd);
                         window.Activate();

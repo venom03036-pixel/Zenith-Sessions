@@ -421,7 +421,7 @@ public sealed class TargetedMacroRun : IAsyncDisposable
         _player.CloseAdmission();
         if (_finalizing)
             return;
-        if (_input.Snapshot.State != TargetedInputRunState.Faulted)
+        if (!HoldsNeedRecovery(_input.Snapshot))
             _stopping ??= _input.StopAsync();
         if (panic)
             _control.SignalPanic();
@@ -510,8 +510,9 @@ public sealed class TargetedMacroRun : IAsyncDisposable
             }
 
             bool cleanupFailed = false, holdCleanupFailed = false;
-            // Failure of one cleanup leg never skips the other actual owned tasks. A
-            // faulted input lease remains quarantined; finalization does not retry it.
+            // Failure of one cleanup leg never skips the other actual owned tasks. A faulted
+            // input lease that still owns submitted holds remains quarantined; finalization
+            // does not retry it. A fault with nothing left to release is stopped normally.
             try
             {
                 await _control.WaitForPanicReleaseAsync().ConfigureAwait(false);
@@ -548,7 +549,7 @@ public sealed class TargetedMacroRun : IAsyncDisposable
 
             try
             {
-                if (_input.Snapshot.State != TargetedInputRunState.Faulted)
+                if (!HoldsNeedRecovery(_input.Snapshot))
                 {
                     Task<TargetedInputRunSnapshot> stop;
                     lock (_sync)
@@ -638,6 +639,14 @@ public sealed class TargetedMacroRun : IAsyncDisposable
         _owner.Finished(this);
         return result;
     }
+
+    /// <summary>
+    /// A faulted input run is a cleanup failure only while it still owns submitted holds. The
+    /// coordinator empties them only after every release was queued or the recipient is definitively
+    /// gone; a rejected, uncertain or unowned release keeps them, so that fault stays quarantined.
+    /// </summary>
+    internal static bool HoldsNeedRecovery(TargetedInputRunSnapshot input)
+        => input.State == TargetedInputRunState.Faulted && input.SubmittedHolds > 0;
 
     private static bool Terminal(TargetedMacroState state) => state is TargetedMacroState.Completed or TargetedMacroState.Stopped or TargetedMacroState.Faulted;
     private static string Explanation(TargetedMacroState state, TargetedMacroProblem problem) => problem == TargetedMacroProblem.CleanupFailed ? "Cleanup failed; the recipient remains quarantined until explicit successful cleanup." : state switch

@@ -1,4 +1,6 @@
 using System.IO.Pipes;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
 using Zenith.MacroHost.Contracts;
 
 namespace Zenith.MacroHost.Windows;
@@ -7,18 +9,25 @@ namespace Zenith.MacroHost.Windows;
 public sealed class MacroCatalogPipeServer : IAsyncDisposable
 {
     public const string ProductionPipeName = MacroHostProtocol.PipeName;
+    /// <summary>Back-to-back failed accepts tolerated before the endpoint gives up and faults <see cref="Completion"/>.</summary>
+    internal const int MaximumConsecutiveAcceptFailures = 3;
     private readonly object _gate = new();
     private readonly IMacroCatalogSource _source;
     private readonly NamedPipeServerStream _pipe;
     private readonly CancellationTokenSource _stop = new();
+    private readonly Task _beforeFirstAccept;
     private readonly Task _worker;
     private Task? _dispose;
     private int _stopped;
     public Task Completion => _worker;
 
-    public MacroCatalogPipeServer(IMacroCatalogSource source, string? pipeName = null)
+    public MacroCatalogPipeServer(IMacroCatalogSource source, string? pipeName = null) : this(source, pipeName, Task.CompletedTask) { }
+
+    /// <summary>Test seam: the worker waits for <paramref name="beforeFirstAccept"/> (or stop) before its first accept.</summary>
+    internal MacroCatalogPipeServer(IMacroCatalogSource source, string? pipeName, Task beforeFirstAccept)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
+        _beforeFirstAccept = beforeFirstAccept ?? throw new ArgumentNullException(nameof(beforeFirstAccept));
         _pipe = new NamedPipeServerStream(MacroCatalogPipeCodec.PipeName(pipeName), PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance, 4096, 4096);
         _worker = Task.Run(RunAsync); // No scheduling token: even a pre-start stop must run and own final cleanup.
@@ -35,9 +44,19 @@ public sealed class MacroCatalogPipeServer : IAsyncDisposable
     {
         try
         {
+            await _beforeFirstAccept.WaitAsync(_stop.Token).ConfigureAwait(false);
+            int acceptFailures = 0;
             while (!_stop.IsCancellationRequested)
             {
-                await _pipe.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false);
+                try { await _pipe.WaitForConnectionAsync(_stop.Token).ConfigureAwait(false); acceptFailures = 0; }
+                catch (IOException) when (!_stop.IsCancellationRequested && acceptFailures < MaximumConsecutiveAcceptFailures)
+                {
+                    // A client that connected and closed before ConnectNamedPipe leaves the instance closing, so the
+                    // accept fails (ERROR_NO_DATA). Reset the same owned instance; the name is never left unowned.
+                    acceptFailures++;
+                    ResetUnacceptedInstance();
+                    continue;
+                }
                 using var deadline = CancellationTokenSource.CreateLinkedTokenSource(_stop.Token);
                 deadline.CancelAfter(MacroCatalogPipeCodec.RequestTimeout);
                 try { await HandleAsync(deadline.Token).ConfigureAwait(false); }
@@ -49,6 +68,17 @@ public sealed class MacroCatalogPipeServer : IAsyncDisposable
         catch (Exception ex) when (_stop.IsCancellationRequested && (ex is OperationCanceledException or ObjectDisposedException or IOException)) { }
         finally { _pipe.Dispose(); }
     }
+
+    private void ResetUnacceptedInstance()
+    {
+        // NamedPipeServerStream.Disconnect rejects a stream that never connected, so reset the native instance directly.
+        if (!DisconnectNamedPipe(_pipe.SafePipeHandle))
+            throw new IOException("The macro metadata endpoint could not reset after a failed accept.", Marshal.GetHRForLastWin32Error());
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DisconnectNamedPipe(SafePipeHandle pipe);
 
     private async Task HandleAsync(CancellationToken ct)
     {

@@ -1,3 +1,4 @@
+using System.Collections;
 using System.IO;
 using System.Text.Json;
 using MacroSuite.Core.Models;
@@ -192,12 +193,14 @@ public sealed class SavedMacroPlanPreparerTests
     [InlineData("target", TargetedMacroPlanProblem.UnsupportedTarget)]
     [InlineData("screen", TargetedMacroPlanProblem.UnsupportedInput)]
     [InlineData("indefinite", TargetedMacroPlanProblem.ResourceLimit)]
+    [InlineData("disabled", TargetedMacroPlanProblem.Disabled)]
     public async Task WholeDocumentRefusalRemainsTypedAndCannotReturnAPartialPlan(string invalid, TargetedMacroPlanProblem problem)
     {
         var reference = Reference();
         var model = invalid == "screen" ? Model(reference.MacroId, new ClickStep()) : Model(reference.MacroId);
         if (invalid == "target") model.Settings.Target = new() { Mode = MacroTargetMode.Screen };
         if (invalid == "indefinite") model.Settings.RepeatUntilStopped = true;
+        if (invalid == "disabled") model.Settings.IsActive = false;
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference, model))));
         await using var preparer = new SavedMacroPlanPreparer(source);
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
@@ -220,6 +223,131 @@ public sealed class SavedMacroPlanPreparerTests
         Assert.Null(result.Prepared);
         AssertPrivateTextAbsent(JsonSerializer.Serialize(result));
         AssertPrivateTextAbsent(result.ToString());
+    }
+
+    // The fixed status hides an unexpected error from users, but a developer must still be able
+    // to tell a bug from a damaged library. Only the error's type reaches the fault callback.
+    [Theory]
+    [InlineData("source")]
+    [InlineData("guard")]
+    [InlineData("guard-after-compile")]
+    public async Task ThrowingSourceOrGuardReportsOnlyTheExceptionType(string thrower)
+    {
+        var reference = Reference();
+        var error = new IOException(PrivateName + PrivatePath + Digest);
+        int guards = 0;
+        var source = new Source((_, _) => thrower == "source" ? throw error
+            : Task.FromResult(Ready(Pin(reference, guard: () => thrower == "guard" || ++guards > 1 ? throw error : true))));
+        var faults = new List<Type>();
+        await using var preparer = new SavedMacroPlanPreparer(source, faults.Add);
+        var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
+        Assert.Equal(thrower == "source" ? SavedMacroPreparationStatus.Unavailable : SavedMacroPreparationStatus.Changed, result.Status);
+        Assert.Null(result.Prepared);
+        Assert.Null(result.DocumentProblem);
+        Assert.Equal(new[] { typeof(IOException) }, faults);
+        AssertPrivateTextAbsent(string.Join(",", faults.Select(type => type.FullName)));
+        AssertPrivateTextAbsent(JsonSerializer.Serialize(result));
+        AssertPrivateTextAbsent(result.ToString());
+    }
+
+    [Fact]
+    public async Task UnexpectedCompilerErrorIsReportedByTypeAndStillRefusesTheWholeDocument()
+    {
+        var reference = Reference();
+        var model = new MacroModel
+        {
+            Id = reference.MacroId, Name = PrivateName, Description = PrivatePath,
+            Steps = new ThrowingSteps(), Settings = new() { MaxRuntime = TimeSpan.FromSeconds(10) }
+        };
+        var faults = new List<Type>();
+        await using var preparer = new SavedMacroPlanPreparer(new Source((_, _) => Task.FromResult(Ready(Pin(reference, model)))), faults.Add);
+        var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
+        Assert.Equal(SavedMacroPreparationStatus.UnsupportedDocument, result.Status);
+        Assert.Equal(TargetedMacroPlanProblem.InvalidDocument, result.DocumentProblem);
+        Assert.Null(result.Prepared);
+        Assert.Equal(new[] { typeof(InvalidOperationException) }, faults);
+        AssertPrivateTextAbsent(JsonSerializer.Serialize(result));
+    }
+
+    [Fact]
+    public async Task SourceReportedFaultReachesTheCallbackByTypeOnlyAndIsNeverSerialized()
+    {
+        var read = SavedMacroDocumentReadResult.Faulted(typeof(IOException));
+        Assert.Equal(SavedMacroDocumentReadStatus.Unavailable, read.Status);
+        Assert.Null(read.Pin);
+        Assert.DoesNotContain(nameof(IOException), JsonSerializer.Serialize(read), StringComparison.Ordinal);
+        Assert.DoesNotContain(nameof(IOException), read.ToString(), StringComparison.Ordinal);
+        var faults = new List<Type>();
+        await using var preparer = new SavedMacroPlanPreparer(new Source((_, _) => Task.FromResult(read)), faults.Add);
+        var result = await preparer.PrepareAsync(Reference(), TargetedMacroScope.OwnedWindowDiagnostic);
+        Assert.Equal(SavedMacroPreparationStatus.Unavailable, result.Status);
+        Assert.Equal(new[] { typeof(IOException) }, faults);
+    }
+
+    [Theory]
+    [InlineData("ready")]
+    [InlineData("not-found")]
+    [InlineData("unavailable")]
+    [InlineData("guard-false")]
+    [InlineData("disabled")]
+    [InlineData("cancelled")]
+    public async Task ExpectedOutcomesReportNoFault(string outcome)
+    {
+        var reference = Reference();
+        var disabled = Model(reference.MacroId);
+        disabled.Settings.IsActive = false;
+        var source = new Source((_, _) => outcome switch
+        {
+            "ready" => Task.FromResult(Ready(Pin(reference))),
+            "not-found" => Task.FromResult(new SavedMacroDocumentReadResult(SavedMacroDocumentReadStatus.NotFound)),
+            "unavailable" => Task.FromResult(new SavedMacroDocumentReadResult(SavedMacroDocumentReadStatus.Unavailable)),
+            "guard-false" => Task.FromResult(Ready(Pin(reference, guard: () => false))),
+            "disabled" => Task.FromResult(Ready(Pin(reference, disabled))),
+            _ => throw new OperationCanceledException()
+        });
+        var faults = new List<Type>();
+        await using var preparer = new SavedMacroPlanPreparer(source, faults.Add);
+        var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
+        Assert.Equal(outcome switch
+        {
+            "ready" => SavedMacroPreparationStatus.Ready,
+            "not-found" => SavedMacroPreparationStatus.NotFound,
+            "unavailable" => SavedMacroPreparationStatus.Unavailable,
+            "guard-false" => SavedMacroPreparationStatus.Changed,
+            "disabled" => SavedMacroPreparationStatus.UnsupportedDocument,
+            _ => SavedMacroPreparationStatus.Cancelled
+        }, result.Status);
+        Assert.Empty(faults);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task ThrowingFaultCallbackCannotChangeTheFixedOutcome(bool guardThrows)
+    {
+        var reference = Reference();
+        var error = new IOException(PrivatePath);
+        var source = new Source((_, _) => guardThrows ? Task.FromResult(Ready(Pin(reference, guard: () => throw error))) : throw error);
+        int calls = 0;
+        await using var preparer = new SavedMacroPlanPreparer(source, _ =>
+        {
+            calls++;
+            throw new InvalidOperationException("The diagnostic sink failed.");
+        });
+        var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
+        Assert.Equal(guardThrows ? SavedMacroPreparationStatus.Changed : SavedMacroPreparationStatus.Unavailable, result.Status);
+        Assert.Null(result.Prepared);
+        Assert.Equal(1, calls);
+    }
+
+    [Fact]
+    public void FaultCallbackAndSourceFaultTypeAreValidated()
+    {
+        var source = new Source((_, _) => throw new InvalidOperationException("Must not read."));
+        Assert.Throws<ArgumentNullException>(() => new SavedMacroPlanPreparer(source, null!));
+        Assert.Throws<ArgumentNullException>(() => SavedMacroDocumentReadResult.Faulted(null!));
+        Assert.Throws<ArgumentException>(() => SavedMacroDocumentReadResult.Faulted(typeof(string)));
+        Assert.Equal(0, source.Calls);
     }
 
     [Fact]
@@ -408,6 +536,15 @@ public sealed class SavedMacroPlanPreparerTests
         }
         public void Dispose() => Interlocked.Increment(ref DisposeCalls);
         public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+    }
+
+    // Stands in for a compiler-side bug: reading the step list throws an ordinary exception.
+    private sealed class ThrowingSteps : IReadOnlyList<MacroStep>
+    {
+        public int Count => 1;
+        public MacroStep this[int index] => throw new InvalidOperationException(PrivateName + PrivatePath);
+        public IEnumerator<MacroStep> GetEnumerator() => throw new InvalidOperationException(PrivateName + PrivatePath);
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
 
     private sealed class Transport(TargetedInputTarget target) : ITargetedInputTransport

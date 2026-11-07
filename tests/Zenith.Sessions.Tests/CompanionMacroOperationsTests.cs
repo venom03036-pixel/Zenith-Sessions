@@ -243,6 +243,46 @@ public sealed partial class TargetedMacroExecutionTests
     }
 
     [Fact]
+    public async Task CompanionFaultWhoseHoldsWereReleasedDoesNotQuarantineTheHost()
+    {
+        await using var f = new Fixture();
+        var source = new HostDocument(Model(Key(65, "Down"), new DelayStep(TimeSpan.FromMilliseconds(20)), Key(65, "Up")));
+        await using var preparer = new SavedMacroPlanPreparer(source);
+        var host = new HostInputOperationArbiter();
+        var operation = new CompanionMacroOperations(host, preparer, f.Runner);
+        // The target window is moved or resized after the press; the release still reaches it.
+        f.Transport.Validation = GeometryChangesAfterFirstInput();
+        try
+        {
+            var result = await operation.RunAsync(source.Reference, [f.A], host.StopGeneration).WaitAsync(HostDeadline);
+            Assert.Equal(CompanionMacroOperationStatus.Finished, result.Status);
+            var run = Assert.Single(result.Recipients).Run!;
+            Assert.Equal(TargetedMacroResultStatus.Faulted, run.Status);
+            Assert.Equal(TargetedMacroProblem.InputRejected, run.Problem);
+            Assert.Equal(TargetedInputRunState.Stopped, run.Snapshot.Input.State);
+            Assert.Collection(f.Transport.Commands,
+                pressed => { Assert.False(pressed.Cleanup); Assert.Equal(TargetedInputKind.KeyDown, pressed.Signal.Kind); Assert.Equal(65, pressed.Signal.Key); },
+                released => { Assert.True(released.Cleanup); Assert.Equal(TargetedInputKind.KeyUp, released.Signal.Kind); Assert.Equal(65, released.Signal.Key); });
+            Assert.False(host.Snapshot.IsQuarantined);
+            Assert.False(host.Snapshot.IsBusy);
+
+            f.Transport.Validation = null;
+            var lease = f.Input.TryOpen(f.A, TargetedInputPurpose.OwnedWindowDiagnostic);
+            Assert.NotNull(lease.Run);
+            await lease.Run!.StopAsync();
+            var next = await operation.RunAsync(source.Reference, [f.A], host.StopGeneration).WaitAsync(HostDeadline);
+            Assert.Equal(CompanionMacroOperationStatus.Finished, next.Status);
+            Assert.Equal(TargetedMacroResultStatus.Completed, Assert.Single(next.Recipients).Run!.Status);
+        }
+        finally
+        {
+            f.Transport.Validation = null;
+            if (host.Snapshot is { IsQuarantined: true, OperationId: { } id })
+                await operation.RecoverAsync(id).WaitAsync(HostDeadline);
+        }
+    }
+
+    [Fact]
     public async Task TrackedStopDuringPreparationKeepsTheSameLeaseUntilTheReadEnds()
     {
         await using var f = new Fixture();

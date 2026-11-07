@@ -36,6 +36,31 @@ public sealed class MacroAssignmentContractsTests
     }
 
     [Fact]
+    public void DisplayNameCheckNamesTheProblemAndMatchesWhatValidationRejects()
+    {
+        string lineBreak = "bad" + (char)0x2028 + "name", lone = ((char)0xD800).ToString();
+        var cases = new (string? Name, MacroAssignmentNameProblem Problem)[]
+        {
+            ("Saved account", MacroAssignmentNameProblem.None), (new string('x', 200), MacroAssignmentNameProblem.None), ("😀 批次", MacroAssignmentNameProblem.None),
+            ("Robloxian main", MacroAssignmentNameProblem.None), ("Bearer", MacroAssignmentNameProblem.None),
+            (null, MacroAssignmentNameProblem.Shape), ("", MacroAssignmentNameProblem.Shape), (" ", MacroAssignmentNameProblem.Shape),
+            (new string('x', 201), MacroAssignmentNameProblem.Shape), ("bad\0name", MacroAssignmentNameProblem.Shape), ("two\nlines", MacroAssignmentNameProblem.Shape),
+            (lineBreak, MacroAssignmentNameProblem.Shape), (lone, MacroAssignmentNameProblem.InvalidUnicode),
+            ("Roblox: main", MacroAssignmentNameProblem.LinkOrCredential), ("ROBLOX-PLAYER:1", MacroAssignmentNameProblem.LinkOrCredential),
+            ("https://fixture.invalid", MacroAssignmentNameProblem.LinkOrCredential), ("Visit WWW.fixture", MacroAssignmentNameProblem.LinkOrCredential),
+            ("Bearer of Light", MacroAssignmentNameProblem.LinkOrCredential), ("access_token=fixture", MacroAssignmentNameProblem.LinkOrCredential)
+        };
+        var assignment = Assignment();
+        foreach (var (name, problem) in cases)
+        {
+            Assert.Equal(problem, MacroAssignment.CheckDisplayName(name));
+            if (problem == MacroAssignmentNameProblem.None) { (assignment with { TargetName = name!, MacroName = name! }).Validated(); continue; }
+            Assert.Throws<ArgumentException>(() => (assignment with { TargetName = name! }).Validated());
+            Assert.Throws<ArgumentException>(() => (assignment with { MacroName = name! }).Validated());
+        }
+    }
+
+    [Fact]
     public void AssignmentSerializationContainsOnlyMetadataAndToStringOmitsDisplayHints()
     {
         var assignment = Assignment() with { TargetName = "private-label-fixture", MacroName = "private-macro-title-fixture" };

@@ -5,4 +5,5 @@
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
   <ItemGroup><ProjectReference Include="../Zenith.MacroHost.Contracts/Zenith.MacroHost.Contracts.csproj" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="Zenith.Sessions.Tests" /></ItemGroup>
 </Project>
