@@ -80,13 +80,16 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         if(_selectedProfile() is not { } profile || profile==Guid.Empty) {link.Dispose();SetStatus("Select a signed-in account first. Share links are checked with that account.");return Task.CompletedTask;}
         if(_resolver is null) {link.Dispose();SetStatus("Share links cannot be checked in this build.");return Task.CompletedTask;}
         ClearResult();
+        // What the user had asked for when the check started: a game result may replace only this, never a newer choice or draft.
+        var requested=new RequestedSnapshot(_browser.Destination,_browser.LinkInput);
         var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
         long generation=Interlocked.Increment(ref _generation);_stop=stop;_busy=true;_status="Checking the share link with the selected account…";
         Raise(nameof(Status));Raise(nameof(IsBusy));NotifyAvailability();
-        _active=RunCheckAsync(link,profile,generation,stop);Track(_active);return _active;
+        _active=RunCheckAsync(link,profile,requested,generation,stop);Track(_active);return _active;
     }
+    private sealed record RequestedSnapshot(RobloxRequestedDestination? Destination,string Draft);
     private void Track(Task operation) {_operations.RemoveAll(task=>task.IsCompleted);_operations.Add(operation);}
-    private async Task RunCheckAsync(RobloxShareLink link,Guid profile,long generation,CancellationTokenSource stop)
+    private async Task RunCheckAsync(RobloxShareLink link,Guid profile,RequestedSnapshot requested,long generation,CancellationTokenSource stop)
     {
         try
         {
@@ -94,13 +97,13 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
             try {resolution=await _resolver!.ResolveShareLinkAsync(profile,link,stop.Token);}
             finally {link.Dispose();}
             if(!Current(generation,stop)) {resolution.Dispose();return;}
-            await PublishAsync(resolution,generation,stop);
+            await PublishAsync(resolution,requested,generation,stop);
         }
         catch(OperationCanceledException) { }
         catch(Exception error) {if(Current(generation,stop)) SetStatus("The share link could not be checked right now. Try again later.");ReportSafeFailure(error);}
         finally {if(ReferenceEquals(_stop,stop)) _stop=null;stop.Dispose();_busy=false;Raise(nameof(IsBusy));NotifyAvailability();}
     }
-    private async Task PublishAsync(RobloxShareLinkResolution resolution,long generation,CancellationTokenSource stop)
+    private async Task PublishAsync(RobloxShareLinkResolution resolution,RequestedSnapshot requested,long generation,CancellationTokenSource stop)
     {
         if(resolution.Outcome is not (RobloxShareLinkOutcome.Experience or RobloxShareLinkOutcome.PrivateServer) || resolution.PlaceId is not { } placeId)
         {
@@ -120,11 +123,17 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         if(!Current(generation,stop)) {resolution.Dispose();return;}
         string place=placeId.ToString(CultureInfo.InvariantCulture);
         _result=resolution;_resultTitle=name is null?"Place "+place:name+" · Place "+place;
-        if(resolution.Outcome==RobloxShareLinkOutcome.Experience)
+        if(resolution.Outcome==RobloxShareLinkOutcome.Experience && StillRequested(requested))
         {
             _browser.UsePreferredPlace(placeId);
             _resultDetail="Game share link. It is now the requested destination for the accounts you launch; nothing has launched.";
             _status="Share link checked. The game is the requested destination; choose Quick join or Browse servers.";
+        }
+        else if(resolution.Outcome==RobloxShareLinkOutcome.Experience)
+        {
+            // Same fence as the Find box (DestinationSearchViewModel): a late result never overwrites a newer destination or erases a draft.
+            _resultDetail="Game share link. It was not applied because you changed the destination while it was checked; nothing has launched.";
+            _status="Share link checked. You picked another game or typed in the Find box while it ran, so your newer choice was kept. Check the link again to use this game.";
         }
         else
         {
@@ -249,6 +258,9 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         Raise(nameof(HasResult));Raise(nameof(HasPrivateResult));Raise(nameof(ResultTitle));Raise(nameof(ResultDetail));
     }
     private bool Current(long generation,CancellationTokenSource stop)=>Allowed && generation==Interlocked.Read(ref _generation) && !stop.IsCancellationRequested;
+    /// <summary>Any re-pick creates a new destination object, so even choosing the same game again counts as a newer choice.</summary>
+    private bool StillRequested(RequestedSnapshot requested)=>ReferenceEquals(_browser.Destination,requested.Destination)
+        && string.Equals(_browser.LinkInput,requested.Draft,StringComparison.Ordinal);
     private void SetStatus(string status) {_status=status;Raise(nameof(Status));}
     private void NotifyAvailability() {Raise(nameof(CanCheck));Raise(nameof(CanSave));Raise(nameof(CanRemoveSaved));}
     private void ReportFailure(Exception error) {if(!_disposed) SetStatus("The share link operation could not finish. Try again.");ReportSafeFailure(error);}

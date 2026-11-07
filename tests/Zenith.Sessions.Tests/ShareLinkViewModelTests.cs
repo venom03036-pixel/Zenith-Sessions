@@ -26,6 +26,32 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task ALateGameResultKeepsTheDestinationAndDraftChosenWhileTheCheckRan()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Browser.UsePreferredPlace(99);f.Browser.LinkInput="Adopt"; // The user went back to step 1, picked another game and started typing.
+        resolver.Hold=false;resolver.Release();await check;
+        Assert.Equal(99,f.Browser.Destination!.PlaceId);Assert.Equal("Adopt",f.Browser.LinkInput);
+        Assert.True(vm.HasResult);Assert.False(vm.IsBusy);
+        Assert.DoesNotContain("The game is the requested destination",vm.Status,StringComparison.Ordinal);
+        Assert.Contains("newer choice was kept",vm.Status,StringComparison.Ordinal);Assert.Contains("not applied",vm.ResultDetail,StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task ALateGameResultKeepsAFindBoxDraftTypedWhileTheCheckRan()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Browser.LinkInput="Adopt";
+        resolver.Hold=false;resolver.Release();await check;
+        Assert.Equal("Adopt",f.Browser.LinkInput);Assert.Null(f.Browser.Destination);Assert.True(vm.HasResult);
+        Assert.Contains("newer choice was kept",vm.Status,StringComparison.Ordinal);
+    });
+
+    [Fact]
     public Task PrivateResultShowsLast4AndDisabledJoin()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();
