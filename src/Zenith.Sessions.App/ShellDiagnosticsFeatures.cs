@@ -21,6 +21,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
 public sealed partial class ShellViewModel
 {
     private ManagerDiagnosticSnapshot? _diagnosticSnapshot;
+    private CancellationTokenSource? _diagnosticExportStop;
     private long _diagnosticAfterSequence;
     private bool _diagnosticsPaused,_showErrors=true,_showWarnings=true,_showInformation=true;
     private string _diagnosticFilter="";
@@ -63,30 +64,29 @@ public sealed partial class ShellViewModel
             }
             catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {Fail(ex);}
         });
-        ExportDiagnostics=new(async p=>
-        {
-            if(p is not string path || IsLocked || _shuttingDown) return;
-            string report=BuildDiagnosticReport();
-            await Task.Run(async ()=>
-            {
-                string destination=DiagnosticExportPath.Validate(path,DataRoot,AppContext.BaseDirectory);
-                string temporary=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
-                try
-                {
-                    await using(var file=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.Asynchronous|FileOptions.WriteThrough))
-                    {
-                        byte[] bytes=Encoding.UTF8.GetBytes(report);await file.WriteAsync(bytes,_lifetime.Token);
-                        await file.FlushAsync(_lifetime.Token);file.Flush(true);
-                    }
-                    _lifetime.Token.ThrowIfCancellationRequested();
-                    DiagnosticExportPath.Validate(destination,DataRoot,AppContext.BaseDirectory);
-                    if(File.Exists(destination)) File.Replace(temporary,destination,null);else File.Move(temporary,destination);
-                }
-                finally {if(File.Exists(temporary)) File.Delete(temporary);}
-            },_lifetime.Token);
-            Notice="Redacted diagnostic report saved. No account names, credentials, game links, paths or raw exception messages were included.";
-        },Fail);
+        ExportDiagnostics=new(p=>p is string path?ExportDiagnosticsAsync(path):Task.CompletedTask,Fail);
     }
+    private async Task ExportDiagnosticsAsync(string path)
+    {
+        if(IsLocked || _shuttingDown) return;
+        string report=BuildDiagnosticReport(),dataRoot=DataRoot,applicationRoot=AppContext.BaseDirectory;
+        using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_diagnosticExportStop=stop;
+        try
+        {
+            await Task.Run(()=>ExplicitReportFile.WriteAsync(path,Encoding.UTF8.GetBytes(report),
+                candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),stop.Token),stop.Token);
+            // Panic, Lock and shutdown own the notice once they land; a write that already committed stays on disk silently.
+            if(!stop.IsCancellationRequested && !IsLocked && !_shuttingDown)
+                Notice="Redacted diagnostic report saved. No account names, credentials, game links, paths or raw exception messages were included.";
+        }
+        catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
+        {
+            // A late disk/path failure stays observable as a typed event without replacing the stop or lock message.
+            _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+        }
+        finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
+    }
+    private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
     private void RefreshDiagnosticsView(bool explicitRequest=false)
     {
         if(_shuttingDown || IsLocked || DiagnosticsPaused || (!explicitRequest && !IsDiagnostics)) return;

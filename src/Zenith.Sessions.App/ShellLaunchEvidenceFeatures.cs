@@ -181,20 +181,11 @@ public sealed partial class ShellViewModel
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_launchEvidenceExportStop=stop;
         try
         {
-            await Task.Run(async()=>
+            string dataRoot=DataRoot,applicationRoot=AppContext.BaseDirectory;
+            await Task.Run(()=>
             {
-                string destination=DiagnosticExportPath.Validate(path,DataRoot,AppContext.BaseDirectory);
-                string temporary=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
-                try
-                {
-                    byte[] bytes=Encoding.UTF8.GetBytes(report);if(bytes.Length>65536)throw new InvalidDataException("The launch evidence report exceeds its size limit.");
-                    await using(var file=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.Asynchronous|FileOptions.WriteThrough))
-                    {await file.WriteAsync(bytes,stop.Token);await file.FlushAsync(stop.Token);file.Flush(true);}
-                    stop.Token.ThrowIfCancellationRequested();DiagnosticExportPath.Validate(destination,DataRoot,AppContext.BaseDirectory);
-                    stop.Token.ThrowIfCancellationRequested();
-                    if(File.Exists(destination))File.Replace(temporary,destination,null);else File.Move(temporary,destination);
-                }
-                finally{if(File.Exists(temporary))File.Delete(temporary);}
+                byte[] bytes=Encoding.UTF8.GetBytes(report);if(bytes.Length>65536)throw new InvalidDataException("The launch evidence report exceeds its size limit.");
+                return ExplicitReportFile.WriteAsync(path,bytes,candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),stop.Token);
             },stop.Token);
             if(epoch==Interlocked.Read(ref _nativeTrialEpoch)&&!IsLocked&&!_shuttingDown)Notice="Launch evidence saved. It contains player/place/server IDs and timestamps; no credentials, raw logs or executable paths.";
         }

@@ -67,6 +67,34 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         using var parsed=JsonDocument.Parse(await File.ReadAllTextAsync(report));Assert.Equal("Zenith Sessions Personal",parsed.RootElement.GetProperty("Product").GetString());
         Assert.Contains("report saved",vm.Notice);Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
     });
+    [Fact]
+    public Task PanicOrLockDuringExportKeepsTheStopNotice()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        // Execute returns at the background write, so each stop lands while that export is still in flight.
+        vm.ExportDiagnostics.Execute(report);vm.Panic.Execute(null);await vm.ExportDiagnostics.Execution;
+        Assert.StartsWith("Panic stop",vm.Notice);Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+        // A stop fences only the export it interrupted; the next explicit export still reports success.
+        vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;Assert.Contains("report saved",vm.Notice);
+        vm.ExportDiagnostics.Execute(report);vm.Lock.Execute(null);await vm.ExportDiagnostics.Execution;
+        Assert.StartsWith("Controls locked",vm.Notice);Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+    });
+    [Fact]
+    public Task ExportReplacesAReportBrieflyHeldByAnotherReader()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");
+        // A scanner or viewer holding the old report without delete sharing blocks File.Replace until it lets go.
+        var held=new FileStream(report,FileMode.Open,FileAccess.Read,FileShare.Read);
+        var release=new Thread(()=>{Thread.Sleep(80);held.Dispose();}) {IsBackground=true};
+        try {vm.ExportDiagnostics.Execute(report);release.Start();await vm.ExportDiagnostics.Execution;}
+        finally {if(release.IsAlive)release.Join();held.Dispose();}
+        Assert.Contains("report saved",vm.Notice);
+        using var parsed=JsonDocument.Parse(await File.ReadAllTextAsync(report));Assert.Equal("Zenith Sessions Personal",parsed.RootElement.GetProperty("Product").GetString());
+        Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+    });
     private sealed class SyntheticMonitor : IDesktopMonitor
     {
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)=>Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]));

@@ -23,26 +23,8 @@ public sealed class PerformanceSettingsTransferStore : IPerformanceSettingsTrans
 
     public Task ExportAsync(string path,PortablePerformanceSettings settings,CancellationToken ct)=>Task.Run(async ()=>
     {
-        ct.ThrowIfCancellationRequested();byte[] bytes=PerformanceSettingsTransfer.SerializeJson(settings,ct);string destination=ValidatePath(path);
-        string temporary=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
-        try
-        {
-            ct.ThrowIfCancellationRequested();
-            await using(var file=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.Asynchronous|FileOptions.WriteThrough))
-            {
-                await file.WriteAsync(bytes,ct).ConfigureAwait(false);await file.FlushAsync(ct).ConfigureAwait(false);file.Flush(true);
-            }
-            ct.ThrowIfCancellationRequested();ValidatePath(destination);
-            if(!File.Exists(destination)) {ct.ThrowIfCancellationRequested();File.Move(temporary,destination);return;}
-            for(int attempt=0;;attempt++)
-            {
-                ct.ThrowIfCancellationRequested();ValidatePath(destination);
-                try {File.Replace(temporary,destination,null);break;}
-                catch(IOException ex) when(((ex.HResult&0xffff) is 32 or 33 or 1175) && attempt<9 && File.Exists(temporary) && File.Exists(destination))
-                {await Task.Delay(TimeSpan.FromMilliseconds(25),ct).ConfigureAwait(false);}
-            }
-        }
-        finally {if(File.Exists(temporary)) File.Delete(temporary);}
+        ct.ThrowIfCancellationRequested();byte[] bytes=PerformanceSettingsTransfer.SerializeJson(settings,ct);
+        await ExplicitReportFile.WriteAsync(path,bytes,ValidatePath,ct).ConfigureAwait(false);
     },CancellationToken.None);
     private string ValidatePath(string path)
     {
