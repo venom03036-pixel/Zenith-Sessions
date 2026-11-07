@@ -46,6 +46,9 @@ public sealed class PrivateServerStorageException(PrivateServerStorageProblem pr
 { public PrivateServerStorageProblem Problem { get; } = problem; }
 public sealed class PrivateServerConflictException() : Exception("This saved private server changed elsewhere or no longer exists. Refresh before using or removing it.");
 public sealed class PrivateServerCapacityException() : Exception("The 100-server limit for saved private servers is reached. Remove one before saving another.");
+/// <summary>The link code is already saved, so nothing was added. <see cref="Existing"/> is that server's metadata (never its code); the message names neither.</summary>
+public sealed class PrivateServerDuplicateException(SavedPrivateServer existing) : Exception("This private server is already saved. Nothing was added.")
+{ public SavedPrivateServer Existing { get; } = existing ?? throw new ArgumentNullException(nameof(existing)); }
 
 /// <summary>
 /// Protected metadata-plus-code storage. A code leaves the store only as a <see cref="ProtectedPrivateServerCode"/>,
@@ -54,7 +57,10 @@ public sealed class PrivateServerCapacityException() : Exception("The 100-server
 public interface IPrivateServerStore
 {
     Task<IReadOnlyList<SavedPrivateServer>> ReadAsync(CancellationToken ct);
-    /// <summary>Save a server. <paramref name="gameName"/> is the checked game's public name, or null when none was known.</summary>
+    /// <summary>
+    /// Save a server. <paramref name="gameName"/> is the checked game's public name, or null when none was known. A link code
+    /// that is already saved adds nothing and throws <see cref="PrivateServerDuplicateException"/> naming the saved row.
+    /// </summary>
     Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, string? gameName, ProtectedPrivateServerCode code, CancellationToken ct);
     Task DeleteAsync(Guid id, long revision, CancellationToken ct);
     Task<ProtectedPrivateServerCode> ReadCodeAsync(Guid id, CancellationToken ct);

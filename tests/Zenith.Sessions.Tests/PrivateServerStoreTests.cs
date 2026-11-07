@@ -65,12 +65,31 @@ public sealed class PrivateServerStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task SavingTheSameLinkCodeAgainAddsNothingAndPointsToTheSavedServer()
+    {
+        using var store = Store(); SavedPrivateServer saved;
+        using (var first = Code()) saved = await store.AddAsync("Weekend VIP", 5, 6, 7, "Synthetic Game", first, default);
+        using var again = Code(); // The same link, checked again and saved under another name.
+        var error = await Assert.ThrowsAsync<PrivateServerDuplicateException>(() => store.AddAsync("Again", 5, 6, 7, "Synthetic Game", again, default));
+        Assert.Equal(saved, error.Existing);
+        Assert.DoesNotContain("9876", error.ToString(), StringComparison.Ordinal); Assert.DoesNotContain("Weekend", error.ToString(), StringComparison.Ordinal);
+        using (var reopened = new PrivateServerStore(_root)) Assert.Equal(saved, Assert.Single(await reopened.ReadAsync(default)));
+        using var other = Code("1111222233334444"); // Another link to the same game is another private server.
+        var second = await store.AddAsync("Other", 5, 6, 7, "Synthetic Game", other, default);
+        Assert.Equal(new[] { saved, second }, (await store.ReadAsync(default)).ToArray());
+    }
+
+    [Fact]
     public async Task CapacityIsOneHundred()
     {
         using var store = Store();
-        for (int index = 0; index < 100; index++) { using var code = Code(); await store.AddAsync("Server " + index, 5, 6, null, null, code, default); }
-        using var extra = Code();
+        static string Distinct(int index) => (10_000_000 + index).ToString(System.Globalization.CultureInfo.InvariantCulture);
+        for (int index = 0; index < 100; index++) { using var code = Code(Distinct(index)); await store.AddAsync("Server " + index, 5, 6, null, null, code, default); }
+        using var extra = Code(Distinct(100));
         await Assert.ThrowsAsync<PrivateServerCapacityException>(() => store.AddAsync("Too many", 5, 6, null, null, extra, default));
+        // A link that is already saved says so even when the list is full: saving it would add nothing anyway.
+        using var duplicate = Code(Distinct(0));
+        Assert.Equal("Server 0", (await Assert.ThrowsAsync<PrivateServerDuplicateException>(() => store.AddAsync("Again", 5, 6, null, null, duplicate, default))).Existing.Name);
         Assert.Equal(100, (await store.ReadAsync(default)).Count);
     }
 

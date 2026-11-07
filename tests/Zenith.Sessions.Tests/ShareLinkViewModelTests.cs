@@ -108,9 +108,22 @@ public sealed class ShareLinkViewModelTests
         vm.SaveName="  Weekend VIP  ";await vm.SaveAsFavoriteAsync();
         var saved=Assert.Single(vm.Saved);Assert.Equal("Weekend VIP",saved.Name);Assert.Equal("3210",saved.Last4);Assert.Equal(LinkCode,store.Codes[saved.Id]);
         Assert.Contains("saved",vm.Status);Assert.Equal("",vm.SaveName);Assert.True(vm.HasPrivateResult); // The result stays visible after saving.
-        vm.SaveName="x";await vm.SaveAsFavoriteAsync();Assert.Equal(2,vm.Saved.Count); // Saving twice is allowed; the store owns capacity.
+        resolver.Response=_=>new(RobloxShareLinkOutcome.PrivateServer,5,6,7,new ProtectedPrivateServerCode("1111222233334444"));
+        vm.LinkInput=Link("Server");await vm.CheckAsync();vm.SaveName="x";await vm.SaveAsFavoriteAsync();Assert.Equal(2,vm.Saved.Count); // Another link to the same game is another server.
         vm.SelectedSaved=vm.Saved[0];Assert.True(vm.CanRemoveSaved);await vm.RemoveSelectedAsync();
         Assert.Single(vm.Saved);Assert.Single(store.Items);Assert.Null(vm.SelectedSaved);Assert.False(vm.CanRemoveSaved);
+    });
+
+    [Fact]
+    public Task SavingTheSameServerAgainAddsNothingAndSelectsTheSavedRow()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();var failures=new List<Exception>();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,failures.Add,games:f.Directory);
+        vm.LinkInput=Link("Server");await vm.CheckAsync();vm.SaveName="Weekend VIP";await vm.SaveAsFavoriteAsync();var saved=Assert.Single(vm.Saved);
+        vm.LinkInput=Link("Server");await vm.CheckAsync();vm.SaveName="Again";await vm.SaveAsFavoriteAsync(); // The same link, checked again under another name.
+        Assert.Equal("This private server is already saved as “Weekend VIP”. Nothing was added.",vm.Status);
+        Assert.Same(saved,Assert.Single(vm.Saved));Assert.Single(store.Items);Assert.Same(saved,vm.SelectedSaved);Assert.True(vm.CanRemoveSaved);
+        Assert.Equal("Again",vm.SaveName);Assert.Empty(failures);Assert.False(vm.IsBusy);Assert.True(vm.HasPrivateResult);
     });
 
     [Fact]
@@ -229,7 +242,9 @@ public sealed class ShareLinkViewModelTests
         {
             LastToken=ct;Entered.TrySetResult();if(HoldAdd) await _release.Task;
             var saved=new SavedPrivateServer(Guid.NewGuid(),SavedPrivateServer.NormalizeName(name),placeId,universeId,ownerUserId,code.Last4,1,gameName).Validated();
-            string value="";code.Reveal(span=>value=new string(span));Codes[saved.Id]=value;Items.Add(saved);return saved;
+            string value="";code.Reveal(span=>value=new string(span));
+            if(Items.Find(item=>Codes[item.Id]==value) is { } existing) throw new PrivateServerDuplicateException(existing); // Like the real store.
+            Codes[saved.Id]=value;Items.Add(saved);return saved;
         }
         public Task DeleteAsync(Guid id,long revision,CancellationToken ct)
         {int index=Items.FindIndex(item=>item.Id==id);if(index<0 || Items[index].Revision!=revision) throw new PrivateServerConflictException();Items.RemoveAt(index);Codes.Remove(id);return Task.CompletedTask;}

@@ -45,14 +45,18 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         return SerializedAsync(async token =>
         {
             var document = await LoadAsync(token).ConfigureAwait(false);
-            if (document.Items.Length >= SavedPrivateServer.MaximumCount) throw new PrivateServerCapacityException();
-            if (document.Revision == long.MaxValue) throw Damaged("Private server revisions cannot advance. Existing files were preserved.");
             // The clear code is a transient string between the protected holder and the protected file, like a cookie header.
             string value = ""; code.Reveal(span => value = new string(span));
             // A holder cleared while it was being copied would leave a torn code; persisting it would make the whole
             // file unreadable (it is never overwritten once damaged). Refuse it before anything is written.
             if (!IsStorableCode(value, draft.Last4))
                 throw new InvalidOperationException("The private server code was cleared while it was being saved. Nothing was written.");
+            // The link code is the private server's identity: one saved row per code, checked under the writer and file lock
+            // so two windows cannot both add it. Files written before this rule may hold copies; they still read, and the first is named.
+            if (Array.Find(document.Items, item => string.Equals(item.Code, value, StringComparison.Ordinal)) is { } existing)
+                throw new PrivateServerDuplicateException(ToSaved(existing));
+            if (document.Items.Length >= SavedPrivateServer.MaximumCount) throw new PrivateServerCapacityException();
+            if (document.Revision == long.MaxValue) throw Damaged("Private server revisions cannot advance. Existing files were preserved.");
             var saved = draft with { Revision = 1 };
             var items = new StoredServer[document.Items.Length + 1]; document.Items.CopyTo(items, 0);
             items[^1] = new(saved.Id, saved.Name, saved.PlaceId, saved.UniverseId, saved.OwnerUserId, value, saved.Revision, saved.GameName);

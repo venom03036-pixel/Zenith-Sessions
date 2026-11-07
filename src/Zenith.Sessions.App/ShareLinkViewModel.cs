@@ -177,6 +177,13 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
                 SavedPrivateServer saved;
                 try {saved=await store.AddAsync(name,placeId,universeId,owner,game,copy!,token);}
                 catch(ArgumentException) {if(current()) SetStatus("Choose a short plain name without links or codes.");return;}
+                catch(PrivateServerDuplicateException duplicate)
+                {
+                    if(!current()) return;
+                    // Point at the row already kept, when the list shows it, instead of adding a second copy of the same link.
+                    if(Saved.FirstOrDefault(server=>server.Id==duplicate.Existing.Id) is { } row) SelectedSaved=row;
+                    SetStatus("This private server is already saved as “"+duplicate.Existing.Name+"”. Nothing was added.");return;
+                }
                 catch(PrivateServerCapacityException) {if(current()) SetStatus("The 100-server limit for saved private servers is reached. Remove one before saving another.");return;}
                 catch(PrivateServerStorageException) {if(current()) SetStatus("Saved private servers could not be written. Existing files were preserved.");return;}
                 if(!current()) return;
