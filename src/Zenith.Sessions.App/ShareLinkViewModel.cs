@@ -91,18 +91,20 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         try
         {
             RobloxShareLinkResolution resolution;
+            bool invite=link.Type is RobloxShareLinkType.ExperienceInvite or RobloxShareLinkType.NotificationExperienceInvite;
             try {resolution=await _resolver!.ResolveShareLinkAsync(profile,link,stop.Token);}
             finally {link.Dispose();}
             if(!Current(generation,stop)) {resolution.Dispose();return;}
-            await PublishAsync(resolution,generation,stop);
+            await PublishAsync(resolution,invite,generation,stop);
         }
         catch(OperationCanceledException) { }
         catch(Exception error) {if(Current(generation,stop)) SetStatus("The share link could not be checked right now. Try again later.");ReportSafeFailure(error);}
         finally {if(ReferenceEquals(_stop,stop)) _stop=null;stop.Dispose();_busy=false;Raise(nameof(IsBusy));NotifyAvailability();}
     }
-    private async Task PublishAsync(RobloxShareLinkResolution resolution,long generation,CancellationTokenSource stop)
+    private async Task PublishAsync(RobloxShareLinkResolution resolution,bool invite,long generation,CancellationTokenSource stop)
     {
-        if(resolution.Outcome is not (RobloxShareLinkOutcome.Experience or RobloxShareLinkOutcome.PrivateServer) || resolution.PlaceId is not { } placeId)
+        if(resolution.Outcome is not (RobloxShareLinkOutcome.Experience or RobloxShareLinkOutcome.PrivateServer or RobloxShareLinkOutcome.ServerInstance)
+            || resolution.PlaceId is not { } placeId)
         {
             resolution.Dispose();
             SetStatus(resolution.Outcome switch
@@ -120,7 +122,20 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         if(!Current(generation,stop)) {resolution.Dispose();return;}
         string place=placeId.ToString(CultureInfo.InvariantCulture);
         _result=resolution;_resultTitle=name is null?"Place "+place:name+" · Place "+place;
-        if(resolution.Outcome==RobloxShareLinkOutcome.Experience)
+        if(resolution.Outcome==RobloxShareLinkOutcome.ServerInstance)
+        {
+            // An invite names the inviter's server: a request for that exact server, never proof of room or arrival.
+            _browser.UseInvitedServer(placeId,resolution.JobId!);
+            _resultDetail="Server invite. The inviter's server is now the requested destination for the accounts you launch; nothing has launched.";
+            _status="Invite checked. The inviter's server is the requested destination; Roblox decides whether it still has room.";
+        }
+        else if(resolution.Outcome==RobloxShareLinkOutcome.Experience && invite)
+        {
+            _browser.UsePreferredPlace(placeId);
+            _resultDetail="Game invite. It no longer names a server you can join, so the game is the requested destination; nothing has launched.";
+            _status="Invite checked. Its server cannot be joined, so the game is the requested destination; choose Quick join or Browse servers.";
+        }
+        else if(resolution.Outcome==RobloxShareLinkOutcome.Experience)
         {
             _browser.UsePreferredPlace(placeId);
             _resultDetail="Game share link. It is now the requested destination for the accounts you launch; nothing has launched.";

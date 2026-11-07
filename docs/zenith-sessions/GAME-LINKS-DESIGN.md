@@ -138,7 +138,9 @@ name, creator line, playing + rating, accent border and check when it is the cur
 
 - `RobloxDestinations` keeps classifying `roblox.com/share?code=…&type=…` as a share link, but instead of discarding
   the code it returns a `RobloxShareLink(ProtectedShareCode Code, RobloxShareLinkType Type)` alongside the
-  unresolved result. `Type` ∈ `ExperienceDetails`, `Server`, `Other`. `ProtectedShareCode` holds the code in a
+  unresolved result. `Type` ∈ `ExperienceDetails`, `Server`, `ExperienceInvite`, `NotificationExperienceInvite`,
+  `Other`, plus `DeepLinkV2` for `share?code=…&v=v2` links (no type). The query must hold exactly `code` and either
+  `type` or `v=v2`; anything else is refused. `ProtectedShareCode` holds the code in a
   pinned char array, redacts `ToString()`, is disposed after use and is never serialized, logged, put in a favorite
   or bundle, or shown again. `ro.blox.com` deferred links stay unresolved (no code to resolve).
 - The text box is cleared as soon as a share link is recognised.
@@ -160,16 +162,30 @@ name, creator line, playing + rating, accent border and check when it is the cur
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF
   retry (403 with `x-csrf-token` → repeat once with the token), then stop. 401 → SignInRequired.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
-  `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
+  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
 - `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
   (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
   `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
   request after the signed-in resolve has finished. A restricted, missing or failed lookup is `Unavailable`.
+- Friend invites (`ExperienceInvite`, `NotificationExperienceInvite`) read `experienceInviteData` /
+  `notificationExperienceInviteData`: `status`, a required `placeId`, an optional `universeId` and `instanceId`. Only a
+  `Valid` invite whose `instanceId` is a nonempty dashed GUID becomes `ServerInstance(placeId, jobId)`, with the job ID
+  in canonical form; a `Valid` invite naming a malformed server is `Unavailable`. `Expired` and
+  `InviterNotInExperience` (and a `Valid` invite without a server) fall back to `Experience(placeId)` without a job, as
+  Roblox's web page opens the game. `inviterId` and `launchData` are never read or kept.
+- v2 links `POST https://apis.roblox.com/deeplinks/v2/resolve` `{ "linkId": code }` under the same cookie, CSRF, redirect
+  and size rules. Only `linkType` `Experience` with a positive `targetId` (the place ID) becomes `Experience`; other link
+  types are `Invalid`; `customData` is never read. Profile links stay `Other` (no request) until the launcher can follow
+  a user.
 
 ### 4.3 Using the result
 
-- `Experience` → becomes the requested destination (place) and loads the game panel, like a pasted game link.
+- `Experience` → becomes the requested destination (place) and loads the game panel, like a pasted game link. When the
+  link was an invite, the result says its server can no longer be joined.
+- `ServerInstance` → the requested destination is that place plus the inviter's job ID, exactly like a pasted
+  `/games/start?placeId=…&gameInstanceId=…` link. It is a request: room, access, account identity and arrival stay
+  unverified (HANDOFF.md).
 - `PrivateServer` → the 05c result row: game name/icon (public lookup), owner when known, "Link code …{last 4}".
   **Save as favorite** stores it in a new `PrivateServerStore`: DPAPI `CurrentUser` protected JSON in the writable
   data folder, at most 100 entries, per-record revision like favorite destinations, code bytes only inside the

@@ -20,6 +20,32 @@ public sealed class ShareLinkParserTests
         Assert.Equal(expectedCode, revealed);
     }
 
+    // Friend invites can name the inviter's server; v2 links carry no type and use the deeplinks/v2 resolver.
+    [Theory]
+    [InlineData("https://www.roblox.com/share?code=" + Code + "&type=ExperienceInvite", RobloxShareLinkType.ExperienceInvite)]
+    [InlineData("https://www.roblox.com/share?code=" + Code + "&type=NotificationExperienceInvite", RobloxShareLinkType.NotificationExperienceInvite)]
+    [InlineData("https://www.roblox.com/share?code=" + Code + "&v=v2", RobloxShareLinkType.DeepLinkV2)]
+    [InlineData("https://roblox.com/share/?v=V2&code=" + Code, RobloxShareLinkType.DeepLinkV2)]
+    public void ParsesInviteAndVersion2ShareLinks(string input, RobloxShareLinkType type)
+    {
+        Assert.True(RobloxShareLinkParser.TryParse(input, out var link)); using var owned = link!;
+        Assert.Equal(type, owned.Type);
+        string revealed = ""; owned.Code.Reveal(code => revealed = new string(code));
+        Assert.Equal(Code, revealed); Assert.DoesNotContain(Code, owned.ToString(), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("https://www.roblox.com/share?code=abc&v=v3")]
+    [InlineData("https://www.roblox.com/share?code=abc&v=")]
+    [InlineData("https://www.roblox.com/share?v=v2")]
+    [InlineData("https://www.roblox.com/share?code=abc&v=v2&type=Server")]
+    [InlineData("https://www.roblox.com/share?code=abc&v=v2&extra=1")]
+    [InlineData("https://www.roblox.com/share?code=abc&v=v2&v=v2")]
+    public void RejectsMalformedVersion2Links(string input)
+    {
+        Assert.False(RobloxShareLinkParser.TryParse(input, out var link)); Assert.Null(link);
+    }
+
     [Fact]
     public void UnknownTypeIsOtherAndMissingCodeOrTypeFails()
     {

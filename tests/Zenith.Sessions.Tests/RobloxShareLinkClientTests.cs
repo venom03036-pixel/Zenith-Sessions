@@ -15,6 +15,8 @@ public sealed class RobloxShareLinkClientTests
     private const string ShareCode = "4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e";
     private const string LinkCode = "98765432109876543210";
     private const string Endpoint = "https://apis.roblox.com/sharelinks/v1/resolve-link";
+    private const string V2Endpoint = "https://apis.roblox.com/deeplinks/v2/resolve";
+    private const string Job = "0f8fad5b-d9cb-469f-a165-70867728950e";
 
     [Fact]
     public async Task PostsToTheExactEndpointWithCookieOnlyThere()
@@ -151,6 +153,108 @@ public sealed class RobloxShareLinkClientTests
         using var untouched = new Handler((_, _) => throw new InvalidOperationException("No request expected."));
         using var other = await Resolve(untouched, RobloxShareLinkType.Other);
         Assert.Equal(RobloxShareLinkOutcome.Invalid, other.Outcome); Assert.Equal(0, untouched.Calls);
+    }
+
+    // Friend invites: a Valid invite with a well-formed instanceId is a request for that exact server (not arrival).
+    [Theory]
+    [InlineData(RobloxShareLinkType.ExperienceInvite, "ExperienceInvite", "experienceInviteData")]
+    [InlineData(RobloxShareLinkType.NotificationExperienceInvite, "NotificationExperienceInvite", "notificationExperienceInviteData")]
+    public async Task AValidInviteWithAServerResolvesToThatServer(RobloxShareLinkType type, string typeName, string key)
+    {
+        using var handler = new Handler(async (request, ct) =>
+        {
+            Assert.Equal(Endpoint, request.RequestUri!.AbsoluteUri);
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+            Assert.Equal(ShareCode, body.RootElement.GetProperty("linkId").GetString()); Assert.Equal(typeName, body.RootElement.GetProperty("linkType").GetString());
+            return Json("{\"" + key + "\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":\"" + Job.ToUpperInvariant() + "\",\"inviterId\":9,\"launchData\":\"synthetic-launch-data\"}}");
+        });
+        using var resolution = await Resolve(handler, type);
+        Assert.Equal(RobloxShareLinkOutcome.ServerInstance, resolution.Outcome); Assert.Equal(1818, resolution.PlaceId);
+        Assert.Equal(Job, resolution.JobId); Assert.Null(resolution.UniverseId); Assert.Null(resolution.OwnerUserId); Assert.Null(resolution.PrivateServerCode);
+        Assert.DoesNotContain("synthetic-launch-data", resolution.ToString(), StringComparison.Ordinal); Assert.Equal(1, handler.Calls);
+    }
+
+    // As on Roblox's web page, an invite whose server cannot be used still opens its game; it never names a server.
+    [Theory]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Expired\",\"placeId\":1818,\"instanceId\":\"" + Job + "\"}}")]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"InviterNotInExperience\",\"placeId\":1818,\"instanceId\":\"" + Job + "\"}}")]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818}}")]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":null}}")]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":\"\"}}")]
+    public async Task AnInviteWithoutAUsableServerFallsBackToItsGame(string json)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Json(json)));
+        using var resolution = await Resolve(handler, RobloxShareLinkType.ExperienceInvite);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Equal(1818, resolution.PlaceId); Assert.Null(resolution.JobId);
+    }
+
+    [Theory]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":\"not-a-server\"}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":\"00000000-0000-0000-0000-000000000000\"}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":42}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"instanceId\":\"" + Job + "\"}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":0,\"instanceId\":\"" + Job + "\"}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Expired\"}}", RobloxShareLinkOutcome.Expired)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Invalid\"}}", RobloxShareLinkOutcome.Invalid)]
+    [InlineData("{\"experienceInviteData\":{\"status\":\"Unexpected\",\"placeId\":1818}}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"experienceDetailsInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"universeId\":6}}", RobloxShareLinkOutcome.Unavailable)]
+    public async Task MalformedInvitesAreNeverGuessed(string json, RobloxShareLinkOutcome outcome)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Json(json)));
+        using var resolution = await Resolve(handler, RobloxShareLinkType.ExperienceInvite);
+        Assert.Equal(outcome, resolution.Outcome); Assert.Null(resolution.PlaceId); Assert.Null(resolution.JobId);
+    }
+
+    // share?code=…&v=v2 links resolve at deeplinks/v2/resolve with only the code; only Experience links name a place.
+    [Fact]
+    public async Task Version2LinksPostOnlyTheCodeToTheirOwnEndpoint()
+    {
+        int calls = 0;
+        using var handler = new Handler(async (request, ct) =>
+        {
+            calls++;
+            Assert.Equal(HttpMethod.Post, request.Method); Assert.Equal(V2Endpoint, request.RequestUri!.AbsoluteUri);
+            Assert.Equal(".ROBLOSECURITY=" + Secret, Assert.Single(request.Headers.GetValues("Cookie")));
+            using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+            Assert.Equal(ShareCode, body.RootElement.GetProperty("linkId").GetString()); Assert.Single(body.RootElement.EnumerateObject());
+            if (calls == 1) return Denied("v2token");
+            Assert.Equal("v2token", Assert.Single(request.Headers.GetValues("X-CSRF-TOKEN")));
+            return Json("{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":1818,\"customData\":\"synthetic-launch-data\"}");
+        });
+        using var resolution = await Resolve(handler, RobloxShareLinkType.DeepLinkV2);
+        Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Equal(1818, resolution.PlaceId);
+        Assert.Null(resolution.UniverseId); Assert.Null(resolution.JobId); Assert.Equal(2, handler.Calls);
+        Assert.Equal(V2Endpoint, RobloxShareLinkClient.V2Endpoint.AbsoluteUri);
+    }
+
+    [Theory]
+    [InlineData("{\"linkType\":\"Experience\",\"targetId\":1818}", RobloxShareLinkOutcome.Experience)]
+    [InlineData("{\"linkType\":\"StudioEdit\",\"status\":\"Valid\",\"targetId\":1818}", RobloxShareLinkOutcome.Invalid)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Invalid\",\"targetId\":1818}", RobloxShareLinkOutcome.Invalid)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Expired\",\"targetId\":1818}", RobloxShareLinkOutcome.Expired)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Unexpected\",\"targetId\":1818}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":0}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":\"1818\"}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"linkType\":\"Experience\",\"status\":\"Valid\"}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("{\"status\":\"Valid\",\"targetId\":1818}", RobloxShareLinkOutcome.Unavailable)]
+    [InlineData("[]", RobloxShareLinkOutcome.Unavailable)]
+    public async Task Version2ResponsesAreMappedStrictly(string json, RobloxShareLinkOutcome outcome)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Json(json)));
+        using var resolution = await Resolve(handler, RobloxShareLinkType.DeepLinkV2);
+        Assert.Equal(outcome, resolution.Outcome);
+        Assert.Equal(outcome == RobloxShareLinkOutcome.Experience ? 1818L : null, resolution.PlaceId); Assert.Null(resolution.JobId);
+    }
+
+    [Fact]
+    public void AResolutionKeepsOnlyACanonicalServerForAServerOutcome()
+    {
+        using var server = new RobloxShareLinkResolution(RobloxShareLinkOutcome.ServerInstance, 1818, jobId: Job.ToUpperInvariant());
+        Assert.Equal(Job, server.JobId); Assert.Contains("Place = 1818", server.ToString(), StringComparison.Ordinal);
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkResolution(RobloxShareLinkOutcome.ServerInstance, 1818, jobId: "not-a-server"));
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkResolution(RobloxShareLinkOutcome.ServerInstance, 1818));
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkResolution(RobloxShareLinkOutcome.ServerInstance, null, jobId: Job));
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 1818, jobId: Job));
     }
 
     [Fact]

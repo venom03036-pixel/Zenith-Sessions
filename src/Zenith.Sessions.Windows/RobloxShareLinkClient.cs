@@ -8,7 +8,8 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Windows;
 
 /// <summary>
-/// One explicit signed-in resolve request for a roblox.com/share link: exact endpoint, no redirects, no cookie jar,
+/// One explicit signed-in resolve request for a roblox.com/share link: exact endpoint (sharelinks/v1/resolve-link, or
+/// deeplinks/v2/resolve for a v2 link), no redirects, no cookie jar,
 /// one CSRF handshake retry and a 64 KiB body cap. The response shape is observed web-client behaviour, not a
 /// documented contract; anything unexpected is Unavailable, never a guess. The request body and the response buffer
 /// carry codes, so both are zeroed after use. A rotated session cookie in the response is ignored, never saved.
@@ -16,6 +17,7 @@ namespace Zenith.Sessions.Windows;
 public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
 {
     public static readonly Uri Endpoint = new("https://apis.roblox.com/sharelinks/v1/resolve-link");
+    public static readonly Uri V2Endpoint = new("https://apis.roblox.com/deeplinks/v2/resolve");
     private const int MaximumBodyBytes = 65536;
     private readonly HttpClient _http;
     private readonly TimeSpan _timeout;
@@ -35,16 +37,25 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     public async Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(link); ArgumentNullException.ThrowIfNull(credential); ct.ThrowIfCancellationRequested();
-        if (link.Type == RobloxShareLinkType.Other) return new(RobloxShareLinkOutcome.Invalid);
-        string typeName = link.Type == RobloxShareLinkType.Server ? "Server" : "ExperienceDetails";
+        // A v2 link has no type: its code alone goes to the deeplinks/v2 resolver. Every other kind names its type to v1.
+        string? typeName = link.Type switch
+        {
+            RobloxShareLinkType.Server => "Server",
+            RobloxShareLinkType.ExperienceDetails => "ExperienceDetails",
+            RobloxShareLinkType.ExperienceInvite => "ExperienceInvite",
+            RobloxShareLinkType.NotificationExperienceInvite => "NotificationExperienceInvite",
+            _ => null
+        };
+        if (typeName is null && link.Type != RobloxShareLinkType.DeepLinkV2) return new(RobloxShareLinkOutcome.Invalid);
+        Uri endpoint = typeName is null ? V2Endpoint : Endpoint;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); stop.CancelAfter(_timeout);
         try
         {
             string? csrf = null;
             for (int attempt = 0; attempt < 2; attempt++)
             {
-                using var response = await SendAsync(link, typeName, credential, csrf, stop.Token).ConfigureAwait(false);
-                if (response.RequestMessage?.RequestUri is { } actual && actual != Endpoint) return new(RobloxShareLinkOutcome.Unavailable);
+                using var response = await SendAsync(link, endpoint, typeName, credential, csrf, stop.Token).ConfigureAwait(false);
+                if (response.RequestMessage?.RequestUri is { } actual && actual != endpoint) return new(RobloxShareLinkOutcome.Unavailable);
                 if (response.StatusCode == HttpStatusCode.Forbidden && csrf is null && response.Headers.TryGetValues("x-csrf-token", out var tokens)
                     && tokens.FirstOrDefault() is { Length: > 0 and <= 256 } token)
                 { csrf = token; continue; } // The documented handshake: repeat once with the issued token, then stop.
@@ -59,13 +70,13 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
         catch (IOException) { return new(RobloxShareLinkOutcome.Unavailable); }
     }
 
-    private async Task<HttpResponseMessage> SendAsync(RobloxShareLink link, string typeName, RobloxSessionCredential credential, string? csrf, CancellationToken ct)
+    private async Task<HttpResponseMessage> SendAsync(RobloxShareLink link, Uri endpoint, string? typeName, RobloxSessionCredential credential, string? csrf, CancellationToken ct)
     {
         string code = ""; link.Code.Reveal(span => code = new string(span));
-        byte[] body = JsonSerializer.SerializeToUtf8Bytes(new ShareLinkRequest(code, typeName));
+        byte[] body = typeName is null ? JsonSerializer.SerializeToUtf8Bytes(new DeepLinkRequest(code)) : JsonSerializer.SerializeToUtf8Bytes(new ShareLinkRequest(code, typeName));
         try
         {
-            using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint) { Content = new ByteArrayContent(body) };
+            using var request = new HttpRequestMessage(HttpMethod.Post, endpoint) { Content = new ByteArrayContent(body) };
             request.Content.Headers.ContentType = new MediaTypeHeaderValue("application/json");
             request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             request.Headers.Add("Cookie", ".ROBLOSECURITY=" + credential.CopyValue());
@@ -95,6 +106,12 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     private static RobloxShareLinkResolution Interpret(JsonElement root, RobloxShareLinkType type)
     {
         if (root.ValueKind != JsonValueKind.Object) return new(RobloxShareLinkOutcome.Unavailable);
+        switch (type)
+        {
+            case RobloxShareLinkType.DeepLinkV2: return InterpretDeepLink(root);
+            case RobloxShareLinkType.ExperienceInvite: return InterpretInvite(root, "experienceInviteData");
+            case RobloxShareLinkType.NotificationExperienceInvite: return InterpretInvite(root, "notificationExperienceInviteData");
+        }
         string key = type == RobloxShareLinkType.Server ? "privateServerInviteData" : "experienceDetailsInviteData";
         if (!root.TryGetProperty(key, out var data) || data.ValueKind != JsonValueKind.Object
             || !data.TryGetProperty("status", out var statusField) || statusField.ValueKind != JsonValueKind.String)
@@ -123,6 +140,52 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
         return new(RobloxShareLinkOutcome.PrivateServer, placeId, universeId, owner, code);
     }
 
+    /// <summary>
+    /// A friend invite. Roblox's web page joins the inviter's server only while the invite is Valid and otherwise opens
+    /// the invite's place, so Expired and InviterNotInExperience fall back to the game without a server. Only status,
+    /// placeId, an optional universeId and (when Valid) instanceId are read; inviterId and launchData are never kept.
+    /// </summary>
+    private static RobloxShareLinkResolution InterpretInvite(JsonElement root, string key)
+    {
+        if (!root.TryGetProperty(key, out var data) || data.ValueKind != JsonValueKind.Object
+            || !data.TryGetProperty("status", out var statusField) || statusField.ValueKind != JsonValueKind.String)
+            return new(RobloxShareLinkOutcome.Unavailable);
+        string? status = statusField.GetString();
+        if (status == "Invalid") return new(RobloxShareLinkOutcome.Invalid);
+        if (status is not ("Valid" or "Expired" or "InviterNotInExperience")) return new(RobloxShareLinkOutcome.Unavailable);
+        if (!TryId(data, "placeId", out long placeId) || !TryOptionalId(data, "universeId", out long? universeId))
+            return new(status == "Expired" ? RobloxShareLinkOutcome.Expired : RobloxShareLinkOutcome.Unavailable); // Nothing to open.
+        if (status != "Valid" || !data.TryGetProperty("instanceId", out var instance) || instance.ValueKind == JsonValueKind.Null
+            || instance.ValueKind == JsonValueKind.String && instance.GetString() is { Length: 0 })
+            return new(RobloxShareLinkOutcome.Experience, placeId, universeId);
+        // A Valid invite that names a server must name a well-formed one; anything else is unexpected, never a guess.
+        if (instance.ValueKind != JsonValueKind.String || !RobloxRequestedDestination.TryNormalizeJobId(instance.GetString(), out string? jobId))
+            return new(RobloxShareLinkOutcome.Unavailable);
+        return new(RobloxShareLinkOutcome.ServerInstance, placeId, universeId, jobId: jobId);
+    }
+
+    /// <summary>
+    /// A v2 link. Only linkType Experience leads into a game, and its targetId is the place ID; customData (launch data)
+    /// is never read. An absent status is accepted; Invalid and Expired are reported, any other status is Unavailable.
+    /// </summary>
+    private static RobloxShareLinkResolution InterpretDeepLink(JsonElement root)
+    {
+        if (root.TryGetProperty("status", out var statusField) && statusField.ValueKind != JsonValueKind.Null)
+        {
+            if (statusField.ValueKind != JsonValueKind.String) return new(RobloxShareLinkOutcome.Unavailable);
+            switch (statusField.GetString())
+            {
+                case "Invalid": return new(RobloxShareLinkOutcome.Invalid);
+                case "Expired": return new(RobloxShareLinkOutcome.Expired);
+                case "Valid": break;
+                default: return new(RobloxShareLinkOutcome.Unavailable);
+            }
+        }
+        if (!root.TryGetProperty("linkType", out var typeField) || typeField.ValueKind != JsonValueKind.String) return new(RobloxShareLinkOutcome.Unavailable);
+        if (typeField.GetString() != "Experience") return new(RobloxShareLinkOutcome.Invalid); // Studio, referral and other v2 links are not games.
+        return TryId(root, "targetId", out long placeId) ? new(RobloxShareLinkOutcome.Experience, placeId) : new(RobloxShareLinkOutcome.Unavailable);
+    }
+
     private static bool TryId(JsonElement item, string name, out long value)
     { value = 0; return item.TryGetProperty(name, out var field) && field.ValueKind == JsonValueKind.Number && field.TryGetInt64(out value) && value > 0; }
     private static bool TryOptionalId(JsonElement item, string name, out long? value)
@@ -134,5 +197,6 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     }
 
     private sealed record ShareLinkRequest(string linkId, string linkType);
+    private sealed record DeepLinkRequest(string linkId);
     public void Dispose() => _http.Dispose();
 }

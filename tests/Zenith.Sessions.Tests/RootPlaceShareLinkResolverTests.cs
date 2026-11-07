@@ -64,6 +64,7 @@ public sealed class RootPlaceShareLinkResolverTests
         foreach(var made in new Func<RobloxShareLinkResolution>[]
         {
             ()=>new(RobloxShareLinkOutcome.Experience,5,6),
+            ()=>new(RobloxShareLinkOutcome.ServerInstance,5,null,jobId:"0f8fad5b-d9cb-469f-a165-70867728950e"), // An invite's server keeps its own place.
             ()=>new(RobloxShareLinkOutcome.Expired),()=>new(RobloxShareLinkOutcome.Invalid),()=>new(RobloxShareLinkOutcome.SignInRequired),
             ()=>new(RobloxShareLinkOutcome.Unavailable),()=>new(RobloxShareLinkOutcome.Cancelled),()=>new(RobloxShareLinkOutcome.Busy)
         })

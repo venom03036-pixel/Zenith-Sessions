@@ -3,7 +3,11 @@ using System.Runtime.InteropServices;
 
 namespace Zenith.Sessions.Core;
 
-public enum RobloxShareLinkType { ExperienceDetails, Server, Other }
+/// <summary>
+/// The declared kind of a share link. ExperienceInvite and NotificationExperienceInvite are friend invites that can name
+/// the inviter's server; DeepLinkV2 is a share?code=…&amp;v=v2 link (no type), resolved by a different endpoint.
+/// </summary>
+public enum RobloxShareLinkType { ExperienceDetails, Server, Other, ExperienceInvite, NotificationExperienceInvite, DeepLinkV2 }
 
 /// <summary>Reads a protected code for the duration of one call. The span must not escape the delegate.</summary>
 public delegate void ProtectedCodeReader(ReadOnlySpan<char> code);
@@ -75,22 +79,33 @@ public sealed class RobloxShareLink(ProtectedShareCode code, RobloxShareLinkType
     public void Dispose() => Code.Dispose();
 }
 
-public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid, SignInRequired, Unavailable, Cancelled, Busy }
+public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid, SignInRequired, Unavailable, Cancelled, Busy, ServerInstance }
 
 /// <summary>
 /// What a share link resolved to. Public place/universe IDs only, plus the owned private server code when the link was
-/// a server invitation. Resolution proves neither access nor arrival. ToString never shows a code.
+/// a server invitation, or the canonical job ID of the inviter's server for a ServerInstance (a requested server, never
+/// proof of access or arrival). Resolution proves neither access nor arrival. ToString never shows a code.
 /// </summary>
 public sealed class RobloxShareLinkResolution(RobloxShareLinkOutcome outcome, long? placeId = null, long? universeId = null,
-    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null) : IDisposable
+    long? ownerUserId = null, ProtectedPrivateServerCode? privateServerCode = null, string? jobId = null) : IDisposable
 {
     public RobloxShareLinkOutcome Outcome { get; } = outcome;
     public long? PlaceId { get; } = placeId;
     public long? UniverseId { get; } = universeId;
     public long? OwnerUserId { get; } = ownerUserId;
     public ProtectedPrivateServerCode? PrivateServerCode { get; } = privateServerCode;
+    /// <summary>Set exactly when Outcome is ServerInstance: a place plus a nonempty dashed GUID, stored in canonical form.</summary>
+    public string? JobId { get; } = CanonicalJob(outcome, placeId, jobId);
     public override string ToString() => "Share link resolution { Outcome = " + Outcome + ", Place = "
-        + (PlaceId?.ToString(CultureInfo.InvariantCulture) ?? "none") + ", Code = [redacted] }";
+        + (PlaceId?.ToString(CultureInfo.InvariantCulture) ?? "none") + ", Server = " + (JobId is null ? "none" : "requested") + ", Code = [redacted] }";
+    private static string? CanonicalJob(RobloxShareLinkOutcome outcome, long? placeId, string? jobId)
+    {
+        if (outcome != RobloxShareLinkOutcome.ServerInstance)
+            return jobId is null ? null : throw new ArgumentException("Only a server invite carries a server job ID.", nameof(jobId));
+        if (placeId is not > 0) throw new ArgumentException("A server invite needs a positive place ID.", nameof(placeId));
+        return RobloxRequestedDestination.TryNormalizeJobId(jobId, out string? job) ? job
+            : throw new ArgumentException("A server job ID must be a nonempty GUID in dashed format.", nameof(jobId));
+    }
     public void Dispose() => PrivateServerCode?.Dispose();
 }
 
@@ -139,8 +154,9 @@ public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, I
 }
 
 /// <summary>
-/// Pure, bounded parsing of https://www.roblox.com/share?code=…&amp;type=… links. The existing destination parser keeps
-/// discarding share codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
+/// Pure, bounded parsing of https://www.roblox.com/share?code=…&amp;type=… links and of share?code=…&amp;v=v2 links (which
+/// carry no type). The query must hold exactly those two fields. The existing destination parser keeps discarding share
+/// codes; this one keeps the code only inside a <see cref="ProtectedShareCode"/>. No resolution or network access.
 /// </summary>
 public static class RobloxShareLinkParser
 {
@@ -161,15 +177,20 @@ public static class RobloxShareLinkParser
         string authority = authorityEnd < 0 ? text[start..] : text[start..authorityEnd];
         if (!authority.Equals(uri.Host, StringComparison.OrdinalIgnoreCase) && !authority.Equals(uri.Host + ":443", StringComparison.OrdinalIgnoreCase)) return false;
         if (!uri.AbsolutePath.TrimEnd('/').Equals("/share", StringComparison.OrdinalIgnoreCase)) return false;
-        if (!TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2
-            || !query.TryGetValue("code", out string? code) || !query.TryGetValue("type", out string? type)) return false;
+        if (!TryQuery(uri.Query.TrimStart('?'), out var query) || query.Count != 2 || !query.TryGetValue("code", out string? code)) return false;
         if (code.Length is 0 or > MaximumCodeLength || !code.All(char.IsAsciiLetterOrDigit)) return false;
-        var kind = type switch
-        {
-            "ExperienceDetails" => RobloxShareLinkType.ExperienceDetails,
-            "Server" => RobloxShareLinkType.Server,
-            _ => RobloxShareLinkType.Other
-        };
+        RobloxShareLinkType kind;
+        if (query.TryGetValue("type", out string? type))
+            kind = type switch
+            {
+                "ExperienceDetails" => RobloxShareLinkType.ExperienceDetails,
+                "Server" => RobloxShareLinkType.Server,
+                "ExperienceInvite" => RobloxShareLinkType.ExperienceInvite,
+                "NotificationExperienceInvite" => RobloxShareLinkType.NotificationExperienceInvite,
+                _ => RobloxShareLinkType.Other
+            };
+        else if (query.TryGetValue("v", out string? version) && version.Equals("v2", StringComparison.OrdinalIgnoreCase)) kind = RobloxShareLinkType.DeepLinkV2;
+        else return false;
         link = new RobloxShareLink(new ProtectedShareCode(code), kind);
         return true;
     }
