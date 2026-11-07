@@ -1,6 +1,7 @@
 using System.IO;
 using System.Reflection;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -71,6 +72,39 @@ public sealed partial class ClientWindowIntegrationTests
         string xaml = new StreamReader(source!).ReadToEnd();
         Assert.DoesNotContain("No candidate is chosen as your launch provider", xaml, StringComparison.Ordinal);
         Assert.Contains("makes it the installation for an explicit trial in Join a game; changing that row stops any trial and pauses the queue", xaml, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void InstallationRowShowsTheProductNameTheFileReports()
+    {
+        static InstallationCandidateRow Row(string? productName) => new(new(ClientInstallationProduct.Roblox, "C:\\x\\RobloxPlayerBeta.exe", productName, "1.0.0.0",
+            ClientInstallationFileState.PresentUnverified, [new(ClientInstallationHintSource.StandardInstallPath, ClientInstallationProduct.Roblox)]));
+        // The path says Roblox; the file's own version resource says otherwise, and the row must show that.
+        Assert.Equal("Roblox", Row("Bloxstrap").Product);
+        Assert.Equal("Bloxstrap", Row("Bloxstrap").ReportedProductName);
+        Assert.Equal("Not reported", Row(null).ReportedProductName);
+        Assert.Equal("Not reported", Row("").ReportedProductName);
+        Assert.Equal("Roblox Corporation " + (char)0x00A9, Row("Roblox Corporation " + (char)0x00A9).ReportedProductName);
+        // File text is untrusted: hidden direction, line-break, control or oversized text is never rendered.
+        Assert.Equal("Not shown: unusual text", Row("Roblox" + (char)0x202E + "exe.").ReportedProductName);
+        Assert.Equal("Not shown: unusual text", Row("Roblox" + (char)0x2028 + "Player").ReportedProductName);
+        Assert.Equal("Not shown: unusual text", Row("Roblox\tPlayer").ReportedProductName);
+        Assert.Equal("Not shown: unusual text", Row(new string('R', 81)).ReportedProductName);
+        Assert.Equal(new string('R', 80), Row(new string('R', 80)).ReportedProductName);
+    }
+
+    [Fact]
+    public void InstallationListShowsTheFileReportedProductNameAsUnverified()
+    {
+        using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
+        var document = XDocument.Load(source!); XNamespace ui = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var list = Assert.Single(document.Descendants(ui + "ListView").Where(item => (string?)item.Attribute("AutomationProperties.Name") == "Unverified installation candidates"));
+        var bindings = list.Descendants(ui + "GridViewColumn").Select(column => (string?)column.Attribute("DisplayMemberBinding")).ToArray();
+        int reported = Array.IndexOf(bindings, "{Binding ReportedProductName}");
+        Assert.True(reported > 0, "The installation list has no column for the product name the file reports.");
+        Assert.Equal("{Binding Product}", bindings[reported - 1]); Assert.Equal("{Binding Version}", bindings[reported + 1]);
+        string header = (string?)list.Descendants(ui + "GridViewColumn").ElementAt(reported).Attribute("Header") ?? "";
+        Assert.Contains("unverified", header, StringComparison.OrdinalIgnoreCase);
     }
 
     private static async Task ResumeQueueForInstallationTestAsync(ShellViewModel vm)

@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
@@ -13,6 +14,16 @@ public sealed record InstallationCandidateRow(ClientInstallationCandidate Candid
             .Select(item => (ClientInstallationProduct?)item.Product).FirstOrDefault()
         : null;
     public string Product => ManagedBy is { } owner ? $"Roblox · {owner}-managed" : Candidate.Product.ToString();
+    // The product name in the file's own version resource. Product above is inferred from the path or
+    // registration, so this is the one column that exposes a renamed or non-Roblox file. It is the file's
+    // unverified claim; hidden direction, line-break or control characters are never rendered.
+    public string ReportedProductName => Candidate.ProductName switch
+    {
+        null or "" => "Not reported",
+        var name when name.Length <= 80 && !name.Any(c => char.GetUnicodeCategory(c) is UnicodeCategory.Control or UnicodeCategory.Format
+            or UnicodeCategory.LineSeparator or UnicodeCategory.ParagraphSeparator) => name,
+        _ => "Not shown: unusual text"
+    };
     public string Version => Candidate.FileVersion ?? "Unknown";
     public string FileState => Candidate.FileState switch
     {
