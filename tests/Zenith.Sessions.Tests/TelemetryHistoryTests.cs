@@ -255,6 +255,45 @@ public sealed class TelemetryHistoryTests
         Assert.Null(history.GetSystemSnapshot().Points[^1].CommitUsedBytes);
     }
 
+    [Fact]
+    public void UnidentifiedProcessRowDoesNotDiscardOtherClientsMeasurements()
+    {
+        // The monitor's explicit row for a process it could not open (for example another Windows user's client).
+        var history = new TelemetryHistory(); var valid = Row(Origin);
+        var unidentified = Row(Origin, 456, 0) with { Problem = "Process identity or access was unavailable during observation." };
+        Assert.True(history.Observe(Frame(Origin, valid, unidentified) with { ProcessInventoryComplete = false }, Origin));
+        var client = history.GetClientSnapshot(Key(valid));
+        Assert.NotNull(client); Assert.Single(client.Points);
+        Assert.Null(history.GetClientSnapshot(Key(unidentified)));
+    }
+
+    [Fact]
+    public void UnidentifiedRowSharingAValidRowsPidStillDiscardsTheFrame()
+    {
+        var history = new TelemetryHistory(); var valid = Row(Origin);
+        var conflict = valid with { ProcessStartUtcTicks = 0, Problem = "Synthetic identity unavailable" };
+        history.Observe(Frame(Origin, valid, conflict) with { ProcessInventoryComplete = false }, Origin);
+        Assert.Null(history.GetClientSnapshot(Key(valid)));
+        history.Observe(Frame(Origin, conflict, valid) with { ProcessInventoryComplete = false }, Origin);
+        Assert.Null(history.GetClientSnapshot(Key(valid)));
+    }
+
+    [Fact]
+    public void UnidentifiedRowWithAnUnusableTimeOrNoProblemStillDiscardsTheFrame()
+    {
+        var history = new TelemetryHistory(); var valid = Row(Origin);
+        var unidentified = Row(Origin, 456, 0) with { Problem = "Synthetic identity unavailable" };
+        history.Observe(Frame(Origin, valid, unidentified with { ObservedUtc = Origin.AddSeconds(1) }), Origin);
+        history.Observe(Frame(Origin, valid, unidentified with { ObservedUtc = Origin.AddMinutes(-1) }), Origin);
+        history.Observe(Frame(Origin, valid, unidentified with { Problem = null }), Origin);
+        history.Observe(Frame(Origin, valid, unidentified with { ProcessId = 0 }), Origin);
+        history.Observe(Frame(Origin, valid, unidentified with { ProcessStartUtcTicks = -1 }), Origin);
+        Assert.Null(history.GetClientSnapshot(Key(valid)));
+        // None of the rejected frames advanced the revision fence, so the genuine frame is still accepted.
+        Assert.True(history.Observe(Frame(Origin, valid), Origin));
+        Assert.Single(history.GetClientSnapshot(Key(valid))!.Points);
+    }
+
     [Theory]
     [InlineData(0, 0)]
     [InlineData(-1, 100)]

@@ -70,10 +70,14 @@ public sealed class TelemetryHistory
             var pids = new HashSet<int>();
             foreach (var row in snapshot.Sessions)
             {
-                if (row is null) return changed;
-                var key = new SessionProcessKey(null, row.ProcessId, row.ProcessStartUtcTicks);
-                if (!key.IsValid || !pids.Add(row.ProcessId) || key.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks
+                if (row is null || row.ProcessId <= 0 || !pids.Add(row.ProcessId)
                     || row.ObservedUtc > completed || !Fresh(row.ObservedUtc, now, MaximumClientAge)) return changed;
+                var key = new SessionProcessKey(null, row.ProcessId, row.ProcessStartUtcTicks);
+                if (key.IsValid && key.ProcessStartUtcTicks <= row.ObservedUtc.UtcTicks) continue;
+                // The monitor's explicit "identity unavailable" row (for example another Windows user's client) has
+                // no key, so it contributes nothing; it must not discard every other client's measurement.
+                if (row.ProcessStartUtcTicks == 0 && row.Problem is not null) continue;
+                return changed;
             }
             if (snapshot.ProcessObservedUtc.HasValue)
             { _processRevision = snapshot.ProcessRevision; _processObserved = completed; }
