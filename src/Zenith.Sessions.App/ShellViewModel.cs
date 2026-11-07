@@ -561,9 +561,21 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task SaveAccountCoreAsync(AccountProfile profile)
     {
         if(!_ready) throw new InvalidOperationException("The local library has not opened successfully.");
-        var saved=await Task.Run(() => _accounts.SaveAsync(profile, _lifetime.Token)); _selectAfterReload=saved.Id; await LoadAccountsAsync(_lifetime.Token);
-        Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
+        var saved=await Task.Run(() => _accounts.SaveAsync(profile, _lifetime.Token)); _selectAfterReload=saved.Id;
         _diagnostics.Record(ManagerEventKind.ProfileSaved);
+        // The commit is authoritative. A failed list refresh must not reach the dialog as a failed
+        // save: a retry would carry the old revision and report a false "changed elsewhere" conflict.
+        // No retry or compensating write; the next successful reload selects the saved row.
+        try { await LoadAccountsAsync(_lifetime.Token); }
+        catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { throw; }
+        catch (Exception ex)
+        {
+            Notice = "Profile saved, but the account list could not refresh. Use Refresh to reload it.";
+            AddEvent($"Profile saved; list refresh failed ({ex.GetType().Name}).");
+            _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+            return;
+        }
+        Notice = "Profile saved. Entered usernames are metadata until official account linking verifies them."; AddEvent("Profile saved.");
     }
     public Task DeleteAccountsAsync(IReadOnlyList<AccountRow> rows)=>OwnProfileOperation(()=>DeleteAccountsCoreAsync(rows));
     private async Task DeleteAccountsCoreAsync(IReadOnlyList<AccountRow> rows)
