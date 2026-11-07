@@ -124,7 +124,9 @@ public sealed class ViewModelTests : IDisposable
         await vm.SaveAccountAsync(AccountProfile.Create("Source") with { Notes="Synthetic note\nSecond line" });
         vm.ToggleFavorite.Execute(null); await vm.ToggleFavorite.Execution; Assert.True(vm.SelectedAccount!.Profile.IsFavorite);
         string path=Path.Combine(_root,"metadata.json"); await vm.ExportAsync(path);
-        string json=await File.ReadAllTextAsync(path); Assert.Contains("\"Version\":3",json); Assert.DoesNotContain("AccessToken",json);
+        string json=await File.ReadAllTextAsync(path); Assert.Contains("\"Version\":4",json); Assert.DoesNotContain("AccessToken",json);
+        // A row already in the library (same name and username) is skipped on import, so rename the source first.
+        await vm.SaveAccountAsync(vm.SelectedAccount!.Profile with { Label="Renamed source" });
         await vm.ImportAsync(path); Assert.Equal(2,vm.AccountCount);
         Assert.All(vm.Accounts,row=> { Assert.True(row.Profile.IsFavorite);Assert.Equal("Synthetic note\nSecond line",row.Profile.Notes);Assert.Equal("Not linked",row.Identity); });
         Assert.Equal(2,vm.Accounts.Select(a=>a.Profile.Id).Distinct().Count());

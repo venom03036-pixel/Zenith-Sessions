@@ -630,15 +630,44 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 await using(var file=new FileStream(temporary,FileMode.Create,FileAccess.Write,FileShare.None,32768,FileOptions.Asynchronous|FileOptions.WriteThrough))
                 {
                     await using var writer=new Utf8JsonWriter(file);
-                    writer.WriteStartObject(); writer.WriteNumber("Version",3); writer.WritePropertyName("Profiles"); writer.WriteStartArray();
+                    async Task FlushBoundedAsync()
+                    {
+                        await writer.FlushAsync(_lifetime.Token);
+                        if(file.Length>16*1024*1024-64) throw new InvalidDataException("The export exceeds 16 MiB. Shorten notes or export a smaller library. The existing destination was preserved.");
+                    }
+                    writer.WriteStartObject(); writer.WriteNumber("Version",ProfileMetadataImport.CurrentVersion);
+                    writer.WritePropertyName("Groups"); writer.WriteStartArray();
+                    if(_accounts is IAccountGroupCatalog catalog)
+                    {
+                        // Saved groups, including empty ones, in list order. All pages must come from one catalog
+                        // revision so a concurrent reorder cannot duplicate or drop a group in the file.
+                        long revision=0; int written=0;
+                        for(int page=0;;page++)
+                        {
+                            var groups=await catalog.ReadGroupCatalogAsync(new(Page:page,PageSize:1000),_lifetime.Token);
+                            if(groups.Total>ProfileMetadataImport.MaximumGroups) throw new InvalidDataException("Export at most 100,000 saved groups per operation.");
+                            if(page==0) revision=groups.CatalogRevision;
+                            else if(groups.CatalogRevision!=revision) throw new InvalidDataException("The saved groups changed while exporting. Export again; the existing destination was preserved.");
+                            foreach(var group in groups.Items)
+                            {
+                                _lifetime.Token.ThrowIfCancellationRequested();
+                                writer.WriteStartObject(); writer.WriteString("Name",group.Name);
+                                if(group.ColorHex is null) writer.WriteNull("ColorHex"); else writer.WriteString("ColorHex",group.ColorHex);
+                                writer.WriteNumber("SortOrder",written++); writer.WriteEndObject();
+                            }
+                            await FlushBoundedAsync();
+                            if(groups.Items.Count==0||written>=groups.Total) break;
+                        }
+                    }
+                    writer.WriteEndArray();
+                    writer.WritePropertyName("Profiles"); writer.WriteStartArray();
                     int exported=0;
                     for(int page=0;;page++)
                     {
                         var batch=await _accounts.ReadAsync(new(Page:page),_lifetime.Token);
                         if(batch.Total>100000) throw new InvalidDataException("Export at most 100,000 profiles per operation.");
                         foreach(var profile in batch.Items) { _lifetime.Token.ThrowIfCancellationRequested(); JsonSerializer.Serialize(writer,profile); }
-                        await writer.FlushAsync(_lifetime.Token);
-                        if(file.Length>16*1024*1024-64) throw new InvalidDataException("The export exceeds 16 MiB. Shorten notes or export a smaller library. The existing destination was preserved.");
+                        await FlushBoundedAsync();
                         exported+=batch.Items.Count; if(exported>=batch.Total) break;
                     }
                     writer.WriteEndArray();writer.WriteEndObject();await writer.FlushAsync(_lifetime.Token);await file.FlushAsync(_lifetime.Token);file.Flush(true);
@@ -647,7 +676,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             }
             finally { if (File.Exists(temporary)) File.Delete(temporary); }
         });
-        Notice = "Profiles and group memberships exported. Saved empty groups, colors, group order, authorization and credentials are excluded.";
+        Notice = "Profiles, group memberships, saved groups (including empty ones), group colors and group order exported. Authorization and credentials are excluded.";
         _diagnostics.Record(ManagerEventKind.MetadataExported);
     }
     public Task ImportAsync(string path)=>OwnProfileOperation(()=>ImportCoreAsync(path));
@@ -659,12 +688,52 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if (stream.Length is 0 or > ProfileMetadataImport.MaximumBytes) throw new InvalidDataException("Import requires a nonempty metadata file of at most 16 MiB.");
             byte[] bytes = new byte[(int)stream.Length];
             await stream.ReadExactlyAsync(bytes, _lifetime.Token);
-            return ProfileMetadataImport.Decode(bytes, _lifetime.Token);
+            return ProfileMetadataImport.DecodeDocument(bytes, _lifetime.Token);
         });
-        var validated = imported.Select(profile => profile with { Id = Guid.NewGuid(), Revision = 0, RobloxUserId = null }).ToArray();
-        await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
-        await LoadAccountsAsync(_lifetime.Token); Notice = $"Imported {validated.Length} profiles. Sign-in is required separately."; AddEvent("Profile metadata imported.");
+        // Exported IDs and Roblox user IDs are hints, never identity (CONFLICT-04), so they cannot detect a
+        // row this library already has. Name plus username, ignoring case, does; such rows are skipped.
+        var existing = await Task.Run(() => ReadProfileKeysAsync(_lifetime.Token));
+        var validated = imported.Profiles.Where(profile => !existing.Contains(ProfileKey(profile)))
+            .Select(profile => profile with { Id = Guid.NewGuid(), Revision = 0, RobloxUserId = null }).ToArray();
+        int skipped = imported.Profiles.Count - validated.Length;
+        // Groups first: creating profiles adds any missing membership group without a color at the end of the list.
+        int addedGroups = await Task.Run(() => ImportGroupsAsync(imported.Groups, _lifetime.Token));
+        if (validated.Length > 0) await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
+        await LoadAccountsAsync(_lifetime.Token);
+        string skippedText = skipped == 0 ? "" : $" Skipped {skipped} already in this library (same name and username).";
+        string groupsText = imported.Groups.Count == 0 ? ""
+            : _accounts is not IAccountGroupCatalog ? " Saved groups, colors and order were not added because this library has no group list."
+            : (addedGroups == 0 ? "" : $" Added {addedGroups} saved group(s) with their colors and order.")
+              + (addedGroups == imported.Groups.Count ? "" : $" Kept this library's colors and order for {imported.Groups.Count - addedGroups} group(s) it already had.");
+        Notice = $"Imported {validated.Length} profiles.{skippedText}{groupsText} Sign-in is required separately."; AddEvent("Profile metadata imported.");
         _diagnostics.Record(ManagerEventKind.ProfilesImported);
+    }
+    private static string ProfileKey(AccountProfile profile) => profile.Label.Trim() + "\n" + profile.Username.Trim();
+    private async Task<HashSet<string>> ReadProfileKeysAsync(CancellationToken ct)
+    {
+        // A label cannot contain a line break, so the joined key is unambiguous.
+        var keys = new HashSet<string>(StringComparer.OrdinalIgnoreCase); int read = 0;
+        for (int page = 0; ; page++)
+        {
+            var batch = await _accounts.ReadAsync(new(Page: page), ct);
+            foreach (var profile in batch.Items) { ct.ThrowIfCancellationRequested(); keys.Add(ProfileKey(profile)); }
+            read += batch.Items.Count; if (batch.Items.Count == 0 || read >= batch.Total) return keys;
+        }
+    }
+    /// <summary>Creates the saved groups this library lacks, in exported order, so they keep their colors and relative
+    /// order after this library's own groups. A group it already has keeps its own color and position. Returns how many were added.</summary>
+    private async Task<int> ImportGroupsAsync(IReadOnlyList<ProfileMetadataGroup> groups, CancellationToken ct)
+    {
+        if (groups.Count == 0 || _accounts is not IAccountGroupCatalog catalog) return 0;
+        int added = 0;
+        foreach (var group in groups)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (await catalog.FindGroupAsync(group.Name, ct) is not null) continue;
+            long revision = (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), ct)).CatalogRevision;
+            await catalog.CreateGroupAsync(group.Name, group.ColorHex, revision, ct); added++;
+        }
+        return added;
     }
     private async Task MonitorLoopAsync(CancellationToken ct)
     {
