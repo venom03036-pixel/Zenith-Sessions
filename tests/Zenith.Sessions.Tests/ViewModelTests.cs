@@ -1,5 +1,6 @@
 using System.Windows.Threading;
 using System.IO;
+using System.IO.Pipes;
 using Microsoft.Data.Sqlite;
 using Xunit;
 using Zenith.Sessions.App;
@@ -111,6 +112,69 @@ public sealed class ViewModelTests : IDisposable
         // Mirrors EntryPoint's final synchronous teardown, after the dispatcher has stopped pumping.
         owner.StopAsync().GetAwaiter().GetResult();
     }).WaitAsync(TimeSpan.FromSeconds(5));
+    [Fact]
+    public Task RestoreListenerSurvivesAFailedRestoreAndStopsCleanly()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        int calls=0; var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // The first restore fails like Window.Show() on a closing window; later launches must still be served.
+        owner.Listen(_=>
+        {
+            if(Interlocked.Increment(ref calls)==1) throw new InvalidOperationException("Synthetic restore failure.");
+            restored.TrySetResult(); return Task.CompletedTask;
+        });
+        using var second=new SingleInstanceCoordinator(_root);
+        Assert.True(await second.RestoreExistingAsync(default));
+        Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.Equal(typeof(InvalidOperationException),owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task AnIdlePeerThatKeepsItsHandleCannotEndTheRestoreListener()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
+        // A same-user peer connects, never writes and keeps its handle past the listener's 2 s read deadline.
+        using(var idle=new NamedPipeClientStream(".",owner.PipeName,PipeDirection.Out,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly))
+        {
+            await idle.ConnectAsync(1500); await Task.Delay(TimeSpan.FromSeconds(2.5));
+            using var second=new SingleInstanceCoordinator(_root);
+            Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        }
+        Assert.Null(owner.LastListenerFault);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task RestoreListenerRetriesWhileItsPipeCannotBeCreated()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        // Another instance briefly holds the pipe name, so the listener's first-instance creation is refused.
+        using(new NamedPipeServerStream(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly))
+        {
+            owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
+            await Task.Delay(TimeSpan.FromMilliseconds(600));
+        }
+        using var second=new SingleInstanceCoordinator(_root);
+        Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.NotNull(owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
+    public Task APersistentListenerFaultStopsRetryingAndIsReportedWithoutFailingExit()=>OnDispatcherAsync(async ()=>
+    {
+        using var owner=new SingleInstanceCoordinator(_root);
+        using var squatter=new NamedPipeServerStream(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
+        var started=DateTime.UtcNow;
+        owner.Listen(_=>Task.CompletedTask);
+        while(!owner.IsListenerFaulted)
+        { if(DateTime.UtcNow-started>TimeSpan.FromSeconds(12)) throw new TimeoutException("The listener kept retrying a persistent fault."); await Task.Delay(50); }
+        // Bounded: the retry pause keeps the consecutive-fault cap from spinning.
+        Assert.True(DateTime.UtcNow-started>=TimeSpan.FromSeconds(3));
+        Assert.NotNull(owner.LastListenerFault);
+        await owner.StopAsync();
+    }).WaitAsync(TimeSpan.FromSeconds(15));
     [Fact]
     public Task IsolatedSamplePreviewCannotClaimAGlobalDesktopShortcut()=>OnDispatcherAsync(async ()=>
     {

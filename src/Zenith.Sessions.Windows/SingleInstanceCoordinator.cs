@@ -11,7 +11,17 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private readonly string _pipe;
     private readonly CancellationTokenSource _lifetime = new();
     private Task _server = Task.CompletedTask;
+    // 20 pauses of 250 ms: about 5 s of retries before a persistent fault stops the listener.
+    private const int MaxConsecutiveFaults = 20;
+    private static readonly TimeSpan FaultRetryDelay = TimeSpan.FromMilliseconds(250);
+    private volatile Type? _lastListenerFault;
+    private volatile bool _listenerFaulted;
     public bool IsOwner { get; }
+    /// <summary>Type of the latest pipe or restore fault the listener survived or stopped on; never its message (Rule 10).</summary>
+    public Type? LastListenerFault => _lastListenerFault;
+    /// <summary>True once repeated consecutive faults stopped the listener; later launches then cannot restore this instance.</summary>
+    public bool IsListenerFaulted => _listenerFaulted;
+    internal string PipeName => _pipe;
     public SingleInstanceCoordinator(string root)
     {
         using var identity = WindowsIdentity.GetCurrent();
@@ -20,28 +30,43 @@ public sealed class SingleInstanceCoordinator : IDisposable
         _mutex = new Mutex(initiallyOwned:true, "Local\\" + _pipe, out bool created); IsOwner = created;
     }
     public void Listen(Func<CancellationToken, Task> restore)
-    { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _server = ListenAsync(restore, _lifetime.Token); }
+    { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _lastListenerFault = null; _listenerFaulted = false; _server = ListenAsync(restore, _lifetime.Token); }
     private async Task ListenAsync(Func<CancellationToken, Task> restore, CancellationToken ct)
     {
+        int faults = 0;
         try
         {
             while (!ct.IsCancellationRequested)
             {
-                using var server = new NamedPipeServerStream(_pipe, PipeDirection.In, 1, PipeTransmissionMode.Byte,
-                    PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
-                await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
-                using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(2));
-                byte[] message = new byte[8];
-                try
+                // Each launch request is one protected unit: its fault ends that request, never the listener every later launch needs.
+                try { await ServeOneAsync(restore, ct).ConfigureAwait(false); faults = 0; }
+                catch (Exception ex) when (!ct.IsCancellationRequested)
                 {
-                    int count = await server.ReadAtLeastAsync(message, 8, throwOnEndOfStream:false, deadline.Token).ConfigureAwait(false);
-                    if (count == 8 && message.AsSpan().SequenceEqual("RESTORE\n"u8)) await restore(ct).ConfigureAwait(false);
+                    // Type only (Rule 10). A refused pipe creation or accept usually clears after a short pause; a fault
+                    // that repeats past the cap stops the listener with IsListenerFaulted set instead of spinning.
+                    _lastListenerFault = ex.GetType();
+                    if (++faults >= MaxConsecutiveFaults) { _listenerFaulted = true; return; }
+                    await Task.Delay(FaultRetryDelay, ct).ConfigureAwait(false);
                 }
-                catch (OperationCanceledException) when (!ct.IsCancellationRequested) { /* An idle local peer gets no indefinite connection. */ }
-                catch (IOException) { /* A disconnected restore request makes no state change. */ }
             }
         }
-        catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
+        // Stopping ends the loop normally, so StopAsync never rethrows into Exit or EntryPoint's teardown.
+        // A non-cancellation fault that raced with Stop is still kept by type.
+        catch (Exception ex) when (ct.IsCancellationRequested) { if (ex is not OperationCanceledException) _lastListenerFault = ex.GetType(); }
+    }
+    private async Task ServeOneAsync(Func<CancellationToken, Task> restore, CancellationToken ct)
+    {
+        using var server = new NamedPipeServerStream(_pipe, PipeDirection.In, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly);
+        await server.WaitForConnectionAsync(ct).ConfigureAwait(false);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct); deadline.CancelAfter(TimeSpan.FromSeconds(2));
+        byte[] message = new byte[8];
+        int count;
+        try { count = await server.ReadAtLeastAsync(message, 8, throwOnEndOfStream:false, deadline.Token).ConfigureAwait(false); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return; /* An idle local peer gets no indefinite connection. */ }
+        catch (IOException) { return; /* A disconnected restore request makes no state change. */ }
+        // A restore failure (for example a window that is already closing) reaches ListenAsync, which records it and keeps listening.
+        if (count == 8 && message.AsSpan().SequenceEqual("RESTORE\n"u8)) await restore(ct).ConfigureAwait(false);
     }
     public async Task<bool> RestoreExistingAsync(CancellationToken ct)
     {
