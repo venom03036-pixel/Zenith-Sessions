@@ -86,6 +86,41 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
     });
 
     [Fact]
+    public Task MonitorListLoadsAtStartupAndRestoresTheSavedDisplayWithoutAManualRefresh() => OnUi(async () =>
+    {
+        await using (var vm = await OpenedWithoutDisplayRefresh(new Monitor()))
+        {
+            await vm.RefreshClientDisplays.Execution;
+            Assert.Equal(2, vm.ClientDisplays.Count);
+            Assert.Equal("fixture-display-1", vm.SelectedClientDisplay?.Display.Id);
+            vm.Sessions[0].IsChecked = true;
+            Assert.True(vm.CanArrangeClients);
+            vm.SelectedClientDisplay = vm.ClientDisplays[1];
+            vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+            Assert.Equal("Settings saved", vm.SaveStatus);
+        }
+        await using var reopened = await OpenedWithoutDisplayRefresh(new Monitor());
+        await reopened.RefreshClientDisplays.Execution;
+        Assert.Equal("fixture-display-2", reopened.SelectedClientDisplay?.Display.Id);
+        Assert.Equal("Settings saved", reopened.SaveStatus); // Restoring the saved monitor is not an edit.
+    });
+
+    [Fact]
+    public Task MonitorListLoadsOnUnlockWhenStartupFinishedWhileLocked() => OnUi(async () =>
+    {
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor());
+        await using (vm)
+        {
+            vm.LockDashboard();
+            await vm.InitializeAsync(); await vm.RefreshClientDisplays.Execution;
+            Assert.Empty(vm.ClientDisplays);
+            vm.Unlock.Execute(null); await vm.RefreshClientDisplays.Execution;
+            Assert.Equal(2, vm.ClientDisplays.Count);
+            Assert.Equal("fixture-display-1", vm.SelectedClientDisplay?.Display.Id);
+        }
+    });
+
+    [Fact]
     public Task ReusedPidDoesNotInheritCheckboxesOrAnOldSelectedWindow() => OnUi(async () =>
     {
         var monitor = new Monitor(); await using var vm = await Ready(monitor);
@@ -175,6 +210,12 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, favoriteStore: store);
         await vm.InitializeAsync(); vm.Refresh.Execute(null); await vm.Refresh.Execution;
         vm.RefreshClientDisplays.Execute(null); await vm.RefreshClientDisplays.Execution;
+        return vm;
+    }
+    private async Task<ShellViewModel> OpenedWithoutDisplayRefresh(Monitor monitor)
+    {
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor);
+        await vm.InitializeAsync(); vm.Refresh.Execute(null); await vm.Refresh.Execution;
         return vm;
     }
     private sealed class Favorites : IFavoriteDestinationStore

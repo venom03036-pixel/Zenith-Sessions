@@ -188,6 +188,16 @@ public sealed partial class ShellViewModel
             Dimension(ClientContentHeight, "height", ClientContentSize.MinimumHeight)).Validated();
     }
 
+    /// <summary>
+    /// Fills the monitor list once the shell is ready and unlocked (startup, or the first unlock after a lock that
+    /// covered startup), so Tile clients and the saved monitor choice work without the manual refresh button. It runs
+    /// through the RefreshClientDisplays command, so the read is tracked, cancelled by Panic/Lock and awaited on dispose.
+    /// </summary>
+    private void LoadClientDisplaysOnce()
+    {
+        if (CanRefreshClientDisplays && !IsLocked && !_shuttingDown && _ready && ClientDisplays.Count == 0)
+            RefreshClientDisplays.Execute(null);
+    }
     private async Task RefreshClientDisplaysAsync()
     {
         if (IsLocked || _shuttingDown || !_ready) return;
