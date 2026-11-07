@@ -160,6 +160,72 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task TransientWriteFailureNamesTheBusyLogAndDoesNotStopLaterEventsFromReachingDisk()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        Directory.CreateDirectory(folder);await File.WriteAllBytesAsync(log,[]);
+        await using var diagnostics=new ManagerDiagnostics(Root,8);
+        string? failure;
+        // A log tailer, backup or sync tool that shares only Read denies the writer's append.
+        using(new FileStream(log,FileMode.Open,FileAccess.Read,FileShare.Read))
+        {
+            diagnostics.Record(ManagerEventKind.Started);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            failure=diagnostics.Failure;
+        }
+        // The folder permissions are fine, so the status must not send the user to check them.
+        Assert.DoesNotContain("permission",failure,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("another program is using the log file",failure);
+        Assert.Contains("retries on the next event",failure);
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("\"Kind\":\"SettingsSaved\"",text);Assert.DoesNotContain("\"Kind\":\"Started\"",text);
+        Assert.Contains("\"Kind\":\"DroppedEvents\",\"ErrorType\":null,\"Count\":1",text);
+    }
+
+    [Fact]
+    public async Task AccessDeniedStillPointsAtPermissionsAndClearsOnceTheLogIsWritableAgain()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        Directory.CreateDirectory(folder);await File.WriteAllBytesAsync(log,[]);
+        await using var diagnostics=new ManagerDiagnostics(Root,8);
+        File.SetAttributes(log,FileAttributes.ReadOnly);
+        try
+        {
+            diagnostics.Record(ManagerEventKind.Started);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            Assert.Equal("Diagnostics could not be written. Check the data-folder permissions.",diagnostics.Failure);
+        }
+        finally {File.SetAttributes(log,FileAttributes.Normal);}
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        Assert.Contains("\"Kind\":\"SettingsSaved\"",await File.ReadAllTextAsync(log));
+    }
+
+    [Fact]
+    public void WriteFailureTextNamesTheCauseWithoutCopyingTheExceptionMessage()
+    {
+        const string marker="synthetic-path-must-not-enter-failure";
+        // HRESULT_FROM_WIN32 of ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_DISK_FULL and ERROR_HANDLE_DISK_FULL.
+        foreach(int code in new[]{32,33})
+            Assert.Contains("another program is using the log file",ManagerDiagnostics.WriteFailureText(new IOException(marker,unchecked((int)0x80070000)|code)));
+        foreach(int code in new[]{112,39})
+            Assert.Contains("the disk is full",ManagerDiagnostics.WriteFailureText(new IOException(marker,unchecked((int)0x80070000)|code)));
+        Assert.Equal("Diagnostics could not be written to the data folder. Zenith retries on the next event.",
+            ManagerDiagnostics.WriteFailureText(new DirectoryNotFoundException(marker)));
+        Assert.Contains("permissions",ManagerDiagnostics.WriteFailureText(new UnauthorizedAccessException(marker)));
+        foreach(Exception error in new Exception[]{new IOException(marker,unchecked((int)0x80070020)),new IOException(marker,unchecked((int)0x80070070)),new IOException(marker),new UnauthorizedAccessException(marker)})
+        {
+            string text=ManagerDiagnostics.WriteFailureText(error);
+            Assert.DoesNotContain(marker,text);
+            if(error is not UnauthorizedAccessException) Assert.DoesNotContain("permission",text,StringComparison.OrdinalIgnoreCase);
+        }
+    }
+
+    [Fact]
     public async Task CanceledWriterShutdownIsSharedIdempotentAndPostDisposalRecordsAreIgnored()
     {
         var entered=Signal();

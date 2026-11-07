@@ -70,7 +70,25 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             return new(_sequence,_sequence,_infoCount,_warningCount,_errorCount,_dropped,_failure,Array.AsReadOnly(entries));
         }
     }
-    private const string WriteFailedText="Diagnostics could not be written. Check the data-folder permissions.";
+    // Fixed texts by cause (never the exception message). Only an access denial points at permissions:
+    // a log held by a tailer, backup or scanner, or a full disk, would otherwise send the user to the wrong fix.
+    private const string AccessDeniedText="Diagnostics could not be written. Check the data-folder permissions.";
+    private const string LogInUseText="Diagnostics could not be written: another program is using the log file. Zenith retries on the next event.";
+    private const string DiskFullText="Diagnostics could not be written: the disk is full. Zenith retries on the next event.";
+    private const string WriteFailedText="Diagnostics could not be written to the data folder. Zenith retries on the next event.";
+    internal static string WriteFailureText(Exception error)
+    {
+        if(error is UnauthorizedAccessException) return AccessDeniedText;
+        // Win32 I/O errors surface as HRESULT_FROM_WIN32(code): facility 7 with the code in the low word.
+        if((error.HResult & unchecked((int)0xFFFF0000))!=unchecked((int)0x80070000)) return WriteFailedText;
+        return (error.HResult & 0xFFFF) switch
+        {
+            32 or 33 => LogInUseText,   // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+            112 or 39 => DiskFullText,  // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
+            _ => WriteFailedText,
+        };
+    }
+    private static bool IsWriteFailureText(string? text)=>text is AccessDeniedText or LogInUseText or DiskFullText or WriteFailedText;
     // One writer for the whole session: a disk error costs only the entry being written, never the writer.
     // A deleted folder, a log held open by another program or a full disk recovers on the next event.
     private async Task WriteAsync(CancellationToken ct)
@@ -107,13 +125,13 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         try
         {
             await WriteEntryAsync(entry,ct).ConfigureAwait(false);
-            lock(_gate) if(ReferenceEquals(_failure,WriteFailedText)) _failure=null;
+            lock(_gate) if(IsWriteFailureText(_failure)) _failure=null;
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {
             lock(_gate)
             {
-                _failure=WriteFailedText;
+                _failure=WriteFailureText(ex);
                 if(countsAsDropped) _dropped++;
             }
         }
