@@ -1,0 +1,49 @@
+{
+  "data": [
+    {
+      "assetTypeId": 1,
+      "assetType": "Image",
+      "imageId": 104827490467627,
+      "videoHash": null,
+      "videoTitle": null,
+      "approved": true,
+      "altText": "Public alt text removed"
+    },
+    {
+      "assetTypeId": 1,
+      "assetType": "Image",
+      "imageId": 97386823072852,
+      "videoHash": null,
+      "videoTitle": null,
+      "approved": true,
+      "altText": "Public alt text removed"
+    },
+    {
+      "assetTypeId": 1,
+      "assetType": "Image",
+      "imageId": 123219959637729,
+      "videoHash": null,
+      "videoTitle": null,
+      "approved": true,
+      "altText": "Public alt text removed"
+    },
+    {
+      "assetTypeId": 1,
+      "assetType": "Image",
+      "imageId": 106328032578640,
+      "videoHash": null,
+      "videoTitle": null,
+      "approved": true,
+      "altText": "Public alt text removed"
+    },
+    {
+      "assetTypeId": 1,
+      "assetType": "Image",
+      "imageId": 102749649628626,
+      "videoHash": null,
+      "videoTitle": null,
+      "approved": true,
+      "altText": "Public alt text removed"
+    }
+  ]
+}

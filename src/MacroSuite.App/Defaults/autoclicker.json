@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "clicksPerSecond": 10,
+  "mouseButton": "Left",
+  "clickType": "Single",
+  "useCurrentPosition": true,
+  "fixedX": 0,
+  "fixedY": 0,
+  "repeatCount": 1,
+  "repeatMode": "UntilStopped",
+  "varyTiming": false,
+  "variationCps": 2
+}

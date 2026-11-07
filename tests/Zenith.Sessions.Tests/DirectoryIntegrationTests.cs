@@ -1,0 +1,216 @@
+using System.IO;
+using System.Windows.Threading;
+using Xunit;
+using Zenith.Sessions.App;
+using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
+
+namespace Zenith.Sessions.Tests;
+
+public sealed partial class DirectoryIntegrationTests : IDisposable
+{
+    private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-directory-ui-tests-"+Guid.NewGuid().ToString("N"));
+    [Fact]
+    public Task QueueLabelsFollowLoadedProfileNamesAfterRenameAndRestart()=>OnUi(async () =>
+    {
+        await using(var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers()))
+        {
+            await vm.InitializeAsync();await vm.SaveAccountAsync(AccountProfile.Create("Original sample") with {PreferredPlaceId=6564161046});
+            vm.QueueSelected.Execute(null);await vm.QueueSelected.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            Assert.Equal("Original sample",Assert.Single(vm.Launches).Label);
+            var notifications=new List<string?>();vm.Launches[0].PropertyChanged+=(_,e)=>notifications.Add(e.PropertyName);
+            await vm.SaveAccountAsync(vm.Accounts[0].Profile with {Label="Renamed sample"});
+            Assert.Equal("Renamed sample",vm.Launches[0].Label);Assert.Contains("Label",notifications);
+        }
+        await using(var reopened=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers()))
+        {
+            await reopened.InitializeAsync();await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            var row=Assert.Single(reopened.Launches);Assert.Equal("Renamed sample",row.Label);
+            Assert.Equal(LaunchState.ReviewRequired,row.Operation.State);Assert.Equal("Review required",Assert.Single(reopened.Accounts).LaunchStatus);
+        }
+    });
+    [Fact]
+    public Task ProfileAndTabRestorationNeverAutomaticallyContactsThePublicDirectory()=>OnUi(async ()=>
+    {
+        var directory=new PublicDirectory();await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),directory,new Servers());
+        await vm.InitializeAsync();await vm.SaveAccountAsync(AccountProfile.Create("Synthetic metadata"));
+        foreach(string tab in new[]{"Accounts","Sessions","JoinGame","Automation","Settings","Guide","Overview","Accounts"}) vm.Navigate.Execute(tab);
+        vm.SelectedAccount=Assert.Single(vm.Accounts);vm.Refresh.Execute(null);await vm.Refresh.Execution;
+        Assert.Equal(0,directory.Calls);Assert.Null(vm.SelectedAccount!.Avatar);Assert.Equal("No verified client",vm.SelectedAccount.LaunchStatus);
+    });
+    [Fact]
+    public Task CheckedRecipientsAndExplicitServerTargetRemainFrozenWhileTheVisibleSelectionChanges()=>OnUi(async ()=>
+    {
+        var directory=new PublicDirectory();await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),directory,new Servers());
+        await vm.InitializeAsync();await vm.SaveAccountAsync(AccountProfile.Create("First") with { PreferredPlaceId=1 });await vm.SaveAccountAsync(AccountProfile.Create("Second") with { PreferredPlaceId=2 });
+        foreach(var row in vm.Accounts) row.IsChecked=true;
+        const string job="9a073cb7-73b1-42bd-844b-83a09cbec848";
+        vm.ServerBrowser.LinkInput=$"https://www.roblox.com/games/start?placeId=6564161046&gameInstanceId={job}";vm.ServerBrowser.Resolve.Execute(null);
+        vm.QueueTargetedAccounts.Execute(null);
+        vm.ServerBrowser.UsePreferredPlace(999);vm.SelectedAccount=vm.Accounts.First();foreach(var row in vm.Accounts) row.IsChecked=false;
+        await vm.QueueTargetedAccounts.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2,vm.Launches.Count);
+        Assert.All(vm.Launches,l=>
+        {
+            Assert.Equal(6564161046,l.Operation.Intent.PlaceId);Assert.Equal(job,l.Operation.Intent.RequestedJobId);Assert.True(l.Operation.Intent.HasExplicitDestination);
+            Assert.Equal(LaunchState.Blocked,l.Operation.State);Assert.Equal(LaunchProblem.ProviderUnavailable,l.Operation.Problem);
+            Assert.Contains(job,l.RequestedDestination);
+        });
+        Assert.Equal(new long?[]{1,2},vm.Accounts.OrderBy(r=>r.Label).Select(r=>r.Profile.PreferredPlaceId));
+        Assert.Contains("2 blocked",vm.Notice);Assert.Equal(0,directory.Calls);
+    });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task NewServerDraftCannotQueueThePreviousServerForCheckedAccountsOrABundle(bool bundle)=>OnUi(async () =>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers());
+        await vm.InitializeAsync();
+        await vm.SaveAccountAsync(AccountProfile.Create("First"));
+        await vm.SaveAccountAsync(AccountProfile.Create("Second"));
+        foreach(var row in vm.Accounts) row.IsChecked=true;
+        await vm.RecipientBundles.SaveCheckedAsync("Saved pair");
+        const string oldJob="9a073cb7-73b1-42bd-844b-83a09cbec848";
+        const string newJob="2e5f96ac-8e17-4d91-bf0e-bd2492a47bea";
+        vm.ServerBrowser.LinkInput=$"https://www.roblox.com/games/start?placeId=6564161046&gameInstanceId={oldJob}";
+        vm.ServerBrowser.Resolve.Execute(null);
+        vm.ServerBrowser.LinkInput=$"https://www.roblox.com/games/start?placeId=6564161046&gameInstanceId={newJob}";
+        Assert.Equal(oldJob,vm.ServerBrowser.Destination!.JobId);
+        await QueueAsync();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Empty(vm.Launches);
+        Assert.Null(vm.BuildRequestedDestinationLink());
+        Assert.False(vm.RecipientBundles.CanQueueSelected);
+
+        vm.Navigate.Execute("JoinGame");vm.SetPreviewWindowVisible(true);
+        await vm.DestinationSearch.SearchOrUseAsync();
+        Assert.True(vm.RecipientBundles.CanQueueSelected);
+        Assert.Contains(newJob,vm.BuildRequestedDestinationLink());
+        await QueueAsync();
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2,vm.Launches.Count);
+        Assert.All(vm.Launches,row=>
+        {
+            Assert.Equal(6564161046,row.Operation.Intent.PlaceId);
+            Assert.Equal(newJob,row.Operation.Intent.RequestedJobId);
+            Assert.Equal(LaunchState.Blocked,row.Operation.State);
+        });
+
+        async Task QueueAsync()
+        {
+            if(bundle) await vm.RecipientBundles.QueueSelectedAsync();
+            else {vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;}
+        }
+    });
+    [Fact]
+    public Task DiscardingDraftReenablesTheLastExplicitRequest()=>OnUi(async () =>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers());
+        await vm.InitializeAsync();vm.Navigate.Execute("JoinGame");vm.SetPreviewWindowVisible(true);
+        vm.ServerBrowser.UsePreferredPlace(42);
+        vm.ServerBrowser.LinkInput="43";
+        Assert.True(vm.DestinationSearch.CanCancel);Assert.Null(vm.BuildRequestedDestinationLink());
+        vm.DestinationSearch.Cancel.Execute(null);
+        Assert.False(vm.ServerBrowser.HasDestinationDraft);Assert.False(vm.DestinationSearch.CanCancel);
+        Assert.Contains("placeId=42",vm.BuildRequestedDestinationLink());Assert.Empty(vm.Launches);
+    });
+    [Fact]
+    public Task ClearingCommittedDraftNeverExposesThePreviousServerToAReentrantCopy()=>OnUi(async () =>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers());
+        await vm.InitializeAsync();
+        vm.ServerBrowser.UsePreferredPlace(1);
+        vm.ServerBrowser.LinkInput="2";
+        var copies=new List<string?>();
+        vm.ServerBrowser.PropertyChanged+=(_,args)=>
+        {
+            if(args.PropertyName==nameof(ServerBrowserViewModel.LinkInput)&&vm.ServerBrowser.LinkInput.Length==0)
+                copies.Add(vm.BuildRequestedDestinationLink());
+        };
+        vm.ServerBrowser.Resolve.Execute(null);
+        string? observed=Assert.Single(copies);
+        if(observed is not null) Assert.Contains("placeId=2",observed);
+        Assert.Contains("placeId=2",vm.BuildRequestedDestinationLink());
+    });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task CheckedRequestFreezesBeforeCommandNotificationsAndObservesPanic(bool panic)=>OnUi(async () =>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),new Servers());
+        await vm.InitializeAsync();await vm.SaveAccountAsync(AccountProfile.Create("First"));await vm.SaveAccountAsync(AccountProfile.Create("Second"));
+        var first=vm.Accounts.Single(row=>row.Label=="First");var second=vm.Accounts.Single(row=>row.Label=="Second");
+        first.IsChecked=true;vm.ServerBrowser.UsePreferredPlace(42);
+        vm.QueueTargetedAccounts.CanExecuteChanged+=(_,_)=>
+        {
+            if(vm.QueueTargetedAccounts.CanExecute(null))return;
+            first.IsChecked=false;second.IsChecked=true;vm.ServerBrowser.UsePreferredPlace(43);
+            if(panic)vm.Panic.Execute(null);
+        };
+        vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        if(panic) Assert.Empty(vm.Launches);
+        else
+        {
+            var intent=Assert.Single(vm.Launches).Operation.Intent;
+            Assert.Equal(first.Profile.Id,intent.ProfileId);Assert.Equal(42,intent.PlaceId);
+        }
+        Assert.Equal(43,vm.ServerBrowser.Destination!.PlaceId);
+    });
+    [Fact]
+    public Task LatePublicPresentationCannotReappearAfterLockAndNeverChangesLinkedIdentity()=>OnUi(async ()=>
+    {
+        using(var profiles=new AccountRepository(_root))
+        {
+            await profiles.InitializeAsync(default);var profile=await profiles.SaveAsync(AccountProfile.Create("Alias"),default);
+            using var vault=new ProtectedCredentialVault(_root);
+            await vault.SaveAsync(new(profile.Id,"roblox-oauth",123,1,"","synthetic-refresh",DateTimeOffset.UtcNow.AddMinutes(10),"linked_name",Issuer:RobloxOAuthIdentity.Issuer,Subject:"123"),default);
+        }
+        var directory=new PublicDirectory {Pending=new(TaskCreationOptions.RunContinuationsAsynchronously)};
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),directory,new Servers());await vm.InitializeAsync();
+        var row=Assert.Single(vm.Accounts);vm.SelectedAccount=row;Assert.Equal("linked_name",row.Label);Assert.Equal(0,directory.Calls);
+        vm.RefreshPublicAccount.Execute(row);await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));Assert.Equal(1,directory.Calls);vm.LockDashboard();
+        directory.Pending.SetResult(directory.Profile);await vm.RefreshPublicAccount.Execution;
+        Assert.True(vm.IsLocked);Assert.Equal("",row.PublicDisplayName);Assert.Null(row.Avatar);Assert.Equal("linked_name",row.Label);
+        directory.Pending=null;vm.Unlock.Execute(null);vm.RefreshPublicAccount.Execute(row);await vm.RefreshPublicAccount.Execution;
+        Assert.Equal("Public display",row.PublicDisplayName);Assert.Equal("linked_name",row.Label);Assert.Equal("@linked_name",row.Username);Assert.Equal(123,row.KnownUserId);
+        vm.Panic.Execute(null);Assert.Equal("",row.PublicDisplayName);Assert.Null(row.Avatar);
+    });
+    private sealed class PublicDirectory : IPublicRobloxDirectory
+    {
+        public int Calls;
+        public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<PublicDirectoryResult<PublicRobloxUser>>? Pending;
+        public PublicDirectoryResult<PublicRobloxUser> Profile=>new(PublicDirectoryState.Success,new(123,"public_name","Public display",DateTimeOffset.UtcNow),"Synthetic public profile");
+        public Task<PublicDirectoryResult<PublicRobloxUser>> LookupUserAsync(long id,CancellationToken ct) {Interlocked.Increment(ref Calls);Started.TrySetResult();return Pending?.Task??Task.FromResult(Profile);}
+        public Task<PublicDirectoryResult<PublicRobloxAvatar>> GetAvatarAsync(long id,CancellationToken ct)=>Task.FromResult(new PublicDirectoryResult<PublicRobloxAvatar>(PublicDirectoryState.Unknown,null,"Synthetic no avatar"));
+        public Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar,CancellationToken ct)=>throw new InvalidOperationException("No synthetic avatar was supplied.");
+        public void ClearMemoryCache() { }
+    }
+    private sealed class Servers : IRobloxPublicServerDirectory
+    {
+        public Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query,CancellationToken ct)=>Task.FromResult(new RobloxPublicServerResult(RobloxPublicServerStatus.Complete,[],null,null,"Synthetic only"));
+    }
+    private sealed class Monitor : IDesktopMonitor
+    {
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)=>Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]));
+        public Task<bool> FocusAsync(SessionObservation observation,CancellationToken ct)=>Task.FromResult(false);
+        public Task<bool> RequestCloseAsync(SessionObservation observation,CancellationToken ct)=>Task.FromResult(false);
+    }
+    private static Task OnUi(Func<Task> work)
+    {
+        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread=new Thread(()=>
+        {
+            var dispatcher=Dispatcher.CurrentDispatcher;Task operation=Task.CompletedTask;
+            dispatcher.BeginInvoke(()=>operation=RunAsync());
+            async Task RunAsync() {try {await work();done.TrySetResult();}catch(Exception ex) {done.TrySetException(ex);}finally {dispatcher.BeginInvokeShutdown(DispatcherPriority.Background);}}
+            Dispatcher.Run();operation.GetAwaiter().GetResult();
+        }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(15));
+    }
+    public void Dispose()
+    {
+        string full=Path.GetFullPath(_root);
+        if(Path.GetDirectoryName(full)!=Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar) || !Path.GetFileName(full).StartsWith("zenith-directory-ui-tests-",StringComparison.Ordinal)) throw new InvalidOperationException("Unexpected test cleanup path.");
+        if(Directory.Exists(full)) Directory.Delete(full,true);
+    }
+}

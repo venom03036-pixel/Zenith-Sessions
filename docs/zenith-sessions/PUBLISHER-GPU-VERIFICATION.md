@@ -1,0 +1,57 @@
+# Personal companion0.17: source review, publisher checks and GPU evidence
+
+This is an uninstalled development increment, not the finished manager. The final source passed **1,417/1,417 regression tests**, zero failures/skips, ending **2026-11-06 00:16:56 UTC**. Forced builds reported zero warnings/errors. Its staged files passed **20/20** noninteractive packaged checks at **00:17:13 UTC** and **20/20** again against the same owned fixture at **00:18:30 UTC**. The unchanged installed Personal/Public/Linux applications and actual accounts were not used for these checks.
+
+Evidence: [exact verification record](../../artifacts/sessions-manager-verification-0.17.json), [tests](../../artifacts/sessions-manager-tests/manager-core.trx), [first packaged pass](../../artifacts/sessions-distribution-check-publisher-gpu-after-first.json), [repeat](../../artifacts/sessions-distribution-check/distribution-check.json), [25-file manifest](../../artifacts/sessions-manager-review/preview-manifest.json). These reports are development evidence, not independent performance or live-client acceptance.
+
+App SHA-256: `6E8C85D26D320303C075E5684C310013552152E7540F622AF6D165D87F207205`.
+Windows implementation SHA-256: `BE508609C8101CA29A45523BFB01AEDF8855336D08AAE9BED88C5375942F90BB`.
+Core SHA-256: `160C1B66D3223784FD6C551E55910ADE443F740B2F2C42B5E69CF728BD922BF8`.
+Manifest SHA-256: `98EF1EB5FBB0DC40E4FB84A17D53E2992C51E4418EA21D149737862186A84316`.
+The App hash alone cannot distinguish every implementation-only change; the manifest and dependency hashes identify this final set. All25 lengths/hashes matched; no extra files or private-material filename/extension matches were found. Runtime10.0.12; SQLite3.53.4. `ReleaseReady:false`.
+
+## Reference coverage and account architecture
+
+The supplied checkout was read statically, without running its programs, builds, dependencies or scripts. The [supplement](ROALT-SOURCE-COVERAGE-SUPPLEMENT.md) expands the [earlier106-file selected review](ROALT-LOCAL-SOURCE-REVIEW.md): a [653-file hash catalog](ROALT-SOURCE-COVERAGE.json), 5,936,691 bytes, includes159 additional bounded authored-source inspections. Root independently rechecked all653 file lengths and hashes with zero mismatches. Catalog SHA-256: `EFBFB913E2902C9D60B247307265424E310A43A5C5BDF0DE603054F14CB9B279`.
+
+This is265 files with prior selected coverage or supplemental inspection, not265 exhaustive semantic audits. The remaining388 entries are83 generated bindings,34 translations and271 research fixtures, inventoried without new semantic acceptance. Selected-line/range inspection of authored files still leaves deeper race/error/interaction questions. No clean Git working-tree or installed-binary/source equivalence was proved.
+
+RoALT stores separate protected sign-ins and launches an installed native player; it does not establish one independently installed Roblox copy per account. Zenith's0.16 saved-session migration remains in place: own visible official Roblox sign-in, explicit Save, provider-specific protected records and verified UserId. OAuth registration is no longer the visible setup path. Historical records remain compatible without conversion on load. Native account handoff, account/process association and arrival still need independent proof; the [handoff checkpoint](NATIVE-HANDOFF-REVIEW.md) explains the remaining contract evidence. Signature verification cannot supply that proof.
+
+Newly reviewed reference options include secret export/recovery, private-server mutations and purchases, recipient bundles/order, account tabs, settings search/help, motion controls, group colors, localization and public-network policy. These are inventory findings, not authorization to copy every mechanism. Existing credential-free export, no enforcement-object takeover, no unrelated-browser collection and no automatic client killing remain intact. No RoALT code was copied into the product.
+
+## Explicit selected-file publisher check
+
+Settings → Roblox installation → Refresh → select a present native Roblox executable → Verify Roblox publisher. This reads one selected file, never starts or installs it and never makes it the launch provider. Bootstrapper authenticity policies remain unknown.
+
+The [Windows verifier](../../src/Zenith.Sessions.Windows/WindowsClientExecutableTrust.cs) binds two bounded SHA-256 passes, WinVerifyTrust and signer extraction to one pinned read handle. It compares exact volume/file identity, length/times and a reopened path. Local-normal-path and ancestor checks reject redirected/device/network cases. Windows code-signing verification and an offline X509Chain require cached revocation/chain evidence, the code-signing EKU and the exact Roblox Corporation organization. Missing or unusable evidence remains unknown. An unsigned/mismatched/changed file never receives an account handoff.
+
+One worker owns the operation, with no queued checks or persisted trust cache; reads are capped at512MiB with a pooled64KiB hash buffer. Windows trust calls have no guaranteed cancellable deadline. Cancel immediately fences presentation, but busy/exit await the actual native owner. Lock/Panic/selection changes discard late success and failure. Returned evidence is historical and is not a future file lease.
+
+Tests exercise fabricated policy outcomes, file replacement/identity, denied reads, bounds, cancellation/disposal and presentation races. The real native negative check uses only a renamed copy of Zenith's own unsigned executable in its owned temporary fixture; Windows returned Rejected/Unsigned. No installed Roblox publisher-positive or native launch was tested. [Verifier tests](../../tests/Zenith.Sessions.Tests/ClientExecutableTrustTests.cs), [Shell tests](../../tests/Zenith.Sessions.Tests/ExecutableTrustIntegrationTests.cs).
+
+## Shared GPU readings and pressure recovery
+
+The existing one-second system sampler owns one PDH query and reusable buffer. It introduces no per-account polling loop, capture owner, timer, process mutation or new dependency. Bounds are8192 rows per counter,2MiB buffer,16 adapters,128 engines per adapter, two bounded buffer-growth attempts and30-second failed-initialization retry. Counter layouts outside the strictly recognized WDDM convention remain unknown; that convention is a compatibility inference, not a naming guarantee.
+
+Process contributions are combined only within the same adapter/physical-engine identity. The busiest physical engine is displayed; different engines, PID maxima and adapters are never added into a fabricated machine percentage. Adapter dedicated/shared usage is separate from capacity. Shared usage is not subtracted from available RAM again. Per-process GPU attribution remains unavailable because PID-only counter labels cannot prove process incarnation.
+
+Overview's expandable GPU panel uses existing presentation ticks, bounds visible height and expires values after three seconds. First rates need two collections. Missing/invalid/partial/stale counters do not become numeric zero or renew old evidence. Optional GPU failure does not invalidate otherwise valid RAM/commit data.
+
+The final native package check obtained fresh, complete engine and memory counters for two adapter identities, twice. This verifies those native calls on this desktop, not Task Manager agreement, GPU model/capacity, Roblox-specific usage, performance superiority or sustained monitoring overhead. The records contain the measurements; their instantaneous utilization is not a benchmark.
+
+Reliable engine pressure≥85% continuously15 seconds holds admission. Established GPU holds cannot recover from missing/partial adapter evidence. Recovery requires CPU<65%, known measured GPU<70%, reachable capped memory/commit margins and30 continuous healthy seconds. Critical physical `<max(1GiB,5% total)` or commit>95% holds immediately. Unknown optional GPU evidence does not initially invent a GPU capacity or raise launch concurrency. Thresholds are currently fixed engineering defaults; complete user-configurable policies and live-load acceptance remain unfinished. [Pressure implementation](../../src/Zenith.Sessions.Core/ResourcePressureTracker.cs), [GPU fixtures](../../tests/Zenith.Sessions.Tests/GpuTelemetryTests.cs), [pressure tests](../../tests/Zenith.Sessions.Tests/GpuPressureTests.cs), [recovery tests](../../tests/Zenith.Sessions.Tests/PressureRecoveryTests.cs).
+
+## Defects found and evidence limits
+
+The first native GPU run rejected fresh counters as stale: PDH's local FILETIME was interpreted as UTC, producing an observed five-hour error on this desktop. A corrected two-collection diagnostic established the local fields; the [Microsoft raw-counter timestamp contract](https://learn.microsoft.com/en-us/windows/win32/api/pdh/ns-pdh-pdh_raw_counter) explicitly describes local time. Conversion now happens once in the native adapter, before UTC freshness checks. Ambiguous/invalid daylight-saving times remain unknown. Seven [timestamp tests](../../tests/Zenith.Sessions.Tests/GpuTimestampTests.cs) cover offsets, DST and invalid values; the [before-fix packaged evidence](../../artifacts/sessions-distribution-check-gpu-clock-before.json) is preserved. The preliminary standalone probe's null-string marshalling error was corrected before drawing this conclusion.
+
+Review also corrected an unsupported async assertion overload, one missing test namespace import, canonical LUID presentation, true numeric completeness and lower-band recovery behavior. An early20/20 package pass then stopped at notice generation because the newly fixed review folder was absent from that writer's allowlist. The [early pass](../../artifacts/sessions-distribution-check-publisher-gpu-before-notices.json) is historical; the final package includes all required notices and hashes. No failed run was promoted as complete.
+
+Rule18 ownership/bounds/cancellation are described above and tested separately from live compatibility. Rule19: no new production dependencies; Windows trust/cryptography/PDH use the platform. Rule20: incremental optional ResourceSnapshot GPU data and selected-file service; existing vault/macro formats, capture/input owners, saved settings and launch capability boundaries remain unchanged.
+
+## Readiness and next acceptance work
+
+The useful saved-sign-in, discovery, monitoring, settings, library and window-management subsets remain available as development code. Outstanding release gates include actual private-WebView login/challenges/cleanup, native account-selecting handoff and reconnect, verified arrival/process identity, simultaneous background input/capture, broadcasting, owned-game bridge, host integration, full custom appearances/mini mode,16-client capacity, long-duration stress and production desktop visual/performance checks. No user sign-in, real client launch, authenticated Roblox call, screenshot or keyboard input was performed in this increment.
+
+The staged0.17 preview is `artifacts/sessions-manager-review`. Candidate0.16 and previous0.15 were retained. Automatic approval review rejected deleting the older development backup with “blocked by policy”; the old stage also has an incomplete historical manifest, so it was preserved. A separate fixed review folder avoided deleting either. No installed product or user-data backup was needed because none was changed. This is not an installation or final protected distribution, and no competitive memory/capacity claim is made.

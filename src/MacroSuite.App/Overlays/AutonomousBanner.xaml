@@ -1,0 +1,35 @@
+<Window x:Class="MacroSuite.App.Overlays.AutonomousBanner"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Autonomous Mode Active"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        ResizeMode="NoResize"
+        Height="40"
+        Width="520">
+    <Border Background="#D9181825"
+            BorderBrush="{DynamicResource AccentWarning}"
+            BorderThickness="1.5"
+            CornerRadius="0,0,8,8"
+            Padding="12,6">
+        <StackPanel Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
+            <TextBlock Text="⚠" FontSize="14" Foreground="{DynamicResource AccentWarning}" Margin="0,0,8,0" VerticalAlignment="Center"/>
+            <TextBlock Text="AUTONOMOUS MODE ACTIVE"
+                       FontWeight="Bold"
+                       FontSize="12"
+                       Foreground="{DynamicResource AccentWarning}"
+                       VerticalAlignment="Center"
+                       Margin="0,0,10,0"/>
+            <Border Background="{DynamicResource SurfaceBackground}" CornerRadius="4" Padding="6,2" VerticalAlignment="Center">
+                <TextBlock Text="USE YOUR EMERGENCY STOP SHORTCUT"
+                           FontSize="10"
+                           FontWeight="Bold"
+                           Foreground="{DynamicResource AccentDanger}"/>
+            </Border>
+        </StackPanel>
+    </Border>
+</Window>

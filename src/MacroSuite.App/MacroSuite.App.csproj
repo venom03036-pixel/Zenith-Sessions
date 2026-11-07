@@ -1,0 +1,52 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <Version>2.5.12</Version>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <UseWPF>true</UseWPF>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationIcon>Assets\Zenith_Macros_Teal.ico</ApplicationIcon>
+    <Product>Zenith Macros Personal</Product>
+
+    <!-- Developer mode is enabled in Debug or when explicitly passed via -p:DeveloperMode=true -->
+    <DeveloperMode Condition="'$(DeveloperMode)' == '' and '$(Configuration)' == 'Debug'">true</DeveloperMode>
+    <DeveloperMode Condition="'$(DeveloperMode)' == ''">false</DeveloperMode>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(DeveloperMode)' == 'true'">
+    <DefineConstants>$(DefineConstants);DEVELOPER_MODE</DefineConstants>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MacroSuite.Core\MacroSuite.Core.csproj" />
+    <ProjectReference Include="..\..\src\MacroSuite.Infrastructure\MacroSuite.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\MacroSuite.SDK\MacroSuite.SDK.csproj" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(DeveloperMode)' == 'true'">
+    <ProjectReference Include="..\Zenith.MacroHost.Contracts\Zenith.MacroHost.Contracts.csproj" />
+    <ProjectReference Include="..\Zenith.MacroHost.Windows\Zenith.MacroHost.Windows.csproj" />
+    <ProjectReference Include="..\Zenith.MacroHost.Execution\Zenith.MacroHost.Execution.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="gong-wpf-dragdrop" Version="4.0.0" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <ActivationTrustManifestPath Condition="'$(ActivationTrustManifestPath)' == ''">$(MSBuildProjectDirectory)\..\..\..\zenith25-build\issuer-public.json</ActivationTrustManifestPath>
+  </PropertyGroup>
+  <ItemGroup>
+    <EmbeddedResource Include="$(ActivationTrustManifestPath)" LogicalName="Zenith.ActivationTrust.json" Condition="Exists('$(ActivationTrustManifestPath)')" />
+    <Content Include="Defaults\*.json" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <Resource Include="Assets\Zenith_Macros_Teal.ico" />
+    <Resource Include="Assets\zenith-mark.png" />
+    <ProjectReference Include="..\MacroSuite.LicenseIssuer\MacroSuite.LicenseIssuer.csproj" Condition="'$(DeveloperMode)' == 'true'" />
+  </ItemGroup>
+</Project>

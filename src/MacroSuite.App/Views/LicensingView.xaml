@@ -1,0 +1,39 @@
+<UserControl x:Class="MacroSuite.App.Views.LicensingView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             Background="{DynamicResource WorkspaceMaterial}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <Style x:Key="Help" TargetType="TextBlock"><Setter Property="FontSize" Value="12"/><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Margin" Value="0,6,0,16"/></Style>
+        <Style x:Key="Label" TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,8"/></Style>
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="24" MaxWidth="760" HorizontalAlignment="Left">
+            <TextBlock Text="Account &amp; license" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource TextHighlight}"/>
+            <TextBlock Text="Your installed product access and available features." Style="{StaticResource Help}"/>
+            <TextBlock Text="{Binding ProductAccessText}" FontSize="18" FontWeight="SemiBold" Foreground="{DynamicResource TextPrimary}"/>
+            <TextBlock Text="{Binding EntitlementExplanation}" Style="{StaticResource Help}"/>
+            <Grid Margin="0,0,0,20"><Grid.ColumnDefinitions><ColumnDefinition Width="130"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                <TextBlock Text="License status" Style="{StaticResource Help}"/><TextBlock Grid.Column="1" Text="{Binding LicenseStatusText}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="1" Text="Assigned to" Style="{StaticResource Help}"/><TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding OwnerDisplay}" Foreground="{DynamicResource TextPrimary}" TextWrapping="Wrap" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="2" Text="Issued" Style="{StaticResource Help}"/><TextBlock Grid.Row="2" Grid.Column="1" Text="{Binding IssuedDateText}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+                <TextBlock Grid.Row="3" Text="Expires" Style="{StaticResource Help}"/><TextBlock Grid.Row="3" Grid.Column="1" Text="{Binding ExpirationDateText}" Foreground="{DynamicResource TextPrimary}" VerticalAlignment="Center"/>
+            </Grid>
+            <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Padding="0,16,0,0">
+                <StackPanel><TextBlock Text="Included features" Style="{StaticResource Label}" FontSize="16"/>
+                    <ItemsControl ItemsSource="{Binding Features}"><ItemsControl.ItemTemplate><DataTemplate>
+                        <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="0,8"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding DisplayName}" Foreground="{DynamicResource TextPrimary}" Margin="0,0,24,0"/><TextBlock Grid.Column="1" Text="{Binding AvailabilityText}" Foreground="{DynamicResource TextSecondary}"/></Grid></Border>
+                    </DataTemplate></ItemsControl.ItemTemplate></ItemsControl>
+                </StackPanel>
+            </Border>
+            <TextBlock Text="AI provider usage is optional and separate from app access. Requests use your provider account; see AI usage for estimates and local limits." Style="{StaticResource Help}" Margin="0,12,0,20"/>
+            <Expander Header="Install or change license" Foreground="{DynamicResource TextPrimary}"><StackPanel Margin="0,12,0,20">
+                <TextBlock Text="Email" Style="{StaticResource Label}"/><TextBox Text="{Binding EmailInput, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="License email" Margin="0,0,0,16"/>
+                <TextBlock Text="License key" Style="{StaticResource Label}"/><TextBox Text="{Binding LicenseKeyInput, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="License key" Margin="0,0,0,12"/>
+                <WrapPanel><Button Content="Install license" Command="{Binding InstallLicenseCommand}" Style="{StaticResource PrimaryButton}" Margin="0,0,8,8"/><Button Content="Remove installed license" Command="{Binding ClearLicenseCommand}" Style="{StaticResource GhostButton}" Margin="0,0,0,8"/></WrapPanel>
+            </StackPanel></Expander>
+            <Expander Header="Developer permissions" Foreground="{DynamicResource TextPrimary}" Visibility="{Binding IsDeveloperMode, Converter={StaticResource BoolToVis}}" Margin="0,12,0,0"><StackPanel Margin="0,12,0,0"><TextBlock Text="{Binding BuildProfileText}" Style="{StaticResource Help}"/><TextBlock Text="Internal administrator access enables all features in this development build. It is separate from a customer purchase." Style="{StaticResource Help}"/><Button Content="Enable developer administrator access" Command="{Binding ApplyAdminKeyCommand}" Style="{StaticResource PillButton}" HorizontalAlignment="Left"/></StackPanel></Expander>
+            <TextBlock Text="{Binding StatusMessage}" Style="{StaticResource Help}"/>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

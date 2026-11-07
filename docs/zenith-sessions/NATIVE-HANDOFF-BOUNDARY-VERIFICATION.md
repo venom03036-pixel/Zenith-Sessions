@@ -1,0 +1,56 @@
+# Native handoff preparation and dispatch boundaries — 0.23
+
+Personal **0.23.0-preview** passed **2,040/2,040 tests**, zero failed/skipped, and **185 focused cases twice more**. Packaged checks passed **28/28 twice**, with25 matching manifest files, zero extras and zero private/test filename-pattern matches. Forced final builds reported zero warnings/errors. Publishing produced different first-party assembly hashes from the normal test build, so the three exact staged assemblies were copied into the test runner and the complete **2,040-case suite passed again**; their hashes matched before and after that run. Nothing was installed; **ReleaseReady:false**.
+
+## Scope and remaining integration
+
+This increment implements necessary native-launch plumbing. The production composition still constructs **UnavailableLaunchProvider**. No product command starts a client through these new components. The existing owned-page probe remains capture-only: it cancels every external request and discards the raw URI. No browser, real account, native process start, client input or production GUI was exercised.
+
+These components do not complete saved-account native selection, arrival verification, reconnect, multi-client support, independent background input or broadcasting. They do not authorize client changes, singleton takeover, Roblox login-file locking or enforcement workarounds. Full queue/browser/host integration and real tests remain required.
+
+## Source-derived opaque candidate
+
+The independently written parser uses vocabulary from the supplied [reference fixture](C:/Users/noelm/OneDrive/Documents/GitHub/RoALT/docs/research/fixtures/authlaunch-web-launch-uri-spec.json) and [URI builder](C:/Users/noelm/OneDrive/Documents/GitHub/RoALT/src-tauri/src/launcher/uri.rs). Their SHA-256 values are respectively `02A2C1F7F84C05B4D15F38D127E6D98AB0BA64B06DF553903FEFD020235FE00D` and `4F040A6660060646ADBB6B18FEF2F509492EF27D7C8117F574183FCAA891117E`. Source was read, not executed or reused. The fixture describes an October24 observation with placeholder values; it is not independent current-runtime evidence.
+
+The parser accepts a bounded prospective play grammar with exact known fields, game or exact-job destinations, the fixed Roblox PlaceLauncher endpoint and fixed matching place/job/tracker/origin fields. Private, reserved, follow-user, play-together, launch-data and unknown variants remain unsupported. It splits raw outer separators before decoding, then decodes each layer once using strict UTF-8. Unknown/duplicate/encoded keys, malformed escaping, unsafe hosts/ports/paths, contradictory destinations and stale wall timestamps fail. It does not reconstruct or normalize a ticket-bearing URI.
+
+Context accepts only the pinned game's page or the exact pinned documented web-start URL. Official [deeplink documentation](https://create.roblox.com/docs/production/promotion/deeplinks) establishes destination parameters, not this ticket grammar or an account-selecting native contract. Actual automatic web-start navigation and origin/gesture/frame behavior remain untested. The old capture-only browser policy was not broadened.
+
+Each owned preparation generates a fresh, non-settable grant-mutation owner distinct from its persistent queue operation ID. An atomic claim accepts only one candidate. Reconstructed contexts receive different owners and cannot inherit the preceding final grant. Candidate disposal/cancellation closes the preparation. The start permission uses another atomic transition: closure before that point prevents the attempt; closure after permission cannot promise recall of native work.
+
+The original opaque string is private, redacted and one-use. It is cleared after every accepted coordinator attempt and expires after ten monotonic seconds from capture, without renewal after verification/cleanup. These bounds and the30-second wall-time guard are local conservative policies, not Roblox ticket TTL guarantees. Diagnostic JSON/string output exposes no ticket/raw URI. Managed strings and SDK/native argument copies cannot be guaranteed erased from memory.
+
+## Current grant and held executable
+
+`IAuthorizationDispatchVault.TryDispatchCurrentAsync` compares the exact selected snapshot under the existing actual vault process lease. It requires a current saved-session grant with verified context, Linked health, unexpired authorization and matching highest/committed generation. Stale, absent, fenced, legacy or incompatible records cannot invoke the callback. No authorization/index/generation write is introduced.
+
+The synchronous callback performs only the final bounded dispatch boundary. Browser work, signature validation, hashing and network operations finish beforehand. A final held-file/path identity recheck is allowed there. Cancellation is checked immediately before invocation; actual synchronous work remains owned through completion. Null, thrown, undefined or inconsistent outcomes become fixed uncertainty, retaining only valid original process receipts. A later cancellation cannot erase a receipt. This is not a global duplicate-start registry or a completed scheduler transaction.
+
+`NativeHandoffCoordinator` pins the candidate, final durable mutation owner/generation, account, place/job and final intent. It validates the request before acquiring the vault boundary, then checks current operation and cached scheduler admission again inside it. It owns one task and joins cancellation/disposal without abandoning the callback. The caller must already own the scheduler reservation and keep the prepared executable alive until actual completion. This component does not itself reserve capacity or lock the profile database; complete queue/rotation/reservation integration remains unfinished.
+
+`WindowsClientExecutableTrust.PrepareAsync` shares the existing diagnostic verification path, retaining the positively verified original file handle instead of releasing it. Hashing, same-handle cache-only WinTrust, Roblox publisher and identity/path checks are shared. Unknown/revocation-unavailable/bootstrapper results do not obtain a preparation. One verifier slot stays occupied through prepared-handle consumption/disposal. Diagnostic trust results still do not authorize a future account launch.
+
+The prepared start rechecks held/reopened file identities and ancestors immediately before one direct native call. It uses the exact full executable path, its own directory and one unmodified argument; no shell, command interpreter, protocol-registry dispatch or credential/environment assignment is added. Arguments are bounded for the Windows command-line limit and cleared after use. [ArgumentList documentation](https://learn.microsoft.com/en-us/dotnet/api/system.diagnostics.processstartinfo.argumentlist?view=net-10.0) and [CreateProcess limits](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-createprocessw) support this argument-handling choice, not Roblox compatibility.
+
+Only the process object returned by Process.Start can supply its held-handle PID and creation time. It may already have exited or forwarded the request; the receipt is historical startup information, not current liveness, native account or arrival proof. Null/partial/throwing starts remain uncertain. No nearest-PID search, focus request, client close or process kill exists in the start component. Native trust/start calls have no guaranteed hard cancellation; disposal fences future work and joins actual ownership before releasing held resources.
+
+## Executed evidence and corrections
+
+New controlled coverage comprises **38 dispatch-boundary**, **40 held-executable**, **46 parser** and **22 coordinator** cases. The185-case repeats also include34 existing conditional-mutation and five cross-process cases. Real DPAPI, file sharing and file-identity operations use owned temporary fixtures; publisher positives and all native starters are synthetic. No real Roblox handoff, current runtime format or native startup was tested.
+
+Coverage includes exact-grant contention, no-write comparison, stale/deleted/fenced/expired grants, per-operation capture/start claims, reconstructed-owner rejection, encoding/layer/size/target ambiguity, monotonic expiry, changed authorization after preflight, fresh admission refusal, cancellation/late receipt preservation, actual owner joining and prepared-file retention/release. The new packaged case is explicitly synthetic, combining real fixture storage with a nonredeemable ticket and fake starter.
+
+Source review found and corrected duplicate candidate replay before the final runs; that finding was not a recorded pre-fix runtime reproduction. A full run passed2,037/2,038 but hit an older fixture's FileNotFound observation during sidecar replacement. Only its bounded polling observation was corrected, retaining strict final store/fence assertions. [That failed run](../../artifacts/sessions-manager-tests/manager-0.23-before-observation-fix.trx) remains. An initial self-check compilation shadowed a local name and was corrected. The final code also adds two exact web-start context checks, yielding2,040 cases.
+
+Final source-build tests finished **2026-11-06 04:24:14.6183750 UTC**. Packaged passes finished **04:24:35.8671150** and **04:25:50.3300952 UTC**. Exact-staged-assembly tests finished **04:30:40.4940541 UTC**. Runtime was .NET10.0.12 / SQLite3.53.4.
+
+- App SHA-256: `CDA9EA7DF32BA8FAA5FC6A465AF23642755146E8AA72D81D692D5F714A0A6B5B`.
+- Windows SHA-256: `9E33A588A7DFE5F43882794ADA8988AF44467AF8A9467C8E93D804B8F9214A86`.
+- Core SHA-256: `835DA64DCF73EFEC722DEDD3CCE2AFE4027C2A8016622C0D618F9F12E4BBBE3A`.
+- Manifest SHA-256: `AB10632990F2462E65227A47E98DD3AF768CA388D968342E7E1975D91B68BE9F`.
+
+[Verification record](../../artifacts/sessions-manager-verification-0.23.json), [source suite](../../artifacts/sessions-manager-tests/manager-core.trx), [exact staged suite](../../artifacts/sessions-manager-tests/manager-0.23-final-binaries.trx), [repeat1](../../artifacts/sessions-manager-tests/manager-0.23-native-repeat-1.trx), [repeat2](../../artifacts/sessions-manager-tests/manager-0.23-native-repeat-2.trx), [first package](../../artifacts/sessions-distribution-check-0.23-first.json), [repeat package](../../artifacts/sessions-distribution-check/distribution-check.json).
+
+Rule18: bounded inputs, one actual coordinator/verifier owner, no new dependency, background service, capture loop or per-account worker. Rule20: incremental contracts/shared verifier extension; no change to credential, profile4, export3, queue4 or macro formats. The fixed review stage is reused. Installed editions, real user data and reference applications remain untouched. Filename-pattern checks are not comprehensive secret or malware scans.
+
+The next integration is a dedicated owned-page candidate flow, post-verification grant receipt and scheduler-owned trial, keeping the old diagnostic separate. Current browser compatibility, native account/process/arrival correlation, multi-client feasibility, background inputs, full UI/performance and2/4/8/16-client acceptance remain unproved. Notify the owner when the integrated two-account Coloseum build is ready; this plumbing increment alone does not meet that threshold.

@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net8.0-windows10.0.19041.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BenchmarkDotNet" Version="0.13.12" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\MacroSuite.Core\MacroSuite.Core.csproj" />
+    <ProjectReference Include="..\..\src\MacroSuite.Infrastructure\MacroSuite.Infrastructure.csproj" />
+    <ProjectReference Include="..\..\src\MacroSuite.SDK\MacroSuite.SDK.csproj" />
+  </ItemGroup>
+
+</Project>

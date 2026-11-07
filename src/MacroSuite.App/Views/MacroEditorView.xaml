@@ -1,0 +1,855 @@
+<UserControl x:Class="MacroSuite.App.Views.MacroEditorView"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+ xmlns:dd="urn:gong-wpf-dragdrop" xmlns:vm="clr-namespace:MacroSuite.App.ViewModels"
+ Focusable="True" PreviewKeyDown="MacroEditorView_PreviewKeyDown">
+ <UserControl.Resources>
+  <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+  <Style x:Key="EditorButton" TargetType="Button" BasedOn="{StaticResource PillButton}">
+   <Setter Property="MinHeight" Value="36"/><Setter Property="MinWidth" Value="32"/><Setter Property="FontSize" Value="13"/><Setter Property="Padding" Value="10,5"/><Setter Property="Margin" Value="0,0,6,0"/>
+  </Style>
+  <vm:CompactActionLayoutConverter x:Key="CompactActionLayout"/>
+  <Style x:Key="LibraryTab" TargetType="Button">
+   <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusRing}"/><Setter Property="MinHeight" Value="36"/><Setter Property="Padding" Value="4,6"/><Setter Property="FontSize" Value="12"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Setter Property="Background" Value="Transparent"/><Setter Property="BorderBrush" Value="Transparent"/><Setter Property="BorderThickness" Value="0"/><Setter Property="Cursor" Value="Hand"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="Button"><Grid><Border Background="{TemplateBinding Background}" Padding="{TemplateBinding Padding}"><ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" RecognizesAccessKey="True"><ContentPresenter.Resources><Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/><Setter Property="FontSize" Value="{Binding FontSize, RelativeSource={RelativeSource AncestorType=Button}}"/><Setter Property="FontWeight" Value="SemiBold"/></Style></ContentPresenter.Resources></ContentPresenter></Border><Border x:Name="SelectedUnderline" Background="Transparent" Height="2" VerticalAlignment="Bottom"/></Grid><ControlTemplate.Triggers><Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource HoverBackground}"/></Trigger><DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True"><Setter Property="Background" Value="{DynamicResource SelectionBackground}"/><Setter Property="Foreground" Value="{DynamicResource SelectionForeground}"/><Setter TargetName="SelectedUnderline" Property="Background" Value="{DynamicResource SelectionBorder}"/></DataTrigger></ControlTemplate.Triggers></ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style x:Key="EditorPrimary" TargetType="Button" BasedOn="{StaticResource PrimaryButton}">
+   <Setter Property="MinHeight" Value="36"/><Setter Property="MinWidth" Value="80"/><Setter Property="FontSize" Value="13"/><Setter Property="Padding" Value="12,5"/><Setter Property="Margin" Value="0,0,6,0"/>
+  </Style>
+  <Style x:Key="EditorStop" TargetType="Button" BasedOn="{StaticResource DangerButton}">
+   <Setter Property="MinHeight" Value="36"/><Setter Property="FontSize" Value="13"/><Setter Property="Padding" Value="10,5"/><Setter Property="Margin" Value="0,0,6,0"/>
+  </Style>
+  <Style x:Key="FlatEditorRow" TargetType="ListBoxItem"><EventSetter Event="PreviewMouseRightButtonDown" Handler="EditorRow_PreviewMouseRightButtonDown"/>
+   <Setter Property="HorizontalContentAlignment" Value="Stretch"/><Setter Property="Padding" Value="8,5"/><Setter Property="MinHeight" Value="38"/>
+   <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusRing}"/>
+   <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="ListBoxItem">
+    <Grid><Border x:Name="Row" Background="Transparent" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="{TemplateBinding Padding}"><ContentPresenter/></Border><Border x:Name="SelectionRail" Width="3" HorizontalAlignment="Left" Background="Transparent"/><Border x:Name="FocusOutline" BorderThickness="1" BorderBrush="Transparent" IsHitTestVisible="False"/></Grid>
+    <ControlTemplate.Triggers>
+     <Trigger Property="ItemsControl.AlternationIndex" Value="1"><Setter TargetName="Row" Property="Background" Value="{DynamicResource RowAlternateBackground}"/></Trigger>
+     <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource HoverBackground}"/></Trigger>
+     <Trigger Property="IsSelected" Value="True"><Setter TargetName="Row" Property="Background" Value="{DynamicResource SelectionBackground}"/><Setter TargetName="SelectionRail" Property="Background" Value="{DynamicResource SelectionBorder}"/></Trigger>
+     <Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter TargetName="FocusOutline" Property="BorderBrush" Value="{DynamicResource BorderBrushFocus}"/></Trigger>
+    </ControlTemplate.Triggers>
+   </ControlTemplate></Setter.Value></Setter>
+  </Style>
+  <Style x:Key="LibraryRow" TargetType="ListBoxItem" BasedOn="{StaticResource FlatEditorRow}"><Setter Property="MinHeight" Value="54"/></Style>
+  <Style x:Key="BlockChevron" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+   <Setter Property="Padding" Value="0"/><Setter Property="Margin" Value="0"/><Setter Property="MinHeight" Value="28"/><Setter Property="MinWidth" Value="24"/><Setter Property="FontSize" Value="15"/>
+  </Style>
+  <Style x:Key="ActionTypeIcon" TargetType="Path">
+   <Setter Property="Stroke" Value="{DynamicResource ActionWait}"/><Setter Property="StrokeThickness" Value="1.8"/><Setter Property="StrokeStartLineCap" Value="Round"/><Setter Property="StrokeEndLineCap" Value="Round"/><Setter Property="StrokeLineJoin" Value="Round"/><Setter Property="Width" Value="16"/><Setter Property="Height" Value="16"/><Setter Property="Stretch" Value="Uniform"/>
+   <Style.Triggers>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="Mouse"><Setter Property="Stroke" Value="{DynamicResource ActionMouse}"/></DataTrigger>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="Keyboard"><Setter Property="Stroke" Value="{DynamicResource ActionKeyboard}"/></DataTrigger>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="Flow"><Setter Property="Stroke" Value="{DynamicResource ActionFlow}"/></DataTrigger>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="Image"><Setter Property="Stroke" Value="{DynamicResource ActionImage}"/></DataTrigger>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="AI"><Setter Property="Stroke" Value="{DynamicResource ActionAI}"/></DataTrigger>
+    <DataTrigger Binding="{Binding VisualCategory}" Value="Color"><Setter Property="Stroke" Value="{DynamicResource ActionColor}"/></DataTrigger>
+   </Style.Triggers>
+  </Style>
+  <DataTemplate x:Key="BindingRow">
+   <DockPanel Margin="0,5" LastChildFill="True">
+    <Button DockPanel.Dock="Right" Content="{Binding HotkeyDisplay}" Command="{Binding CaptureCommand}" CommandParameter="{Binding Id}" MinWidth="52" MinHeight="36" FontFamily="Consolas" Padding="6,3"/>
+    <TextBlock Text="{Binding Name}" TextWrapping="Wrap" VerticalAlignment="Center" Margin="0,0,8,0"/>
+   </DockPanel>
+  </DataTemplate>
+ </UserControl.Resources>
+ <Grid Background="{DynamicResource WorkspaceMaterial}">
+  <Grid.ColumnDefinitions><ColumnDefinition x:Name="LibraryColumn" Width="240" MinWidth="220" MaxWidth="360"/><ColumnDefinition Width="5"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+  <Border Grid.Column="0" Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,1,0">
+   <Grid Margin="12"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+    <Border Margin="0,0,0,12" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="6" Background="{DynamicResource SurfaceBackground}"><Grid KeyboardNavigation.DirectionalNavigation="Cycle"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Button Content="Macros" Command="{Binding ShowScriptsTabCommand}" Style="{StaticResource LibraryTab}" Tag="{Binding IsScriptsTabVisible}"/><Button Grid.Column="1" Content="Shortcuts" Command="{Binding ShowHotkeysTabCommand}" Style="{StaticResource LibraryTab}" Tag="{Binding IsHotkeysTabVisible}"/><Button Grid.Column="2" Content="Log" Command="{Binding ShowLogTabCommand}" Style="{StaticResource LibraryTab}" Tag="{Binding IsLogTabVisible}"/><Border Grid.Column="1" Width="1" HorizontalAlignment="Left" Background="{DynamicResource ControlBorder}" IsHitTestVisible="False"/><Border Grid.Column="2" Width="1" HorizontalAlignment="Left" Background="{DynamicResource ControlBorder}" IsHitTestVisible="False"/></Grid></Border>
+    <Grid Grid.Row="1" Margin="0,0,0,12" Visibility="{Binding IsScriptsTabVisible, Converter={StaticResource BoolToVis}}">
+     <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="36"/></Grid.ColumnDefinitions>
+     <Button Grid.Column="2" ToolTip="{Binding SortOrderTooltip}" Command="{Binding ToggleSortOrderCommand}" Style="{StaticResource EditorButton}" Margin="0" Padding="0" AutomationProperties.Name="Change macro sort order"><Path Width="16" Height="16" Data="M 4,2 L 4,14 M 1,5 L 4,2 L 7,5 M 12,2 L 12,14 M 9,11 L 12,14 L 15,11" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"/></Button>
+     <Grid><TextBox x:Name="MacroSearchBox" Text="{Binding ScriptSearchText, UpdateSourceTrigger=PropertyChanged}" ToolTip="Search macros" AutomationProperties.Name="Search macros" MinHeight="36" Padding="33,6,8,6"/>
+      <Path Data="M 6,1 A 5,5 0 1 1 5.999,1 M 10,10 L 15,15" Width="16" Height="16" Stretch="Uniform" Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" HorizontalAlignment="Left" VerticalAlignment="Center" Margin="10,0,0,0" IsHitTestVisible="False"/>
+      <TextBlock Text="Search macros" Foreground="{DynamicResource TextSecondary}" Margin="34,0,8,0" VerticalAlignment="Center" IsHitTestVisible="False"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding Text, ElementName=MacroSearchBox}" Value=""><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+     </Grid>
+    </Grid>
+    <ListBox Grid.Row="2" ItemsSource="{Binding MacroScripts}" SelectedItem="{Binding SelectedScript}" ItemContainerStyle="{StaticResource LibraryRow}" BorderThickness="0" Background="Transparent" Visibility="{Binding IsScriptsTabVisible, Converter={StaticResource BoolToVis}}" ScrollViewer.CanContentScroll="True" ScrollViewer.HorizontalScrollBarVisibility="Disabled" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling">
+     <ListBox.ContextMenu><ContextMenu><MenuItem Header="Rename / properties" Command="{Binding ShowMacroPropertiesCommand}"/><MenuItem Header="Duplicate" Command="{Binding DuplicateMacroCommand}"/><MenuItem Header="Favorite" Command="{Binding FavoriteScriptCommand}"/><MenuItem Header="Enable / disable shortcut" Command="{Binding ToggleMacroStatusCommand}"/><MenuItem Header="Export…" Command="{Binding ExportMacroCommand}"/><Separator/><MenuItem Header="Delete macro" Command="{Binding DeleteMacroCommand}"/></ContextMenu></ListBox.ContextMenu>
+     <ListBox.ItemTemplate><DataTemplate><Grid Margin="3,3"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+      <TextBlock Text="{Binding Name}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" ToolTip="{Binding Name}" Margin="0,0,8,3"/>
+      <Border Grid.Column="1" Background="{DynamicResource KeyPillBackground}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1" CornerRadius="4" Padding="5,2" VerticalAlignment="Center"><Border.Style><Style TargetType="Border"><Style.Triggers><DataTrigger Binding="{Binding Hotkey}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></Border.Style><TextBlock Text="{Binding Hotkey}" FontSize="11" Foreground="{DynamicResource TextSecondary}"/></Border>
+      <StackPanel Grid.Row="1" Orientation="Horizontal"><Ellipse Width="6" Height="6" Margin="0,0,6,0" VerticalAlignment="Center"><Ellipse.Style><Style TargetType="Ellipse"><Setter Property="Fill" Value="{DynamicResource DisabledForeground}"/><Style.Triggers><DataTrigger Binding="{Binding IsActive}" Value="True"><Setter Property="Fill" Value="{DynamicResource ActionFlow}"/></DataTrigger></Style.Triggers></Style></Ellipse.Style></Ellipse><TextBlock Text="{Binding ActionCount, StringFormat={}{0} actions}" FontSize="12" Foreground="{DynamicResource TextSecondary}"/></StackPanel>
+      <TextBlock Grid.Row="1" Grid.Column="1" Text="Running" Foreground="{DynamicResource AccentSuccess}" FontSize="12" Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"/>
+     </Grid></DataTemplate></ListBox.ItemTemplate>
+    </ListBox>
+    <ScrollViewer Grid.Row="2" VerticalScrollBarVisibility="Auto" Visibility="{Binding IsHotkeysTabVisible, Converter={StaticResource BoolToVis}}"><StackPanel>
+     <TextBlock Text="Global shortcuts" FontWeight="SemiBold" Margin="0,0,0,8"/><TextBlock Text="Click a key to change it. Press Esc to cancel. Panic Stop may use Esc." TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,12"/>
+     <ItemsControl ItemsSource="{Binding AppKeybinds}" ItemTemplate="{StaticResource BindingRow}"/><TextBlock Text="Macros" FontWeight="SemiBold" Margin="0,16,0,8"/><ItemsControl ItemsSource="{Binding MacroKeybinds}" ItemTemplate="{StaticResource BindingRow}"/>
+    </StackPanel></ScrollViewer>
+    <ListBox Grid.Row="2" ItemsSource="{Binding ActivityLogs}" Visibility="{Binding IsLogTabVisible, Converter={StaticResource BoolToVis}}" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled"><ListBox.ItemTemplate><DataTemplate><TextBlock Text="{Binding}" TextWrapping="Wrap" FontSize="12" Margin="0,4"/></DataTemplate></ListBox.ItemTemplate></ListBox>
+    <Border Grid.Row="3" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Margin="0,12,0,0" Padding="0,12,0,0"><StackPanel>
+     <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="8"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Button Command="{Binding NewMacroCommand}" Style="{StaticResource EditorButton}" Margin="0" Padding="3,5" IsEnabled="{Binding CanEditMacro}" AutomationProperties.Name="New macro"><StackPanel Orientation="Horizontal"><Path Data="M 6,0 L 6,12 M 0,6 L 12,6" Width="16" Height="16" Stretch="Uniform" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="New macro" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/></StackPanel></Button><Button Grid.Column="2" Command="{Binding LoadMacroCommand}" Style="{StaticResource EditorButton}" Margin="0" Padding="3,5" IsEnabled="{Binding CanImportMacro}" AutomationProperties.Name="Import macro"><StackPanel Orientation="Horizontal"><Path Data="M 5,0 L 12,0 L 12,12 L 5,12 M 0,6 L 8,6 M 5,3 L 8,6 L 5,9" Width="16" Height="16" Stretch="Uniform" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeLineJoin="Round" VerticalAlignment="Center" Margin="0,0,8,0"/><TextBlock Text="Import…" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/></StackPanel></Button></Grid>
+     <Grid Margin="0,8,0,0" Visibility="{Binding HasDeletedMacro, Converter={StaticResource BoolToVis}}"><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions><TextBlock Text="{Binding DeletedMacroNotice}" TextWrapping="Wrap" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,8,0" VerticalAlignment="Center"/><Button Grid.Column="1" Content="Undo" Command="{Binding UndoDeleteMacroCommand}" Style="{StaticResource EditorButton}" Margin="0" VerticalAlignment="Center"/></Grid>
+    </StackPanel></Border>
+   </Grid>
+  </Border>
+  <GridSplitter Grid.Column="1" Width="5" HorizontalAlignment="Stretch" Background="Transparent" DragCompleted="LibrarySplitter_DragCompleted"/>
+  <Grid Grid.Column="2"><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+   <Border Background="{DynamicResource HeaderMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="12,7"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+    <StackPanel Margin="0,0,12,0"><TextBlock Text="{Binding MacroName}" FontSize="17" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding MacroName}"/><WrapPanel Margin="0,2,0,0"><TextBlock Text="{Binding TotalActionsCount, StringFormat={}{0} actions}" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,10,0"/><TextBlock Text="{Binding CurrentHotkey}" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,10,0"/><TextBlock Text="{Binding SaveStateText}" FontSize="12" ToolTip="{Binding EditingAvailabilityText}"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Style.Triggers><DataTrigger Binding="{Binding SaveStateText}" Value="Unapplied changes"><Setter Property="Foreground" Value="{DynamicResource AccentWarning}"/></DataTrigger><DataTrigger Binding="{Binding SaveStateText}" Value="Unsaved macro changes"><Setter Property="Foreground" Value="{DynamicResource AccentWarning}"/></DataTrigger><DataTrigger Binding="{Binding SaveStateText}" Value="Save failed"><Setter Property="Foreground" Value="{DynamicResource AccentDanger}"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></WrapPanel></StackPanel>
+    <WrapPanel Grid.Column="1" VerticalAlignment="Center"><Button Content="{Binding MacroStatusButtonText}" Command="{Binding ToggleMacroStatusCommand}" ToolTip="Enable this macro and its global shortcut" Style="{StaticResource EditorButton}" IsEnabled="{Binding CanEditMacro}"/><Button Content="Properties" Command="{Binding ShowMacroPropertiesCommand}" Style="{StaticResource EditorButton}" ToolTip="Macro name, shortcut and repeat settings"/><Button Content="{Binding ToggleActionEditorLabel}" Command="{Binding ToggleActionEditorCommand}" Style="{StaticResource EditorButton}"/></WrapPanel>
+   </Grid></Border>
+   <Border Grid.Row="1" Background="{DynamicResource HeaderMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="12,6"><StackPanel>
+    <WrapPanel><Button Content="{Binding PrimaryTransportText}" Command="{Binding PrimaryTransportCommand}" Style="{StaticResource EditorPrimary}"/>
+     <Button Content="■ Stop" Command="{Binding StopCommand}" Style="{StaticResource EditorStop}" ToolTip="Stop the current macro or recording"/>
+     <Button x:Name="RecordToggleButton" Command="{Binding RecordCommand}" Style="{StaticResource EditorButton}" AutomationProperties.Name="{Binding RecordingButtonText}"><StackPanel Orientation="Horizontal"><Ellipse Width="10" Height="10" Fill="{DynamicResource AccentDanger}" VerticalAlignment="Center" Margin="0,0,7,0"/><TextBlock Text="{Binding RecordingButtonText}" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}"/></StackPanel></Button>
+     <Border Width="1" Height="22" Background="{DynamicResource ControlBorder}" Margin="5,0,10,0"/>
+     <TextBlock Text="Speed" Margin="0,0,6,0" VerticalAlignment="Center"/><TextBox Text="{Binding PlaybackSpeed, UpdateSourceTrigger=LostFocus, StringFormat=0.0}" Width="55" MinHeight="36" IsEnabled="{Binding CanEditMacro}" ToolTip="Playback speed multiplier"/><TextBlock Text="×" VerticalAlignment="Center" Margin="4,0,12,0"/>
+     <CheckBox Content="Repeat" IsChecked="{Binding RepeatUntilStopped}" IsEnabled="{Binding CanEditMacro}" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="Repeat until you stop the macro. Change the fixed repeat count in Macro properties."/>
+     <CheckBox Content="Follow" IsChecked="{Binding FollowCurrentAction}" VerticalAlignment="Center" Margin="0,0,12,0" ToolTip="Scroll to the current action during playback"/>
+     <TextBlock Text="{Binding InputTargetText}" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" FontSize="12"/>
+    </WrapPanel>
+    <TextBlock Text="{Binding LastExecutionError}" Visibility="{Binding HasExecutionError, Converter={StaticResource BoolToVis}}" Foreground="{DynamicResource AccentDanger}" FontSize="12" TextWrapping="Wrap" Margin="0,6,0,0"/>
+   </StackPanel></Border>
+   <WrapPanel Grid.Row="2" Margin="12,6" ToolTip="{Binding DragDestinationText}">
+    <Grid Width="145" Margin="0,0,4,0"><TextBox x:Name="ActionSearchBox" Text="{Binding ActionSearchText, UpdateSourceTrigger=PropertyChanged}" MinHeight="36" KeyDown="ActionSearchBox_KeyDown" ToolTip="Find an action (Ctrl+F); press Enter for the next match" AutomationProperties.Name="Find action"/>
+     <TextBlock Text="Find action…" Foreground="{DynamicResource TextSecondary}" Margin="9,0" VerticalAlignment="Center" IsHitTestVisible="False"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding Text, ElementName=ActionSearchBox}" Value=""><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+    </Grid>
+    <Button Content="↓" Command="{Binding FindNextActionCommand}" Style="{StaticResource EditorButton}" ToolTip="Next search match (Enter)" AutomationProperties.Name="Next search match"/>
+    <Border Width="1" Height="22" Background="{DynamicResource ControlBorder}" Margin="2,0,8,0"/>
+    <Button Click="AddMoreActionsButton_Click" Style="{StaticResource EditorButton}" IsEnabled="{Binding CanEditMacro}"><Button.Content><StackPanel Orientation="Horizontal"><TextBlock Text="+ Add action" Foreground="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" VerticalAlignment="Center"/><Path Width="16" Height="16" Margin="8,0,0,0" Data="M 3,6 L 8,11 L 13,6" Stroke="{Binding Foreground, RelativeSource={RelativeSource AncestorType=Button}}" StrokeThickness="1.5" StrokeStartLineCap="Round" StrokeEndLineCap="Round" StrokeLineJoin="Round" VerticalAlignment="Center"/></StackPanel></Button.Content><Button.ContextMenu><ContextMenu>
+     <MenuItem Header="Mouse click" Command="{Binding AddClickCommand}"/><MenuItem Header="Key press" Command="{Binding AddKeypressCommand}"/><MenuItem Header="Wait / delay" Command="{Binding AddDelayCommand}"/><Separator/>
+     <MenuItem Header="Wait / repeat image" Command="{Binding AddImageCommand}"/><MenuItem Header="If condition" Command="{Binding AddIfCommand}"/><MenuItem Header="While condition" Command="{Binding AddWhileCommand}"/><MenuItem Header="Repeat until present" Command="{Binding AddRepeatUntilCommand}"/><MenuItem Header="Repeat until gone" Command="{Binding AddRepeatUntilGoneCommand}"/><MenuItem Header="Color condition" Command="{Binding AddColorConditionCommand}"/><MenuItem Header="Visual wait" Command="{Binding AddVisualWaitCommand}"/><MenuItem Header="AI vision instruction" Command="{Binding AddAIStepCommand}"/><MenuItem Header="Camera sweep" Command="{Binding InsertActionKindCommand}" CommandParameter="10"/><MenuItem Header="Camera path" Command="{Binding InsertActionKindCommand}" CommandParameter="11"/>
+    </ContextMenu></Button.ContextMenu></Button>
+    <Button Content="⧉" Command="{Binding DuplicateStepCommand}" Style="{StaticResource EditorButton}" ToolTip="Duplicate action or block (Ctrl+D)" AutomationProperties.Name="Duplicate selected action or block"/>
+    <Button Content="×" Command="{Binding RemoveStepCommand}" Style="{StaticResource EditorButton}" ToolTip="Delete action or block (Delete)" AutomationProperties.Name="Delete selected action or block"/>
+    <Border Width="1" Height="22" Background="{DynamicResource ControlBorder}" Margin="2,0,8,0"/>
+    <Button Content="Undo" Command="{Binding UndoEditCommand}" Style="{StaticResource EditorButton}"/><Button Content="Redo" Command="{Binding RedoEditCommand}" Style="{StaticResource EditorButton}"/>
+    <Button Content="Generate with AI" Command="{Binding DataContext.GenerateMacroWithAICommand, RelativeSource={RelativeSource AncestorType=Window}}" Style="{StaticResource EditorButton}" ToolTip="Describe a macro, review the generated steps, then save it to your library"/>
+   </WrapPanel>
+   <Grid x:Name="ActionWorkspaceGrid" Grid.Row="3" SizeChanged="ActionWorkspaceGrid_SizeChanged"><Grid.ColumnDefinitions><ColumnDefinition Width="*" MinWidth="180"/><ColumnDefinition Width="5"/><ColumnDefinition x:Name="EditorColumn" Width="320"/></Grid.ColumnDefinitions>
+    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/></Grid.RowDefinitions>
+     <Border Background="{DynamicResource HeaderMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,1" Padding="8,5" ToolTip="{Binding DragDestinationText}"><Grid Margin="0,0,12,0"><Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions><TextBlock Text="#" Foreground="{DynamicResource TextSecondary}" FontSize="12"/><TextBlock Grid.Column="1" Text="Action / parameters" Margin="52,0,0,0" Foreground="{DynamicResource TextSecondary}" FontSize="12"/><TextBlock Grid.Column="2" Text="Delay" HorizontalAlignment="Right" Foreground="{DynamicResource TextSecondary}" FontSize="12"/></Grid></Border>
+     <ListBox Grid.Row="1" x:Name="ActionSequenceList" AlternationCount="2" ItemsSource="{Binding OutlineRows}" SelectedItem="{Binding SelectedStep}" ItemContainerStyle="{StaticResource FlatEditorRow}" Background="Transparent" BorderThickness="0" ScrollViewer.HorizontalScrollBarVisibility="Disabled" ScrollViewer.VerticalScrollBarVisibility="Auto" ScrollViewer.CanContentScroll="True" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" VirtualizingPanel.ScrollUnit="Pixel" VirtualizingPanel.CacheLength="1,1" ScrollViewer.IsDeferredScrollingEnabled="True" ScrollViewer.ScrollChanged="ActionSequenceList_ScrollChanged" dd:DragDrop.IsDragSource="True" dd:DragDrop.IsDropTarget="True" dd:DragDrop.DropHandler="{Binding}">
+     <ListBox.ItemsPanel><ItemsPanelTemplate><VirtualizingStackPanel/></ItemsPanelTemplate></ListBox.ItemsPanel>
+     <ListBox.ContextMenu><ContextMenu><MenuItem Header="Duplicate action / block" InputGestureText="Ctrl+D" Command="{Binding DuplicateStepCommand}"/><MenuItem Header="Delete action / block" InputGestureText="Del" Command="{Binding RemoveStepCommand}"/><Separator/><MenuItem Header="Move up in this scope" InputGestureText="Ctrl+Up" Command="{Binding MoveUpCommand}"/><MenuItem Header="Move down in this scope" InputGestureText="Ctrl+Down" Command="{Binding MoveDownCommand}"/><MenuItem Header="Move to start of scope" Command="{Binding MoveToTopCommand}"/><MenuItem Header="Move to end of scope" Command="{Binding MoveToBottomCommand}"/></ContextMenu></ListBox.ContextMenu>
+     <ListBox.ItemTemplate><DataTemplate><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="36"/><ColumnDefinition Width="*"/><ColumnDefinition Width="64"/></Grid.ColumnDefinitions>
+      <TextBlock Text="{Binding StepIndex, StringFormat=00}" FontFamily="Consolas" Foreground="{DynamicResource TextSecondary}" FontSize="12" VerticalAlignment="Center"/>
+      <Border Grid.Column="1" Margin="{Binding OutlineIndent}" BorderBrush="{DynamicResource ControlBorder}" BorderThickness="1,0,0,0">
+       <Grid Margin="2,0,6,0"><Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="26"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+        <Button Command="{Binding DataContext.ToggleBlockCommand, RelativeSource={RelativeSource AncestorType=ListBox}}" CommandParameter="{Binding}" Visibility="{Binding HasChildren, Converter={StaticResource BoolToVis}}" Style="{StaticResource BlockChevron}" ToolTip="Expand or collapse this block" AutomationProperties.Name="Expand or collapse block"><Path Width="16" Height="16" Stroke="{DynamicResource TextSecondary}" StrokeThickness="1.5" StrokeLineJoin="Round" StrokeStartLineCap="Round" StrokeEndLineCap="Round"><Path.Style><Style TargetType="Path"><Setter Property="Data" Value="M 6,3 L 11,8 L 6,13"/><Style.Triggers><DataTrigger Binding="{Binding IsBlockExpanded}" Value="True"><Setter Property="Data" Value="M 3,6 L 8,11 L 13,6"/></DataTrigger></Style.Triggers></Style></Path.Style></Path></Button>
+        <Grid Grid.Column="1" Width="16" Height="16" VerticalAlignment="Center" HorizontalAlignment="Center" ToolTip="{Binding TypeLabel}"><Path Data="{Binding TypeIconData}" Style="{StaticResource ActionTypeIcon}" VerticalAlignment="Center" HorizontalAlignment="Center"/></Grid>
+        <Grid Grid.Column="2" Margin="5,0,0,0" Tag="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ListBox}, Converter={StaticResource CompactActionLayout}}">
+         <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+         <StackPanel x:Name="ActionNamePanel" Orientation="Vertical" VerticalAlignment="Center" Margin="0,0,8,0"><TextBlock Text="{Binding ReadableName}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" ToolTip="{Binding ReadableName}"/><TextBlock Text="{Binding ScopeLabel}" FontSize="10" Foreground="{DynamicResource TextSecondary}"><TextBlock.Style><Style TargetType="TextBlock"><Style.Triggers><DataTrigger Binding="{Binding ScopeLabel}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></StackPanel>
+         <TextBlock x:Name="Parameters" Grid.Column="1" Text="{Binding ReadableValues}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextTrimming="CharacterEllipsis" VerticalAlignment="Center" ToolTip="{Binding ParameterTokens}"/>
+         <TextBlock x:Name="ActionStatus" Grid.Row="2" Grid.ColumnSpan="2" Text="{Binding StatusLabel}" FontSize="11" ToolTip="{Binding FailureMessage}"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource ActionFlow}"/><Style.Triggers><DataTrigger Binding="{Binding StatusLabel}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger><DataTrigger Binding="{Binding HasFailure}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentDanger}"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+        </Grid>
+       </Grid>
+      </Border>
+      <TextBlock Grid.Column="2" Text="{Binding TimingOffset}" FontFamily="Consolas" FontSize="11" Foreground="{DynamicResource TextSecondary}" Margin="6,0,0,0" HorizontalAlignment="Right" VerticalAlignment="Center"/>
+     </Grid><DataTemplate.Triggers><DataTrigger Binding="{Binding ActualWidth, RelativeSource={RelativeSource AncestorType=ListBox}, Converter={StaticResource CompactActionLayout}}" Value="True"><Setter TargetName="ActionNamePanel" Property="Grid.ColumnSpan" Value="2"/><Setter TargetName="Parameters" Property="Grid.Row" Value="1"/><Setter TargetName="Parameters" Property="Grid.Column" Value="0"/><Setter TargetName="Parameters" Property="Grid.ColumnSpan" Value="2"/></DataTrigger></DataTemplate.Triggers></DataTemplate></ListBox.ItemTemplate>
+    </ListBox><TextBlock Grid.Row="1" Text="Add an action, record input, or generate a macro with AI." TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" HorizontalAlignment="Center" VerticalAlignment="Center" Margin="24" Visibility="{Binding HasNoSteps, Converter={StaticResource BoolToVis}}"/>
+    <Button Grid.Row="1" Content="Resume recording follow" Command="{Binding ResumeRecordingFollowCommand}" Visibility="{Binding ShowResumeFollowBanner, Converter={StaticResource BoolToVis}}" VerticalAlignment="Bottom" HorizontalAlignment="Right" Margin="8"/>
+    </Grid>
+    <GridSplitter x:Name="EditorSplitter" Grid.Column="1" Width="5" HorizontalAlignment="Stretch" VerticalAlignment="Stretch" Background="Transparent" DragCompleted="EditorSplitter_DragCompleted"/>
+                <Border x:Name="ActionEditorPanel"
+                        Grid.Column="2"
+                        Background="{DynamicResource PanelMaterial}"
+                        BorderBrush="{DynamicResource BorderBrushLight}"
+                        BorderThickness="1,0,0,0"
+                        CornerRadius="0"
+                        Padding="12,10">
+                    <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+                        <TextBlock Text="{Binding InspectorTitle}" FontSize="14" FontWeight="SemiBold" Margin="0,0,0,12"/>
+                        <ScrollViewer Grid.Row="1" HorizontalScrollBarVisibility="Disabled" Visibility="{Binding ShowMacroProperties, Converter={StaticResource BoolToVis}}" VerticalScrollBarVisibility="Auto">
+                            <StackPanel IsEnabled="{Binding CanEditMacro}">
+                                <TextBlock Text="Name" Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBox Text="{Binding MacroName, UpdateSourceTrigger=PropertyChanged}" Margin="0,4,0,12"/>
+                                <TextBlock Text="Description" Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBox Text="{Binding Description, UpdateSourceTrigger=PropertyChanged}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="72" Margin="0,4,0,12"/>
+                                <TextBlock Text="Global shortcut" Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBox Text="{Binding CurrentHotkey}" PreviewKeyDown="HotkeyInputBox_PreviewKeyDown" GotFocus="HotkeyInputBox_GotFocus" LostFocus="HotkeyInputBox_LostFocus" Margin="0,4,0,12"/>
+                                                                <TextBlock Text="Target" Foreground="{DynamicResource TextSecondary}"/>
+                                <ComboBox ItemsSource="{Binding TargetModes}" SelectedIndex="{Binding TargetModeIndex}" Margin="0,4,0,8"/>
+                                <TextBlock Text="{Binding TargetWindowDisplay}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,6"/>
+                                <Button Content="Refresh target windows" Command="{Binding RefreshTargetWindowsCommand}" HorizontalAlignment="Left" Margin="0,0,0,6"/>
+                                <ComboBox ItemsSource="{Binding AvailableTargetWindows}" SelectedItem="{Binding SelectedTargetWindow}" DisplayMemberPath="Title" Margin="0,0,0,8"/>
+                                <TextBlock Text="Window targets pause if focus changes. Screen mode uses desktop coordinates; window modes use their client coordinates. Choose the target before recording." TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,12"/>
+                                <CheckBox Content="Repeat until stopped" IsChecked="{Binding RepeatUntilStopped}" Margin="0,0,0,8"/>
+                                <TextBlock Text="Repeat count" Foreground="{DynamicResource TextSecondary}"/>
+                                <TextBox Text="{Binding RepeatCountInputText, UpdateSourceTrigger=LostFocus}" IsEnabled="{Binding CanEditRepeatCount}" Margin="0,4,0,12"/>
+                                <TextBlock Text="Failures stop the macro and show a diagnostic. Conditions can override outcome handling in their action properties." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                            </StackPanel>
+                        </ScrollViewer>                        <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled"
+                                      Visibility="{Binding ActionEditor.HasSelection, Converter={StaticResource BoolToVis}}">
+                            <StackPanel IsEnabled="{Binding CanEditMacro}">
+                                <TextBlock Text="Action Type" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                <ComboBox x:Name="ActionTypeCombo"
+                                          ItemsSource="{Binding ActionEditor.KindNames}"
+                                          SelectedIndex="{Binding ActionEditor.KindIndex}"
+                                          SelectionChanged="ActionTypeCombo_SelectionChanged"
+                                          Margin="0,0,0,12"/>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowWaitFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Duration (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.DurationMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowTrajectoryFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Each signed peak is the farthest look in that direction. Edit a side and Apply to stretch it. 0 means that direction was not recorded — look both ways while holding. Look gain goes up to 10." FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,8" TextWrapping="Wrap"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <Grid.RowDefinitions>
+                                            <RowDefinition Height="Auto"/>
+                                            <RowDefinition Height="Auto"/>
+                                        </Grid.RowDefinitions>
+                                        <StackPanel Grid.Row="0" Grid.Column="0" Margin="0,0,0,8">
+                                            <TextBlock Text="Look X- (left)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.LookPeakXMin, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="Farthest left look. Apply stretches only the negative-X side."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="0" Grid.Column="2" Margin="0,0,0,8">
+                                            <TextBlock Text="Look X+ (right)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.LookPeakXMax, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="Farthest right look. Apply stretches only the positive-X side."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="0">
+                                            <TextBlock Text="Look Y- (up)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.LookPeakYMin, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="Farthest upward look. Apply stretches only the negative-Y side."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Row="1" Grid.Column="2">
+                                            <TextBlock Text="Look Y+ (down)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.LookPeakYMax, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="Farthest downward look. Apply stretches only the positive-Y side."/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Text="Duration (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.DurationMs}" IsReadOnly="True" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Playback mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.TrajectoryModeIndex}" Margin="0,0,0,8"
+                                              ToolTip="Reconstructed is the smooth mode: it filters lock-cursor chatter and plays the path at a steady rate. Packet reference replays the raw captured deltas, including recording noise — use it only to compare.">
+                                        <ComboBoxItem Content="Reconstructed (smooth)"/>
+                                        <ComboBoxItem Content="Packet reference (raw)"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Playback rate" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.TrajectoryHzIndex}" Margin="0,0,0,8"
+                                              ToolTip="How often reconstructed playback samples the path. 125 Hz is the usual choice. 250 Hz is finer but will also replay leftover 1-pixel noise more often.">
+                                        <ComboBoxItem Content="60 Hz"/>
+                                        <ComboBoxItem Content="125 Hz"/>
+                                        <ComboBoxItem Content="250 Hz"/>
+                                    </ComboBox>
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Look gain X" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.SensitivityX, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="1 = recorded speed and size. Range is 0.25–10."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Look gain Y" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.SensitivityY, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="1 = recorded speed and size. Range is 0.25–10. Keep the same as X unless one axis is short."/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowSweepFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Camera look — one smooth relative turn. Down/Up around this step keep the button held." FontSize="12" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,8" TextWrapping="Wrap"/>
+                                    <TextBlock Text="Profile" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.ProfileIndex}" Margin="0,0,0,8"
+                                              ToolTip="Precise = linear 240 Hz. Smooth = SmootherStep + Y filter. Cinematic = slower ease. Custom = your mix.">
+                                        <ComboBoxItem Content="Precise"/>
+                                        <ComboBoxItem Content="Smooth"/>
+                                        <ComboBoxItem Content="Cinematic"/>
+                                        <ComboBoxItem Content="Custom"/>
+                                    </ComboBox>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Horizontal (dx)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.X, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Vertical (dy)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.Y, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Text="Duration (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.DurationMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Playback rate" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <ComboBox SelectedIndex="{Binding ActionEditor.PlaybackHzIndex}">
+                                                <ComboBoxItem Content="120 Hz"/>
+                                                <ComboBoxItem Content="144 Hz"/>
+                                                <ComboBoxItem Content="240 Hz"/>
+                                            </ComboBox>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Motion" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <ComboBox SelectedIndex="{Binding ActionEditor.InterpolationIndex}">
+                                                <ComboBoxItem Content="Linear"/>
+                                                <ComboBoxItem Content="Smooth"/>
+                                                <ComboBoxItem Content="Ease In/Out"/>
+                                                <ComboBoxItem Content="Bezier"/>
+                                                <ComboBoxItem Content="SmootherStep"/>
+                                            </ComboBox>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Horizontal smoothing" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.HorizontalSmoothing, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="0–100. Blends the curve toward SmootherStep on horizontal-dominant looks."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Vertical smoothing" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.VerticalSmoothing, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="0–100. Used when the look is mostly vertical. X and Y always share one curve so they cannot drift apart."/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <CheckBox Content="Vertical jitter filter" IsChecked="{Binding ActionEditor.FilterVerticalJitter}" Margin="0,0,0,4" Foreground="{DynamicResource TextPrimary}"
+                                              ToolTip="Only strips a couple of Y pixels from a wide horizontal turn (e.g. -300,+2). Slow look up/down is kept."/>
+                                    <CheckBox Content="Horizontal jitter filter" IsChecked="{Binding ActionEditor.FilterHorizontalJitter}" Margin="0,0,0,8" Foreground="{DynamicResource TextPrimary}"
+                                              ToolTip="Same idea for tiny dx on a mostly vertical look."/>
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="Sensitivity X" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.SensitivityX, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="1 = recorded width. 2 = twice as far. 0.5 = half."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Sensitivity Y" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.SensitivityY, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"
+                                                     ToolTip="Independent vertical scale. Games often need a lower Y than X."/>
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowPointFields, Converter={StaticResource BoolToVis}}">
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="X" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.X, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Y" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.Y, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Margin="0,0,0,8" Visibility="{Binding ActionEditor.ShowDetectionRegionFields, Converter={StaticResource BoolToVis}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="W" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.Width, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="H" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.Height, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <Button Command="{Binding ActionEditor.ArmPickLocationCommand}"
+                                            Content="{Binding ActionEditor.PickLocationButtonText}"
+                                            Style="{StaticResource PillButton}"
+                                            HorizontalAlignment="Stretch"
+                                            Padding="10,6"
+                                            Margin="0,0,0,6"
+                                            ToolTip="Aim anywhere, then press Tab to save those coordinates. Esc cancels."/>
+                                    <TextBlock Text="{Binding ActionEditor.PickHint}" FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowClickFields, Converter={StaticResource BoolToVis}}">
+                                    <CheckBox Content="Click detected image" IsChecked="{Binding ActionEditor.ClickDetectedImage}"
+                                              Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,8"
+                                              ToolTip="Uses the center of the latest matched image plus the offsets shown below. Positive X moves right and positive Y moves down. Apply to save."/>
+                                    <TextBlock Text="Uses the detected image's center. Adjust the offsets to click a button inside a larger image."
+                                               Visibility="{Binding ActionEditor.ClickDetectedImage, Converter={StaticResource BoolToVis}}"
+                                               FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    <Grid Margin="0,0,0,12" Visibility="{Binding ActionEditor.ShowClickOffsetFields, Converter={StaticResource BoolToVis}}">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <StackPanel Grid.Column="0">
+                                            <TextBlock Text="X offset (pixels)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.ClickOffsetX, UpdateSourceTrigger=LostFocus}" Padding="8,5"
+                                                     ToolTip="Added to the detected image center or X variable. Positive moves right; negative moves left. Default: 0."/>
+                                        </StackPanel>
+                                        <StackPanel Grid.Column="2">
+                                            <TextBlock Text="Y offset (pixels)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                            <TextBox Text="{Binding ActionEditor.ClickOffsetY, UpdateSourceTrigger=LostFocus}" Padding="8,5"
+                                                     ToolTip="Added to the detected image center or Y variable. Positive moves down; negative moves up. Default: 0."/>
+                                        </StackPanel>
+                                    </Grid>
+                                    <TextBlock Text="Button" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.MouseButtonIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Left"/>
+                                        <ComboBoxItem Content="Right"/>
+                                        <ComboBoxItem Content="Middle"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Click" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.ClickCountIndex}" Margin="0,0,0,12">
+                                        <ComboBoxItem Content="Single"/>
+                                        <ComboBoxItem Content="Double"/>
+                                    </ComboBox>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowCoordinateVariableFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Optional coordinate variables" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,12">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/>
+                                            <ColumnDefinition Width="8"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding ActionEditor.XVariable, UpdateSourceTrigger=LostFocus}" Padding="8,5"
+                                                 ToolTip="Example: $LastDetectedX or $Vision.LastDetectedX"/>
+                                        <TextBox Grid.Column="2" Text="{Binding ActionEditor.YVariable, UpdateSourceTrigger=LostFocus}" Padding="8,5"
+                                                 ToolTip="Example: $LastDetectedY or $Vision.LastDetectedY"/>
+                                    </Grid>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowKeyFields, Converter={StaticResource BoolToVis}}">
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.StrokeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Press (down+up)"/>
+                                        <ComboBoxItem Content="Key Down"/>
+                                        <ComboBoxItem Content="Key Up"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Key" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.KeyName, Mode=OneWay}" IsReadOnly="True" Margin="0,0,0,6"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <Button Command="{Binding ActionEditor.ArmCaptureKeyCommand}" Content="{Binding ActionEditor.CaptureKeyButtonText}"
+                                            Style="{StaticResource PillButton}" Padding="10,6" Margin="0,0,0,12"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowVisualFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Search Mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.SearchModeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Fixed Region"/>
+                                        <ComboBoxItem Content="Nearby Region"/>
+                                        <ComboBoxItem Content="Entire Screen"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Target color (sRGB)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding ActionEditor.R, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="2" Text="{Binding ActionEditor.G, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="4" Text="{Binding ActionEditor.B, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                    </Grid>
+                                    <TextBlock Text="Similarity %" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.SimilarityPercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Minimum matching pixels %" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.MinimumMatchPercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Timeout (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.TimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Check interval (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PollIntervalMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Required confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="False confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredFalseConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Stability (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.StabilityDurationMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Extra palette colors (OR match, #RRGGBB,#RRGGBB)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PaletteText, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Detection mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.DetectionModeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="RGB per-channel"/>
+                                        <ComboBoxItem Content="HSV"/>
+                                        <ComboBoxItem Content="Perceptual CIE76"/>
+                                        <ComboBoxItem Content="Perceptual CIEDE2000"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Sample stride" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.SampleStride, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="On Timeout" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.OnTimeoutIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Stop"/>
+                                        <ComboBoxItem Content="Skip"/>
+                                        <ComboBoxItem Content="Retry"/>
+                                    </ComboBox>
+                                    <CheckBox Content="Maximum accuracy" IsChecked="{Binding ActionEditor.MaximumAccuracy}" Margin="0,0,0,12" Foreground="{DynamicResource TextPrimary}"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowColorFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Target color (sRGB)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding ActionEditor.R, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="2" Text="{Binding ActionEditor.G, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="4" Text="{Binding ActionEditor.B, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                    </Grid>
+                                    <TextBlock Text="Extra palette colors (OR match, #RRGGBB,#RRGGBB)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PaletteText, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Tolerance" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.Tolerance, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Detection mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.DetectionModeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="RGB per-channel"/>
+                                        <ComboBoxItem Content="HSV"/>
+                                        <ComboBoxItem Content="Perceptual CIE76"/>
+                                        <ComboBoxItem Content="Perceptual CIEDE2000"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Minimum match %" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.MinimumMatchPercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Check interval (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PollIntervalMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Required confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="False confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredFalseConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Stability (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.StabilityDurationMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Sample stride" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.SampleStride, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Failure policy" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.FailurePolicyIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Stop"/>
+                                        <ComboBoxItem Content="Skip"/>
+                                        <ComboBoxItem Content="Retry"/>
+                                        <ComboBoxItem Content="Default"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Timeout (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.TimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <CheckBox Content="Wait while (until the color is gone)"
+                                              IsChecked="{Binding ActionEditor.WaitWhile}"
+                                              Margin="0,0,0,12"
+                                              Foreground="{DynamicResource TextPrimary}"
+                                              ToolTip="Off = wait until the color is present. On = wait while it is present, then continue once it disappears."/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowImageFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Target image" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                    <Image Source="{Binding ActionEditor.TemplatePreview}" MaxHeight="80" Stretch="Uniform" HorizontalAlignment="Left" Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding ActionEditor.ImageTemplateDimensions}" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBlock Text="{Binding ActionEditor.ImageTemplateSummary}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <WrapPanel Margin="0,0,0,4">
+                                        <Button Content="Capture image" Command="{Binding ActionEditor.CaptureTargetImageCommand}" Margin="0,0,8,4" ToolTip="Capture a screen image, then place its search area."/>
+                                        <Button Content="Import image…" Command="{Binding ActionEditor.ImportImageTemplateCommand}" Margin="0,0,0,4" ToolTip="Choose a saved image, then place a search area at its original pixel size."/>
+                                    </WrapPanel>
+                                    <TextBlock Text="Minimum confidence (%)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,4,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.ImageConfidencePercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,16" ToolTip="50–100%. Higher values require a closer visual match." AutomationProperties.Name="Image minimum confidence percent"/>
+
+                                    <TextBlock Text="Search area" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.ImageScopeNames}" SelectedIndex="{Binding ActionEditor.ImageScopeIndex}" Margin="0,0,0,8" AutomationProperties.Name="Image search scope"/>
+                                    <StackPanel>
+                                        <StackPanel.Style><Style TargetType="StackPanel"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding ActionEditor.ImageScopeIndex}" Value="3"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></StackPanel.Style>
+                                        <TextBlock Text="Display" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                        <ComboBox ItemsSource="{Binding ActionEditor.ImageMonitorNames}" SelectedIndex="{Binding ActionEditor.ImageMonitorIndex}" Margin="0,0,0,8" AutomationProperties.Name="Image search display"/>
+                                    </StackPanel>
+                                    <TextBlock Text="{Binding ActionEditor.ImageSearchAreaSummary}" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,6"/>
+                                    <WrapPanel Margin="0,0,0,4">
+                                        <Button Content="Show area" Command="{Binding ActionEditor.ShowImageSearchAreaCommand}" Margin="0,0,8,4"/>
+                                        <Button Content="Move area" Command="{Binding ActionEditor.MoveImageSearchAreaCommand}" Margin="0,0,8,4"/>
+                                        <Button Content="Choose area" Command="{Binding ActionEditor.ChooseImageSearchAreaCommand}" Margin="0,0,8,4"/>
+                                        <Button Content="Use default area" Command="{Binding ActionEditor.ResetImageSearchAreaCommand}" Margin="0,0,0,4"/>
+                                    </WrapPanel>
+                                    <TextBlock Text="The whole template must fit. Smaller search areas use fewer resources." FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    <TextBlock Text="Scan resolution" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.ImageResolutionNames}" SelectedIndex="{Binding ActionEditor.ImageResolutionIndex}" Margin="0,0,0,16" AutomationProperties.Name="Image scan resolution"/>
+                                    <TextBlock Text="{Binding ActionEditor.DraftError}" FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource AccentDanger}" Margin="0,0,0,8"/>
+
+                                    <TextBlock Text="Detection behavior" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.ImageDetectionModeNames}" SelectedIndex="{Binding ActionEditor.ImageDetectionModeIndex}" Margin="0,0,0,8" AutomationProperties.Name="Image detection behavior"/>
+                                    <StackPanel Visibility="{Binding ActionEditor.ImageOneShot, Converter={StaticResource BoolToVis}}">
+                                        <CheckBox Content="Wait until the image disappears" IsChecked="{Binding ActionEditor.WaitWhile}" Margin="0,0,0,8" ToolTip="When selected, continue after the image disappears instead of when it appears."/>
+                                        <TextBlock Text="Timeout (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                        <TextBox Text="{Binding ActionEditor.TimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"/>
+                                    </StackPanel>
+                                    <TextBlock Text="Scan interval" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.ImageScanPresetNames}" SelectedIndex="{Binding ActionEditor.ImageScanPresetIndex}" Margin="0,0,0,8" AutomationProperties.Name="Image scan interval preset"/>
+                                    <TextBlock Text="Check every (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PollIntervalMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8" ToolTip="Enter a custom interval from 10 to 10,000 milliseconds."/>
+                                    <TextBlock Text="{Binding ActionEditor.ImageScanSpeedNote}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8">
+                                        <TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Style.Triggers><DataTrigger Binding="{Binding ActionEditor.ShowFastImageScanWarning}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentWarning}"/></DataTrigger></Style.Triggers></Style></TextBlock.Style>
+                                    </TextBlock>
+                                    <CheckBox Content="Limit image scan resource use" IsChecked="{Binding ActionEditor.ImageResourceBudgetEnabled}" Margin="0,0,0,4" ToolTip="Application-wide image scan budget; takes effect without applying this action."/>
+                                    <TextBlock Text="{Binding ActionEditor.ImageScanPerformanceText}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,16"/>
+
+                                    <TextBlock Text="Actions when found" FontWeight="SemiBold" Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding ActionEditor.ImageOutcomeSummary}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    <StackPanel Visibility="{Binding ActionEditor.RepeatImageWhileVisible, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Delay between action runs (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                        <TextBox Text="{Binding ActionEditor.ImageRepeatDelayMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"/>
+                                        <CheckBox Content="Handle every matching image" IsChecked="{Binding ActionEditor.MatchAllImageOccurrences}" Margin="0,0,0,8" ToolTip="Run the image group once for each distinct match, using that match for detected-image clicks."/>
+                                        <TextBlock Text="Runs every action below this image up to the next Wait Image. Each group scans independently; missing images are skipped. Stop ends monitoring. Delay: 50–60,000 ms." FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    </StackPanel>
+                                    <StackPanel Visibility="{Binding ActionEditor.RedirectOnAppearance, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="Jump destination" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                        <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName" SelectedValuePath="StepId" SelectedValue="{Binding ActionEditor.AppearanceTargetStepId}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Minimum time between jumps (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                        <TextBox Text="{Binding ActionEditor.AppearanceCooldownMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Monitors throughout playback. Jumps once when visible, then waits for the image to disappear before another jump." FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    </StackPanel>
+                                    <WrapPanel Margin="0,0,0,4">
+                                        <Button Content="Test detection" Command="{Binding ActionEditor.TestDetectionCommand}" Margin="0,0,8,4"/>
+                                        <Button Content="Cancel test" Command="{Binding ActionEditor.CancelDetectionTestCommand}" Margin="0,0,0,4"/>
+                                    </WrapPanel>
+                                    <TextBlock Text="{Binding ActionEditor.DetectionTestResult}" TextWrapping="Wrap" Foreground="{DynamicResource TextPrimary}" Margin="0,0,0,12"/>
+                                </StackPanel>
+                                <StackPanel Visibility="{Binding ActionEditor.ShowAiFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Prompt" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.Prompt, UpdateSourceTrigger=LostFocus}" TextWrapping="Wrap" AcceptsReturn="True" Height="72" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Timeout (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.TimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Expected window title (required for click/type)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.ExpectedWindow, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Minimum confidence (0–1)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.MinConfidence, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,12"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowControlFlowFields, Converter={StaticResource BoolToVis}}"><TextBlock Text="{Binding ActionEditor.BlockOutcomeSummary}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,12"/>
+                                    <TextBlock Text="This block uses a condition that this panel cannot edit. It is preserved when you change routing or body actions."
+                                               Visibility="{Binding ActionEditor.HasPreservedCondition, Converter={StaticResource BoolToVis}}"
+                                               FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <StackPanel IsEnabled="{Binding ActionEditor.CanEditPresenceCondition}">
+                                    <TextBlock Text="Condition" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.ConditionKindIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Color present"/>
+                                        <ComboBoxItem Content="Color absent"/>
+                                        <ComboBoxItem Content="Image present"/>
+                                        <ComboBoxItem Content="Image absent"/>
+                                    </ComboBox>
+                                    <StackPanel Visibility="{Binding ActionEditor.ShowPresenceImageFields, Converter={StaticResource BoolToVis}}">
+                                        <TextBlock Text="{Binding ActionEditor.PresenceTemplateSummary}" FontSize="12" TextWrapping="Wrap"
+                                                   Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,6"/>
+                                        <Button Content="Capture / replace condition image" Command="{Binding ActionEditor.CaptureImageTemplateCommand}"
+                                                Style="{StaticResource PillButton}" Padding="10,5" FontSize="12" Margin="0,0,0,8"/>
+                                        <TextBlock Text="Choose Entire Screen to find the image anywhere. Color fields below apply only to color conditions."
+                                                   FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextMuted}" Margin="0,0,0,8"/>
+                                    </StackPanel>
+                                    <TextBlock Text="Search Mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.SearchModeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Fixed Region"/>
+                                        <ComboBoxItem Content="Nearby Region"/>
+                                        <ComboBoxItem Content="Entire Screen"/>
+                                    </ComboBox>
+                                    <TextBlock Text="RGB target" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <Grid Margin="0,0,0,8">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/><ColumnDefinition Width="6"/>
+                                            <ColumnDefinition Width="*"/>
+                                        </Grid.ColumnDefinitions>
+                                        <TextBox Grid.Column="0" Text="{Binding ActionEditor.R, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="2" Text="{Binding ActionEditor.G, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                        <TextBox Grid.Column="4" Text="{Binding ActionEditor.B, UpdateSourceTrigger=LostFocus}" Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="6,5"/>
+                                    </Grid>
+                                    <TextBlock Text="Extra palette colors (OR match, #RRGGBB,#RRGGBB)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PaletteText, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Similarity %" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.SimilarityPercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Minimum matching pixels %" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.MinimumMatchPercent, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Detection mode" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.DetectionModeIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="RGB per-channel"/>
+                                        <ComboBoxItem Content="HSV"/>
+                                        <ComboBoxItem Content="Perceptual CIE76"/>
+                                        <ComboBoxItem Content="Perceptual CIEDE2000"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Sample stride" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.SampleStride, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Check interval (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.PollIntervalMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Required confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="False confirmations" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RequiredFalseConfirmations, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Stability (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.StabilityDurationMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Condition timeout (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.ConditionTimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Failure policy" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.FailurePolicyIndex}" Margin="0,0,0,12">
+                                        <ComboBoxItem Content="Stop"/>
+                                        <ComboBoxItem Content="Skip"/>
+                                        <ComboBoxItem Content="Retry"/>
+                                        <ComboBoxItem Content="Default (next conditional)"/>
+                                    </ComboBox>
+                                    </StackPanel>
+                                    <TextBlock Text="The failure setting above is used when the failure route below is Default. Saved Stop, Skip and Retry choices are preserved."
+                                               FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <TextBlock Text="When the condition is not satisfied" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.OnNotSatisfiedRouteIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Default — next conditional"/>
+                                        <ComboBoxItem Content="Continue with following action"/>
+                                        <ComboBoxItem Content="Retry block"/>
+                                        <ComboBoxItem Content="Jump to chosen action"/>
+                                        <ComboBoxItem Content="Stop macro"/>
+                                    </ComboBox>
+                                    <TextBlock Text="If an ELSE branch has enabled actions, it runs first. A completed branch returns to its surrounding flow."
+                                               FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <TextBlock Text="When detection or the block fails" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox SelectedIndex="{Binding ActionEditor.OnFailureRouteIndex}" Margin="0,0,0,8">
+                                        <ComboBoxItem Content="Default — saved failure setting"/>
+                                        <ComboBoxItem Content="Continue with following action"/>
+                                        <ComboBoxItem Content="Retry block"/>
+                                        <ComboBoxItem Content="Jump to chosen action"/>
+                                        <ComboBoxItem Content="Stop macro"/>
+                                    </ComboBox>
+                                    <TextBlock Text="Jump destination (main action list)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName" SelectedValuePath="StepId"
+                                              SelectedValue="{Binding ActionEditor.RouteTargetStepId}" Margin="0,0,0,8"/>
+                                    <TextBlock Text="Extra retry attempts (0–20)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RouteRetryCount, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Delay between retries (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.RouteRetryDelayMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="After retries, continue to the next conditional. If there is none in this block, return to its surrounding flow. Destinations keep their identity when actions are reordered."
+                                               FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowControlFlowFields, Converter={StaticResource BoolToVis}}"><TextBlock Text="{Binding ActionEditor.BlockOutcomeSummary}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,12"/>
+                                    <TextBlock Text="Key for new body actions" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.KeyName, Mode=OneWay}" IsReadOnly="True" Margin="0,0,0,6"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <Button Command="{Binding ActionEditor.ArmCaptureKeyCommand}" Content="{Binding ActionEditor.CaptureKeyButtonText}"
+                                            Style="{StaticResource PillButton}" Padding="10,6" Margin="0,0,0,12"/>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowIfFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="Select a child action in the list to edit it. To add an existing action, place it immediately after this block and move it into THEN or ELSE."
+                                               FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    <TextBlock Text="{Binding ActionEditor.ThenSummary}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                    <WrapPanel Margin="0,0,0,10">
+                                        <Button Content="+ Wait" Command="{Binding ActionEditor.AddThenWaitCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Key" Command="{Binding ActionEditor.AddThenKeyCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Click" Command="{Binding ActionEditor.AddThenClickCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move next into THEN" Command="{Binding ActionEditor.MoveNextIntoThenCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move last THEN out" Command="{Binding ActionEditor.RemoveLastThenCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                    </WrapPanel>
+                                    <TextBlock Text="{Binding ActionEditor.ElseSummary}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                    <WrapPanel Margin="0,0,0,12">
+                                        <Button Content="+ Wait" Command="{Binding ActionEditor.AddElseWaitCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Key Press" Command="{Binding ActionEditor.AddElseKeyCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move next into ELSE" Command="{Binding ActionEditor.MoveNextIntoElseCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move last ELSE out" Command="{Binding ActionEditor.RemoveLastElseCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                    </WrapPanel>
+                                </StackPanel>
+
+                                <StackPanel Visibility="{Binding ActionEditor.ShowWhileFields, Converter={StaticResource BoolToVis}}">
+                                    <TextBlock Text="{Binding ActionEditor.LoopHelpText}" FontSize="12" Foreground="{DynamicResource TextMuted}" TextWrapping="Wrap" Margin="0,0,0,8"/>
+                                    <TextBlock Text="Maximum duration (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.TimeoutMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Loop check every (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.LoopCheckIntervalMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="Minimum body delay (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
+                                    <TextBox Text="{Binding ActionEditor.MinBodyDelayMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
+                                             Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
+                                    <TextBlock Text="{Binding ActionEditor.BodySummary}" FontSize="12" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,6"/>
+                                    <TextBlock Text="Select a child action in the list to edit it. To add an existing action, place it immediately after this block and move it into DO."
+                                               FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
+                                    <WrapPanel Margin="0,0,0,12">
+                                        <Button Content="+ Key Down" Command="{Binding ActionEditor.AddBodyKeyDownCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Wait" Command="{Binding ActionEditor.AddBodyWaitCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Key Up" Command="{Binding ActionEditor.AddBodyKeyUpCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Key Press" Command="{Binding ActionEditor.AddBodyKeyPressCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Break" Command="{Binding ActionEditor.AddBodyBreakCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="+ Continue" Command="{Binding ActionEditor.AddBodyContinueCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move next into DO" Command="{Binding ActionEditor.MoveNextIntoBodyCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                        <Button Content="Move last DO out" Command="{Binding ActionEditor.RemoveLastBodyCommand}" Style="{StaticResource PillButton}" Padding="8,4" FontSize="12" Margin="0,0,4,4"/>
+                                    </WrapPanel>
+                                </StackPanel>
+
+                            </StackPanel>
+                        </ScrollViewer>
+                        <Border Grid.Row="2" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Padding="0,10,0,0" Margin="0,10,0,0">
+                         <StackPanel>
+                          <TextBlock Text="Unapplied changes" FontSize="12" Foreground="{DynamicResource AccentWarning}" Margin="0,0,0,6"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Visibility" Value="Collapsed"/><Style.Triggers><DataTrigger Binding="{Binding ActionEditor.HasDraftChanges}" Value="True"><Setter Property="Visibility" Value="Visible"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+                          <WrapPanel HorizontalAlignment="Right" Visibility="{Binding ActionEditor.HasSelection, Converter={StaticResource BoolToVis}}" IsEnabled="{Binding CanEditMacro}">
+                           <Button Content="Revert &amp; close" Command="{Binding ActionEditor.CancelCommand}" Style="{StaticResource EditorButton}" ToolTip="Discard this action's draft and close its properties. Applied actions remain saved."/>
+                           <Button Content="Apply" Click="ActionEditorApply_Click" Command="{Binding ActionEditor.ApplyCommand}" Style="{StaticResource EditorPrimary}" ToolTip="Save these values into the selected action."/>
+                          </WrapPanel>
+                          <Button Content="Save macro" Command="{Binding SaveMacroCommand}" Style="{StaticResource EditorPrimary}" HorizontalAlignment="Right" Visibility="{Binding ShowMacroProperties, Converter={StaticResource BoolToVis}}" IsEnabled="{Binding CanEditMacro}" ToolTip="Commit this macro and any open drafts"/>
+                         </StackPanel>
+                        </Border>
+                    </Grid>
+                </Border>
+
+   </Grid>
+   <Border Grid.Row="4" Background="{DynamicResource CardBackground}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Padding="12,6"><WrapPanel>
+    <TextBlock Text="{Binding TransportStateText}" ToolTip="{Binding RunProgressText}" FontWeight="SemiBold" Margin="0,0,16,0"/><TextBlock Text="{Binding TotalActionsCount, StringFormat={}{0} top-level actions}" FontSize="12" Margin="0,0,16,0" Foreground="{DynamicResource TextSecondary}"/>
+    <TextBlock Text="{Binding RecordedDelaysText, StringFormat=Top-level delays: {0}}" FontSize="12" Margin="0,0,16,0" Foreground="{DynamicResource TextSecondary}"/>
+    <TextBlock Text="{Binding TotalRunsCount, StringFormat=Completed runs: {0}}" FontSize="12" Foreground="{DynamicResource TextSecondary}"/>
+    <TextBlock Text="{Binding RecordingCheckpointText}" Visibility="{Binding IsRecordingBusy, Converter={StaticResource BoolToVis}}" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="16,0,0,0" TextWrapping="Wrap"/>
+   </WrapPanel></Border>
+  </Grid>
+ </Grid>
+</UserControl>

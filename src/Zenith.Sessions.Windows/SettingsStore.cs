@@ -1,0 +1,197 @@
+using System.Text.Json;
+using Zenith.Sessions.Core;
+
+namespace Zenith.Sessions.Windows;
+
+public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = null, string? PreferredDisplayId = null)
+{
+    public ClientWindowLayoutSettings Validated()
+    {
+        if (PreferredDisplayId is not null && (PreferredDisplayId.Length is < 1 or > 100 || PreferredDisplayId.Any(char.IsControl)))
+            throw new InvalidDataException("The preferred display identifier is invalid.");
+        return this with { Tile = (Tile ?? new()).Validated() };
+    }
+}
+
+public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-mint", bool DenseAccounts = false,
+    CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
+    ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null)
+{
+    public SessionsSettings Validated()
+    {
+        if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
+            || OAuthCallbackPort is < 1024 or > 65535) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
+        (Capacity ?? new()).Validated();
+        (Performance ?? new()).Validated();
+        return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated() };
+    }
+}
+
+public sealed class SettingsStore(string root) : IDisposable
+{
+    private const int MaximumBytes = 65536;
+    private sealed class UnsupportedSettingsFormatException : Exception { }
+    private sealed record SettingsRead(SessionsSettings Settings, bool ImplicitVersion);
+    private readonly SemaphoreSlim _writer = new(1);
+    public string Path { get; } = System.IO.Path.Combine(root, "settings.json");
+    public async Task<(SessionsSettings Settings, string? Notice)> LoadAsync(CancellationToken ct)
+    {
+        await _writer.WaitAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            ct.ThrowIfCancellationRequested();
+            bool primary = Exists(Path), backup = Exists(Path + ".bak"), temporary = Exists(Path + ".tmp"), damaged = Exists(Path + ".damaged");
+            if (!primary)
+            {
+                if (backup)
+                {
+                    var recovered = await ReadRecoveryAsync(Path + ".bak", ct).ConfigureAwait(false);
+                    return (recovered.Settings, Notice(recovered, "The main settings file is missing. Loaded the last valid settings copy without changing files. Review and save to repair the main file."));
+                }
+                if (temporary || damaged) throw new InvalidDataException("Settings recovery evidence exists without a valid main file or backup. Existing files were preserved; review them before creating settings.");
+                var defaults = new SessionsSettings().Validated(); await SaveOwnedAsync(defaults, ct).ConfigureAwait(false); return (defaults, null);
+            }
+            try
+            {
+                var current = await ReadAsync(Path, ct).ConfigureAwait(false);
+                return (current.Settings, Notice(current, temporary ? "Loaded current settings. An interrupted temporary settings copy was preserved; review it before saving." : null));
+            }
+            catch (Exception ex) when (Recoverable(ex))
+            {
+                if (backup)
+                {
+                    var recovered = await ReadRecoveryAsync(Path + ".bak", ct).ConfigureAwait(false);
+                    return (recovered.Settings, Notice(recovered, "Loaded the last valid settings copy. Review and save to repair the main file."));
+                }
+                throw new InvalidDataException("Settings are damaged and no valid backup is available. Preserve the files and open the settings folder for recovery.", ex);
+            }
+        }
+        finally { _writer.Release(); }
+    }
+    private static string? Notice(SettingsRead read, string? notice)
+    {
+        if (!read.ImplicitVersion) return notice;
+        const string legacy = "Legacy settings without a version were read as schema 1. Review and save to add an explicit version.";
+        return notice is null ? legacy : notice + " " + legacy;
+    }
+    private static bool Exists(string path)
+    {
+        FileAttributes attributes;
+        try { attributes = File.GetAttributes(path); }
+        catch (FileNotFoundException) { return false; }
+        catch (DirectoryNotFoundException) { return false; }
+        if ((attributes & (FileAttributes.Directory | FileAttributes.ReparsePoint)) != 0)
+            throw new IOException("A settings entry is not a regular local file. Existing recovery evidence was preserved.");
+        return true;
+    }
+    private static async Task<byte[]> ReadBytesAsync(string path, CancellationToken ct)
+    {
+        await using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 4096, FileOptions.Asynchronous);
+        if (file.Length > MaximumBytes) throw new InvalidDataException("Settings exceed the size limit.");
+        byte[] bytes = new byte[(int)file.Length];
+        await file.ReadExactlyAsync(bytes, ct).ConfigureAwait(false); ct.ThrowIfCancellationRequested(); return bytes;
+    }
+    private static async Task<SettingsRead> ReadAsync(string path, CancellationToken ct)
+        => Decode(await ReadBytesAsync(path, ct).ConfigureAwait(false), ct);
+    private static async Task<SettingsRead> ReadRecoveryAsync(string path, CancellationToken ct)
+    {
+        try { return await ReadAsync(path, ct).ConfigureAwait(false); }
+        catch (Exception ex) when (Recoverable(ex))
+        { throw new InvalidDataException("The settings recovery copy is damaged. Existing files were preserved; review them before saving.", ex); }
+    }
+    private static SettingsRead Decode(byte[] bytes, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        ReadOnlyMemory<byte> json = bytes;
+        // Preserve the stream reader's existing UTF-8 BOM compatibility without
+        // normalizing or rewriting the stored original during recovery.
+        if (bytes.Length >= 3 && bytes[0] == 0xEF && bytes[1] == 0xBB && bytes[2] == 0xBF) json = bytes.AsMemory(3);
+        bool implicitVersion = PreflightVersion(json.Span, ct);
+        using var document = JsonDocument.Parse(json);
+        if (document.RootElement.ValueKind != JsonValueKind.Object) throw new InvalidDataException("Settings are invalid.");
+        ct.ThrowIfCancellationRequested();
+        var settings = (document.RootElement.Deserialize<SessionsSettings>() ?? throw new InvalidDataException("Settings are empty.")).Validated();
+        ct.ThrowIfCancellationRequested(); return new(settings, implicitVersion);
+    }
+    private static bool PreflightVersion(ReadOnlySpan<byte> json, CancellationToken ct)
+    {
+        // This scan has the same byte bound as the file, but can traverse an unfamiliar
+        // deep prefix before deciding its format. Normal document/typed depth limits
+        // still apply afterward. Reject a future/duplicate version immediately, even
+        // when later JSON is malformed, so ordinary corruption cannot select a backup.
+        var reader = new Utf8JsonReader(json, new JsonReaderOptions { MaxDepth = MaximumBytes });
+        if (!reader.Read() || reader.TokenType != JsonTokenType.StartObject) return true;
+        int versions = 0;
+        while (reader.Read())
+        {
+            ct.ThrowIfCancellationRequested();
+            if (reader.TokenType != JsonTokenType.PropertyName || reader.CurrentDepth != 1 || !reader.ValueTextEquals("Version")) continue;
+            versions++;
+            if (versions > 1) throw UnsupportedFormat();
+            if (!reader.Read()) throw new JsonException("Settings have an incomplete version.");
+            if (reader.TokenType != JsonTokenType.Number || !reader.TryGetInt32(out int value) || value != 1) throw UnsupportedFormat();
+        }
+        return versions == 0;
+    }
+    private static InvalidDataException UnsupportedFormat() => new("Settings have an unsupported format. Existing files were preserved without fallback or overwrite.", new UnsupportedSettingsFormatException());
+    public async Task SaveAsync(SessionsSettings settings, CancellationToken ct)
+    {
+        settings = settings.Validated(); await _writer.WaitAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try { await SaveOwnedAsync(settings, ct).ConfigureAwait(false); }
+        finally { _writer.Release(); }
+    }
+    private async Task SaveOwnedAsync(SessionsSettings settings, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        bool primary = Exists(Path), backup = Exists(Path + ".bak"), temporary = Exists(Path + ".tmp"), damaged = Exists(Path + ".damaged");
+        if (temporary) throw new InvalidDataException("An interrupted temporary settings copy already exists. It was preserved; review it before saving.");
+        if (!primary && !backup && damaged) throw new InvalidDataException("Settings recovery evidence exists without a valid main file or backup. It was preserved; review it before saving.");
+        byte[]? original = null; bool validOld = false;
+        if (primary)
+        {
+            original = await ReadBytesAsync(Path, ct).ConfigureAwait(false);
+            try { Decode(original, ct); validOld = true; }
+            catch (Exception ex) when (Recoverable(ex)) { /* Preserve this bounded malformed original below; unsupported versions are never caught. */ }
+        }
+        if (backup)
+        {
+            byte[] bytes = await ReadBytesAsync(Path + ".bak", ct).ConfigureAwait(false);
+            try { Decode(bytes, ct); }
+            catch (Exception ex) when (Recoverable(ex))
+            {
+                if (!primary) throw new InvalidDataException("The orphan settings backup is damaged. Existing files were preserved; review them before saving.", ex);
+                // A known malformed backup may be replaced by the validated primary; future formats propagate.
+            }
+        }
+        if (original is not null && !validOld && damaged)
+        {
+            byte[] preserved = await ReadBytesAsync(Path + ".damaged", ct).ConfigureAwait(false);
+            if (!original.AsSpan().SequenceEqual(preserved))
+                throw new InvalidDataException("A different damaged settings original is already preserved. Both originals were retained; review recovery files before saving.");
+        }
+        Directory.CreateDirectory(root);
+        string temporaryPath = Path + ".tmp"; bool ownsTemporary = false;
+        try
+        {
+            await using (var file = new FileStream(temporaryPath, FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough))
+            {
+                ownsTemporary = true;
+                await JsonSerializer.SerializeAsync(file, settings, cancellationToken: ct).ConfigureAwait(false);
+                if (file.Length > MaximumBytes) throw new InvalidDataException("Settings exceed the size limit.");
+                await file.FlushAsync(ct).ConfigureAwait(false); file.Flush(true);
+            }
+            if (original is not null && !validOld && !damaged)
+            {
+                await using var copy = new FileStream(Path + ".damaged", FileMode.CreateNew, FileAccess.Write, FileShare.None, 4096, FileOptions.Asynchronous | FileOptions.WriteThrough);
+                await copy.WriteAsync(original, ct).ConfigureAwait(false); await copy.FlushAsync(ct).ConfigureAwait(false); copy.Flush(true);
+            }
+            ct.ThrowIfCancellationRequested();
+            if (primary) File.Replace(temporaryPath, Path, validOld ? Path + ".bak" : null);
+            else File.Move(temporaryPath, Path);
+        }
+        finally { if (ownsTemporary) File.Delete(temporaryPath); }
+    }
+    private static bool Recoverable(Exception error) => error is JsonException or ArgumentException
+        || error is InvalidDataException { InnerException: not UnsupportedSettingsFormatException };
+    public void Dispose()=>_writer.Dispose();
+}

@@ -1,0 +1,134 @@
+<UserControl x:Class="MacroSuite.App.Views.AutoClickerView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="clr-namespace:MacroSuite.App.ViewModels"
+             xmlns:common="clr-namespace:MacroSuite.App.Common"
+             Background="{DynamicResource WorkspaceMaterial}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <Style x:Key="Section" TargetType="StackPanel">
+            <Setter Property="Margin" Value="0,0,0,16"/>
+        </Style>
+        <Style x:Key="Label" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            <Setter Property="FontWeight" Value="SemiBold"/>
+            <Setter Property="Margin" Value="0,0,0,8"/>
+        </Style>
+        <Style x:Key="Help" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+            <Setter Property="FontSize" Value="12"/>
+            <Setter Property="TextWrapping" Value="Wrap"/>
+            <Setter Property="Margin" Value="0,6,0,0"/>
+        </Style>
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="20" MaxWidth="1120" HorizontalAlignment="Stretch">
+            <TextBlock Text="Auto Clicker" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource TextHighlight}"/>
+            <TextBlock Text="Configure a click, choose how often to repeat it, then start." Style="{StaticResource Help}" Margin="0,4,0,20"/>
+            <common:ResponsiveColumnsPanel ColumnThreshold="760" Gap="24" IsEnabled="{Binding CanEditConfiguration}">
+            <Border Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="16"><StackPanel>
+                <TextBlock Text="Click settings" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                <Grid Margin="0,0,0,16">
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="16"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                    <StackPanel><TextBlock Text="Mouse button" Style="{StaticResource Label}"/>
+                        <ComboBox ItemsSource="{x:Static vm:AutoClickerViewModel.MouseButtons}" SelectedItem="{Binding SelectedMouseButton}" AutomationProperties.Name="Mouse button"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="2"><TextBlock Text="Click type" Style="{StaticResource Label}"/>
+                        <ComboBox ItemsSource="{x:Static vm:AutoClickerViewModel.ClickTypes}" SelectedItem="{Binding SelectedClickType}" AutomationProperties.Name="Click type"/>
+                    </StackPanel>
+                </Grid>
+                <StackPanel Style="{StaticResource Section}">
+                    <TextBlock Text="Rate" Style="{StaticResource Label}"/>
+                    <WrapPanel>
+                        <TextBox Width="100" Text="{Binding CpsInputText, UpdateSourceTrigger=LostFocus}" FontFamily="Consolas" AutomationProperties.Name="Clicks or double-click pairs per second"/>
+                        <Button Content="−" Command="{Binding DecreaseCpsCommand}" Style="{StaticResource PillButton}" Margin="8,0,4,0" AutomationProperties.Name="Decrease rate"/>
+                        <Button Content="+" Command="{Binding IncreaseCpsCommand}" Style="{StaticResource PillButton}" AutomationProperties.Name="Increase rate"/>
+                        <TextBlock Text="{Binding RateUnit}" Foreground="{DynamicResource TextSecondary}" VerticalAlignment="Center" Margin="8,0,0,0"/>
+                    </WrapPanel>
+                    <TextBlock Text="{Binding IntervalPreviewText}" Style="{StaticResource Help}"/>
+                    <TextBlock Text="Double-click values count pairs. Actual speed depends on the target and computer." Style="{StaticResource Help}"/>
+                    <Slider Minimum="0.1" Maximum="500" Value="{Binding SliderValue, Mode=TwoWay}" SmallChange="1" LargeChange="10" Margin="0,8,0,0" AutomationProperties.Name="Click rate"/>
+                    <CheckBox Content="Vary the timing" IsChecked="{Binding RandomOffsetEnabled}" Margin="0,10,0,0"/>
+                    <WrapPanel Margin="0,8,0,0" Visibility="{Binding RandomOffsetEnabled, Converter={StaticResource BoolToVis}}">
+                        <TextBlock Text="Random rate variation ±" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="0,0,8,0"/>
+                        <TextBox Width="76" Text="{Binding RandomOffsetCps, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Random rate variation"/>
+                        <TextBlock Text="{Binding RateUnit}" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="8,0,0,0"/>
+                    </WrapPanel>
+                    <TextBlock Text="Changes the interval between clicks only. Cursor position is unchanged." Style="{StaticResource Help}"/>
+                </StackPanel>
+            </StackPanel></Border>
+            <Border Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="16"><StackPanel>
+                <TextBlock Text="Position &amp; repeat" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,16"/>
+                <StackPanel Style="{StaticResource Section}">
+                    <TextBlock Text="Cursor position" Style="{StaticResource Label}"/>
+                    <WrapPanel>
+                        <RadioButton Content="Current cursor" GroupName="Position" IsChecked="{Binding UseCurrentPosition}" Margin="0,0,20,0"/>
+                        <RadioButton Content="Fixed position" GroupName="Position" IsChecked="{Binding UseFixedPosition}"/>
+                    </WrapPanel>
+                    <StackPanel Visibility="{Binding UseFixedPosition, Converter={StaticResource BoolToVis}}" Margin="0,10,0,0">
+                        <WrapPanel>
+                            <TextBlock Text="X" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="0,0,6,0"/>
+                            <TextBox Width="88" Text="{Binding FixedX, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Fixed X coordinate"/>
+                            <TextBlock Text="Y" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" Margin="16,0,6,0"/>
+                            <TextBox Width="88" Text="{Binding FixedY, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Fixed Y coordinate"/>
+                            <Button Content="{Binding PickLocationButtonText}" Command="{Binding PickLocationCommand}" Style="{StaticResource PillButton}" Margin="12,0,0,0"/>
+                        </WrapPanel>
+                        <TextBlock Text="{Binding FixedPositionMonitorText}" Style="{StaticResource Help}"/><TextBlock Text="Screen pixel coordinates across all monitors. Move the cursor and press Tab to choose; Esc cancels." Style="{StaticResource Help}"/>
+                    </StackPanel>
+                </StackPanel>
+                <StackPanel Style="{StaticResource Section}">
+                    <TextBlock Text="Repeat" Style="{StaticResource Label}"/>
+                    <WrapPanel>
+                        <RadioButton Content="Once" GroupName="Repeat" IsChecked="{Binding RepeatOnce}" Margin="0,0,20,0"/>
+                        <RadioButton Content="A set number" GroupName="Repeat" IsChecked="{Binding RepeatNTimes}" Margin="0,0,20,0"/>
+                        <RadioButton Content="Until stopped" GroupName="Repeat" IsChecked="{Binding RepeatUntilStopped}"/>
+                    </WrapPanel>
+                    <WrapPanel Visibility="{Binding RepeatNTimes, Converter={StaticResource BoolToVis}}" Margin="0,10,0,0">
+                        <TextBox Width="100" Text="{Binding RepeatCount, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Repeat count"/>
+                        <Button Content="−" Command="{Binding DecreaseRepeatCommand}" Style="{StaticResource PillButton}" Margin="8,0,4,0" AutomationProperties.Name="Decrease repeat count"/>
+                        <Button Content="+" Command="{Binding IncreaseRepeatCommand}" Style="{StaticResource PillButton}" AutomationProperties.Name="Increase repeat count"/>
+                    </WrapPanel>
+                </StackPanel>
+                <StackPanel Style="{StaticResource Section}">
+                    <TextBlock Text="Start / stop shortcut" Style="{StaticResource Label}"/>
+                    <Button Content="{Binding StartHotkeyDisplay}" Command="{Binding BeginHotkeyCaptureCommand}" Style="{StaticResource PillButton}" FontFamily="Consolas" HorizontalAlignment="Left"/>
+                    <TextBlock Text="Works globally. Click to assign a key or combination; Esc cancels." Style="{StaticResource Help}"/>
+                </StackPanel>
+            </StackPanel></Border>
+            </common:ResponsiveColumnsPanel>
+            <Border Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,16,0,0">
+            <Expander Header="Click speed tester" IsExpanded="{Binding TestPanelExpanded}" Foreground="{DynamicResource TextPrimary}">
+                <StackPanel Margin="0,12,0,16">
+                    <TextBlock Text="Click the test area yourself to measure clicks per second." Style="{StaticResource Help}"/>
+                    <Button Content="Click here to test" Command="{Binding RegisterTestClickCommand}" Style="{StaticResource PillButton}" MinHeight="64" Margin="0,12,0,8"/>
+                    <WrapPanel>
+                        <TextBlock Text="{Binding LiveCpsTester, StringFormat={}{0:0} clicks/s}" Foreground="{DynamicResource TextPrimary}" Margin="0,0,16,0"/>
+                        <TextBlock Text="{Binding TotalTestClicks, StringFormat={}{0} clicks}" Foreground="{DynamicResource TextSecondary}" Margin="0,0,16,0"/>
+                        <TextBlock Text="{Binding TestElapsedText}" Foreground="{DynamicResource TextSecondary}"/>
+                    </WrapPanel>
+                    <WrapPanel Margin="0,12,0,0"><Button Content="Stop test" Command="{Binding StopTestCommand}" Style="{StaticResource PillButton}" Margin="0,0,8,0"/><Button Content="Reset" Command="{Binding ResetTestCommand}" Style="{StaticResource PillButton}"/></WrapPanel>
+                </StackPanel>
+            </Expander>
+            </Border>
+        <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Padding="0,16,0,0" Margin="0,16,0,16">
+            <StackPanel>
+            <TextBlock Text="Summary" FontSize="16" FontWeight="SemiBold" Margin="0,0,0,12"/>
+            <Grid>
+                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                <StackPanel Margin="0,0,16,0">
+                    <TextBlock Text="{Binding RunSummary}" TextWrapping="Wrap" Foreground="{DynamicResource TextPrimary}" FontWeight="SemiBold"/>
+                    <TextBlock Text="{Binding ConcurrencyMessage}" Style="{StaticResource Help}"/>
+                    <TextBlock Text="{Binding CompletedCountText}" Style="{StaticResource Help}"/>
+                    <TextBlock Text="Settings are locked during a run. Stop to change them." Style="{StaticResource Help}" Visibility="{Binding IsRunning, Converter={StaticResource BoolToVis}}"/>
+                </StackPanel>
+                <Button Grid.Column="1" Content="{Binding StartStopButtonText}" Command="{Binding ToggleRunCommand}" Style="{StaticResource PrimaryButton}" VerticalAlignment="Top" MinWidth="120"/>
+            </Grid>
+            </StackPanel>
+        </Border>
+
+            <ItemsControl ItemsSource="{Binding RunLog}" Foreground="{DynamicResource AccentDanger}"/>
+        </StackPanel>
+        </ScrollViewer>
+
+</UserControl>
+

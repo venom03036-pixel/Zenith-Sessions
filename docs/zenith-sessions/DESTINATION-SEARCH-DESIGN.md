@@ -1,0 +1,32 @@
+# Unified destination search: incremental design
+
+Cycle 0.40, November 6, 2026. Requirements: CHAT-23, CHAT-11, PROD-BOOT-02/05, PROD-UI-17. All three original prompt fingerprints were checked before work. The preceding cycle changed authoritative source and verification evidence; it was progress. This cycle extends the current destination flow rather than replacing the launcher.
+
+## Behavior and boundaries
+
+Keep one input above the existing game gallery and server browser. Explicit Search / Use accepts a game name, positive Int64 place ID or already supported exact-host Roblox URL. Names produce selectable public results; selection explicitly chooses that result's root place, then loads the existing public details/gallery. A URL or numeric ID retains its requested subplace and optional public JobId. Search never selects the first result automatically, launches, accesses credentials or rewrites a saved account preference.
+
+Private/share/reserved links remain recognized by the existing parser and must not turn into public game searches or lose their restriction through result selection. The current launcher cannot accept a protected private-destination grant. This cycle therefore reports that integration as unavailable and clears the input using existing behavior; it must not claim private joining works. End-to-end private grants require a separate protected persistence/provider migration and are still required, not redefined as completed.
+
+## Contract and ownership
+
+Add an optional IPublicRobloxGameSearchDirectory so existing directory mocks/providers remain compatible. A query contains bounded UTF-8 text, one pagination token and an ephemeral request session ID. A result page carries the exact query, a bounded immutable set of results, next token and observation time. Each result contains positive Int64 universe/root-place IDs, safe name, optional creator and player count, and sponsored marker when reported. No credential, raw URL, HTML or caller-controlled endpoint enters the contract. Public data is neither sign-in evidence nor proof of native arrival.
+
+The Windows implementation uses the existing anonymous RobloxPublicDirectory, its two shared request slots, 64-KiB JSON limit, duplicate-property/text validation, rate-limit cooldown and HTTP lifetime. One explicit operation fetches one page from the current public omni-search endpoint. Ignore non-game categories; validate and deduplicate game identities, reject contradictory duplicates or malformed game entries, retain at most fifty visible results. Retaining a page limit must not be reported as complete search coverage. Empty/changed endpoint, 403, cooldown and cancellation remain explicit. No automatic retry, polling, new worker or cache.
+
+The presentation owner keeps at most one request and one bounded result page. Typing cancels/fences stale search results; only an explicit command starts network activity. During cancellation, wait for the existing tracked operation before accepting another request. Capture query, session, generation and token together; a page or selection from another query cannot be used. Lock, Panic, shutdown and explicit Cancel invalidate generation and clear results/input. UI publication stays on the existing dispatcher context. Disposal joins its one owned task before HTTP disposal.
+
+## Integration and compatibility
+
+Use ServerBrowser.LinkInput as the single text source and its existing Resolve/UsePreferredPlace boundaries. Introduce a small view model for search rather than adding network logic to WPF events. Existing preferred-place/favorite/server choices remain authoritative and invalidate old search results. Actual result selection must belong to the current page, be fresh and valid, and be accepted only while controls are available. Never implicitly discard a pending private destination by treating its URL as a name.
+
+Keep existing server filters, recipient selection, resource checks, native trial approval and queue behavior. Preserve themes, headshots, gallery, Windows view and compact controls. Use bounded/recycled results with creator/place labels and accessible names. No new dependency, schema or installed-app change. Rollback removes the optional search contract/adapter/view model and restores the prior input row; persisted settings/accounts/queue/documents need no migration.
+
+## Rule 18 and verification
+
+CPU: explicit single-page parse and bounded row validation. The current first-party response contained forty results; fifty retained results avoid discarding half of that ordinary page. Parse at most 1,024 game entries within the existing 64-KiB response cap and report any retention truncation. Memory: existing bounded transport plus at most fifty results and one token. Allocations: outside capture/input hot paths. Threads/timers: none added. Cancellation: one tracked task with generation fence and joined disposal. Errors: generic secret-free actionable states and existing cooldown; do not log input/response bodies. Security: anonymous exact-host requests only; never route URL/private code to search. Compatibility: optional interface, no schema changes. Testability: fake HTTP/time and actual Shell isolated sample data.
+
+Test Int64 values, special Unicode/escaping, duplicate identities/properties, malformed/oversized responses, mixed categories, partial pages/cursors, unavailable creator/count, 403/429, shared slots, cancellation, stale/foreign result selection, target changes, Lock/Panic, disposal, URL classification, direct subplace preservation and no implicit launch. Run complete source and exact staged tests sequentially, affected repeats and packaged self-checks, plus production-view renders. Native launch audit independently checks local Froststrap and our current providers; source facts must not be presented as runtime success or performance improvements.
+
+Independent pre-edit review accepted the design with unknown creator/count support, exact query/session cursor binding, repeated-token rejection and URL-like input classification before name transport. A direct anonymous two-page observation returned HTTP200, forty results each and zero shared universe IDs, using returned nextPageToken as pageToken. This is observed current first-party endpoint behavior, not a promised stable/supported schema. See artifacts/sessions-search-0.40/public-pagination-observation.json and the sanitized fixture; no account was used.
+

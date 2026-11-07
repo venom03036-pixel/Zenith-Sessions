@@ -1,0 +1,135 @@
+using System.Globalization;
+using System.Text.Json.Serialization;
+using Zenith.Sessions.Core;
+
+namespace Zenith.Sessions.App;
+
+/// <summary>Fixed labels over one transient observation, never launch or account authority.</summary>
+public sealed record NativeLaunchDiagnosticPresentation
+{
+    public Guid? OperationId {get;}
+    public bool Available=>Snapshot is not null;
+    [JsonIgnore] public NativeLaunchDiagnosticSnapshot? Snapshot {get;}
+    public string Summary=>Snapshot is not { } value
+        ?OperationId is null?"Select a launch request to inspect its native stages."
+            :"Native-stage details are unavailable for this request in this app run. They may predate startup, have been evicted or never recorded."
+        :value.Stage switch
+        {
+            NativeLaunchDiagnosticStage.VerifyingExecutable=>"Checking the selected executable's publisher.",
+            NativeLaunchDiagnosticStage.PreparingHandoff=>"Preparing the selected account's official-page handoff.",
+            NativeLaunchDiagnosticStage.Prepared=>"Handoff prepared. Native startup and arrival are not established.",
+            NativeLaunchDiagnosticStage.Dispatching=>"Final native dispatch stage. Review the recorded outcome below.",
+            NativeLaunchDiagnosticStage.Stopped=>"Stop requested for this attempt. A native request already delivered cannot be recalled.",
+            _=>"Native attempt finished. Its fixed outcomes are diagnostic evidence only."
+        };
+    public string Times=>Snapshot is { } value?$"Started {At(value.StartedUtc)} · updated {At(value.UpdatedUtc)} · revision {value.Revision.ToString(CultureInfo.InvariantCulture)}"
+        :"No native-stage timestamp recorded. Queue history does not restore these transient details.";
+    public string StageTimes=>Snapshot is { } value?"Publisher: "+Observed(value.ExecutableObservedUtc)+"\nPreparation: "+Observed(value.PreparationObservedUtc)
+        +"\nOfficial page: "+Observed(value.BrowserObservedUtc)+"\nDispatch: "+Observed(value.DispatchObservedUtc)+"\nCleanup: "+Observed(value.CleanupObservedUtc)
+        :"Individual stage times unavailable.";
+    public string Trust=>Snapshot is {TrustReason:{ } reason} value?"Publisher: "+(value.TrustStatus switch
+    {ClientExecutableTrustStatus.VerifiedRobloxPublisher=>"verified · ",ClientExecutableTrustStatus.Rejected=>"rejected · ",ClientExecutableTrustStatus.Deferred=>"deferred · ",_=>"unknown · "})+TrustReason(reason)
+        :"Publisher: not reached or not recorded.";
+    public string Preparation=>Snapshot?.PreparationStatus is { } status?"Preparation: "+(status switch
+    {
+        NativeHandoffPreparationStatus.Ready=>"handoff prepared; not proof of a launched account.",
+        NativeHandoffPreparationStatus.Busy=>"another preparation was still owned.",
+        NativeHandoffPreparationStatus.RequestChanged=>"the pinned request changed.",
+        NativeHandoffPreparationStatus.SignInRequired=>"the selected saved sign-in needs review or renewal.",
+        NativeHandoffPreparationStatus.IdentityMismatch=>"the saved sign-in did not verify as the expected player.",
+        NativeHandoffPreparationStatus.AuthorizationChanged=>"the selected authorization changed.",
+        NativeHandoffPreparationStatus.CaptureRejected=>"the official-page handoff was rejected.",
+        NativeHandoffPreparationStatus.CleanupFailed=>"cleanup could not be confirmed.",
+        NativeHandoffPreparationStatus.Expired=>"the prepared handoff expired.",
+        NativeHandoffPreparationStatus.Cancelled=>"the preparation was cancelled.",
+        _=>"the preparation failed."
+    }):"Preparation: not reached or not recorded.";
+    public string Browser=>Snapshot?.BrowserOutcome is { } outcome?"Official page: "+(outcome switch
+    {
+        RobloxHandoffProbeOutcome.CapturedAndPrevented=>"external navigation captured and cancelled. Later native dispatch is a separate stage.",
+        RobloxHandoffProbeOutcome.ContextRejected=>"page context was rejected.",
+        RobloxHandoffProbeOutcome.OriginRejected=>"page origin was rejected.",
+        RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"an unsupported external scheme was blocked.",
+        RobloxHandoffProbeOutcome.MalformedHandoff=>"the handoff structure was rejected.",
+        RobloxHandoffProbeOutcome.TimedOut=>"the page request timed out.",
+        RobloxHandoffProbeOutcome.Cancelled=>"the page request was cancelled.",
+        RobloxHandoffProbeOutcome.BrowserUnavailable=>"the private browser was unavailable.",
+        RobloxHandoffProbeOutcome.SignInRequired=>"the saved sign-in needs review or renewal.",
+        RobloxHandoffProbeOutcome.IdentityMismatch=>"the page did not verify as the expected player.",
+        RobloxHandoffProbeOutcome.AuthorizationChanged=>"the selected authorization changed.",
+        RobloxHandoffProbeOutcome.Busy=>"another page request was still owned.",
+        RobloxHandoffProbeOutcome.CleanupFailed=>"private browser cleanup could not be confirmed.",
+        _=>"the page request failed."
+    }):"Official page: not reached or not recorded.";
+    public string Shape=>Snapshot?.ShapeStatus is { } status?"Handoff shape: "+(status switch
+    {
+        NativeHandoffCaptureStatus.AcceptedSourceGrammar=>"accepted source grammar; compatibility remains unverified.",
+        NativeHandoffCaptureStatus.ContextRejected=>"request context was rejected.",
+        NativeHandoffCaptureStatus.OriginRejected=>"source origin was rejected.",
+        NativeHandoffCaptureStatus.InvalidShape=>"invalid structure.",
+        NativeHandoffCaptureStatus.UnsupportedVariant=>"unsupported variant.",
+        NativeHandoffCaptureStatus.DestinationMismatch=>"reported target did not match the pinned request.",
+        NativeHandoffCaptureStatus.StaleTimestamp=>"the source timestamp was stale.",
+        _=>"this operation had already captured a handoff."
+    }):"Handoff shape: not reached or not recorded.";
+    public string Dispatch=>Snapshot?.DispatchStatus is { } status?"Native dispatch: "+(status switch
+    {
+        NativeHandoffAttemptStatus.Busy=>"another dispatch was still owned.",
+        NativeHandoffAttemptStatus.NotAuthorized=>"the final current-grant boundary denied authorization.",
+        NativeHandoffAttemptStatus.RequestChanged=>"the pinned request changed before dispatch.",
+        NativeHandoffAttemptStatus.Expired=>"the handoff expired before dispatch.",
+        NativeHandoffAttemptStatus.AdmissionDenied=>"resource or provider admission denied the request.",
+        NativeHandoffAttemptStatus.Cancelled=>"dispatch was cancelled.",
+        NativeHandoffAttemptStatus.NotStarted=>"no start was reported by this dispatch.",
+        NativeHandoffAttemptStatus.StartedUnverified=>"a start was reported; account and arrival remain unverified.",
+        _=>"startup is uncertain. Review any possible client before retrying."
+    }):"Native dispatch: not reached or not recorded. This does not prove no client started.";
+    public string Cleanup=>Snapshot is { } value?"Cleanup: "+(value.CleanupStatus switch
+    {
+        NativeLaunchCleanupStatus.NotStarted=>"not started or not recorded.",
+        NativeLaunchCleanupStatus.Pending=>"still owned; completion has not been recorded.",
+        NativeLaunchCleanupStatus.Complete=>"owned cleanup completed. This does not verify an account or arrival.",
+        _=>"could not be confirmed. Review cleanup before another trial."
+    }):"Cleanup: unavailable.";
+    public bool AccountVerified=>false;
+    public bool ArrivalVerified=>false;
+    public bool InputAuthorized=>false;
+    private NativeLaunchDiagnosticPresentation(Guid? operationId,NativeLaunchDiagnosticSnapshot? snapshot)
+    {OperationId=operationId;Snapshot=snapshot;}
+    public static NativeLaunchDiagnosticPresentation Unavailable(Guid? operationId=null)=>new(operationId,null);
+    public static NativeLaunchDiagnosticPresentation Project(Guid operationId,NativeLaunchDiagnosticSnapshot? snapshot)
+    {
+        if(operationId==Guid.Empty)return Unavailable();
+        if(snapshot is null||snapshot.OperationId!=operationId)return Unavailable(operationId);
+        try {snapshot=snapshot.Validated();}catch(ArgumentException){return Unavailable(operationId);}
+        return new(operationId,snapshot);
+    }
+    internal static NativeLaunchDiagnosticPresentation? ReadCurrent(INativeLaunchDiagnosticSource? source,Guid operationId,Func<bool> current)
+    {
+        if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot=null;
+        try{snapshot=source?.GetDiagnostic(operationId);}catch(Exception){/* Only fixed unavailable feedback crosses this optional boundary. */}
+        var value=Project(operationId,snapshot);return current()?value:null;
+    }
+    private static string At(DateTimeOffset at)=>at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'",CultureInfo.InvariantCulture);
+    private static string Observed(DateTimeOffset? at)=>at is { } value?At(value):"not recorded";
+    private static string TrustReason(ClientExecutableTrustReason reason)=>reason switch
+    {
+        ClientExecutableTrustReason.Verified=>"exact Roblox publisher signature verified with cached Windows evidence; no launch authority.",
+        ClientExecutableTrustReason.BootstrapperNotEvaluated=>"bootstrapper publisher policy has not been evaluated.",
+        ClientExecutableTrustReason.InvalidCandidate=>"the selected native executable was invalid.",
+        ClientExecutableTrustReason.UnsupportedPlatform=>"publisher verification is unavailable on this platform.",
+        ClientExecutableTrustReason.UnsafePath=>"the selected path was unsafe or redirected.",
+        ClientExecutableTrustReason.MissingFile=>"the selected executable was missing.",
+        ClientExecutableTrustReason.AccessDenied=>"Windows denied access to the selected executable.",
+        ClientExecutableTrustReason.FileTooLarge=>"the executable exceeded the verification size bound.",
+        ClientExecutableTrustReason.FileChanged=>"the selected file changed during verification.",
+        ClientExecutableTrustReason.Unsigned=>"an embedded executable signature was not established.",
+        ClientExecutableTrustReason.InvalidSignature=>"Windows rejected the executable signature.",
+        ClientExecutableTrustReason.RevocationUnavailable=>"cached certificate revocation evidence was unavailable; no online retrieval was attempted.",
+        ClientExecutableTrustReason.UntrustedChain=>"the cached code-signing chain was not trusted.",
+        ClientExecutableTrustReason.PublisherMismatch=>"the signer did not establish Roblox Corporation as publisher.",
+        ClientExecutableTrustReason.MetadataUnavailable=>"the exact file or signer metadata was unavailable.",
+        ClientExecutableTrustReason.Busy=>"another publisher check was still owned.",
+        _=>"publisher verification was unavailable."
+    };
+}

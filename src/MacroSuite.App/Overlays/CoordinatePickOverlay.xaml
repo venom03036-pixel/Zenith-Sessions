@@ -1,0 +1,34 @@
+<Window x:Class="MacroSuite.App.Overlays.CoordinatePickOverlay"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pick Location"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowInTaskbar="False"
+        ShowActivated="False"
+        ResizeMode="NoResize"
+        SizeToContent="WidthAndHeight"
+        IsHitTestVisible="False"
+        Focusable="False">
+    <Border Background="#F20D1117"
+            BorderBrush="{DynamicResource AccentMint}"
+            BorderThickness="1"
+            CornerRadius="8"
+            Padding="12,10">
+        <StackPanel>
+            <TextBlock x:Name="CoordsText"
+                       Text="X 0   Y 0"
+                       FontFamily="Consolas, Cascadia Mono, monospace"
+                       FontSize="18"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource AccentMint}"/>
+            <TextBlock Text="TAB confirm   ·   ESC cancel"
+                       FontSize="11"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextSecondary}"
+                       Margin="0,4,0,0"/>
+        </StackPanel>
+    </Border>
+</Window>

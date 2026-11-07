@@ -1,0 +1,3 @@
+<Application x:Class="Zenith.Sessions.App.App" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:common="clr-namespace:MacroSuite.App.Common">
+  <Application.Resources><ResourceDictionary><ResourceDictionary.MergedDictionaries><ResourceDictionary Source="Themes/SessionsControls.xaml" /></ResourceDictionary.MergedDictionaries><BooleanToVisibilityConverter x:Key="VisibleIf" /><common:InverseBoolToVisibilityConverter x:Key="HiddenIf" /></ResourceDictionary></Application.Resources>
+</Application>

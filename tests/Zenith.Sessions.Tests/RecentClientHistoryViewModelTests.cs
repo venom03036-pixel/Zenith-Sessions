@@ -1,0 +1,172 @@
+using System.IO;
+using Xunit;
+using Zenith.Sessions.App;
+using Zenith.Sessions.Core;
+
+namespace Zenith.Sessions.Tests;
+
+public sealed class RecentClientHistoryViewModelTests
+{
+    private static readonly DateTimeOffset At = new(2026, 11, 5, 21, 0, 0, TimeSpan.Zero);
+    private static SessionObservation Client(int id = 10001) => new(id, At.AddMinutes(-1).UtcTicks, "Synthetic", 1, "Synthetic", false, true, 1, 1, null, At);
+    private static DesktopSnapshot Frame(long revision, DateTimeOffset time, params SessionObservation[] clients)
+        => new(new(time, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 20),
+            clients.Select(client => client with { ObservedUtc = time }).ToArray(), ProcessObservedUtc: time, ProcessRevision: revision, ProcessInventoryComplete: true);
+
+    [Fact]
+    public async Task MissingMetadataAndPartialInventoriesNeverCreateHistoryOrWrites()
+    {
+        var store = new Store(); await using var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync();
+        vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)) with { ProcessInventoryComplete = false }, [], At.AddSeconds(1));
+        vm.Observe(Frame(3, At.AddSeconds(2)) with { ProcessObservedUtc = null }, [], At.AddSeconds(2));
+        vm.Observe(Frame(4, At.AddSeconds(3)) with { ProcessRevision = 0 }, [], At.AddSeconds(3));
+        Assert.Empty(vm.Rows); Assert.Empty(store.Requests); Assert.False(vm.IsSaving);
+        vm.Observe(Frame(5, At.AddSeconds(4)), [], At.AddSeconds(4)); await vm.ActiveSave;
+        Assert.Single(vm.Rows); Assert.Single(store.Stored.Entries); Assert.Contains("cause unknown", vm.Rows[0].Outcome);
+        Assert.False(vm.Rows[0].Entry.CanAuthorizeAccountAction);
+    }
+
+    [Fact]
+    public async Task OnlySuccessfulExplicitCloseIntentIsPresentedAndPersistedAsARequest()
+    {
+        var store = new Store(); await using var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync(); var client = Client(); vm.Observe(Frame(1, At, client), [], At);
+        vm.RecordCloseRequest(new(null, client.ProcessId, client.ProcessStartUtcTicks + 1), At.AddMilliseconds(100));
+        vm.RecordCloseRequest(new(null, client.ProcessId, client.ProcessStartUtcTicks), At.AddMilliseconds(200));
+        Assert.Empty(store.Requests);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await vm.ActiveSave;
+        var row = Assert.Single(vm.Rows); Assert.Equal(At.AddMilliseconds(200), row.Entry.CloseRequestedUtc);
+        Assert.Contains("close requested", row.Outcome); Assert.Contains("cause unknown", row.Outcome); Assert.DoesNotContain("crashed", row.Outcome);
+        Assert.Equal("Unknown", row.Entry.Cause);
+        await using var reopened = new RecentClientHistoryViewModel(new Store { Stored=store.Stored }, () => true);
+        await reopened.InitializeAsync(); Assert.Single(reopened.Rows); Assert.Empty(store.Requests.Skip(1));
+    }
+
+    [Fact]
+    public async Task SaveOwnerCoalescesBoundedLatestStateWithoutStartingAWorkerForEveryClient()
+    {
+        var store = new Store { Pending = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync();
+        vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
+        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2)); Assert.True(vm.IsSaving);
+        for (int index = 1; index <= 300; index++)
+        {
+            var time = At.AddSeconds(index * 2);
+            vm.Observe(Frame(index * 2 + 1, time, Client(10001 + index)), [], time);
+            vm.Observe(Frame(index * 2 + 2, time.AddSeconds(1)), [], time.AddSeconds(1));
+        }
+        Assert.Equal(100, vm.Rows.Count); Assert.Single(store.Requests); Assert.Contains("Saving", vm.Status);
+        store.Pending.SetResult(); await vm.ActiveSave;
+        Assert.Equal(2, store.Requests.Count); Assert.Equal(1, store.MaximumConcurrent);
+        Assert.Equal(100, store.Stored.Entries.Count); Assert.Contains("saved", vm.Status);
+    }
+
+    [Fact]
+    public async Task ClearDuringAnInflightSaveCannotBeOverwrittenByThatOldSnapshot()
+    {
+        var store = new Store { Pending = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
+        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.True(vm.CanClear); vm.Clear.Execute(null); Assert.Empty(vm.Rows);
+        store.Pending.SetResult(); await vm.ActiveSave;
+        Assert.Empty(store.Stored.Entries); Assert.Equal(2, store.Requests.Count);
+        // Repeated cached/old frames cannot republish the removed ended record.
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); Assert.Empty(vm.Rows);
+    }
+
+    [Fact]
+    public async Task FailedSaveRetainsMemoryAndPreviousDiskStateUntilExplicitRetry()
+    {
+        var store = new Store { FailSave = true }; List<Exception> failures = [];
+        await using var vm = new RecentClientHistoryViewModel(store, () => true, failures.Add);
+        await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await vm.ActiveSave;
+        Assert.Single(vm.Rows); Assert.Empty(store.Stored.Entries); Assert.Single(failures);
+        Assert.Contains("save failed", vm.Status); Assert.True(vm.CanRetry);
+        vm.Observe(Frame(3, At.AddSeconds(2), Client(10002)), [], At.AddSeconds(2));
+        vm.Observe(Frame(4, At.AddSeconds(3)), [], At.AddSeconds(3)); Assert.Single(store.Requests);
+        store.FailSave = false; vm.Retry.Execute(null); await vm.Retry.Execution;
+        Assert.Equal(2, store.Stored.Entries.Count); Assert.False(vm.CanRetry); Assert.Contains("saved", vm.Status);
+    }
+
+    [Fact]
+    public async Task FailedLoadDisablesTrackingAndCannotOverwriteStoredHistory()
+    {
+        var store = new Store { FailLoad = true };
+        await using var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync(); Assert.Contains("unavailable", vm.Status); Assert.True(vm.CanRetry);
+        vm.Observe(Frame(1, At, Client()), [], At); vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
+        Assert.Empty(vm.Rows); Assert.Empty(store.Requests);
+        store.FailLoad = false; vm.Retry.Execute(null); await vm.Retry.Execution;
+        vm.Observe(Frame(3, At.AddSeconds(2), Client()), [], At.AddSeconds(2));
+        vm.Observe(Frame(4, At.AddSeconds(3)), [], At.AddSeconds(3)); await vm.ActiveSave;
+        Assert.Single(vm.Rows); Assert.Single(store.Requests);
+    }
+
+    [Fact]
+    public async Task LockedControlsCannotClearOrRetryButMonitoringCanFinishAnObservation()
+    {
+        bool allowed = true; var store = new Store();
+        await using var vm = new RecentClientHistoryViewModel(store, () => allowed);
+        await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
+        allowed = false; vm.RefreshAvailability();
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await vm.ActiveSave;
+        Assert.Single(vm.Rows); Assert.False(vm.CanClear); vm.Clear.Execute(null); Assert.Single(vm.Rows);
+        allowed = true; vm.RefreshAvailability(); Assert.True(vm.CanClear);
+    }
+
+    [Fact]
+    public async Task ShutdownAwaitsTheActualSaveOwnerBeforeDisposingStorage()
+    {
+        var store = new Store { Pending = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        var vm = new RecentClientHistoryViewModel(store, () => true);
+        await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        var stopping = vm.DisposeAsync().AsTask(); Assert.False(stopping.IsCompleted); Assert.False(store.Disposed);
+        Assert.False(vm.CanClear); store.Pending.SetResult(); await stopping;
+        Assert.True(store.Disposed); Assert.Single(store.Stored.Entries); await vm.DisposeAsync();
+    }
+
+    [Fact]
+    public async Task ExhaustedHistoryRevisionPausesOnlyHistoryInsteadOfThrowingIntoTheMonitor()
+    {
+        var store=new Store {Stored=new(1,long.MaxValue,Array.Empty<RecentClientHistoryEntry>())};
+        List<Exception> failures=[];
+        await using var vm=new RecentClientHistoryViewModel(store,()=>true,failures.Add);
+        await vm.InitializeAsync();vm.Observe(Frame(1,At,Client()),[],At);
+        var error=Record.Exception(()=>vm.Observe(Frame(2,At.AddSeconds(1)),[],At.AddSeconds(1)));
+        Assert.Null(error);Assert.Single(failures);Assert.Contains("paused",vm.Status);
+        Assert.Empty(store.Requests);Assert.False(vm.CanClear);
+        vm.Observe(Frame(3,At.AddSeconds(2)),[],At.AddSeconds(2));Assert.Single(failures);
+    }
+
+    private sealed class Store : ISessionHistoryStore, IDisposable
+    {
+        public bool FailLoad, FailSave, Disposed;
+        public RecentClientHistorySnapshot Stored = RecentClientHistorySnapshot.Empty;
+        public List<RecentClientHistorySnapshot> Requests { get; } = [];
+        public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource? Pending;
+        private int _active;
+        public int MaximumConcurrent;
+        public Task<RecentClientHistorySnapshot> LoadAsync(CancellationToken ct)
+        { ct.ThrowIfCancellationRequested(); if (FailLoad) throw new IOException("Synthetic read failure"); return Task.FromResult(Stored); }
+        public async Task SaveAsync(RecentClientHistorySnapshot snapshot, CancellationToken ct)
+        {
+            int active = Interlocked.Increment(ref _active); MaximumConcurrent = Math.Max(MaximumConcurrent, active);
+            try
+            {
+                Requests.Add(snapshot); Started.TrySetResult(); if (Pending is { } pending) await pending.Task;
+                ct.ThrowIfCancellationRequested(); if (FailSave) throw new IOException("Synthetic write failure"); Stored = snapshot;
+            }
+            finally { Interlocked.Decrement(ref _active); }
+        }
+        public void Dispose() => Disposed = true;
+    }
+}

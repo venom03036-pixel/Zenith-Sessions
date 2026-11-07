@@ -1,0 +1,44 @@
+# Official-page handoff inspection — 0.19
+
+Personal **0.19.0-preview** passed **1,605/1,605 controlled tests**, zero failed/skipped, with zero forced-build warnings/errors. Its exact staged binaries passed **23/23 non-interactive package checks twice**. Nothing was installed, no real account/browser/client was used, and **ReleaseReady remains false**. This increment implements the next evidence-gathering step toward native launch, not a substitute for the required functioning native provider.
+
+## Connected workflow
+
+Automation now offers **Inspect and prevent launch** for a selected saved account and game-only destination. A separate private WebView seeds only that selected protected session, loads the exact official experience page and asks the user to choose Play. The window labels the saved ID **Expected player ID**, not an observed native identity. Exact-server requests are explicitly outside this first diagnostic; the production target/recipient requirements remain unchanged.
+
+The external-scheme handler sets cancellation first on every callback. It is installed before session seeding/navigation; failure to install it prevents navigation. Main-frame and child-frame guards are separate, and neither resets an existing cancellation. The narrow native-scheme navigation exception can only reach this cancelling handler. Other schemes, pop-ups, downloads and permissions are blocked. There is no shell execution, process-start, input injection, launch-ticket endpoint or client modification in this adapter.
+
+Only fixed field-label flags, bounded counts and the SDK's nullable user-gesture flag survive inspection. The pure policy limits native input to 32 KiB in both characters and encoded UTF-8, 64 fields and 64-character ASCII field names. It rejects malformed encoding/controls, duplicate fields and unexpected context/origin; unknown names and all values are discarded. These are diagnostic shape rules, not a validated current native launch protocol. Results always have `CanLaunch=false`; a synthetic `NativeLaunchPrevented` property is not evidence that an actual browser event was exercised.
+
+The selected saved-session service owns inspection through completion. Before any browser request it durably advances the grant to SignInRequired. After a cancelled handoff, the adapter reads only its own current cookie, closes its browser and finishes cleanup before returning the owned credential. The existing fixed authenticated-user check must then verify the same player; accepted rotation, duplicate identity checks, durable generations and identity projection reuse the existing save path. Interrupted, mismatched or failed checks cannot silently reuse the old grant. A postcommit failure can re-fence only this operation's allocated commit generation, preserving unrelated replacements and protected originals.
+
+Lock, Panic, Disconnect, profile removal and Exit cancel/fence future publication and await the actual owner. Selecting another profile/destination cannot retarget an active inspection. The dashboard can report structural capture and renewed saved sign-in; it never reports a native client or arrival. Its in-app Guide and package instructions explain the distinction.
+
+## Ownership, compatibility and review corrections
+
+There is one on-demand browser operation, a three-minute deadline, one sanitized capture and no hidden browser per account. Private folders use the existing marked/leased/ACL-protected storage. Environment overrides are rejected; the installed Evergreen Runtime remains required. The existing sign-in navigation guard is unchanged; only its identical own-cookie extraction moved into a shared helper. No dependency was added.
+
+Actual browser initialization is joined because the SDK provides no cancellation parameter. Cancellation guards stay installed through controller disposal and confirmed browser exit. A five-second cleanup observation timeout returns an explicit fault, retains the real cleanup task/directory owner and blocks another probe; disposal joins that owner. No timeout is treated as proof that native work stopped. Setup failures dispose uninitialized controls and let the outer owner clean the directory.
+
+Source review found and corrected a missing inspection join during profile removal, an interval that detached guards before controller shutdown, ambiguous expected-ID wording and a pre-cleanup setup failure path. These are source-ordering corrections with controlled surrounding coverage, not reproduced real WebView failures. Native cleanup/event ordering and UI interaction remain unexecuted.
+
+The service's failure safety read followed by generation allocation is **not cross-process atomic CAS**. Tests preserve foreign same-user grants observed before/after this operation's commit, but a truly concurrent replacement between separate storage calls remains a gap. Same-service ownership is enforced. A production dispatch adapter still needs final current-grant/operation-generation authority and an appropriate conditional storage/dispatch boundary; this inspection does not close that requirement.
+
+No macro/container, vault, account DB, settings or queue schema changes occur. Existing Link/Check behavior and legacy authorization formats remain compatible. The previous staged folder is reused; installed editions, actual profiles/credentials, Roblox sessions, Public and Linux remain untouched.
+
+## Executed evidence and limits
+
+The full run finished **2026-11-06 01:36:23.4968973 UTC**. Package passes finished **01:36:40.2278423 UTC** and **01:37:45.0050099 UTC**, with .NET 10.0.12 and SQLite 3.53.4. All **25 manifest entries** matched sizes/hashes: zero extras and zero private-material filename-pattern matches. A filename audit is not comprehensive secret or malware detection.
+
+- App SHA-256: `5A54BDFFB6443486DA776496DC3982ADC4B67CB4140B69BD8F3D3E3345F500E2`.
+- Windows SHA-256: `7AA7B26B9B54A3CB3C54C57AC19D11E1E7810FC14CF41CE8113A4F965E072482`.
+- Core SHA-256: `A1EE00B1FD251A1B63306C0600E3C7A3FEF7C21EF32A91E8B2F33946AC518420`.
+- Manifest SHA-256: `8E8F31E085197FB5E67B19BBB724B171775A9118C89BCEDD1D7DD3FEC395321C`.
+
+[Verification record](../../artifacts/sessions-manager-verification-0.19.json), [full tests](../../artifacts/sessions-manager-tests/manager-core.trx), [first package check](../../artifacts/sessions-distribution-check-handoff-first.json), [repeat](../../artifacts/sessions-distribution-check/distribution-check.json), [manifest](../../artifacts/sessions-manager-review/preview-manifest.json).
+
+The focused 153-case set covers policy and saved-session behavior. The full run additionally executes dashboard pinning, Lock/late results, removal waiting for an uncooperative synthetic browser, and pre-cancelled/invalid adapter calls that create no browser/directory. Service fixtures cover rotation, mismatch, expiration, pending-before-browser, noncapture outcomes, late success/failure, held cleanup, noncancellable saves, generation changes, projection failure, safety failure and redaction. The new packaged case checks pure policy and disposable synthetic credential ownership; the existing browser-runtime case checks SDK assembly linkage. Neither opens a browser or contacts an endpoint.
+
+The [research basis](NATIVE-WEB-HANDOFF-RESEARCH.md) and installed SDK 1.0.3800.47 documentation support the APIs used. No RoALT program/source script/build/dependency was executed or implementation copied. Browser/runtime memory and immutable SDK string copies cannot be guaranteed instantly erased; Zenith does not intentionally persist/log the live handoff, and private-folder cleanup itself still needs live validation.
+
+Next native evidence must come from an explicit owned-browser capture test: observed current origin/frame/gesture/shape, selected-cookie UserId, rotation and actual cleanup. Only then should a strict current handoff validator and guarded native dispatch be evaluated. That still will not prove multiple clients, process/account association, exact-server arrival, reconnect or background input. Full custom appearance/mini mode, host integration, owned-game bridge, real desktop UI performance, equal-workload benchmarks and 2/4/8/16-client acceptance remain unfinished. No RoALT parity or efficiency-superiority claim is made.

@@ -1,0 +1,57 @@
+<UserControl x:Class="MacroSuite.App.Views.UsageDashboardView"
+             xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:common="clr-namespace:MacroSuite.App.Common" Background="{DynamicResource WorkspaceMaterial}">
+    <UserControl.Resources>
+        <BooleanToVisibilityConverter x:Key="BoolToVis"/>
+        <Style x:Key="Help" TargetType="TextBlock"><Setter Property="FontSize" Value="12"/><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Setter Property="TextWrapping" Value="Wrap"/><Setter Property="Margin" Value="0,6,0,0"/></Style>
+        <Style x:Key="Label" TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Margin" Value="0,0,0,8"/></Style>
+        <Style x:Key="MetricLabel" TargetType="TextBlock" BasedOn="{StaticResource Label}"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Setter Property="TextWrapping" Value="Wrap"/></Style>
+        <Style x:Key="MetricValue" TargetType="TextBlock"><Setter Property="FontSize" Value="22"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/></Style>
+    </UserControl.Resources>
+    <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="20" MaxWidth="1120" HorizontalAlignment="Stretch">
+            <DockPanel LastChildFill="True"><Button DockPanel.Dock="Right" Content="Refresh" Command="{Binding RefreshCommand}" Style="{StaticResource PillButton}" VerticalAlignment="Center" Margin="16,0,0,0"/><TextBlock Text="AI usage" FontSize="22" FontWeight="SemiBold" Foreground="{DynamicResource TextHighlight}" VerticalAlignment="Center"/></DockPanel>
+            <TextBlock Text="Local estimates for requests made with your API key. Your provider bills separately from your Zenith license; its final charges may differ." Style="{StaticResource Help}" Margin="0,8,0,16"/>
+            <Border Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1" CornerRadius="6" Padding="16" Margin="0,0,0,16">
+                <common:ResponsiveColumnsPanel ColumnThreshold="840" Gap="24">
+                    <common:ResponsiveColumnsPanel ColumnThreshold="380" Gap="24">
+                        <StackPanel><TextBlock Text="Today" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding TotalSpentToday, StringFormat='${0:F4}'}" Style="{StaticResource MetricValue}"/><TextBlock Text="{Binding RequestsToday, StringFormat='{}{0} requests · estimated cost'}" Style="{StaticResource Help}"/><TextBlock Text="{Binding TokensTodayDisplay}" Style="{StaticResource Help}" Margin="0,3,0,0"/></StackPanel>
+                        <StackPanel><TextBlock Text="This month" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding TotalSpentMonth, StringFormat='${0:F4}'}" Style="{StaticResource MetricValue}"/><TextBlock Text="Estimated cost this month" Style="{StaticResource Help}"/></StackPanel>
+                    </common:ResponsiveColumnsPanel>
+                    <common:ResponsiveColumnsPanel ColumnThreshold="380" Gap="24">
+                        <StackPanel><TextBlock Text="Daily remaining" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding RemainingDailyBudget, StringFormat='${0:F4}'}" Style="{StaticResource MetricValue}"/><TextBlock Text="Resets at midnight UTC" Style="{StaticResource Help}"/></StackPanel>
+                        <StackPanel><TextBlock Text="Monthly remaining" Style="{StaticResource MetricLabel}"/><TextBlock Text="{Binding RemainingMonthlyBudget, StringFormat='${0:F4}'}" Style="{StaticResource MetricValue}"/><TextBlock Text="Resets on the 1st UTC" Style="{StaticResource Help}"/></StackPanel>
+                    </common:ResponsiveColumnsPanel>
+                </common:ResponsiveColumnsPanel>
+            </Border>
+            <TextBlock Text="Local spending limits" Style="{StaticResource Label}" FontSize="16"/>
+            <WrapPanel>
+                <StackPanel Width="160" Margin="0,0,16,8"><TextBlock Text="Daily limit (USD)" Style="{StaticResource Label}" TextWrapping="Wrap"/><TextBox Text="{Binding DailySpendCap, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Daily AI limit in US dollars"/></StackPanel>
+                <StackPanel Width="160" Margin="0,0,16,8"><TextBlock Text="Monthly limit (USD)" Style="{StaticResource Label}" TextWrapping="Wrap"/><TextBox Text="{Binding MonthlySpendCap, UpdateSourceTrigger=LostFocus}" AutomationProperties.Name="Monthly AI limit in US dollars"/></StackPanel>
+                <Button Content="Save limits" Command="{Binding SaveCapsCommand}" Style="{StaticResource PrimaryButton}" VerticalAlignment="Bottom" MinWidth="116" Margin="0,0,0,8"/>
+            </WrapPanel>
+            <TextBlock Text="Limits apply after saving, only to this installation. Remaining allowance uses saved limits. Other apps and provider-account spending are not limited here." Style="{StaticResource Help}" Margin="0,0,0,8"/>
+            <TextBlock Text="{Binding StatusMessage}"><TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource Help}"><Style.Triggers><DataTrigger Binding="{Binding StatusMessage}" Value=""><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+            <Expander Header="How local limits and estimates work" Foreground="{DynamicResource TextPrimary}" Margin="0,8,0,0"><StackPanel Margin="0,8,0,0"><TextBlock Text="These totals estimate requests made through this installation; they are not a subscription, bill, or receipt. Your own API key connects to your provider account, whose prices and final charges may differ." Style="{StaticResource Help}"/><TextBlock Text="Zenith checks recorded usage and a buffered estimate before each AI request. If a limit is exceeded, the request is blocked. A response that exceeds the limit does not send input; its macro stops. The provider may still charge for a completed request." Style="{StaticResource Help}"/><TextBlock Text="Daily totals reset at midnight UTC; monthly totals reset on the first day of the month UTC. A zero limit blocks requests with a positive estimated cost. Recording and playback without AI remain available." Style="{StaticResource Help}"/></StackPanel></Expander>
+            <TextBlock Text="Usage history" Style="{StaticResource Label}" FontSize="16" Margin="0,20,0,8"/>
+            <Border Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1" CornerRadius="6">
+            <Grid><Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+            <DataGrid ItemsSource="{Binding RecentRecords}" AutoGenerateColumns="False" IsReadOnly="True" CanUserAddRows="False" HeadersVisibility="Column" MinRowHeight="36" MaxHeight="420" EnableRowVirtualization="True" EnableColumnVirtualization="True"
+                      Background="{DynamicResource AppBackground}" RowBackground="{DynamicResource AppBackground}" AlternatingRowBackground="{DynamicResource SurfaceBackground}" Foreground="{DynamicResource TextPrimary}" GridLinesVisibility="Horizontal" HorizontalGridLinesBrush="{DynamicResource BorderBrushLight}" BorderThickness="0">
+                <DataGrid.ColumnHeaderStyle><Style TargetType="DataGridColumnHeader"><Setter Property="Background" Value="{DynamicResource HeaderBackground}"/><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Setter Property="FontWeight" Value="SemiBold"/><Setter Property="FontSize" Value="12"/><Setter Property="Padding" Value="8"/><Setter Property="BorderThickness" Value="0,0,0,1"/><Setter Property="BorderBrush" Value="{DynamicResource BorderBrushLight}"/></Style></DataGrid.ColumnHeaderStyle>
+                <DataGrid.CellStyle><Style TargetType="DataGridCell"><Setter Property="Padding" Value="8,4"/><Setter Property="BorderThickness" Value="1"/><Setter Property="BorderBrush" Value="Transparent"/><Style.Triggers><Trigger Property="IsKeyboardFocusWithin" Value="True"><Setter Property="BorderBrush" Value="{DynamicResource AccentSky}"/></Trigger></Style.Triggers></Style></DataGrid.CellStyle>
+                <DataGrid.Columns>
+                    <DataGridTextColumn Header="Time (UTC)" Binding="{Binding TimestampUtc, StringFormat='yyyy-MM-dd HH:mm:ss'}" Width="150"/>
+                    <DataGridTextColumn Header="Provider" Binding="{Binding ProviderId}" Width="90"/>
+                    <DataGridTextColumn Header="Model" Binding="{Binding ModelId}" Width="150"/>
+                    <DataGridTextColumn Header="Tokens in / out" Binding="{Binding TokenDisplay}" Width="130"/>
+                    <DataGridTextColumn Header="Estimated USD" Binding="{Binding EstimatedCostUsd, StringFormat='${0:F5}'}" Width="115"/>
+                    <DataGridTextColumn Header="Feature" Binding="{Binding Feature}" Width="*" MinWidth="120"/>
+                </DataGrid.Columns>
+            </DataGrid>
+            <Border Grid.Row="1" Padding="16" MinHeight="68"><Border.Style><Style TargetType="Border"><Style.Triggers><DataTrigger Binding="{Binding HasRecords}" Value="True"><Setter Property="Visibility" Value="Collapsed"/></DataTrigger></Style.Triggers></Style></Border.Style><TextBlock Text="{Binding EmptyTrailMessage}" Style="{StaticResource Help}" Margin="0" VerticalAlignment="Center"/></Border>
+            </Grid></Border>
+        </StackPanel>
+    </ScrollViewer>
+</UserControl>

@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+    <Version>0.3.0</Version>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../Zenith.Sessions.CapabilityHarness/Zenith.Sessions.CapabilityHarness.csproj" />
+    <ProjectReference Include="../../src/Zenith.Sessions.Core/Zenith.Sessions.Core.csproj" />
+    <ProjectReference Include="../../src/Zenith.MacroHost.Execution/Zenith.MacroHost.Execution.csproj" />
+  </ItemGroup>
+</Project>

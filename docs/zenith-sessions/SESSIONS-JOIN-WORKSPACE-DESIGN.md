@@ -1,0 +1,23 @@
+# Sessions and joining workspace, cycle0.41
+
+November6,2026. The preceding cycle was progress: source, exact staged tests, real anonymous search observations and production renders changed authoritative state. All three original prompt fingerprints were checked again; selected scope is CHAT-23, CHAT-22 and PROD-UI-01/04/09. The full product goal and its outstanding native, background, private-destination and performance gates remain intact.
+
+## Incremental migration
+
+The existing Automation page combines game discovery, server selection, bundle requests, native development trials and macro assignments. Move the existing joining panels as a unit into a dedicated `JoinGame` route within the Sessions workspace. Do not duplicate controllers, views, template caches or window owners. Keep the current Sessions page for observed clients, table/previews/history and window controls. Add an obvious Join a game action there, a Back to sessions action on joining, and a nearby Overview route. Highlight the Sessions navigation item for both routes. Existing Automation becomes the macro catalog/assignment workspace.
+
+`IsSessions` retains its current client-page meaning so preview/telemetry ownership is unchanged. Add derived `IsJoinGame` and `IsSessionWorkspace` properties and a single explicit Navigate route. Do not add persisted navigation state, timers, hidden tabs, new subwindows or a second view model. Account preferred-game selection now opens JoinGame. Search and gallery visibility move from Automation to JoinGame; leaving/hiding still cancels/fences work, and returning never automatically restarts it. Preserve the current requested place/job, account checks, gallery matching, favorites, bundle membership, queue state, native approval and input restrictions.
+
+Move the XAML boundary before the macro catalog/assignment panels, preserving every existing named control, event, Window-relative binding and command. Joining remains on one scrollable surface with wrapping controls. Macro assignments remain independently reachable and retain their saved macro references. Update guide wording and affected tests to the actual routes rather than leaving a hidden compatibility copy. No controller/provider authorization is widened by navigation.
+
+## Gallery state repair
+
+The current placeholder always says to load details, even after a successful empty gallery or unsupported/failed media. Add explicit, bounded presentation state to the existing GameGalleryViewModel and expose title/description/placeholder visibility. Cover not-loaded, loading, empty, unavailable/deferred, item pending/blocked/video, decode failure, cancelled/cleared and displayed-image states. Use the actual outcome; do not infer it from localized strings or substitute unrelated artwork. Changing/hiding a destination still clears pixels through the same owner, preserves bounded caches and joins work. WPF binds the placeholder to that state while keeping image controls/text crisp. No network request, retry or timer is added.
+
+## Rule18/20 review and rollback
+
+This is a view/lifecycle migration around the existing controllers, not a launcher rewrite. CPU/allocation work is bounded property publication and existing XAML; memory, threads, capture/input/network owners and dependency set are unchanged. Existing cancellation, errors and availability must remain observable. No credentials, formats, account data or settings migration is introduced. Regressions to watch are stale selected-account/destination state, search unexpectedly running on a hidden page, preview capture while joining, cancelled task ownership, broken bindings/events after moving XAML, unreachable commands and incorrect gallery feedback.
+
+Verify real Shell navigation/defaults, preferred-game route, source generations, input/target retention, Lock/Panic/hide/disposal and no automatic HTTP/capture. Test gallery outcomes and reentrant cancellation without weakening timing or image bounds. Test production composition at narrow/wide sizes and all presets plus light custom, then render final BAML at100–200% scales. Re-run source/exact-staged regression, affected repeats and packaged checks sequentially. Rendered/simulated evidence does not qualify live Roblox or physical-DPI/performance behavior.
+
+Rollback restores the previous XAML boundary/derived route properties and the gallery view model/bindings as one source change; no persisted user state needs reversal. Backups of the0.40 evidence remain, and installed editions/real sessions remain untouched. Native launching/private destinations are not represented as newly working controls in this migration.

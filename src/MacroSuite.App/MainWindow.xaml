@@ -1,0 +1,84 @@
+<Window x:Class="MacroSuite.App.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="clr-namespace:MacroSuite.App.ViewModels"
+        xmlns:views="clr-namespace:MacroSuite.App.Views"
+        xmlns:themes="clr-namespace:MacroSuite.App.Themes"
+        xmlns:common="clr-namespace:MacroSuite.App.Common"
+        Title="Zenith Macros" Height="840" Width="1320" MinHeight="640" MinWidth="960"
+        Background="{DynamicResource AppBackground}" WindowStartupLocation="CenterScreen"
+        WindowStyle="None" AllowsTransparency="False" UseLayoutRounding="True"
+        Topmost="{Binding SettingsVM.AlwaysOnTop}">
+    <WindowChrome.WindowChrome>
+        <WindowChrome CaptionHeight="44" CornerRadius="0" GlassFrameThickness="0" ResizeBorderThickness="6" UseAeroCaptionButtons="False"/>
+    </WindowChrome.WindowChrome>
+    <Window.Resources>
+        <DataTemplate DataType="{x:Type vm:MacroEditorViewModel}"><views:MacroEditorView/></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:SettingsViewModel}"><views:SettingsView/></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:LicensingViewModel}"><views:LicensingView/></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:UsageDashboardViewModel}"><views:UsageDashboardView/></DataTemplate>
+        <DataTemplate DataType="{x:Type vm:AutoClickerViewModel}"><views:AutoClickerView/></DataTemplate>
+        <Style x:Key="ShellTab" TargetType="Button" BasedOn="{StaticResource TerminalTabButton}">
+            <Setter Property="FontWeight" Value="Normal"/>
+            <Setter Property="Padding" Value="16,6"/>
+            
+        </Style>
+    </Window.Resources>
+    <Grid>
+    <themes:AppearanceBackdrop Appearance="{Binding SettingsVM.Appearance}"/>
+    <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" MinHeight="44"/>
+                <RowDefinition Height="Auto" MinHeight="40"/>
+                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto" MinHeight="32"/>
+            </Grid.RowDefinitions>
+            <Border Background="{DynamicResource HeaderMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="16,0,0,0">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <themes:ThemeAwareLogo Mode="{Binding SettingsVM.LogoColorMode}" Width="28" Height="28" Margin="0,0,8,0" AutomationProperties.Name="Zenith mark"/><TextBlock Text="Zenith Macros" FontSize="14" FontWeight="SemiBold"/>
+                        <TextBlock Text="{x:Static common:BuildEnvironment.Version}" Foreground="{DynamicResource TextMuted}" FontSize="12" Margin="10,0,0,0" VerticalAlignment="Center"/>
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" WindowChrome.IsHitTestVisibleInChrome="True">
+                        <Button Content="{Binding PanicButtonText}" Command="{Binding PanicCommand}" Style="{StaticResource DangerButton}" FontSize="12" Margin="0,0,12,0" Padding="12,5"
+                                ToolTip="Emergency stop: stops all input, releases held keys and cancels pending starts."/>
+                        <Button Content="Mini toolbar" Command="{Binding SettingsVM.SwitchToMiniModeCommand}" Style="{StaticResource GhostButton}" Padding="10,5" Margin="0,0,12,0"/>
+                        <Button Style="{StaticResource WindowCaptionButton}" Click="MinimizeButton_Click" ToolTip="Minimize" AutomationProperties.Name="Minimize"><TextBlock Text="&#xE921;" FontFamily="Segoe MDL2 Assets" FontSize="12"/></Button>
+                        <Button x:Name="MaximizeButton" Style="{StaticResource WindowCaptionButton}" Click="MaximizeButton_Click" ToolTip="Maximize or restore" AutomationProperties.Name="Maximize or restore"><TextBlock Text="&#xE922;" FontFamily="Segoe MDL2 Assets" FontSize="12"/></Button>
+                        <Button Style="{StaticResource WindowCloseButton}" Click="CloseButton_Click" ToolTip="Close Zenith Macros" AutomationProperties.Name="Close Zenith Macros"><TextBlock Text="&#xE8BB;" FontFamily="Segoe MDL2 Assets" FontSize="12"/></Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+            <Border Grid.Row="1" Background="{DynamicResource PanelMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,0,0,1" Padding="8,0">
+                <DockPanel LastChildFill="True">
+                    <StackPanel Orientation="Horizontal" DockPanel.Dock="Left">
+                        <Button Content="Editor" Command="{Binding NavigateEditorCommand}" Style="{StaticResource ShellTab}" Tag="{Binding IsEditorSelected}"/>
+                        <Button Content="Auto clicker" Command="{Binding NavigateAutoClickerCommand}" Style="{StaticResource ShellTab}" Tag="{Binding IsAutoClickerSelected}"/>
+                        <Button Content="Settings &amp; AI" Command="{Binding NavigateSettingsCommand}" Style="{StaticResource ShellTab}" Tag="{Binding IsSettingsSelected}"/>
+                        <Button Content="License Manager" Command="{Binding OpenLicenseManagerCommand}" Style="{StaticResource ShellTab}"/>
+                        <Button Content="Account" Command="{Binding NavigateLicensingCommand}" Style="{StaticResource ShellTab}" Tag="{Binding IsAccountSelected}"/>
+                        <Button Content="AI usage" Command="{Binding NavigateUsageCommand}" Style="{StaticResource ShellTab}" Tag="{Binding IsUsageSelected}"/>
+                    </StackPanel>
+                    <TextBlock Text="{Binding TopStatusText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding TopStatusText}" VerticalAlignment="Center" TextAlignment="Right" Margin="16,0,8,0"><TextBlock.Style><Style TargetType="TextBlock"><Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/><Style.Triggers><DataTrigger Binding="{Binding IsAnythingRunning}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentSuccess}"/></DataTrigger><DataTrigger Binding="{Binding EditorVM.IsPaused}" Value="True"><Setter Property="Foreground" Value="{DynamicResource AccentWarning}"/></DataTrigger><DataTrigger Binding="{Binding ExecutionState}" Value="PANIC TERMINATED"><Setter Property="Foreground" Value="{DynamicResource AccentDanger}"/></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock>
+                </DockPanel>
+            </Border>
+            <common:RetainedViewHost Grid.Row="2" ViewModel="{Binding CurrentViewModel}" Focusable="False"/>
+            <Border Grid.Row="3" Background="{DynamicResource HeaderMaterial}" BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="0,1,0,0" Padding="12,0">
+                <Grid>
+                    <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock Text="{Binding StatusMessage}" Foreground="{DynamicResource TextSecondary}" FontSize="12" VerticalAlignment="Center" TextTrimming="CharacterEllipsis" ToolTip="{Binding StatusMessage}"/>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center" Margin="16,0,0,0">
+                        <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1,0,0,0" Padding="12,0"><TextBlock Text="{Binding ActiveProvider, StringFormat='AI: {0}'}" Foreground="{DynamicResource TextSecondary}" FontSize="12"/></Border>
+                        <Button Content="Diagnostics" Command="{Binding ShowDiagnosticsCommand}" Style="{StaticResource GhostButton}" FontSize="12" Padding="8,2" MinHeight="36"/>
+                        <Button Content="{Binding EditorVM.RecordingRecoveryText}" Command="{Binding EditorVM.RecoverRecordingCommand}" Style="{StaticResource GhostButton}" FontSize="12" Padding="8,2" MinHeight="36">
+                            <Button.Visibility><Binding Path="EditorVM.HasPendingRecordingRecovery" Converter="{StaticResource BoolToVis}"/></Button.Visibility>
+                        </Button>
+                    </StackPanel>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+    </Grid>
+</Window>

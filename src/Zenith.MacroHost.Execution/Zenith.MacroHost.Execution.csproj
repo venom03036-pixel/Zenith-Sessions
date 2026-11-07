@@ -1,0 +1,13 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>12</LangVersion>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="../MacroSuite.Core/MacroSuite.Core.csproj" />
+    <ProjectReference Include="../Zenith.Automation.Input/Zenith.Automation.Input.csproj" />
+    <InternalsVisibleTo Include="Zenith.Sessions.Tests" />
+  </ItemGroup>
+</Project>

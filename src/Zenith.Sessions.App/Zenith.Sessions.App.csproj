@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType><TargetFramework>net10.0-windows10.0.19041.0</TargetFramework>
+    <UseWPF>true</UseWPF><UseWindowsForms>true</UseWindowsForms><Nullable>enable</Nullable><ImplicitUsings>disable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors><Version>0.50.0-preview</Version><Product>Zenith Sessions Personal Preview</Product>
+    <ApplicationIcon>../MacroSuite.App/Assets/Zenith_Macros_Teal.ico</ApplicationIcon><ApplicationManifest>app.manifest</ApplicationManifest>
+    <StartupObject>Zenith.Sessions.App.EntryPoint</StartupObject><ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
+  </PropertyGroup>
+  <ItemGroup><ProjectReference Include="../Zenith.Sessions.Core/Zenith.Sessions.Core.csproj" /><ProjectReference Include="../Zenith.Sessions.Windows/Zenith.Sessions.Windows.csproj" /></ItemGroup>
+  <ItemGroup><PackageReference Include="Microsoft.Web.WebView2" Version="1.0.3800.47" /></ItemGroup>
+  <ItemGroup><InternalsVisibleTo Include="Zenith.Sessions.Tests" /></ItemGroup>
+  <ItemGroup>
+    <Compile Include="../MacroSuite.App/Themes/ThemeCatalog.cs" Link="Themes/ThemeCatalog.cs" />
+    <Compile Include="../MacroSuite.App/Themes/ThemeManager.cs" Link="Themes/ThemeManager.cs" />
+    <Compile Include="../MacroSuite.App/Themes/ThemeAwareLogo.cs" Link="Themes/ThemeAwareLogo.cs" />
+    <Compile Include="../MacroSuite.App/Common/ValueConverters.cs" Link="Common/ValueConverters.cs" />
+    <Page Include="../MacroSuite.App/Themes/Colors.xaml" Link="Themes/Colors.xaml" />
+    <Page Include="../MacroSuite.App/Themes/ModernControls.xaml" Link="Themes/ModernControls.xaml" />
+    <Resource Include="../MacroSuite.App/Assets/zenith-mark.png" Link="Assets/zenith-mark.png" />
+    <Resource Include="../MacroSuite.App/Assets/Zenith_Macros_Teal.ico" Link="Assets/Zenith_Macros_Teal.ico" />
+  </ItemGroup>
+</Project>
+
+
+

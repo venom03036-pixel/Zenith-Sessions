@@ -1,0 +1,60 @@
+<Window x:Class="MacroSuite.App.Overlays.AIMacroAuthoringWindow"
+ xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml" xmlns:common="clr-namespace:MacroSuite.App.Common"
+ Title="Create macro with AI — Zenith Macros" Width="900" Height="780" MinWidth="640" MinHeight="540"
+ Background="{DynamicResource CardBackground}" Foreground="{DynamicResource TextPrimary}" FontFamily="Segoe UI" FontSize="13" WindowStartupLocation="CenterOwner"
+ Closing="Window_Closing">
+ <Window.Resources>
+  <BooleanToVisibilityConverter x:Key="BoolVisibility"/>
+  <common:DraftDepthIndentConverter x:Key="DepthIndent"/>
+  <common:DraftTemplatePreviewConverter x:Key="TemplatePreview"/>
+  <Style TargetType="Button" BasedOn="{StaticResource ModernButton}"><Setter Property="MinHeight" Value="34"/><Setter Property="Padding" Value="12,5"/><Setter Property="Margin" Value="0,0,8,0"/></Style>
+  <Style TargetType="TextBox"><Setter Property="Background" Value="{DynamicResource SurfaceBackground}"/><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/><Setter Property="BorderBrush" Value="{DynamicResource ControlBorder}"/><Setter Property="Padding" Value="8"/><Setter Property="CaretBrush" Value="{DynamicResource TextPrimary}"/></Style>
+ </Window.Resources>
+ <Grid Margin="20">
+  <Grid.RowDefinitions><RowDefinition Height="Auto"/><RowDefinition Height="*"/><RowDefinition Height="Auto"/><RowDefinition Height="Auto"/></Grid.RowDefinitions>
+  <StackPanel Margin="0,0,0,14">
+   <TextBlock Text="Create a reusable macro" FontSize="21" FontWeight="SemiBold"/>
+   <TextBlock Text="Describe what to do. Review the draft, save it, then run it from your library." TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,6,0,4"/>
+   <TextBlock Text="{Binding ProviderSummary}" Foreground="{DynamicResource TextSecondary}"/>
+  </StackPanel>
+  <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+   <StackPanel>
+    <Label Content="What should this macro do?" Target="{Binding ElementName=PromptBox}" Foreground="{DynamicResource TextPrimary}" Padding="0,0,0,6"/>
+    <TextBox x:Name="PromptBox" Text="{Binding Prompt, UpdateSourceTrigger=PropertyChanged}" IsEnabled="{Binding CanEdit}" AcceptsReturn="True" TextWrapping="Wrap" MinHeight="100" MaxLength="6000" VerticalScrollBarVisibility="Auto" AutomationProperties.Name="Macro instructions"/>
+    <TextBlock Text="Example: Whenever the OK button appears, click its center. Independently, press M whenever the menu icon appears. Keep watching until I stop." TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,6,0,12"/>
+    <WrapPanel Margin="0,0,0,8">
+     <Button Content="Choose screen area…" Click="ChooseArea_Click" IsEnabled="{Binding CanEdit}" ToolTip="Capture a region to send with your instructions. No image is sent until Generate."/>
+     <Button Content="Remove image" Click="ClearArea_Click" IsEnabled="{Binding CanEdit}" Visibility="{Binding HasScreenshot, Converter={StaticResource BoolVisibility}}"/>
+    </WrapPanel>
+    <TextBlock Text="{Binding ScreenSummary}" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}"/>
+    <Image x:Name="ScreenPreview" MaxHeight="150" Stretch="Uniform" HorizontalAlignment="Left" Margin="0,8,0,8" AutomationProperties.Name="Chosen screen area preview"/>
+    <TextBlock Text="Optional AI usage is billed by your provider. Your Zenith spending limits apply. Inspect the image before sending it." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap" Margin="0,0,0,12"/>
+    <WrapPanel><Button Content="Generate draft" Style="{StaticResource PrimaryButton}" Click="Generate_Click" IsEnabled="{Binding CanGenerate}" Margin="0,0,8,0"/><Button Content="Cancel generation" Click="Cancel_Click" IsEnabled="{Binding IsBusy}"/></WrapPanel>
+    <StackPanel Margin="0,20,0,0" Visibility="{Binding HasDraft, Converter={StaticResource BoolVisibility}}">
+     <TextBlock Text="Review generated actions" FontSize="17" FontWeight="SemiBold"/>
+     <TextBlock Text="{Binding DraftDescription}" TextWrapping="Wrap" Margin="0,6,0,8"/>
+     <Label Content="Macro name" Target="{Binding ElementName=NameBox}" Foreground="{DynamicResource TextPrimary}" Padding="0,0,0,6"/>
+     <TextBox x:Name="NameBox" Text="{Binding MacroName, UpdateSourceTrigger=PropertyChanged}" MaxLength="80" IsEnabled="{Binding CanEdit}"/>
+     <TextBlock Text="{Binding DraftSummary}" TextWrapping="Wrap" Margin="0,8" Foreground="{DynamicResource TextSecondary}"/>
+     <ItemsControl ItemsSource="{Binding Rows}">
+      <ItemsControl.ItemTemplate><DataTemplate>
+       <Border BorderBrush="{DynamicResource BorderBrushLight}" BorderThickness="1,0,0,1" Padding="8,8" Margin="{Binding Depth, Converter={StaticResource DepthIndent}}">
+        <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="32"/><ColumnDefinition Width="Auto"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+         <TextBlock Text="{Binding Number}" Foreground="{DynamicResource TextSecondary}"/>
+         <Image Grid.Column="1" Source="{Binding TemplatePng, Converter={StaticResource TemplatePreview}}" Width="84" MaxHeight="60" Stretch="Uniform" Margin="0,0,10,0" AutomationProperties.Name="{Binding Action}">
+          <Image.Style><Style TargetType="Image"><Style.Triggers><Trigger Property="Source" Value="{x:Null}"><Setter Property="Visibility" Value="Collapsed"/></Trigger></Style.Triggers></Style></Image.Style>
+         </Image>
+         <StackPanel Grid.Column="2"><TextBlock Text="{Binding Action}" TextWrapping="Wrap" FontWeight="SemiBold"/><TextBlock Text="{Binding Detail}" Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"/></StackPanel>
+        </Grid>
+       </Border>
+      </DataTemplate></ItemsControl.ItemTemplate>
+     </ItemsControl>
+     <CheckBox Content="I reviewed these actions and the chosen screen area." IsChecked="{Binding Reviewed}" Foreground="{DynamicResource TextPrimary}" Margin="0,14,0,10" IsEnabled="{Binding CanEdit}"/>
+     <TextBlock Text="The macro starts disabled with no shortcut. Saving opens it for editing and does not run it. Screen coordinates and templates use this captured layout; recheck them if the window moves." Foreground="{DynamicResource TextSecondary}" TextWrapping="Wrap"/>
+    </StackPanel>
+   </StackPanel>
+  </ScrollViewer>
+  <TextBlock Grid.Row="2" Text="{Binding Status}" TextWrapping="Wrap" Margin="0,14,0,12" AutomationProperties.LiveSetting="Polite"/>
+  <WrapPanel Grid.Row="3" HorizontalAlignment="Right"><Button Content="Save and open in editor" Style="{StaticResource PrimaryButton}" IsEnabled="{Binding CanSave}" Click="Save_Click" Margin="0,0,8,0"/><Button Content="Close" Click="Close_Click" Margin="0"/></WrapPanel>
+ </Grid>
+</Window>

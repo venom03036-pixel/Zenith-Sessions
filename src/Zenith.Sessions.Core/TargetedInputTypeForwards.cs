@@ -1,0 +1,21 @@
+using System.Runtime.CompilerServices;
+using Zenith.Sessions.Core;
+
+[assembly: TypeForwardedTo(typeof(PixelRectangle))]
+[assembly: TypeForwardedTo(typeof(TargetedInputTarget))]
+[assembly: TypeForwardedTo(typeof(TargetedInputPurpose))]
+[assembly: TypeForwardedTo(typeof(TargetedInputKind))]
+[assembly: TypeForwardedTo(typeof(TargetedInputRunState))]
+[assembly: TypeForwardedTo(typeof(TargetedInputValidation))]
+[assembly: TypeForwardedTo(typeof(TargetedInputSubmission))]
+[assembly: TypeForwardedTo(typeof(TargetedInputDispatchStatus))]
+[assembly: TypeForwardedTo(typeof(TargetedInputSignal))]
+[assembly: TypeForwardedTo(typeof(TargetedInputModifiers))]
+[assembly: TypeForwardedTo(typeof(TargetedInputCommand))]
+[assembly: TypeForwardedTo(typeof(TargetedInputRunSnapshot))]
+[assembly: TypeForwardedTo(typeof(TargetedInputDispatchResult))]
+[assembly: TypeForwardedTo(typeof(TargetedInputOpenResult))]
+[assembly: TypeForwardedTo(typeof(TargetedInputLimits))]
+[assembly: TypeForwardedTo(typeof(ITargetedInputTransport))]
+[assembly: TypeForwardedTo(typeof(TargetedInputCoordinator))]
+[assembly: TypeForwardedTo(typeof(TargetedInputRun))]

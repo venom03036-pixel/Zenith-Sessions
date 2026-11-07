@@ -1,0 +1,17 @@
+# Companion macro ownership design
+
+A host-local companion operation acquires the existing Personal input arbiter before reading a saved macro. One lease covers a bounded recipient set. Each accepted recipient receives a separate interpreter, timing context, and targeted hold list. A stopped or replaced host lease cannot admit ordinary input at the transport commit point. Cleanup retains the exact lease and can still release that run’s submitted holds after Stop. The host releases ownership only after preparation, interpreters, and cleanup have finished.
+
+The change is additive. Existing diagnostic entry points continue to use their own registered-window scope. The companion path borrows the existing saved-document and targeted-input owners. It adds no IPC contract, target discovery, production Roblox transport, foreground fallback, stored format, dependency, timer, or worker per idle profile. An operation accepts at most 32 unique windows. It uses cancellation to wake waiting runs and a constant-time admission check for each targeted submission. An explicit retry may clear an input cleanup fault for the same owner. A separate lifecycle fault remains quarantined.
+
+The regression risks are stale Stop or resume callbacks, release being blocked by ordinary cancellation, failed recovery reopening the host, and changes to existing diagnostic or editor playback. Check these with controlled transport barriers, the Personal encrypted document path, the existing interpreter suites, and the final staged assemblies. Rollback removes the new local entry point and its additive admission policy. Existing macro files and callers need no migration.
+
+## Tracking an operation
+
+Call `CompanionMacroOperations.Start` with the saved reference, ordered recipients, and the observed host stop generation. A successful admission gives the caller a `CompanionMacroOperation` with a stable ID, a snapshot method, and a completion task. Reservation is synchronous. Document preparation and recipient eligibility run off the calling thread. Each run becomes observable before its first input, even if a later recipient has not finished its checks.
+
+Use the handle and the recipient's `RunId` for Pause, Resume, or Stop. A missing result means the run is unavailable through that handle. Run IDs are immutable, and a handle remains scoped to its original reservation when a target window is used again. Group Stop closes admission for the whole operation. Await completion before treating cleanup as finished. Exact-owner recovery still uses the operation ID and is explicit.
+
+Snapshot rows remain in the submitted order. A null start status means no start attempt was published for that recipient. The group phase separates preparation, execution, stopping, finalizing, and completion. Read the group result together with the row results. A finished group can contain a rejected or faulted recipient. Unexpected worker exceptions fault the completion task and the snapshot reports a faulted phase.
+
+Tracking uses at most 32 recipient slots and one worker task per reserved operation. Snapshots allocate bounded copies on demand. Input events create no progress notifications or snapshot history. The handle drops its live run references after completion. This API is host-local. The app's existing cross-process connection, document schema, and staged binaries need no migration to keep using their existing behavior.

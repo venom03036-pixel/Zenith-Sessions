@@ -1,0 +1,92 @@
+# Zenith Sessions engineering handoff
+
+**November 7, 2026 · Windows Personal companion · Backend checkpoint 0.57**
+
+The user paused the development goal. This file is a snapshot for the next AI or engineer. The latest tested backend source is at checkpoint **0.57**. The staged manager remains **0.50.0-preview**, and the installed Zenith editions were left alone. **LiveTestReady and ReleaseReady are both false.** Resume from the source and evidence below once the user directs the next work.
+
+## Read this first
+
+- The active project tree is `C:\Users\noelm\Downloads\Zenith_Macros_CameraPath\working-copy`. Shell commands may start one level above it. The application is a separate WPF companion on .NET 10. The existing Personal macro host remains on .NET 8.
+- The user put the UI in a separate workstream and said to leave it alone while continuing backend work. Preserve `src/Zenith.Sessions.App`, the UI work in progress, the staged package, and installed builds until the user coordinates integration. Inspect the current tree before merging or rebuilding anything. Public and Linux editions are outside this companion project.
+- Start with the [engineering constitution](../../AGENTS.md), the [review workflow](../../.cursor/rules/zenith-sessions-requirements.mdc), and the [requirements ledger](REQUIREMENTS-LEDGER.md). The ledger tracks coverage and current gaps against the user's three prompt inventories and conversation decisions.
+- Run the requirements review with the IDs for each development cycle. Read the matching original clauses and revisit any prompt whose fingerprint changed. The **0.57 Before** record exists. The pause arrived before the separate **0.57 After** command, so close that bookkeeping when development resumes if it is still missing. The ledger entry and test evidence already exist.
+
+The three original inventories are in `C:\Users\noelm\Downloads\`.
+
+- `Roblox_Launcher_Full_Prompt_With_Encrypted_Account_Vault.txt`
+- `Roblox_Saved_Accounts_Encrypted_Vault_Addendum.txt`
+- `# MASTER PROMPT — COMPLETE PRODUCT.txt`
+
+The latest account-flow decision is saved per-account authorization via Roblox-hosted sign-in, with games running in the native Roblox client. Earlier OAuth research stays relevant as background. The user chose a different flow for native launch. Preserve the existing protected saved-session work and keep real account sign-ins, active clients, and the published experience out of unattended development. Earlier research used public material and the user-provided RoALT source at `C:\Users\noelm\OneDrive\Documents\GitHub\RoALT`. That tree is a read-only reference. Keep RoALT runtime work in an isolated guest and keep Kuro Clicker out of the project. The original design excludes browser-secret scraping, client injection or modification, singleton-enforcement workarounds, and shared Roblox sign-in file locks.
+
+## Product target
+
+The companion should manage many saved Roblox accounts, with sixteen simultaneous native clients as a measured acceptance target. Keep an observed session separate from a saved profile. Correctly identify the player, native process instance, place, and server. Let the user launch selected accounts or join the same exact server from an approved link. Support independently running copies of a shared macro and a separate opt-in live broadcast mode. Both depend on proof that background input reaches only the intended client.
+
+The original requirements also cover account groups and backups, launch orchestration and recovery, session monitoring, window management and tiling, safe bootstrapper integration, performance and resource admission, diagnostics, and a polished interface. Use the [feature comparison](FEATURE-COMPARISON.md) to find the individual RoALT utility gaps. The user's requests for player headshots, game image galleries, and tiled client previews belong in the UI integration and acceptance review.
+
+## Backend map and current state
+
+### Accounts, vault, and native launch
+
+- [Core](../../src/Zenith.Sessions.Core/) owns profiles, group and recipient snapshots, authorization and launch contracts, scheduling and resource admission, evidence reduction, and destination parsing. [Windows](../../src/Zenith.Sessions.Windows/) contains protected storage, OS observations, the Open Cloud adapter, and native handoff and installation discovery.
+- `ProtectedCredentialVault` uses current-user DPAPI with per-record authorization context and generation. `LaunchAuthorizationValidator` rechecks the current profile revision, verified player and saved grant at dispatch. A label, profile metadata, an open browser, and a launch request convey different information.
+- `WindowsConfiguredNativeLaunchProvider` remains **Unverified**. The source supports an explicitly approved, one-operation native trial. The ordinary account and group launch routes stay gated. The trial can record an exact PID and process creation time when the provider reports them. A start receipt has no authority to declare the account or arrival verified.
+- Installation discovery and file trust have controlled evidence. An independent bootstrapper and multi-client compatibility still require a supported approach and real verification. Use the [native handoff research](NATIVE-WEB-HANDOFF-RESEARCH.md), [trial capacity checks](NATIVE-TRIAL-CAPACITY-VERIFICATION.md), and [bootstrapper audit](FROSTSTRAP-LAUNCH-AUDIT.md) to pick up the evidence.
+
+### Exact destinations and the batch queue
+
+- `RobloxDestinationParser` and `RobloxRequestedDestination` carry a positive 64-bit place ID and, where resolved, a canonical job ID and server kind. Keep unresolved share, follow, private, or reserved destinations explicit. A requested link alone does not establish current presence, permissions, available slots, or arrival.
+- The UI handoff is [LaunchCoordinatorBatches.cs](../../src/Zenith.Sessions.Core/LaunchCoordinatorBatches.cs). Call `CaptureBatchReview(destination, recipients)` to freeze one destination plus the selected profiles, revisions, priorities, and account bindings. Submit the resulting review once with `EnqueueBatchAsync(review, ct)`. The review belongs to its original queue. Panic fences stale reviews. Accepted rows share one durable queue write.
+- `CaptureBatchRetryReview` takes retained failed operations, current profiles, and current bindings for the same Roblox players. It preserves the original exact server and only accepts a confirmed startup rejection with no process receipt. Successful accounts stay in place. An uncertain or possibly live client must be reconciled separately. The result reports per-account dispositions such as `AlreadyPending` and `RetryNoLongerEligible`. Queueing and retry preserve the queue's pause state.
+- The previous UI path in `ShellDirectoryFeatures.QueueFrozenRecipientsAsync` still uses the older per-recipient enqueue calls. This is the integration point for both selected-account and saved-bundle routes. Plan the change with the UI owner. Keep the existing explicit review and Cancel/Panic behavior. [Batch and retry verification](DESTINATION-DRAFT-VERIFICATION.md#backend-055-exact-batch-commit)
+
+### Process, player, and server evidence
+
+- `WindowsSessionLogCorrelator` bounds discovery, file reads, and holder checks. `SessionEvidence` separates current facts from last-known facts and fences replay, file replacement, partial lines, an unread log tail, and competing ownership. `NativeTrialEvidence` projects fresh process presence and reported player/place/job values for review.
+- Reported matching IDs remain diagnostic. Hold that boundary when wiring the new UI. Use separate statuses for requested destination, observed local process, reported player/server, and verified arrival. Never route input from a manual profile label, PID alone, file order, or uncorroborated log claims. [Tracking verification](NATIVE-TRIAL-EVIDENCE-VERIFICATION.md#backend-054-log-tail-coverage)
+
+### Owned-experience Open Cloud bridge
+
+- `IOwnedExperienceBridge` and `OwnedExperienceCommand` define the typed command and receipt. [RobloxOwnedExperienceBridge.cs](../../src/Zenith.Sessions.Windows/RobloxOwnedExperienceBridge.cs) publishes status or an exact public-server move and reads a bounded acknowledgement using a separate read key. HTTP acceptance, source receipt, teleport initiation, and destination arrival are separate stages.
+- The [server Script](../../integrations/roblox/ZenithSessionsBridge.server.luau) ships disabled. In a private configured copy, it requires an approved universe, places, players, and exact source job. An atomic per-player claim prevents repeated moves. A destination acknowledgement requires the same operation and claim, matching source data, and the exact destination place/job. A command expires after 45 seconds. A remote command already accepted by Roblox can finish after local cancellation.
+- Next, wire the adapter's two key-loading callbacks to **separately protected** local Open Cloud keys with narrow scopes. Keep keys out of settings exports, diagnostics, package contents, and command lines. Then configure the server Script on both source and destination in the user's owned test experience when authorized. A bridge receipt establishes a player/server observation. It does not bind the account to a local PID, provide native launch, or reconnect a disconnected client. [Setup and protocol notes](OWNED-EXPERIENCE-BRIDGE-VERIFICATION.md)
+
+### Macro execution and input ownership
+
+- [CompanionMacroOperations.cs](../../src/Zenith.MacroHost.Execution/CompanionMacroOperations.cs) provides a host-local `Start` handle, per-recipient progress and controls, completion, and exact cleanup recovery. It uses the Personal host's input arbiter and the encrypted saved revision. Separate recipients keep separate interpreter and input state.
+- Stop/Panic fence admission and cleanup releases only the captured owner's inputs. Preserve the current foreground executor and its checks. The controlled Windows probes used Zenith-owned cooperating windows. They do not prove Roblox consumes background input or that overlapping Roblox clients receive isolated capture and input.
+- Production execution and control IPC, binding to verified Roblox targets, per-target image and condition evaluation, and live broadcasting remain unfinished. The host-local API is the place to start the wiring. The companion should send macro IDs and revisions to the Personal host, with the host resolving its own encrypted document. [Operation design](COMPANION-MACRO-OWNERSHIP-DESIGN.md) · [Backend verification](COMPANION-MACRO-OWNERSHIP-VERIFICATION.md#backend-052)
+
+## Verification and how to reproduce it
+
+- **0.57 backend** — **603 focused Windows checks passed twice**, zero build warnings or errors, and **10 Luau checks passed** with simulated Roblox services. [Machine record](../../artifacts/sessions-owned-bridge-verification-0.57.json). The final runs include the request-pacing changes.
+- **0.56 and 0.55** — **580** and **567** focused checks respectively, each twice. The sixteen-recipient persistence fixture exercised the actual temporary Windows queue store. Sixteen enqueued fixtures are evidence of queue behavior. Real sixteen-client capacity remains open. [Retry record](../../artifacts/sessions-launch-verification-0.56.json) · [Batch record](../../artifacts/sessions-launch-verification-0.55.json)
+- **0.54 tracking and 0.52 macro ownership** — **122** and **153** focused checks respectively, each twice. The macro checkpoint also passed **759 Core** and **199 Personal** regressions on .NET 8. [Tracking record](../../artifacts/sessions-tracking-verification-0.54.json) · [Macro record](../../artifacts/sessions-backend-verification-0.52.json)
+- **0.50 staged preview** — the historical source and exact staged tests each passed **4,169**, with **42 packaged checks twice**. The staged application DLL was rechecked and has SHA-256 `44DF884E551554A1B10E718F8AF399E7ECEBFFD1F3BE5464D73FAE28E3E74249`. A later shared-tree run had four account-template failures during the separate UI work and a Windows file observation timeout that passed on isolated retry. Rebuild and recheck the integrated UI before using a full-suite result as release evidence. [Staged verification](DESTINATION-DRAFT-VERIFICATION.md) · [Shared-tree notes](COMPANION-MACRO-OWNERSHIP-VERIFICATION.md#executed-checks)
+
+From `working-copy`, rerun the latest isolated tests using the installed .NET 10 SDK. This project references the Windows backend without compiling the UI workstream. Use a separate test output location from the staged app. Test discovery may need local communication between the runner and its child process.
+
+```powershell
+$build = 'artifacts/sessions-owned-bridge-0.57'
+$project = Join-Path $build 'Zenith.Sessions.Launch.Tests.csproj'
+$env:DOTNET_CLI_HOME = Join-Path $PWD 'artifacts/.dotnet-home'
+$env:DOTNET_CLI_TELEMETRY_OPTOUT = '1'
+dotnet restore $project --source (Join-Path $env:USERPROFILE '.nuget/packages') --ignore-failed-sources --disable-parallel --disable-build-servers -m:1 -nr:false
+dotnet build $project -c Release --no-restore --disable-build-servers -m:1 -nr:false -p:UseSharedCompilation=false -p:BuildInParallel=false
+$assembly = Join-Path $build 'bin/Release/net10.0-windows10.0.19041.0/Zenith.Sessions.Tests.dll'
+dotnet vstest $assembly "--ResultsDirectory:$build" "--Logger:trx;LogFileName=handoff-recheck.trx"
+./scripts/Test-ZenithOwnedExperienceBridge.ps1 -LuauDirectory (Join-Path $build 'luau') -OutputDirectory 'artifacts/sessions-owned-bridge-handoff-recheck'
+```
+
+The Luau verifier uses the official 0.745 CLI binaries stored with the isolated artifacts. Its generated fixture configures synthetic IDs and runs the same production Script against simulated services. [Runner](../../scripts/Test-ZenithOwnedExperienceBridge.ps1)
+
+## Next work in order
+
+1. **Close the native feasibility gap.** Continue the supported Roblox-hosted sign-in to native-player handoff. Identify which real account reaches each exact process instance and which exact place/job it joins. Keep ordinary/group launch disabled until that evidence exists. Separately prove unattended reconnect of the correct still-authorized account after a confirmed game disconnect. A deliberate close should stay closed. Reconnect prefers the prior server and falls back only to another server of the exact same place when the prior server is confirmed unavailable. Existing interrupted macros stay stopped.
+2. **Finish the owned-game wiring and prepare the authorized two-account trial.** The chosen experience is [Coloseum sword-fight](https://www.roblox.com/games/6564161046/Coloseum-sword-fight), place `6564161046`. Confirm published configuration and key handling with isolated fixtures first. The user can provide two test accounts for the first trial and sixteen later. Invite the user when the app is ready for that exact exercise. Use the [live evidence checklist](LIVE-EXERCISES.md) to record real results.
+3. **Prove input isolation before enabling background macros and broadcasting.** Test keys, clicks, holds, arrow keys, and fresh images in unfocused and overlapping windows. Check focus loss, resize/move, PID reuse, and Panic. A shared macro runs independently for each account. Broadcast uses one focused leader and explicit followers with their macros stopped, filters synthetic input and transport shortcuts, and leaves original leader input intact. Mouse-driven camera movement is outside the agreed first release.
+4. **Coordinate UI and control integration.** Connect the reviewed queue and retry API, evidence states, the macro host control path, the owned-game bridge, and resource and window management to the separately owned UI. Keep Launch, Run, and Launch and run distinct. Use real headshots and game galleries where available. Verify that the Windows view tiles the intended live clients. Check keyboard access, scrolling, rapid navigation, multi-monitor use, and 100–200% DPI against the supplied design.
+5. **Finish parity, measurements, and delivery.** Work through the remaining utility rows in the feature comparison and requirements ledger. Validate native operation at 2, 4, 8, and 16 clients under measured memory, commit, CPU, GPU and latency limits. Compare with equivalent reference workloads where a valid baseline can be obtained. Finish the seven requested reports or their equivalents covering RoALT analysis, feature comparison, performance, architecture, security and licensing, QA, and release readiness. Package only the Personal companion once the release gates pass, and preserve the installed host and user data through verified backups before an authorized installation.
+
+The highest-priority evidence gap is still the real native account/process/server association. The owned-game receipt, the log evidence, the queue, and the local macro host each solve a different part of that workflow. Keep their results distinct in code, UI, tests, and release claims.

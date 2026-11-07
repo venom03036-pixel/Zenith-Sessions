@@ -1,0 +1,112 @@
+<Window x:Class="MacroSuite.App.Overlays.ApprovalToastWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI Action Approval"
+        WindowStyle="None"
+        AllowsTransparency="True"
+        Background="Transparent"
+        Topmost="True"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        SizeToContent="WidthAndHeight"
+        ResizeMode="NoResize">
+    <Border Background="{DynamicResource CardBackground}"
+            BorderBrush="{DynamicResource ControlBorder}"
+            BorderThickness="1.5"
+            CornerRadius="10"
+            Padding="16"
+            Margin="10">
+        <Border.Effect>
+            <DropShadowEffect BlurRadius="20" ShadowDepth="4" Opacity="0.5" Color="#000000"/>
+        </Border.Effect>
+        <StackPanel Width="320">
+            <!-- Header -->
+            <DockPanel Margin="0,0,0,10">
+                <Border Background="{DynamicResource DangerGradient}" CornerRadius="4" Padding="6,2" DockPanel.Dock="Left">
+                    <TextBlock Text="AI SAFETY GATE" FontSize="10" FontWeight="Bold" Foreground="{DynamicResource DangerForeground}"/>
+                </Border>
+                <TextBlock x:Name="CountdownText"
+                           Text="10s"
+                           FontSize="12"
+                           FontWeight="SemiBold"
+                           Foreground="{DynamicResource TextSecondary}"
+                           HorizontalAlignment="Right"
+                           DockPanel.Dock="Right"/>
+            </DockPanel>
+
+            <!-- Action Summary -->
+            <TextBlock x:Name="ActionSummaryText"
+                       Text="Proposed Action: Click (500, 300)"
+                       FontSize="13"
+                       FontWeight="Bold"
+                       Foreground="{DynamicResource TextPrimary}"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,4"/>
+
+            <!-- Reasoning -->
+            <TextBlock x:Name="ReasoningText"
+                       Text="Reasoning: Click Save button to persist state."
+                       FontSize="11"
+                       Foreground="{DynamicResource TextSecondary}"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,10"/>
+
+            <!-- Thumbnail Image -->
+            <Border x:Name="ThumbnailBorder"
+                    CornerRadius="6"
+                    BorderBrush="{DynamicResource SurfaceBackground}"
+                    BorderThickness="1"
+                    Background="{DynamicResource AppBackground}"
+                    Height="120"
+                    Margin="0,0,0,12"
+                    Visibility="Collapsed">
+                <Image x:Name="ThumbnailImage" Stretch="Uniform" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Border>
+
+            <!-- Progress Bar -->
+            <ProgressBar x:Name="TimeoutProgress"
+                         Height="4"
+                         Background="{DynamicResource SurfaceBackground}"
+                         Foreground="{DynamicResource AccentMint}"
+                         BorderThickness="0"
+                         Margin="0,0,0,12"/>
+
+            <!-- Buttons -->
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="Reject"
+                        Style="{StaticResource DangerPillButton}"
+                        FontWeight="SemiBold"
+                        Padding="8,6"
+                        BorderThickness="0"
+                        Click="OnRejectClicked">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="6"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+
+                <Button Grid.Column="2"
+                        Content="Approve"
+                        Style="{StaticResource PrimaryButton}"
+                        FontWeight="Bold"
+                        Padding="8,6"
+                        BorderThickness="0"
+                        Click="OnApproveClicked">
+                    <Button.Resources>
+                        <Style TargetType="Border">
+                            <Setter Property="CornerRadius" Value="6"/>
+                        </Style>
+                    </Button.Resources>
+                </Button>
+            </Grid>
+        </StackPanel>
+    </Border>
+</Window>

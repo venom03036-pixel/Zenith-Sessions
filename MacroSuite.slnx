@@ -1,0 +1,16 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/MacroSuite.App/MacroSuite.App.csproj" />
+    <Project Path="src/MacroSuite.Core/MacroSuite.Core.csproj" />
+    <Project Path="src/MacroSuite.Infrastructure/MacroSuite.Infrastructure.csproj" />
+    <Project Path="src/MacroSuite.SDK/MacroSuite.SDK.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/MacroSuite.Core.Tests/MacroSuite.Core.Tests.csproj" />
+    <Project Path="tests/MacroSuite.Infrastructure.Tests/MacroSuite.Infrastructure.Tests.csproj" />
+    <Project Path="tests/MacroSuite.SDK.Tests/MacroSuite.SDK.Tests.csproj" />
+  </Folder>
+  <Folder Name="/benchmarks/">
+    <Project Path="benchmarks/MacroSuite.Benchmarks/MacroSuite.Benchmarks.csproj" />
+  </Folder>
+</Solution>

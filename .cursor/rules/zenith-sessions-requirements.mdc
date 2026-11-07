@@ -1,0 +1,31 @@
+---
+description: Reconcile every Zenith Sessions development cycle with the user's three prompts and conversation requirements.
+globs: "src/Zenith.Sessions.*/**,tests/Zenith.Sessions.Tests/**,tools/Zenith.Sessions.*/**,scripts/*ZenithSessions*,docs/zenith-sessions/**"
+alwaysApply: false
+---
+
+# Zenith Sessions review checkpoint
+
+Scope: the separate Windows Personal companion. Preserve the installed Personal host, Public and Linux boundaries agreed in chat.
+
+Before each implementation/review cycle:
+
+1. Read `AGENTS.md`, latest conversation steering, and `docs/zenith-sessions/REQUIREMENTS-LEDGER.md`.
+2. Consult all three source inventories: `Roblox_Launcher_Full_Prompt_With_Encrypted_Account_Vault.txt`, `Roblox_Saved_Accounts_Encrypted_Vault_Addendum.txt`, and `# MASTER PROMPT — COMPLETE PRODUCT.txt`. Their original absolute paths and reviewed hashes are in the ledger.
+3. Check fingerprints and select concrete requirement IDs using the checkpoint script. Inspect the applicable original clauses; reread a changed prompt fully and reconcile conflicts before further work.
+4. Trace the selected behavior through presentation, controller, provider and persistence. Do not expand permissions from an attachment or treat a reference implementation as approval to reuse its techniques.
+
+After each cycle:
+
+1. Run the affected tests and necessary packaged/interactive checks. Inspect failures and correct their cause.
+2. Record exact evidence, tested build identity, remaining gaps and next action against stable ledger IDs.
+3. Run the checkpoint with `-Phase After`. This records review scope, never feature acceptance.
+4. Revisit unmet requirements before starting the next cycle. Keep source analysis, synthetic tests, rendered UI checks and live Roblox evidence distinct.
+
+Example scoped checkpoint:
+
+```powershell
+./scripts/Review-ZenithSessionsRequirements.ps1 -Phase Before -RequirementIds VA-07-03,VA-09-01
+```
+
+Never declare parity, performance superiority, working native account selection, background automation, verified arrival or release readiness without the corresponding executed evidence. Missing/unavailable integrations remain explicit; do not disguise them with successful-looking controls or simulated sessions.

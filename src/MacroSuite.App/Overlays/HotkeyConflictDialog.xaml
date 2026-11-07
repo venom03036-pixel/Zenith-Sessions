@@ -1,0 +1,189 @@
+<Window x:Class="MacroSuite.App.Overlays.HotkeyConflictDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Keybind Conflict"
+        Width="460"
+        SizeToContent="Height"
+        WindowStartupLocation="CenterOwner"
+        WindowStyle="None"
+        AllowsTransparency="False"
+        Background="{DynamicResource CardBackground}"
+        Foreground="{DynamicResource TextPrimary}"
+        ResizeMode="NoResize"
+        ShowInTaskbar="False"
+        Topmost="True"
+        ShowActivated="True"
+        BorderBrush="{DynamicResource BorderBrushDark}"
+        BorderThickness="1"
+        PreviewKeyDown="Window_PreviewKeyDown">
+
+    <StackPanel>
+        <Border Background="{DynamicResource HeaderBackground}"
+                Padding="14,10"
+                BorderBrush="{DynamicResource BorderBrushLight}"
+                BorderThickness="0,0,0,1"
+                MouseLeftButtonDown="TitleBar_MouseLeftButtonDown">
+            <DockPanel>
+                <Button DockPanel.Dock="Right"
+                        Content="✕"
+                        Width="28"
+                        Height="24"
+                        Click="Cancel_Click"
+                        Style="{StaticResource GhostButton}"
+                        Padding="0"
+                        FontSize="11"
+                        ToolTip="Cancel and keep the original keybind"/>
+                <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                    <TextBlock Text="MACRO"
+                               FontWeight="Black"
+                               FontSize="11"
+                               Foreground="{DynamicResource AccentMint}"
+                               VerticalAlignment="Center"/>
+                    <TextBlock Text="  ·  KEYBIND CONFLICT"
+                               FontWeight="Bold"
+                               FontSize="11"
+                               Foreground="{DynamicResource TextSecondary}"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <StackPanel Margin="16,16,16,14">
+            <TextBlock Text="This key is already in use"
+                       FontSize="14"
+                       FontWeight="SemiBold"
+                       Foreground="{DynamicResource TextHighlight}"
+                       Margin="0,0,0,6"/>
+            <TextBlock Text="{Binding SummaryText}"
+                       FontSize="12"
+                       Foreground="{DynamicResource TextSecondary}"
+                       TextWrapping="Wrap"
+                       Margin="0,0,0,14"/>
+
+            <Grid Margin="0,0,0,12">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="10"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Border Background="{DynamicResource SurfaceBackground}"
+                        BorderBrush="{DynamicResource BorderBrushLight}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,8">
+                    <StackPanel>
+                        <TextBlock Text="PRESSED"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextMuted}"/>
+                        <TextBlock Text="{Binding KeyCaption}"
+                                   FontFamily="Consolas, Cascadia Mono, monospace"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextHighlight}"
+                                   Margin="0,4,0,2"/>
+                        <TextBlock Text="{Binding PressedOwnerText}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource AccentWarning}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+
+                <Border Grid.Column="2"
+                        Background="{DynamicResource SurfaceBackground}"
+                        BorderBrush="{DynamicResource BorderBrushLight}"
+                        BorderThickness="1"
+                        CornerRadius="6"
+                        Padding="10,8">
+                    <StackPanel>
+                        <TextBlock Text="CURRENT BIND"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource TextMuted}"/>
+                        <TextBlock Text="{Binding OriginalCaption}"
+                                   FontFamily="Consolas, Cascadia Mono, monospace"
+                                   FontSize="16"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource AccentMint}"
+                                   Margin="0,4,0,2"/>
+                        <TextBlock Text="{Binding OriginalOwnerText}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource TextSecondary}"
+                                   TextWrapping="Wrap"/>
+                    </StackPanel>
+                </Border>
+            </Grid>
+
+            <Border Background="{DynamicResource SelectionBackground}"
+                    BorderBrush="{DynamicResource SelectionBorder}"
+                    BorderThickness="1"
+                    CornerRadius="6"
+                    Padding="10,8"
+                    Margin="0,0,0,16">
+                <DockPanel LastChildFill="True">
+                    <Border DockPanel.Dock="Right"
+                            Background="{DynamicResource KeyPillBackground}"
+                            BorderBrush="{DynamicResource ControlBorder}"
+                            BorderThickness="1"
+                            CornerRadius="4"
+                            Padding="10,3"
+                            VerticalAlignment="Center"
+                            Margin="10,0,0,0">
+                        <TextBlock Text="{Binding SuggestedHotkey}"
+                                   FontFamily="Consolas, Cascadia Mono, monospace"
+                                   FontSize="12"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource AccentMint}"/>
+                    </Border>
+                    <StackPanel>
+                        <TextBlock Text="UNUSED RECOMMENDATION"
+                                   FontSize="10"
+                                   FontWeight="Bold"
+                                   Foreground="{DynamicResource AccentMint}"/>
+                        <TextBlock Text="{Binding SuggestedCaption}"
+                                   FontSize="11"
+                                   Foreground="{DynamicResource TextSecondary}"
+                                   TextWrapping="Wrap"
+                                   Margin="0,3,0,0"/>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="8"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <Button Grid.Column="0"
+                        Content="{Binding CancelButtonText}"
+                        Style="{StaticResource PillButton}"
+                        Padding="8,8"
+                        FontSize="11"
+                        Click="Cancel_Click"
+                        ToolTip="Close this dialog and keep the original keybind"/>
+                <Button Grid.Column="2"
+                        Content="{Binding StealButtonText}"
+                        Style="{StaticResource DangerPillButton}"
+                        Padding="8,8"
+                        FontSize="11"
+                        Click="Confirm_Click"
+                        ToolTip="Assign the pressed key and unbind the other owner"/>
+                <Button Grid.Column="4"
+                        Content="{Binding SuggestedButtonText}"
+                        Style="{StaticResource PrimaryButton}"
+                        Foreground="{DynamicResource PrimaryForeground}"
+                        FontWeight="Bold"
+                        Padding="8,8"
+                        FontSize="11"
+                        Click="UseSuggested_Click"
+                        IsDefault="True"
+                        ToolTip="Keep the other owner and use the unused combo"/>
+            </Grid>
+        </StackPanel>
+    </StackPanel>
+</Window>
