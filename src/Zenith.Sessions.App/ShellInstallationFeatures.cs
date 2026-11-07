@@ -75,7 +75,7 @@ public sealed partial class ShellViewModel
             if (!Enum.IsDefined(snapshot.Status) || snapshot.Candidates.Count > 64 || snapshot.Issues.Count > 32
                 || snapshot.ObservedUtc > DateTimeOffset.UtcNow.AddSeconds(2)
                 || snapshot.Candidates.Any(item => !Enum.IsDefined(item.Product) || !Enum.IsDefined(item.FileState)
-                    || string.IsNullOrWhiteSpace(item.ExecutablePath) || item.ExecutablePath.Length > 1024
+                    || string.IsNullOrWhiteSpace(item.ExecutablePath) || item.ExecutablePath.Length > WindowsClientInstallationDiscovery.MaximumHintCharacters
                     || item.Evidence.Count > 16 || item.Evidence.Any(evidence => !Enum.IsDefined(evidence.Source) || !Enum.IsDefined(evidence.Product)))
                 || snapshot.Issues.Any(issue => !Enum.IsDefined(issue.Code))
                 || snapshot.Candidates.Select(item => item.ExecutablePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != snapshot.Candidates.Count)

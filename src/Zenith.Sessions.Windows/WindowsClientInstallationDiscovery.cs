@@ -97,8 +97,11 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
             if(root.Product!=ClientInstallationProduct.Roblox) Probe(Path.Combine(root.Root,root.Product+".exe"),evidence);
             foreach(string executable in PlayerNames) Probe(Path.Combine(root.Root,"Roblox","Player",executable),evidence);
             if(root.Product==ClientInstallationProduct.Roblox) foreach(string executable in PlayerNames) Probe(Path.Combine(root.Root,"Player",executable),evidence);
+            // An accepted root near the hint limit can yield an oversized Versions path: that is one invalid hint, not a failed scan.
+            if(!TryNormalizeDirectory(Path.Combine(root.Root,"Versions"),out var versions))
+            {Issue(ClientInstallationIssueCode.InvalidHint,root.Product,ClientInstallationHintSource.VersionDirectory);continue;}
             ClientInstallationVersionDirectories directories;
-            try {directories=_source.ReadVersionDirectories(Path.Combine(root.Root,"Versions"),MaximumVersionEntriesPerRoot,ct);successfulQueries++;}
+            try {directories=_source.ReadVersionDirectories(versions,MaximumVersionEntriesPerRoot,ct);successfulQueries++;}
             catch(Exception error) when(IsMetadataFailure(error)) {Issue(IsDenied(error)?ClientInstallationIssueCode.AccessDenied:error is InvalidDataException?ClientInstallationIssueCode.UnsafePath:ClientInstallationIssueCode.InventoryUnavailable,root.Product);continue;}
             if(directories is null || directories.Names is null) {Issue(ClientInstallationIssueCode.InventoryUnavailable,root.Product);continue;}
             if(directories.Truncated || directories.Names.Count>MaximumVersionEntriesPerRoot) Issue(ClientInstallationIssueCode.LimitReached,root.Product);

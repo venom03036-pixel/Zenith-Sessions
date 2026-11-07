@@ -113,6 +113,21 @@ public sealed class ClientInstallationDiscoveryTests
         }
     }
     [Fact]
+    public async Task AnAcceptedButNearLimitInstallRootRecordsAnInvalidHintInsteadOfFaultingTheScan()
+    {
+        // A valid 2045-character root passes the hint limit, but its Versions child does not; the real source rejects that child.
+        string root="C:\\"+string.Join('\\',Enumerable.Repeat(new string('a',200),10))+"\\"+new string('b',32);
+        Assert.Equal(2045,root.Length);Assert.True(WindowsClientInstallationDiscovery.TryNormalizeDirectory(root,out _));
+        var source=new FakeSource();source.Registry[ClientInstallationRegistryHint.BloxstrapInstallLocation]=root;
+        source.Files[Blox]=new(ClientInstallationFileState.PresentUnverified,"Bloxstrap","2.10.0.0");
+        var result=await new WindowsClientInstallationDiscovery(source).DiscoverAsync(default);
+        Assert.Equal(ClientInstallationSnapshotStatus.Partial,result.Status);
+        Assert.Contains(result.Issues,issue=>issue.Code==ClientInstallationIssueCode.InvalidHint && issue.Product==ClientInstallationProduct.Bloxstrap
+            && issue.Source==ClientInstallationHintSource.VersionDirectory);
+        Assert.Equal(Blox,Assert.Single(result.Candidates).ExecutablePath);
+        Assert.All(result.Candidates,candidate=>Assert.InRange(candidate.ExecutablePath.Length,1,WindowsClientInstallationDiscovery.MaximumHintCharacters));
+    }
+    [Fact]
     public async Task LargeInventoriesAndMalformedChildrenCannotEscapeOneLevelOrExceedResultAndProbeBounds()
     {
         var source=new FakeSource {AllFiles=new(ClientInstallationFileState.PresentUnverified,"Claimed product",new string('9',1000)),
@@ -166,7 +181,13 @@ public sealed class ClientInstallationDiscoveryTests
         public string? GetLocalAppData(CancellationToken ct) {RootCalls++;Started.TrySetResult(true);Gate?.Wait();ct.ThrowIfCancellationRequested();if(RootFailure is { } failure) throw failure;return Local;}
         public string? ReadRegistryValue(ClientInstallationRegistryHint hint,CancellationToken ct) {ct.ThrowIfCancellationRequested();RegistryCalls++;if(RegistryFailure is { } failure) throw failure;return Registry.GetValueOrDefault(hint);}
         public ClientInstallationVersionDirectories ReadVersionDirectories(string root,int maximum,CancellationToken ct)
-        {ct.ThrowIfCancellationRequested();if(DirectoryFailure is { } failure) throw failure;return AllVersions??Versions.GetValueOrDefault(root)??new([]);}
+        {
+            ct.ThrowIfCancellationRequested();
+            // Same argument contract as WindowsClientInstallationInventorySource.ReadVersionDirectories.
+            if(!WindowsClientInstallationDiscovery.TryNormalizeDirectory(root,out var normalized) || !string.Equals(Path.GetFileName(normalized),"Versions",StringComparison.OrdinalIgnoreCase))
+                throw new ArgumentException("Only a known Versions metadata folder may be enumerated.",nameof(root));
+            if(DirectoryFailure is { } failure) throw failure;return AllVersions??Versions.GetValueOrDefault(root)??new([]);
+        }
         public ClientInstallationFileMetadata InspectExecutable(string path,CancellationToken ct)
         {ct.ThrowIfCancellationRequested();Inspected.Add(path);return AllFiles??Files.GetValueOrDefault(path)??new(ClientInstallationFileState.Missing);}
     }

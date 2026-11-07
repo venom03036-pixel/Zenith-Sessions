@@ -126,6 +126,26 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task ALongButBoundedInstallationPathKeepsEveryRow() => OnUi(async () =>
+    {
+        // Discovery and executable trust accept paths up to 2048 characters, so one such row must not discard the scan.
+        const string tail = "\\RobloxPlayerBeta.exe";
+        string atLimit = "C:\\Synthetic" + string.Concat(Enumerable.Repeat("\\" + new string('a', 199), 10)) + "\\" + new string('b', 14) + tail;
+        Assert.Equal(Zenith.Sessions.Windows.WindowsClientInstallationDiscovery.MaximumHintCharacters, atLimit.Length);
+        var discovery = new InstallationProbe { ExtraPath = atLimit };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(3, vm.InstallationCandidates.Count); Assert.Contains(vm.InstallationCandidates, row => row.ExecutablePath == atLimit);
+        Assert.NotEqual("Check failed", vm.InstallationObserved); Assert.DoesNotContain("could not be checked", vm.InstallationStatus);
+
+        // One character past the shared limit is still inconsistent metadata.
+        discovery.ExtraPath = atLimit[..^tail.Length] + "b" + tail;
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Empty(vm.InstallationCandidates); Assert.Equal("Check failed", vm.InstallationObserved);
+        Assert.Contains("could not be checked", vm.InstallationStatus);
+    });
+
+    [Fact]
     public Task ShutdownWaitsForTheActualInstallationOwnerAndSuppressesLateResults() => OnUi(async () =>
     {
         var discovery = new InstallationProbe { Gate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
@@ -139,13 +159,15 @@ public sealed partial class ClientWindowIntegrationTests
 
     private sealed class InstallationProbe : IClientInstallationDiscovery
     {
-        public int Calls; public bool Malformed; public CancellationToken Token;
+        public int Calls; public bool Malformed; public string? ExtraPath; public CancellationToken Token;
         public TaskCompletionSource<ClientInstallationSnapshot>? Gate;
         public Task<ClientInstallationSnapshot> DiscoverAsync(CancellationToken ct)
         {
             Calls++; Token = ct;
             if (Gate is not null) return Gate.Task;
             var snapshot = Snapshot();
+            if (ExtraPath is not null)
+                snapshot = snapshot with { Candidates = [.. snapshot.Candidates, snapshot.Candidates[0] with { ExecutablePath = ExtraPath }] };
             return Task.FromResult(Malformed ? snapshot with { Candidates = [snapshot.Candidates[0], snapshot.Candidates[0]] } : snapshot);
         }
         public static ClientInstallationSnapshot Snapshot() => new(DateTimeOffset.UtcNow, ClientInstallationSnapshotStatus.Partial,
