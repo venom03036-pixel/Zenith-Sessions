@@ -176,8 +176,10 @@ public static class RobloxDestinationParser
 
     /// <summary>
     /// The one Roblox link an ro.blox.com wrapper's query carries: the first of af_dp, deep_link_value and af_web_dp whose
-    /// value (decoded once by the query reader) parses, without unwrapping again, as a link this parser reads. The share link
-    /// parser reads its code from this same link, so both parsers read the same field of a wrapper.
+    /// value (decoded once by the query reader) is a link (roblox:// or https://, any letter case) that parses, without
+    /// unwrapping again, as a link this parser reads. A value that is not a link, such as a bare number or GUID (AppsFlyer's
+    /// deep_link_value is often a plain value), is skipped rather than read as a place or server ID. The share link parser
+    /// reads its code from this same link, so both parsers read the same field of a wrapper.
     /// </summary>
     internal static bool TryDeferredLink(Dictionary<string, string> query,
         [System.Diagnostics.CodeAnalysis.NotNullWhen(true)] out string? wrapped,
@@ -185,7 +187,9 @@ public static class RobloxDestinationParser
     {
         foreach (string field in DeferredLinkFields)
         {
-            if (!query.TryGetValue(field, out wrapped) || wrapped.Length == 0) continue;
+            if (!query.TryGetValue(field, out wrapped)
+                || !wrapped.StartsWith("roblox://", StringComparison.OrdinalIgnoreCase)
+                && !wrapped.StartsWith("https://", StringComparison.OrdinalIgnoreCase)) continue;
             parsed = Parse(wrapped, unwrapDeferredLink: false);
             if (parsed.Status != RobloxDestinationStatus.Invalid && parsed.Kind != RobloxDestinationKind.UnresolvedUnknownLink) return true;
         }

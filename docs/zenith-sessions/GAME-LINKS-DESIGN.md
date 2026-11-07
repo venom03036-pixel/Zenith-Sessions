@@ -148,7 +148,8 @@ name, creator line, playing + rating, accent border and check when it is the cur
   (same fields as `roblox://placeId=…`); `/users/{id}` and `/users/{id}/profile` as a follow-user request (unresolved);
   a bare server (job) ID as "needs its game" (unresolved, never a name search). An `ro.blox.com` link's `af_dp`,
   `deep_link_value` or `af_web_dp` value is decoded once and parsed locally, never fetched and never unwrapped twice;
-  if none is a link Zenith reads, the wrapper stays an opaque deferred link. The share parser accepts the same hosts
+  only a value that is a link (`roblox://` or `https://`) is read, so a bare number or GUID there is never taken as a
+  place or server ID; if none is a link Zenith reads, the wrapper stays an opaque deferred link. The share parser accepts the same hosts
   and language prefix.
 - Share links in the forms Roblox itself produces (R-research-1): a recorded `roblox.com/share` request redirects (302)
   to a long `ro.blox.com` link whose `af_dp` and `deep_link_value` carry `roblox://navigation/share_links?code=…&type=…`

@@ -180,6 +180,11 @@ public sealed class DestinationTests
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fm.roblox.com%2Fde%2Fgames%2F123%2FAn-Experience", null)]
     [InlineData("https://ro.blox.com/Ebh5?deep_link_value=roblox%3A%2F%2Fexperiences%2Fstart%3FplaceId%3D123%26gameInstanceId%3D" + Job, Job)]
     [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2Fnavigation%2Fgame_details%3FgameId%3D9&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    // Only a link is read from a wrapper field: a bare number or server ID in af_dp is not a link, so af_web_dp's game is.
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=999&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=" + Job + "&deep_link_value=roblox%3A%2F%2FplaceId%3D123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=ROBLOX%3A%2F%2FplaceId%3D123", null)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=HTTPS%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
     // A website page's tab (#!/game-instances, #!/about) stays in the browser and never reaches Roblox: it names the same page.
     [InlineData("https://www.roblox.com/games/123/An-Experience#!/game-instances", null)]
     [InlineData("https://www.roblox.com/de/games/123/Ein-Erlebnis#!/game-instances", null)]
@@ -211,6 +216,12 @@ public sealed class DestinationTests
     [InlineData("https://ro.blox.com/Ebh5?af_dp=https%3A%2F%2Fro.blox.com%2FEbh5%3Faf_dp%3D123", RobloxDestinationKind.UnresolvedShareLink)]
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fevil.invalid%2Fgames%2F123", RobloxDestinationKind.UnresolvedShareLink)]
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fhome&af_dp=synthetic-sensitive-value", RobloxDestinationKind.UnresolvedShareLink)]
+    // A wrapper field that is not a link (AppsFlyer's deep_link_value is often a plain value) names nothing: a bare number
+    // is not read as a place ID, nor a bare GUID as a server ID, so the wrapper stays opaque.
+    [InlineData("https://ro.blox.com/Ebh5?deep_link_value=4483381587", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=123", RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_web_dp=" + Job, RobloxDestinationKind.UnresolvedShareLink)]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=%20roblox%3A%2F%2FplaceId%3D123", RobloxDestinationKind.UnresolvedShareLink)]
     // Only one leading language segment, only before a page this parser reads.
     [InlineData("https://www.roblox.com/deu/games/123", RobloxDestinationKind.UnresolvedUnknownLink)]
     [InlineData("https://www.roblox.com/de/fr/games/123", RobloxDestinationKind.UnresolvedUnknownLink)]

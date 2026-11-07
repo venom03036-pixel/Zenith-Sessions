@@ -77,6 +77,9 @@ public sealed class ShareLinkParserTests
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fshare%3Fcode%3D" + Code + "%26type%3Dserver", RobloxShareLinkType.Server)]
     // An unreadable af_dp is skipped exactly as the destination parser skips it; the next field it reads is the one read here.
     [InlineData("https://ro.blox.com/Ebh5?af_dp=synthetic&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fshare-links%3Fcode%3D" + Code + "%26type%3DServer", RobloxShareLinkType.Server)]
+    // A number or server ID in af_dp is not a link, so it neither names a place nor hides the share link in af_web_dp.
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=123&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fshare-links%3Fcode%3D" + Code + "%26type%3DServer", RobloxShareLinkType.Server)]
+    [InlineData("https://ro.blox.com/Ebh5?deep_link_value=12345678-1234-4234-8234-123456789abc&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fshare-links%3Fcode%3D" + Code + "%26type%3DServer", RobloxShareLinkType.Server)]
     public void ParsesTheShareLinkFormsRobloxItselfProduces(string input, RobloxShareLinkType type)
     {
         var classified = RobloxDestinationParser.Parse(input);
