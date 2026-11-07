@@ -34,6 +34,50 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Throws<InvalidOperationException>(()=>vm.BuildVisibleDiagnosticText());
     });
     [Fact]
+    public Task ReportCarriesTheWindowsVersionAndActiveSettingsAsNumbersAndIdsOnly()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        const string label="Sample report account label";
+        await vm.SaveAccountAsync(AccountProfile.Create(label));
+        vm.ApplyTheme.Execute("ocean-blue");await vm.ApplyTheme.Execution;
+        vm.SelectedPerformanceProfile=vm.PerformanceProfiles.Single(p=>p.Profile==ManagerPerformanceProfile.Custom);
+        vm.CustomProcessSample="2500";vm.CustomPresentation="1500";vm.CustomStagger="6000";vm.CustomStabilization="40000";
+        var culture=System.Globalization.CultureInfo.CurrentCulture;
+        vm.SpareRam=7.ToString(culture);vm.PhysicalPerClient=1.5.ToString(culture);vm.CommitPerClient=2.5.ToString(culture);vm.MaximumClients="4";
+        vm.SaveSettings.Execute(null);await vm.SaveSettings.Execution;Assert.Equal("Settings saved",vm.SaveStatus);
+        // An unsaved draft is not the active policy, so the report keeps the saved values.
+        vm.CustomProcessSample="3000";vm.SpareRam=9.ToString(culture);
+        string report=vm.BuildDiagnosticReport();using var parsed=JsonDocument.Parse(report);var root=parsed.RootElement;
+        Assert.True(root.TryGetProperty("Os",out var os),"The report has no Os section.");
+        Assert.Equal(System.Runtime.InteropServices.RuntimeInformation.OSDescription,os.GetProperty("Description").GetString());
+        Assert.Equal(Environment.OSVersion.Version.ToString(),os.GetProperty("Version").GetString());
+        Assert.True(root.TryGetProperty("Performance",out var performance),"The report has no Performance section.");
+        Assert.Equal("Custom",performance.GetProperty("Profile").GetString());Assert.True(performance.GetProperty("CustomTiming").GetBoolean());
+        Assert.Equal(2500,performance.GetProperty("ProcessSampleMs").GetInt32());Assert.Equal(1500,performance.GetProperty("PresentationMs").GetInt32());
+        Assert.Equal(6000,performance.GetProperty("StaggerMs").GetInt32());Assert.Equal(40000,performance.GetProperty("StabilizationMs").GetInt32());
+        Assert.True(root.TryGetProperty("Theme",out var theme),"The report has no Theme id.");Assert.Equal("ocean-blue",theme.GetString());
+        Assert.True(root.TryGetProperty("Capacity",out var capacity),"The report has no Capacity section.");
+        Assert.Equal(7,capacity.GetProperty("SparePhysicalGiB").GetDouble());Assert.Equal(20,capacity.GetProperty("SparePhysicalPercent").GetDouble());
+        Assert.Equal(1.5,capacity.GetProperty("NewClientPhysicalGiB").GetDouble());Assert.Equal(2.5,capacity.GetProperty("NewClientCommitGiB").GetDouble());
+        Assert.Equal(10,capacity.GetProperty("SpareCommitPercent").GetDouble());Assert.Equal(2,capacity.GetProperty("SpareCommitGiB").GetDouble());
+        Assert.Equal(4,capacity.GetProperty("UserMaximum").GetInt32());
+        // Decoded string values catch a path even though JSON escapes its backslashes in the raw text.
+        var strings=new List<string>();CollectStrings(root,strings);string decoded=string.Join("\n",strings);
+        string[] forbidden=[label,Data,Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar),Environment.UserName,Environment.MachineName,Environment.UserDomainName];
+        foreach(string value in forbidden.Where(v=>v.Length>=4))
+        {Assert.DoesNotContain(value,report,StringComparison.OrdinalIgnoreCase);Assert.DoesNotContain(value,decoded,StringComparison.OrdinalIgnoreCase);}
+        Assert.DoesNotContain("\\",decoded,StringComparison.Ordinal);
+    });
+    private static void CollectStrings(JsonElement element,List<string> values)
+    {
+        switch(element.ValueKind)
+        {
+            case JsonValueKind.String:values.Add(element.GetString()!);break;
+            case JsonValueKind.Object:foreach(var property in element.EnumerateObject()) {values.Add(property.Name);CollectStrings(property.Value,values);}break;
+            case JsonValueKind.Array:foreach(var item in element.EnumerateArray()) CollectStrings(item,values);break;
+        }
+    }
+    [Fact]
     public Task PauseAndClearAffectOnlyTheViewAndResumeGetsTheLatestBoundedHistory()=>OnUi(async ()=>
     {
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();

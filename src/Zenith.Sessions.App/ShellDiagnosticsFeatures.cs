@@ -5,6 +5,8 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using MacroSuite.App.Themes;
+using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.App;
@@ -80,7 +82,7 @@ public sealed partial class ShellViewModel
             await Task.Run(()=>ExplicitReportFile.WriteReportAsync(path,Encoding.UTF8.GetBytes(report),dataRoot,applicationRoot,stop.Token),stop.Token);
             // Panic, Lock and shutdown own the notice once they land; a write that already committed stays on disk silently.
             if(!stop.IsCancellationRequested && !IsLocked && !_shuttingDown)
-                Notice="Redacted diagnostic report saved. No account names, credentials, game links, paths or raw exception messages were included.";
+                Notice="Redacted diagnostic report saved with the Windows version and the active performance, theme and capacity settings. No account names, credentials, game links, paths or raw exception messages were included.";
         }
         catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
         {
@@ -147,10 +149,19 @@ public sealed partial class ShellViewModel
         if(IsLocked || _shuttingDown) throw new InvalidOperationException("Unlock the dashboard before exporting diagnostics.");
         RefreshDiagnosticsView(true);
         var snapshot=_diagnosticSnapshot??_diagnostics.GetSnapshot();
+        // Applied policy and committed limits only; unsaved drafts, the main account, sign-in and window-layout settings stay out.
+        var performance=Volatile.Read(ref _activePerformance);var limits=Volatile.Read(ref _savedSettings).Capacity!;
         var report=new
         {
             FormatVersion=1,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
             CreatedUtc=DateTimeOffset.UtcNow,Runtime=Environment.Version.ToString(),Architecture=RuntimeInformation.ProcessArchitecture.ToString(),
+            Os=new {Description=RuntimeInformation.OSDescription,Version=Environment.OSVersion.Version.ToString()},
+            Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
+                performance.ProcessSampleMs,performance.PresentationMs,performance.StaggerMs,performance.StabilizationMs},
+            // The catalog id, never the stored text, so an edited settings file cannot carry free text into a report.
+            Theme=ThemeCatalog.Resolve(_settings.Theme).Id,
+            Capacity=new {limits.SparePhysicalPercent,limits.SparePhysicalGiB,limits.SpareCommitPercent,limits.SpareCommitGiB,
+                limits.NewClientPhysicalGiB,limits.NewClientCommitGiB,limits.UserMaximum},
             SessionTotals=new {snapshot.TotalEvents,snapshot.InfoCount,snapshot.WarningCount,snapshot.ErrorCount},
             snapshot.DroppedEvents,PersistenceAvailable=snapshot.Failure is null,PausedView=DiagnosticsPaused,
             Scope="Filtered in-memory view, newest 512 events; no prior-session replay or raw log files.",
