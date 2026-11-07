@@ -795,6 +795,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested)
         { if(!_lifetime.IsCancellationRequested) { await LoadAccountsAsync(_lifetime.Token); if(!_preserveStopNotice) Notice="Account sign-in cancelled. Existing profiles were preserved."; } }
+        catch(OperationCanceledException ended) when(!_lifetime.IsCancellationRequested)
+        {
+            // The sign-in or check ended on its own side; the user's stop was never used. The command discards
+            // cancellations, so rethrowing left the prompt to finish signing in after its window had closed.
+            await LoadAccountsAsync(_lifetime.Token);
+            if(_preserveStopNotice || IsLocked || _shuttingDown) return;
+            Notice=refresh?"The saved sign-in check ended before it finished. Existing profiles were preserved; review this account's sign-in status, then check again."
+                :"Roblox sign-in ended before a session was saved. Existing profiles were preserved; start sign-in again when you are ready.";
+            AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
+            _diagnostics.Record(ManagerEventKind.OperationFailed,ended.GetType());
+        }
         catch(Exception)
         {
             if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);

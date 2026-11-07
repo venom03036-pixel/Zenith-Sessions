@@ -261,6 +261,43 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Equal(RobloxSessionIdentity.Provider, saved.Provider); Assert.Equal("synthetic-private-session", saved.SessionCookie);
     });
     [Fact]
+    public Task ShellLinkReportsProviderCancellationInsteadOfStalePrompt() => OnUi(async () =>
+    {
+        // The sign-in ended on its own side (for example its UI thread stopped) while the user's stop was never used.
+        // The link command discards cancellations, so the shell kept asking the user to finish in a window that had closed.
+        var signin = new ProviderCancelledSignIn();
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), signIn: signin, sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        await shell.SaveAccountAsync(AccountProfile.Create("My test alias"));
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution;
+        Assert.Equal(1, signin.Calls);
+        Assert.DoesNotContain("Complete sign-in on Roblox", shell.Notice);
+        Assert.Contains("Roblox sign-in ended before a session was saved", shell.Notice);
+        Assert.Contains("Existing profiles were preserved", shell.Notice);
+        Assert.Contains(shell.Events, line => line.Contains("Roblox sign-in ended before a session was saved", StringComparison.Ordinal));
+        Assert.False(shell.IsAuthorizing);
+        Assert.Null(Assert.Single(shell.Accounts).KnownUserId);
+    });
+    [Fact]
+    public Task ShellSavedSignInCheckReportsProviderCancellationInsteadOfStalePrompt() => OnUi(async () =>
+    {
+        var client = new CancelsAfterFirstClient();
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), signIn: new SignIn(), sessionClient: client);
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        await shell.SaveAccountAsync(AccountProfile.Create("My test alias"));
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution;
+        Assert.Contains("Saved sign-in verified", shell.Notice);
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        shell.RefreshAuthorization.Execute(null); await shell.RefreshAuthorization.Execution;
+        Assert.Equal(2, client.Calls);
+        Assert.DoesNotContain("Checking the selected saved Roblox sign-in", shell.Notice);
+        Assert.Contains("The saved sign-in check ended before it finished", shell.Notice);
+        Assert.Contains(shell.Events, line => line.Contains("Saved sign-in check ended before it finished", StringComparison.Ordinal));
+        Assert.False(shell.IsAuthorizing);
+    });
+    [Fact]
     public void ProductionSettingsNoLongerRequestsOAuthRegistration()
     {
         using var stream = typeof(RobloxSignInPresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
@@ -274,11 +311,28 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         public Task<RobloxSessionCredential> SignInAsync(Guid id, CancellationToken ct)
         { ct.ThrowIfCancellationRequested(); Calls++; return Task.FromResult(new RobloxSessionCredential("synthetic-private-session")); }
     }
+    private sealed class ProviderCancelledSignIn : IRobloxSessionSignIn
+    {
+        public int Calls;
+        public Task<RobloxSessionCredential> SignInAsync(Guid id, CancellationToken ct)
+        { ct.ThrowIfCancellationRequested(); Calls++; return Task.FromException<RobloxSessionCredential>(new OperationCanceledException()); }
+    }
     private sealed class Client : IRobloxSessionClient
     {
         public int Calls;
         public Task<RobloxSessionValidation> ValidateAsync(RobloxSessionCredential credential, CancellationToken ct)
         { ct.ThrowIfCancellationRequested(); Calls++; return Task.FromResult(new RobloxSessionValidation(new(456, "verified_player", RobloxSessionIdentity.Issuer, "456"))); }
+    }
+    /// <summary>Verifies the first sign-in, then ends the next check with a cancellation nobody requested.</summary>
+    private sealed class CancelsAfterFirstClient : IRobloxSessionClient
+    {
+        public int Calls;
+        public Task<RobloxSessionValidation> ValidateAsync(RobloxSessionCredential credential, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return ++Calls == 1 ? Task.FromResult(new RobloxSessionValidation(new(456, "verified_player", RobloxSessionIdentity.Issuer, "456")))
+                : Task.FromException<RobloxSessionValidation>(new OperationCanceledException());
+        }
     }
     private sealed class Monitor : IDesktopMonitor
     {
