@@ -17,8 +17,19 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
     private bool _disposed;
     public string Path { get; }
     private static readonly JsonSerializerOptions Json = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
+    // The first fourteen fields are always written. End evidence is written only when present, so a row without it keeps
+    // the original shape that earlier versions read; a row with it is rejected by them and left untouched (no repair).
     private sealed record Stored(Guid EntryId, string? HostId, int Pid, long Start, long First, long Last, long Absent,
-        long? Close, long? User, long? UserTime, long? Place, Guid? Job, long? Universe, long? DestinationTime);
+        long? Close, long? User, long? UserTime, long? Place, Guid? Job, long? Universe, long? DestinationTime,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Hung = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Disconnected = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Reason = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Checked = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Complete = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Fault = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? Code = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null);
+    private static readonly string[] RequiredFields = ["EntryId", "HostId", "Pid", "Start", "First", "Last", "Absent", "Close", "User", "UserTime", "Place", "Job", "Universe", "DestinationTime"];
     public RecentClientHistoryStore(string root)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(root);
@@ -110,7 +121,7 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
                 using var document = JsonDocument.Parse(payload, new JsonDocumentOptions { MaxDepth = 3 });
                 var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
                 foreach (var property in document.RootElement.EnumerateObject()) if (!fields.Add(property.Name)) throw new InvalidDataException();
-                if (fields.Count != 14) throw new InvalidDataException();
+                if (!RequiredFields.All(fields.Contains)) throw new InvalidDataException();
                 var stored = JsonSerializer.Deserialize<Stored>(payload, Json) ?? throw new InvalidDataException();
                 entries.Add(ToEntry(stored));
             }
@@ -161,13 +172,20 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
     private static Stored ToStored(RecentClientHistoryEntry entry) => new(entry.EntryId, entry.Process.HostId, entry.Process.ProcessId,
         entry.Process.ProcessStartUtcTicks, entry.FirstObservedUtc.UtcTicks, entry.LastObservedUtc.UtcTicks, entry.NoLongerObservedUtc!.Value.UtcTicks,
         entry.CloseRequestedUtc?.UtcTicks, entry.LastKnownUserId, entry.LastKnownUserIdentityUtc?.UtcTicks,
-        entry.LastKnownDestination?.PlaceId, entry.LastKnownDestination?.JobId, entry.LastKnownDestination?.UniverseId, entry.LastKnownDestination?.ObservedUtc.UtcTicks);
+        entry.LastKnownDestination?.PlaceId, entry.LastKnownDestination?.JobId, entry.LastKnownDestination?.UniverseId, entry.LastKnownDestination?.ObservedUtc.UtcTicks,
+        entry.NotRespondingUtc?.UtcTicks, entry.DisconnectedUtc?.UtcTicks, entry.DisconnectReason, entry.FaultCheck?.CheckedUtc.UtcTicks,
+        entry.FaultCheck?.Complete, entry.FaultCheck?.FaultRecordedUtc?.UtcTicks, entry.FaultCheck?.ExceptionCode, entry.FaultCheck?.CrashDumps);
     private static RecentClientHistoryEntry ToEntry(Stored item)
     {
         if ((item.Place.HasValue || item.Job.HasValue || item.Universe.HasValue || item.DestinationTime.HasValue) && !(item.Place.HasValue && item.Job.HasValue && item.DestinationTime.HasValue)) throw new InvalidDataException();
+        if (item.Checked.HasValue != item.Complete.HasValue || item.Checked.HasValue != item.Dumps.HasValue
+            || !item.Checked.HasValue && (item.Fault.HasValue || item.Code.HasValue)) throw new InvalidDataException();
         return new RecentClientHistoryEntry(item.EntryId, new(item.HostId, item.Pid, item.Start), Utc(item.First), Utc(item.Last), Utc(item.Absent),
             item.Close is { } close ? Utc(close) : null, item.User, item.UserTime is { } userTime ? Utc(userTime) : null,
-            item.Place is { } place ? new(place, item.Job!.Value, item.Universe, Utc(item.DestinationTime!.Value)) : null).Validated(ended: true);
+            item.Place is { } place ? new(place, item.Job!.Value, item.Universe, Utc(item.DestinationTime!.Value)) : null,
+            item.Hung is { } hung ? Utc(hung) : null, item.Disconnected is { } disconnected ? Utc(disconnected) : null, item.Reason,
+            item.Checked is { } checkedAt ? new(Utc(checkedAt), item.Complete!.Value, item.Fault is { } fault ? Utc(fault) : null, item.Code, item.Dumps!.Value) : null)
+            .Validated(ended: true);
     }
     private static DateTimeOffset Utc(long ticks) => new(ticks, TimeSpan.Zero);
     public void Dispose()

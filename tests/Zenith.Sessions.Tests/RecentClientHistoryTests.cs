@@ -165,4 +165,85 @@ public sealed class RecentClientHistoryTests
         Assert.True(reducer.RecordCloseRequest(Key(row), Now.AddMilliseconds(500)));
         Assert.Equal(Now.AddMilliseconds(500), Assert.Single(reducer.Snapshot().Active).CloseRequestedUtc);
     }
+
+    [Fact]
+    public void EndCauseNamesTheStrongestRecordedEvidenceAndACloseRequestAloneStaysUnknown()
+    {
+        var key = new SessionProcessKey(null, 123, Now.AddSeconds(-10).UtcTicks);
+        var ended = new RecentClientHistoryEntry(Guid.NewGuid(), key, Now, Now, Now.AddSeconds(1));
+        var check = new ClientFaultCheck(Now.AddSeconds(7), true);
+        Assert.Equal(ClientEndCause.Unknown, ended.EndCause); Assert.Equal("Unknown", ended.Cause);
+        Assert.Equal(ClientEndCause.Unknown, (ended with { CloseRequestedUtc = Now }).EndCause);
+        Assert.Equal(ClientEndCause.Unknown, (ended with { FaultCheck = check }).EndCause);
+        Assert.Equal(ClientEndCause.PossibleCrash, (ended with { FaultCheck = check with { CrashDumps = 1 } }).EndCause);
+        var disconnected = ended with { DisconnectedUtc = Now, DisconnectReason = 277, FaultCheck = check with { CrashDumps = 1 } };
+        Assert.Equal(ClientEndCause.Disconnected, disconnected.EndCause); Assert.Equal("Disconnected", disconnected.Cause);
+        Assert.Equal(ClientEndCause.LeftGame, (disconnected with { DisconnectReason = 285 }).EndCause);
+        var hung = disconnected with { NotRespondingUtc = Now };
+        Assert.Equal(ClientEndCause.NotResponding, hung.EndCause);
+        var crashed = hung with { FaultCheck = check with { FaultRecordedUtc = Now.AddSeconds(1), ExceptionCode = 0xC0000005 } };
+        Assert.Equal(ClientEndCause.Crashed, crashed.EndCause); Assert.Equal("Crashed", crashed.Cause);
+        Assert.Same(crashed, crashed.Validated(ended: true)); Assert.False(crashed.CanAuthorizeAccountAction);
+        Assert.Equal(ClientEndCause.Unknown, (crashed with { NoLongerObservedUtc = null, FaultCheck = null }).EndCause);
+        // Inconsistent evidence is rejected instead of being shown as a cause.
+        Assert.Throws<ArgumentException>(() => (ended with { DisconnectReason = 277 }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { NotRespondingUtc = Now.AddSeconds(1) }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { FaultCheck = check with { FaultRecordedUtc = Now.AddMinutes(-1) } }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { FaultCheck = check with { ExceptionCode = 1 } }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { FaultCheck = check with { CheckedUtc = Now } }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { NoLongerObservedUtc = null, FaultCheck = check }).Validated(ended: false));
+    }
+
+    [Fact]
+    public void TheLastObservedHangAndLoggedDisconnectCarryIntoTheEndedEntry()
+    {
+        var reducer = new RecentClientHistoryReducer(); var hung = Session(); var dropped = Session(456);
+        var disconnect = Evidence(dropped) with { Lifecycle = ObservedSessionLifecycle.Disconnected, CurrentDestination = null, DisconnectReason = 277 };
+        reducer.Observe(Frame(1, Now, hung with { NotResponding = true }, dropped), [disconnect], Now);
+        reducer.Observe(Frame(2, Now.AddSeconds(1)), [], Now.AddSeconds(1));
+        var ended = reducer.Snapshot().Ended;
+        var frozen = ended.Single(item => item.Process == Key(hung));
+        Assert.Equal(ClientEndCause.NotResponding, frozen.EndCause); Assert.Equal(Now, frozen.NotRespondingUtc);
+        var gone = ended.Single(item => item.Process == Key(dropped));
+        Assert.Equal(ClientEndCause.Disconnected, gone.EndCause); Assert.Equal(277, gone.DisconnectReason); Assert.Equal(Now, gone.DisconnectedUtc);
+
+        // A client that answered again and rejoined before it ended carries no hang or disconnect.
+        var recovered = new RecentClientHistoryReducer(); var row = Session(789);
+        recovered.Observe(Frame(1, Now, row with { NotResponding = true }),
+            [Evidence(row) with { Lifecycle = ObservedSessionLifecycle.Disconnected, CurrentDestination = null, DisconnectReason = 277 }], Now);
+        Assert.Equal(Now, Assert.Single(recovered.Snapshot().Active).DisconnectedUtc);
+        recovered.Observe(Frame(2, Now.AddSeconds(1), row with { ObservedUtc = Now.AddSeconds(1) }), [Evidence(row)], Now.AddSeconds(1));
+        recovered.Observe(Frame(3, Now.AddSeconds(2)), [], Now.AddSeconds(2));
+        var later = Assert.Single(recovered.Snapshot().Ended);
+        Assert.Null(later.NotRespondingUtc); Assert.Null(later.DisconnectedUtc); Assert.Null(later.DisconnectReason);
+        Assert.Equal(ClientEndCause.Unknown, later.EndCause);
+    }
+
+    [Fact]
+    public void EachEndedClientGetsOneSettledCrashRecordCheckThatIsPersisted()
+    {
+        var reducer = new RecentClientHistoryReducer(); var row = Session();
+        reducer.Observe(Frame(1, Now, row), [], Now);
+        var gone = Now.AddSeconds(1); reducer.Observe(Frame(2, gone), [], gone);
+        Assert.Null(reducer.NextFaultCheck(gone.AddSeconds(4)));
+        Assert.Null(reducer.NextFaultCheck(gone + RecentClientHistoryReducer.MaximumFaultCheckAge + TimeSpan.FromSeconds(1)));
+        var due = gone + RecentClientHistoryReducer.FaultCheckDelay;
+        var ended = reducer.NextFaultCheck(due); Assert.NotNull(ended); Assert.Equal(Key(row), ended!.Process);
+        long revision = reducer.PersistedSnapshot().Revision;
+        Assert.Throws<ArgumentException>(() => reducer.RecordFaultCheck(ended, new(due, true, Now.AddMinutes(-5), 0xC0000005)));
+        Assert.Equal(revision, reducer.PersistedSnapshot().Revision);
+        var found = new ClientFaultCheck(due, true, Now, 0xC0000005);
+        Assert.True(reducer.RecordFaultCheck(ended, found));
+        Assert.Equal(revision + 1, reducer.PersistedSnapshot().Revision);
+        var saved = Assert.Single(reducer.PersistedSnapshot().Entries);
+        Assert.Equal(found, saved.FaultCheck); Assert.Equal(ClientEndCause.Crashed, saved.EndCause);
+        Assert.Null(reducer.NextFaultCheck(due)); Assert.False(reducer.RecordFaultCheck(ended, found));
+
+        // Reappearance drops the check; a late result for the earlier end cannot attach to the next one.
+        var back = Now.AddSeconds(8); reducer.Observe(Frame(3, back, row with { ObservedUtc = back }), [], back);
+        Assert.Null(Assert.Single(reducer.Snapshot().Active).FaultCheck);
+        var again = back.AddSeconds(1); reducer.Observe(Frame(4, again), [], again);
+        Assert.False(reducer.RecordFaultCheck(ended, found with { CheckedUtc = again.AddSeconds(5) }));
+        Assert.NotNull(reducer.NextFaultCheck(again + RecentClientHistoryReducer.FaultCheckDelay));
+    }
 }
