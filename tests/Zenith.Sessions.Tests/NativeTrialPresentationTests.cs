@@ -85,6 +85,30 @@ public sealed partial class ClientWindowIntegrationTests
         await AssertBlockedTrialCommandAsync(shell); Assert.Equal(notice, shell.Notice); Assert.Empty(shell.Launches);
     });
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task PanicOrLockKeepsTheTrialStopReasonInTheTrialPanel(bool lockDashboard) => OnUi(async () =>
+    {
+        await using var shell = await NativeTrialShellAsync(); Assert.True(shell.CanRunNativeTrial);
+        if (lockDashboard) shell.LockDashboard(); else shell.Panic.Execute(null);
+        Assert.False(shell.CanRunNativeTrial); Assert.Null(shell.SelectedInstallation);
+        Assert.Contains("Panic or Lock", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
+        await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+    });
+
+    [Fact]
+    public Task ClearingTheInstallationSelectionShowsANeutralTrialStatus() => OnUi(async () =>
+    {
+        await using var shell = await NativeTrialShellAsync(); Assert.True(shell.CanRunNativeTrial);
+        shell.CancelInstallationDiscovery.Execute(null);
+        Assert.Null(shell.SelectedInstallation); Assert.False(shell.CanRunNativeTrial);
+        Assert.DoesNotContain("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("No native installation is selected", shell.NativeTrialStatus, StringComparison.Ordinal);
+        await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
+    });
+
     [Fact]
     public Task DiscoveryValidLauncherSelectionRemainsVisibleWithoutThrowingOrEnablingANativeTrial() => OnUi(async () =>
     {

@@ -94,19 +94,24 @@ public sealed partial class ShellViewModel
         InvalidateNativeTrialReview();
         Interlocked.Increment(ref _nativeTrialEpoch);
         _launchQueue.SignalPanic();
+        // A cleared selection (Refresh, Cancel check, Panic or Lock) is not a rejected row;
+        // only a row that is still selected may be described as unsupported.
+        var selection=SelectedInstallation?.Candidate;
         try
         {
-            _nativeLaunch.Configure(SelectedInstallation?.Candidate is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null);
+            _nativeLaunch.Configure(selection is {Product:ClientInstallationProduct.Roblox,FileState:ClientInstallationFileState.PresentUnverified} candidate?candidate:null);
             NativeTrialStatus=_nativeLaunch.Selected?"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified."
-                :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
+                :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation;
         }
         catch(ArgumentException)
         {
             _nativeLaunch.Configure(null);
-            NativeTrialStatus="This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
+            NativeTrialStatus=UnsupportedNativeInstallation;
         }
         RefreshNativeTrialFeatures();
     }
+    private const string NoNativeInstallationSelected="No native installation is selected. In Settings, choose Refresh installation, then select a present native Roblox player file.";
+    private const string UnsupportedNativeInstallation="This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
     private void FenceNativeTrial(string reason)
     {
         InvalidateNativeTrialReview();
