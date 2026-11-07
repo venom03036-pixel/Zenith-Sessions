@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using MacroSuite.App.Themes;
 using Microsoft.Win32;
 using Zenith.Sessions.Core;
@@ -17,6 +18,7 @@ public partial class MainWindow : Window
     private bool _exiting, _exitStarted;
     private HwndSource? _source;
     private readonly GlobalPanicRegistration _panicKey=new();
+    private readonly ManagerWindowPlacement? _startPlacement;
     public MainWindow(ShellViewModel vm) : this(vm, false) { }
     // Resolve the shipped view without creating a tray owner or registering shortcuts.
     internal static MainWindow CreateForLayoutCheck(ShellViewModel vm) => new(vm, true);
@@ -24,6 +26,9 @@ public partial class MainWindow : Window
     {
         _vm = vm; DataContext = vm; InitializeComponent();
         if (layoutCheckOnly) return;
+        // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
+        _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
+        if (_startPlacement is not null) WindowStartupLocation = WindowStartupLocation.Manual;
         vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
         PreviewKeyDown+=SettingsPagePreviewKeyDown;
         IsVisibleChanged+=(_,_)=>UpdatePreviewVisibility();
@@ -46,6 +51,9 @@ public partial class MainWindow : Window
         SourceInitialized += (_, _) =>
         {
             var handle = new WindowInteropHelper(this).Handle; _source = HwndSource.FromHwnd(handle); _source.AddHook(OnMessage);
+            // The window exists but is not shown yet, so it appears in place. Maximizing after the move keeps it on that display.
+            if (_startPlacement is { } placement && ManagerWindowNative.Place(handle, placement.Bounds) && placement.Maximized)
+                WindowState = WindowState.Maximized;
             // Isolated sample previews must not take a real desktop transport shortcut.
             vm.SetPanicRegistration(!vm.IsSample && _panicKey.RegisterF12(handle));
         };
@@ -83,6 +91,9 @@ public partial class MainWindow : Window
         if (_exitStarted) return; _exitStarted = true;
         try
         {
+            // Remember where the window was left while the shell can still save; this never stops the exit (type only, Rule 10).
+            try { await _vm.SaveManagerWindowAsync(CaptureManagerWindow()); }
+            catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
             // and still give the priority warning and stop the instance coordinator.
             try { await _vm.DisposeAsync(); }
@@ -94,6 +105,13 @@ public partial class MainWindow : Window
             if (((App)Application.Current).Coordinator is { } coordinator) await coordinator.StopAsync();
         }
         finally { _exiting = true; Close(); }
+    }
+    // RestoreBounds is the normal (not maximized) rectangle in DIPs at the window's current display scale, so multiplying by that
+    // scale gives physical pixels, the unit that stays correct across displays with different scaling.
+    private ManagerWindowPlacement? CaptureManagerWindow()
+    {
+        var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
+        return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
     }
     private void Restore() { Show(); if (WindowState == WindowState.Minimized) WindowState = WindowState.Normal; if (!Activate()) _vm.Inform("Window restored. Windows denied activation; select it from the taskbar."); }
     public void RestoreFromLaunch() => Restore();

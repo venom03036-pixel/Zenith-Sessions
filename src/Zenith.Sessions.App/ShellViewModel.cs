@@ -690,20 +690,20 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
     {
-        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;
+        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
         try
         {
             await _preferencesWriter.WaitAsync(_lifetime.Token);
             try
             {
-                // Appearance autosaves merge with the latest successful explicit save,
+                // Appearance and window-position autosaves merge with the latest successful explicit save,
                 // even when they waited behind it. Never persist uncommitted field drafts.
-                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense };
+                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
-                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts };
+                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
             }
@@ -711,6 +711,21 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         catch { _saveFailed = true; throw; }
         finally { _pendingSaves--; PreferencesEdited(); }
+    }
+    /// <summary>UI thread, before the window is first shown: where it was left last time, or null. Read-only; see SettingsStore.ReadManagerWindow.</summary>
+    internal ManagerWindowPlacement? ReadSavedManagerWindow()=>_settingsStore.ReadManagerWindow();
+    /// <summary>
+    /// UI thread, at exit before <see cref="DisposeAsync"/>: keeps where the window was left through the same merge as the theme
+    /// autosave, so unsaved setting edits are never written. Skipped when nothing changed, when startup did not finish, and while
+    /// recovered settings wait for review, because an exit must not repair them silently. A failed save is recorded by type only
+    /// (Rule 10) and never stops the exit.
+    /// </summary>
+    internal async Task SaveManagerWindowAsync(ManagerWindowPlacement? placement)
+    {
+        if(placement is null || !placement.IsValid || !_ready || _shuttingDown || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
+        _settings=_settings with { ManagerWindow=placement };
+        try { await SaveCurrentSettingsAsync(); }
+        catch(Exception ex) { _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType()); }
     }
     public async Task RequestCloseAsync(SessionObservation session)
     {

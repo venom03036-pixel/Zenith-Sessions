@@ -15,14 +15,17 @@ public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = 
 
 public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-mint", bool DenseAccounts = false,
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
-    ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null)
+    ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
+    ManagerWindowPlacement? ManagerWindow = null)
 {
+    // ManagerWindow is optional within schema 1: files without it load unchanged, and older builds ignore it.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
             || OAuthCallbackPort is < 1024 or > 65535) throw new InvalidDataException("Settings have an unsupported version or invalid value.");
         (Capacity ?? new()).Validated();
         (Performance ?? new()).Validated();
+        ManagerWindow?.Validated();
         return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated() };
     }
 }
@@ -66,6 +69,28 @@ public sealed class SettingsStore(string root) : IDisposable
                 throw new InvalidDataException("Settings are damaged and no valid backup is available. Preserve the files and open the settings folder for recovery.", ex);
             }
         }
+        finally { _writer.Release(); }
+    }
+    /// <summary>
+    /// UI thread, before the manager window is first shown: the window placement in the main settings file, or null when there
+    /// is none or the file cannot be read right now. Read-only and best effort, so the window opens at its default place instead;
+    /// it never creates, repairs or recovers files, and any real settings problem is still reported by <see cref="LoadAsync"/>.
+    /// </summary>
+    public ManagerWindowPlacement? ReadManagerWindow()
+    {
+        if (!_writer.Wait(0)) return null;
+        try
+        {
+            if (!Exists(Path)) return null;
+            byte[] bytes;
+            using (var file = new FileStream(Path, FileMode.Open, FileAccess.Read, FileShare.Read))
+            {
+                if (file.Length > MaximumBytes) return null;
+                bytes = new byte[(int)file.Length]; file.ReadExactly(bytes);
+            }
+            return Decode(bytes, CancellationToken.None).Settings.ManagerWindow;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException or ArgumentException or InvalidDataException) { return null; }
         finally { _writer.Release(); }
     }
     private static string? Notice(SettingsRead read, string? notice)

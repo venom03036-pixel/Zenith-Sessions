@@ -163,7 +163,7 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         long width = (long)rect.Right - rect.Left, height = (long)rect.Bottom - rect.Top;
         return width is > 0 and <= int.MaxValue && height is > 0 and <= int.MaxValue ? new(rect.Left, rect.Top, (int)width, (int)height) : default;
     }
-    private sealed class PhysicalDpiScope : IDisposable
+    internal sealed class PhysicalDpiScope : IDisposable
     {
         private readonly nint _previous = Native.SetThreadDpiAwarenessContext((nint)(-4));
         public PhysicalDpiScope() { if (_previous == 0) throw new Win32Exception(Marshal.GetLastWin32Error()); }
