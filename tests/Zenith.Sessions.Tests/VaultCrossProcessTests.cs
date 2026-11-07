@@ -16,6 +16,7 @@ namespace Zenith.Sessions.Tests;
 /// Native interprocess contention using this repository's test-only helper. All vaults are newly
 /// owned synthetic Temp fixtures; no installed application, browser, account or network is used.
 /// </summary>
+[Trait(TestCategory.Name, TestCategory.CrossProcess)]
 public sealed class VaultCrossProcessTests
 {
     private static readonly Guid ProfileId=Guid.Parse("d87a0474-b2e3-4bc1-8b70-0cde43000001");

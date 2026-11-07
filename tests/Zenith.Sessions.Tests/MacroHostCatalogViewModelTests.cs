@@ -165,7 +165,7 @@ public sealed class MacroHostCatalogViewModelTests
         Assert.Contains("stopped", vm.Status, StringComparison.OrdinalIgnoreCase); Assert.False(vm.CanNext);
     }
 
-    [Fact]
+    [Fact, Trait(TestCategory.Name, TestCategory.CrossProcess)]
     public async Task Net10ClientReadsTheRealPipeFromAnIsolatedNet8Worker()
     {
         string path = TestWorkerLocator.Find("Zenith.MacroHost.ProbeWorker", "net8.0-windows10.0.19041.0");
@@ -192,7 +192,7 @@ public sealed class MacroHostCatalogViewModelTests
         }
     }
 
-    [Fact]
+    [Fact, Trait(TestCategory.Name, TestCategory.CrossProcess)]
     public async Task ProbeWorkerThatExitsBeforeReadyReportsItsExitCode()
     {
         string path = TestWorkerLocator.Find("Zenith.MacroHost.ProbeWorker", "net8.0-windows10.0.19041.0");
