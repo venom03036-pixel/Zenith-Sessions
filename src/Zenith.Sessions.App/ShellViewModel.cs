@@ -73,8 +73,11 @@ public sealed class LaunchRow(LaunchOperation operation) : Observable
     public Guid Id=>Operation.Intent.OperationId;
     private string _label="Saved profile";
     public string Label { get=>_label;set=>Set(ref _label,value); }
-    public string State=>Operation.State switch {LaunchState.Preparing=>"Preparing account",LaunchState.Blocked when Operation.Problem==LaunchProblem.PreparationInterrupted=>"Review preparation",LaunchState.Blocked when Operation.Problem==LaunchProblem.Interrupted=>"Review request",LaunchState.Arrived=>"Arrival verified",LaunchState.ReviewRequired=>"Review required",LaunchState.ClientStartedUnverified=>"Client started · unverified",_=>Operation.State.ToString()};
-    public string Detail=>LaunchDescriptions.Explain(Operation.Problem);
+    public string State=>Operation.State switch {LaunchState.Preparing=>"Preparing account",LaunchState.Blocked when Operation.Problem==LaunchProblem.PreparationInterrupted=>"Review preparation",LaunchState.Blocked when Operation.Problem==LaunchProblem.Interrupted=>NotStartedInterrupted,LaunchState.Arrived=>"Arrival verified",LaunchState.ReviewRequired=>"Review required",LaunchState.ClientStartedUnverified=>"Client started · unverified",_=>Operation.State.ToString()};
+    public string Detail=>LaunchDescriptions.Explain(Operation.State,Operation.Problem);
+    /// <summary>A recovered request that never started a client (Blocked/Interrupted). It can only be cancelled, so it never says review.
+    /// The account list uses the same words.</summary>
+    internal const string NotStartedInterrupted="Not started · interrupted";
     public string RequestedDestination=>$"Place {Operation.Intent.PlaceId}"+(Operation.Intent.RequestedJobId is { } job?$" · {job}":" · server not specified");
     public string ProcessReceipt=>Operation.ProcessReceipt is{ } receipt?$"PID {receipt.ProcessId} · start {new DateTimeOffset(receipt.ProcessStartUtcTicks,TimeSpan.Zero).ToLocalTime():T} · not a liveness check":"No process-start receipt";
     public string ResourceEstimate=>Operation.ResourceBudget is { } budget

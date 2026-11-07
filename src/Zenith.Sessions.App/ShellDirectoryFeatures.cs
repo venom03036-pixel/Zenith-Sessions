@@ -24,11 +24,12 @@ public sealed partial class AccountRow
     public string LaunchStatus=>_launchState switch
     {
         LaunchState.Arrived=>"Arrival verified",LaunchState.ReviewRequired=>"Review required",
+        LaunchState.Blocked when _launchProblem==LaunchProblem.Interrupted=>LaunchRow.NotStartedInterrupted,
         LaunchState.ClientStartedUnverified=>"Client started · account and arrival unverified",
         null=>"No verified client",_=>_launchState.ToString()!
     };
     public string PowerExplanation=>_launchState is LaunchState.Queued or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing?
-        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):SignInStatusBusy?
+        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { } state?LaunchDescriptions.Explain(state,_launchProblem):SignInStatusBusy?
         "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
         "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
         "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";

@@ -28,8 +28,13 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
             var row=Assert.Single(reopened.Launches);Assert.Equal("Renamed sample",row.Label);
             // A never-started request is recovered as a cancellable non-reserving row, not a possible client.
             Assert.Equal(LaunchState.Blocked,row.Operation.State);Assert.Equal(LaunchProblem.Interrupted,row.Operation.Problem);
-            Assert.Equal("Review request",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
-            Assert.Equal("Blocked",Assert.Single(reopened.Accounts).LaunchStatus);
+            // M-L2-2: it cannot be reviewed, so it says it never started instead of asking for review, and the
+            // account list and that account's Details notice use the queue row's words.
+            Assert.Equal("Not started · interrupted",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
+            var account=Assert.Single(reopened.Accounts);Assert.Equal(row.State,account.LaunchStatus);Assert.Equal("Details",account.PowerLabel);
+            reopened.AccountPower.Execute(account);await reopened.AccountPower.Execution;
+            Assert.Equal("This request never started a client. Cancel it and queue again if it is still needed.",reopened.Notice);
+            Assert.Same(row,Assert.Single(reopened.Launches));Assert.Equal(LaunchState.Blocked,row.Operation.State);
         }
     });
     [Fact]

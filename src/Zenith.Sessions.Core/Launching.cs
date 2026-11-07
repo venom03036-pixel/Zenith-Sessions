@@ -91,6 +91,11 @@ public static class LaunchDescriptions
         LaunchProblem.ClientClosureAcknowledged=>"You confirmed the possible client is closed. Its historical receipt is retained; current Windows observations remain separate.",
         _=>""
     };
+    /// <summary>A row's explanation. Interrupted means two things: on a Blocked row it was recovered from a
+    /// Queued or Blocked save made before any validation, preparation or provider call, so it never started a
+    /// client and Cancel is its only action; on a ReviewRequired row a client may exist and Review applies.</summary>
+    public static string Explain(LaunchState state,LaunchProblem problem)=>state==LaunchState.Blocked && problem==LaunchProblem.Interrupted
+        ?"This request never started a client. Cancel it and queue again if it is still needed.":Explain(problem);
     public static string ExplainPause(LaunchQueuePauseReason reason)=>reason switch
     {
         // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
