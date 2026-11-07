@@ -171,16 +171,60 @@ public sealed class JoinWorkspacePresentationTests
     [InlineData("midnight",1320,840)]
     public Task RendersJoinPageSnapshotsForReview(string theme,int width,int height)=>SearchTest.OnUi(async()=>
     {
-        // Review evidence: the page beside the 200 px sidebar and under the 44 px title bar / 32 px status bar, saved under artifacts/game-links.
+        // Review evidence: the page beside the 200 px sidebar and under the 44 px title bar / 32 px status bar, saved under the
+        // repository's artifacts/game-links; a build with no repository above it keeps them in the fixture's own Temp root.
         await using var fixture=new Fixture(theme);var view=fixture.View;int pageWidth=width-200,pageHeight=height-76;
         Layout(view,pageWidth,pageHeight);
         var render=new RenderTargetBitmap(pageWidth,pageHeight,96,96,PixelFormats.Pbgra32);render.Render(view);
         var encoder=new PngBitmapEncoder();encoder.Frames.Add(BitmapFrame.Create(render));
-        string root=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"..","..","..","..","..","artifacts","game-links"));
+        string root=ReviewSnapshotFolder(AppContext.BaseDirectory)??Path.Combine(fixture.Root,"game-links");
         Directory.CreateDirectory(root);string path=Path.Combine(root,$"join-{theme}-{width}x{height}.png");
         await using(var file=File.Create(path)) encoder.Save(file);
         Assert.True(new FileInfo(path).Length>1024);Assert.Equal(pageHeight,render.PixelHeight);
     });
+
+    [Fact]
+    public void ReviewSnapshotFolderFollowsTheRepositoryNotTheOutputDepth()
+    {
+        string temp=Path.GetTempPath().TrimEnd(Path.DirectorySeparatorChar);
+        string owned=Path.Combine(temp,"zenith-snapshot-root-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string repo=Path.Combine(owned,"repo");
+            Directory.CreateDirectory(Path.Combine(repo,"src","Zenith.Sessions.App"));
+            File.WriteAllBytes(Path.Combine(repo,"src","Zenith.Sessions.App","MainWindow.xaml"),[]);
+            // The manager check script builds the tests into artifacts\sessions-tests-bin\, two levels below the repository.
+            string runnerOutput=Path.Combine(repo,"artifacts","sessions-tests-bin")+Path.DirectorySeparatorChar;Directory.CreateDirectory(runnerOutput);
+            Assert.Equal(Path.Combine(repo,"artifacts","game-links"),ReviewSnapshotFolder(runnerOutput));
+            // The default layout is tests\Zenith.Sessions.Tests\bin\<Config>\<tfm>\, five levels below it.
+            string defaultOutput=Path.Combine(repo,"tests","Zenith.Sessions.Tests","bin","Release","net10.0-windows10.0.19041.0")+Path.DirectorySeparatorChar;Directory.CreateDirectory(defaultOutput);
+            Assert.Equal(Path.Combine(repo,"artifacts","game-links"),ReviewSnapshotFolder(defaultOutput));
+            // No repository above the output: no review folder, so the theory keeps its snapshots in its own Temp root.
+            string elsewhere=Path.Combine(owned,"elsewhere","a","b")+Path.DirectorySeparatorChar;Directory.CreateDirectory(elsewhere);
+            Assert.Null(ReviewSnapshotFolder(elsewhere));
+        }
+        finally
+        {
+            string full=Path.GetFullPath(owned);
+            if(Path.GetDirectoryName(full)!=temp||!Path.GetFileName(full).StartsWith("zenith-snapshot-root-",StringComparison.Ordinal))throw new InvalidOperationException("Unexpected snapshot-root cleanup path");
+            if(Directory.Exists(full))Directory.Delete(full,true);
+        }
+    }
+
+    /// <summary>
+    /// The repository's artifacts\game-links folder for the review snapshots, found by walking up from the test output
+    /// (at most 8 levels) to the folder that holds src\Zenith.Sessions.App\MainWindow.xaml, so the default bin\ layout
+    /// and the check script's artifacts\sessions-tests-bin\ output both land in the same place. The marker is the file
+    /// this project already embeds as ProductionMainWindow.xaml, so renaming it breaks the build first. Null when no
+    /// repository is above the output; the caller then keeps the snapshots in its own Temp root.
+    /// </summary>
+    internal static string? ReviewSnapshotFolder(string baseDirectory)
+    {
+        string? directory=Path.GetFullPath(baseDirectory).TrimEnd(Path.DirectorySeparatorChar);
+        for(int depth=0;directory is not null&&depth<8;depth++,directory=Path.GetDirectoryName(directory))
+            if(File.Exists(Path.Combine(directory,"src","Zenith.Sessions.App","MainWindow.xaml")))return Path.Combine(directory,"artifacts","game-links");
+        return null;
+    }
 
     private static XDocument Source(){using var stream=typeof(JoinWorkspacePresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;return XDocument.Load(stream);}
     private static XElement Page(XDocument source,string name)=>source.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
@@ -192,6 +236,7 @@ public sealed class JoinWorkspacePresentationTests
         public readonly NoCapture Capture=new();
         public ShellViewModel Model {get;}
         public ScrollViewer View {get;}
+        public string Root=>_root;
         public Fixture(string theme)
         {
             _=Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml",UriKind.Relative));
