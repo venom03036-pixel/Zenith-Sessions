@@ -295,6 +295,7 @@ public sealed partial class ShellViewModel
         RobloxFavorites.Cancel();
         RecentlyPlayed.Cancel();
         ShareLink.Cancel();
+        _shareLinkClient.ForgetAllTokens(); // Lock and Panic: the next share-link resolve starts with a fresh handshake.
     }
     private async Task StopDirectoryFeaturesAsync()
     {

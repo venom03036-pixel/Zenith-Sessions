@@ -130,6 +130,22 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(0, vault.Saves); Assert.Equal(0, client.Calls); Assert.Equal(0, browser.Calls); Assert.Same(vault.Records[profile.Id], vault.Records[profile.Id]);
     }
 
+    // A kept anti-forgery token belongs to the profile and the account verified for it, and sign-out forgets it.
+    [Fact]
+    public async Task ShareLinkTokensAreScopedToTheVerifiedAccountAndForgottenOnSignOut()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id, 789);
+        var resolver = new ShareLinks();
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.ExperienceDetails);
+        using (await service.ResolveShareLinkAsync(profile.Id, link, default)) { }
+        Assert.Equal(new RobloxShareLinkTokenScope(profile.Id, 789), resolver.SeenScope);
+        Assert.Empty(resolver.Forgotten);
+        await service.DisconnectAsync(profile.Id, default);
+        Assert.Equal(profile.Id, Assert.Single(resolver.Forgotten)); Assert.Equal(0, resolver.ForgotAll); Assert.Empty(vault.Records);
+    }
+
     [Fact]
     public async Task ShareLinkResolutionWithoutASavedSessionIsSignInRequiredWithoutARequest()
     {
@@ -148,10 +164,13 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
 
     private sealed class ShareLinks : IRobloxShareLinkClient
     {
-        public int Calls; public string? SeenCookie; public RobloxShareLink? SeenLink; private RobloxSessionCredential? _credential;
+        public int Calls; public string? SeenCookie; public RobloxShareLink? SeenLink; public RobloxShareLinkTokenScope? SeenScope; private RobloxSessionCredential? _credential;
+        public readonly List<Guid> Forgotten = []; public int ForgotAll;
         public bool CredentialDisposedAfterCall { get { try { _credential?.CopyValue(); return false; } catch (ObjectDisposedException) { return true; } } }
-        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, CancellationToken ct)
-        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); _credential = credential; return Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
+        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, RobloxShareLinkTokenScope scope, CancellationToken ct)
+        { Calls++; SeenLink = link; SeenCookie = credential.CopyValue(); SeenScope = scope; _credential = credential; return Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.Experience, 5, 6)); }
+        public void ForgetTokens(Guid profileId) => Forgotten.Add(profileId);
+        public void ForgetAllTokens() => ForgotAll++;
     }
 
     [Fact]

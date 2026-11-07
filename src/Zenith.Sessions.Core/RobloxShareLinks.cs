@@ -109,10 +109,25 @@ public sealed class RobloxShareLinkResolution(RobloxShareLinkOutcome outcome, lo
     public void Dispose() => PrivateServerCode?.Dispose();
 }
 
-/// <summary>One signed-in resolve request. The credential is borrowed for the call and never retained or logged.</summary>
+/// <summary>
+/// Whose saved session a resolve uses: the profile and the Roblox account verified for it. A kept anti-forgery token is
+/// sent only for this exact pair, never for another profile or another account.
+/// </summary>
+public readonly record struct RobloxShareLinkTokenScope(Guid ProfileId, long RobloxUserId)
+{
+    public bool IsValid => ProfileId != Guid.Empty && RobloxUserId > 0;
+}
+
+/// <summary>
+/// One signed-in resolve request. The credential is borrowed for the call and never retained or logged. The client may keep
+/// the anti-forgery (CSRF) token Roblox last accepted for a scope, in memory only and never logged, so that account's next
+/// resolve normally takes one request. Sign-out forgets one profile's tokens; Lock, Panic and shutdown forget all of them.
+/// </summary>
 public interface IRobloxShareLinkClient
 {
-    Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, CancellationToken ct);
+    Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, RobloxShareLinkTokenScope scope, CancellationToken ct);
+    void ForgetTokens(Guid profileId);
+    void ForgetAllTokens();
 }
 
 /// <summary>Resolves a share link with the selected account's saved session under the link service's one-operation ownership.</summary>

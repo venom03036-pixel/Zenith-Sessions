@@ -312,6 +312,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             _disconnect = completion = new(TaskCreationOptions.RunContinuationsAsynchronously); active = _active;
             if (active?.ProfileId == profileId) active.Invalidated = true;
         }
+        shareLinks?.ForgetTokens(profileId); // Sign-out: no anti-forgery token kept for this profile outlives its saved session.
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
         try
         {

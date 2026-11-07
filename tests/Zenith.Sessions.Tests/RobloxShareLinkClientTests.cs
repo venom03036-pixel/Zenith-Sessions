@@ -17,6 +17,7 @@ public sealed class RobloxShareLinkClientTests
     private const string Endpoint = "https://apis.roblox.com/sharelinks/v1/resolve-link";
     private const string V2Endpoint = "https://apis.roblox.com/deeplinks/v2/resolve";
     private const string Job = "0f8fad5b-d9cb-469f-a165-70867728950e";
+    private static readonly RobloxShareLinkTokenScope Account = new(Guid.Parse("6f1c2a52-8d0e-4c1b-9a43-0b7d2f1e5c11"), 456);
 
     [Fact]
     public async Task PostsToTheExactEndpointWithCookieOnlyThere()
@@ -51,6 +52,91 @@ public sealed class RobloxShareLinkClientTests
         using var stubborn = new Handler((_, _) => Task.FromResult(Denied("again")));
         using var refused = await Resolve(stubborn, RobloxShareLinkType.ExperienceDetails);
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, refused.Outcome); Assert.Equal(2, stubborn.Calls); // One retry, never a third request.
+    }
+
+    // The token Roblox accepted for an account is kept in memory, so that account's next resolve is one request, not two.
+    [Fact]
+    public async Task ASecondResolveForTheSameAccountSendsItsKeptTokenInOneRequest()
+    {
+        var roblox = new TokenIssuer("token-1");
+        using var client = new RobloxShareLinkClient(roblox.Handler);
+        using (var first = await Resolve(client, Account)) Assert.Equal(RobloxShareLinkOutcome.Experience, first.Outcome);
+        Assert.Equal(2, roblox.Handler.Calls); // The first resolve still needs the handshake.
+        using (var second = await Resolve(client, Account, RobloxShareLinkType.DeepLinkV2)) Assert.Equal(RobloxShareLinkOutcome.Experience, second.Outcome);
+        Assert.Equal(3, roblox.Handler.Calls); // Exactly one request, to either endpoint.
+        Assert.Equal(new string?[] { null, "token-1", "token-1" }, roblox.Sent.ToArray());
+    }
+
+    [Fact]
+    public async Task AKeptTokenIsNeverSentForAnotherAccountOrProfile()
+    {
+        var roblox = new TokenIssuer("token-1");
+        using var client = new RobloxShareLinkClient(roblox.Handler);
+        foreach (var scope in new[] { Account, Account with { RobloxUserId = 789 }, Account with { ProfileId = Guid.NewGuid() } })
+            using (var resolution = await Resolve(client, scope)) Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome);
+        Assert.Equal(new string?[] { null, "token-1", null, "token-1", null, "token-1" }, roblox.Sent.ToArray());
+        await Assert.ThrowsAsync<ArgumentException>(() => Resolve(client, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => Resolve(client, Account with { RobloxUserId = 0 }));
+        Assert.Equal(6, roblox.Handler.Calls); // An unscoped resolve never reaches Roblox.
+    }
+
+    [Fact]
+    public async Task ARefusedKeptTokenIsReplacedWithTheOneRetryAndAFailureKeepsNothing()
+    {
+        var roblox = new TokenIssuer("token-1");
+        using var client = new RobloxShareLinkClient(roblox.Handler);
+        using (await Resolve(client, Account)) { }
+        roblox.Current = "token-2"; // Roblox rotated the session's token.
+        using (var rotated = await Resolve(client, Account)) Assert.Equal(RobloxShareLinkOutcome.Experience, rotated.Outcome);
+        using (await Resolve(client, Account)) { }
+        Assert.Equal(new string?[] { null, "token-1", "token-1", "token-2", "token-2" }, roblox.Sent.ToArray());
+
+        roblox.Refuse = HttpStatusCode.Unauthorized; // The session ended: the token Roblox issued is not kept.
+        roblox.Current = "token-3";
+        using (var ended = await Resolve(client, Account)) Assert.Equal(RobloxShareLinkOutcome.SignInRequired, ended.Outcome);
+        roblox.Refuse = null;
+        using (await Resolve(client, Account)) { }
+        Assert.Equal(new string?[] { null, "token-1", "token-1", "token-2", "token-2", "token-2", "token-3", null, "token-3" }, roblox.Sent.ToArray());
+    }
+
+    [Fact]
+    public async Task ForgettingDropsAProfilesTokensOrAllOfThemEvenDuringAResolve()
+    {
+        var roblox = new TokenIssuer("token-1"); var other = Account with { ProfileId = Guid.NewGuid() };
+        using var client = new RobloxShareLinkClient(roblox.Handler);
+        using (await Resolve(client, Account)) { }
+        using (await Resolve(client, other)) { }
+        client.ForgetTokens(Account.ProfileId); // Sign-out of one profile.
+        using (await Resolve(client, other)) { }
+        using (await Resolve(client, Account)) { }
+        Assert.Equal(new string?[] { null, "token-1", null, "token-1", "token-1", null, "token-1" }, roblox.Sent.ToArray());
+
+        client.ForgetAllTokens(); // Lock or Panic.
+        using (await Resolve(client, other)) { }
+        Assert.Equal(new string?[] { null, "token-1" }, roblox.Sent.Skip(7).ToArray());
+
+        client.ForgetAllTokens();
+        roblox.OnAccepted = client.ForgetAllTokens; // Lock or Panic lands while Roblox is answering.
+        using (var late = await Resolve(client, Account)) Assert.Equal(RobloxShareLinkOutcome.Experience, late.Outcome);
+        roblox.OnAccepted = null;
+        using (await Resolve(client, Account)) { }
+        Assert.Equal(new string?[] { null, "token-1", null, "token-1" }, roblox.Sent.Skip(9).ToArray());
+    }
+
+    // Memory stays bounded: a full set keeps working for known accounts, and one more account drops every kept token.
+    [Fact]
+    public async Task KeptTokensAreBoundedAndOneMoreAccountDropsThemAll()
+    {
+        var roblox = new TokenIssuer("token-1");
+        using var client = new RobloxShareLinkClient(roblox.Handler);
+        var scopes = Enumerable.Range(1, RobloxShareLinkClient.MaximumKeptTokens).Select(id => new RobloxShareLinkTokenScope(Guid.NewGuid(), id)).ToArray();
+        foreach (var scope in scopes) using (await Resolve(client, scope)) { }
+        int calls = roblox.Handler.Calls;
+        using (await Resolve(client, scopes[0])) { }
+        Assert.Equal(calls + 1, roblox.Handler.Calls); // Still kept at the limit.
+        using (await Resolve(client, Account)) { }
+        using (await Resolve(client, scopes[0])) { }
+        Assert.Equal(new string?[] { null, "token-1", null, "token-1" }, roblox.Sent.Skip(calls + 1).ToArray());
     }
 
     [Fact]
@@ -279,10 +365,10 @@ public sealed class RobloxShareLinkClientTests
         using var client = new RobloxShareLinkClient(slow, TimeSpan.FromMilliseconds(150));
         using var credential = new RobloxSessionCredential(Secret);
         using var link = new RobloxShareLink(new ProtectedShareCode(ShareCode), RobloxShareLinkType.ExperienceDetails);
-        using var timedOut = await client.ResolveAsync(link, credential, default);
+        using var timedOut = await client.ResolveAsync(link, credential, Account, default);
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, timedOut.Outcome);
         using var stop = new CancellationTokenSource(); stop.Cancel();
-        var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.ResolveAsync(link, credential, stop.Token));
+        var cancelled = await Assert.ThrowsAnyAsync<OperationCanceledException>(() => client.ResolveAsync(link, credential, Account, stop.Token));
         Assert.DoesNotContain(ShareCode, cancelled.ToString(), StringComparison.Ordinal); Assert.DoesNotContain(Secret, cancelled.ToString(), StringComparison.Ordinal);
         Assert.DoesNotContain(ShareCode, link.ToString(), StringComparison.Ordinal);
     }
@@ -290,9 +376,13 @@ public sealed class RobloxShareLinkClientTests
     private static async Task<RobloxShareLinkResolution> Resolve(Handler handler, RobloxShareLinkType type)
     {
         using var client = new RobloxShareLinkClient(handler);
+        return await Resolve(client, Account, type);
+    }
+    private static async Task<RobloxShareLinkResolution> Resolve(RobloxShareLinkClient client, RobloxShareLinkTokenScope scope, RobloxShareLinkType type = RobloxShareLinkType.ExperienceDetails)
+    {
         using var credential = new RobloxSessionCredential(Secret);
         using var link = new RobloxShareLink(new ProtectedShareCode(ShareCode), type);
-        return await client.ResolveAsync(link, credential, default);
+        return await client.ResolveAsync(link, credential, scope, default);
     }
     private static string Experience(string status) => "{\"experienceDetailsInviteData\":{\"status\":\"" + status + "\",\"placeId\":5,\"universeId\":6},\"privateServerInviteData\":null}";
     private static string Server(string status) => "{\"experienceDetailsInviteData\":null,\"privateServerInviteData\":{\"status\":\"" + status + "\",\"placeId\":5,\"universeId\":6,\"ownerUserId\":7,\"linkCode\":\"" + LinkCode + "\"}}";
@@ -301,6 +391,28 @@ public sealed class RobloxShareLinkClientTests
     {
         var denied = new HttpResponseMessage(HttpStatusCode.Forbidden) { Content = new StringContent("{\"errors\":[{\"code\":0,\"message\":\"XSRF token invalid\"}]}", Encoding.UTF8, "application/json") };
         denied.Headers.Add("x-csrf-token", token); return denied;
+    }
+    // A synthetic Roblox that accepts only its current token and otherwise issues it with a 403, like the real handshake.
+    private sealed class TokenIssuer
+    {
+        public string Current;
+        public HttpStatusCode? Refuse;
+        public Action? OnAccepted;
+        public List<string?> Sent { get; } = [];
+        public Handler Handler { get; }
+        public TokenIssuer(string current)
+        {
+            Current = current;
+            Handler = new Handler((request, _) =>
+            {
+                string? sent = request.Headers.TryGetValues("X-CSRF-TOKEN", out var values) ? string.Join(",", values) : null;
+                Sent.Add(sent);
+                if (sent != Current) return Task.FromResult(Denied(Current));
+                if (Refuse is { } status) return Task.FromResult(new HttpResponseMessage(status) { Content = new StringContent("{}", Encoding.UTF8, "application/json") });
+                OnAccepted?.Invoke();
+                return Task.FromResult(Json(request.RequestUri!.AbsoluteUri == V2Endpoint ? "{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":5}" : Experience("Valid")));
+            });
+        }
     }
     private sealed class Handler(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> handle) : HttpMessageHandler
     {

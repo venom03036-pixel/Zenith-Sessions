@@ -101,6 +101,29 @@ public sealed partial class ClientPreviewPresentationTests
         shell.ServerBrowser.LinkInput="Fisch";await shell.DestinationSearch.SearchOrUseAsync();Assert.Empty(directory.Queries);Assert.False(shell.DestinationSearch.CanSearch);Assert.Equal(0,provider.CaptureCalls);
     });
 
+    // Lock and Panic forget every kept share-link anti-forgery token, so the next resolve starts with a fresh handshake.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task LockAndPanicForgetKeptShareLinkTokens(bool locked)=>OnUi(async()=>
+    {
+        var directory=new SearchDirectory(new());var tokens=new KeptShareLinkTokens();
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new DesktopMonitor(),publicDirectory:directory,
+            serverDirectory:new SearchServers(),previewProvider:new PreviewProvider{AutoReady=true},shareLinkClient:tokens);
+        await shell.InitializeAsync();Assert.Equal(0,tokens.ForgotAll);
+        if(locked) shell.LockDashboard(); else shell.Panic.Execute(null);
+        Assert.Equal(1,tokens.ForgotAll);Assert.Empty(tokens.Forgotten);Assert.Equal(0,tokens.Resolves);
+    });
+
+    private sealed class KeptShareLinkTokens:IRobloxShareLinkClient
+    {
+        public int ForgotAll,Resolves;public readonly List<Guid> Forgotten=[];
+        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link,RobloxSessionCredential credential,RobloxShareLinkTokenScope scope,CancellationToken ct)
+        {Resolves++;throw new InvalidOperationException("Unexpected synthetic share-link request");}
+        public void ForgetTokens(Guid profileId)=>Forgotten.Add(profileId);
+        public void ForgetAllTokens()=>ForgotAll++;
+    }
+
     private sealed class JoinGallery(SearchDirectory directory):IPublicRobloxGameDirectory,IPublicRobloxGameGallery
     {
         public int Calls;

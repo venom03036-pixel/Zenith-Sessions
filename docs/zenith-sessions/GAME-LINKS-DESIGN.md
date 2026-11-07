@@ -161,6 +161,10 @@ name, creator line, playing + rating, accent border and check when it is the cur
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF
   retry (403 with `x-csrf-token` → repeat once with the token), then stop. 401 → SignInRequired.
+- The CSRF token Roblox last accepted is kept in memory for that profile and its verified Roblox user ID (never another
+  profile or account; never saved or logged) and sent first, so a repeat check is normally one request instead of two.
+  A refused token still gets only the one retry. Any failure drops it; disconnecting the saved sign-in drops that
+  profile's token; Lock, Panic and shutdown drop all of them; at most 256 are kept, and one more drops them all.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
   `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
