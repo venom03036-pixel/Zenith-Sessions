@@ -18,7 +18,7 @@ public sealed class PrivateServerStoreTests : IDisposable
     public async Task RoundTripsMetadataAndCode()
     {
         using var store = Store(); using var code = Code();
-        var saved = await store.AddAsync("  Weekend VIP  ", 5, 6, 7, code, default);
+        var saved = await store.AddAsync("  Weekend VIP  ", 5, 6, 7, null, code, default);
         Assert.Equal("Weekend VIP", saved.Name); Assert.Equal(1, saved.Revision); Assert.Equal("3210", saved.Last4); Assert.Equal(7, saved.OwnerUserId);
         Assert.Equal(5, saved.PlaceId); Assert.Equal(6, saved.UniverseId); Assert.NotEqual(Guid.Empty, saved.Id);
         Assert.Equal(saved, Assert.Single(await store.ReadAsync(default)));
@@ -30,10 +30,32 @@ public sealed class PrivateServerStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task GameNameIsKeptAndFilesSavedBeforeGameNamesStillRead()
+    {
+        // A version 1 file, written before game names were kept, protected exactly as the store protects it.
+        Directory.CreateDirectory(_root); var oldId = Guid.Parse("22222222-2222-4222-8222-222222222222");
+        string legacy = "{\"Version\":1,\"Revision\":2,\"Items\":[{\"Id\":\"" + oldId + "\",\"Name\":\"Old server\",\"PlaceId\":5,\"UniverseId\":6,"
+            + "\"OwnerUserId\":null,\"Code\":\"" + LinkCode + "\",\"Revision\":1}]}";
+        await File.WriteAllBytesAsync(Path.Combine(_root, "private-servers.dat"), System.Security.Cryptography.ProtectedData.Protect(Encoding.UTF8.GetBytes(legacy),
+            Encoding.UTF8.GetBytes("Zenith.Sessions.PrivateServers.v1"), System.Security.Cryptography.DataProtectionScope.CurrentUser));
+        using var store = new PrivateServerStore(_root);
+        var old = Assert.Single(await store.ReadAsync(default)); Assert.Equal(oldId, old.Id); Assert.Null(old.GameName); Assert.Equal("Place 5", old.GameLabel);
+        using var code = Code("1111222233334444");
+        var saved = await store.AddAsync("Weekend VIP", 8, 9, null, "Synthetic Game", code, default);
+        Assert.Equal("Synthetic Game", saved.GameName); Assert.Equal("Synthetic Game", saved.GameLabel);
+        using var reopened = new PrivateServerStore(_root); var all = await reopened.ReadAsync(default);
+        Assert.Equal(new[] { old, saved }, all.ToArray()); Assert.Equal(new[] { "Place 5", "Synthetic Game" }, all.Select(server => server.GameLabel).ToArray());
+        using var oldCode = await reopened.ReadCodeAsync(oldId, default); Assert.Equal("3210", oldCode.Last4);
+        using var badName = Code();
+        await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync("Bad game", 5, 6, null, "line\nbreak", badName, default));
+        Assert.Equal(2, (await store.ReadAsync(default)).Count);
+    }
+
+    [Fact]
     public async Task FileNeverContainsTheCodeOrNameInPlainText()
     {
         using var store = Store(); using var code = Code("13579246801357924680");
-        await store.AddAsync("Hidden server", 5, 6, null, code, default);
+        await store.AddAsync("Hidden server", 5, 6, null, null, code, default);
         byte[] bytes = await File.ReadAllBytesAsync(store.Path); Assert.NotEmpty(bytes);
         foreach (string secret in new[] { "13579246801357924680", "Hidden server", "\"Items\"" })
         {
@@ -46,16 +68,16 @@ public sealed class PrivateServerStoreTests : IDisposable
     public async Task CapacityIsOneHundred()
     {
         using var store = Store();
-        for (int index = 0; index < 100; index++) { using var code = Code(); await store.AddAsync("Server " + index, 5, 6, null, code, default); }
+        for (int index = 0; index < 100; index++) { using var code = Code(); await store.AddAsync("Server " + index, 5, 6, null, null, code, default); }
         using var extra = Code();
-        await Assert.ThrowsAsync<PrivateServerCapacityException>(() => store.AddAsync("Too many", 5, 6, null, extra, default));
+        await Assert.ThrowsAsync<PrivateServerCapacityException>(() => store.AddAsync("Too many", 5, 6, null, null, extra, default));
         Assert.Equal(100, (await store.ReadAsync(default)).Count);
     }
 
     [Fact]
     public async Task StaleRevisionDeleteIsAConflict()
     {
-        using var store = Store(); using var code = Code(); var saved = await store.AddAsync("Delete me", 5, 6, null, code, default);
+        using var store = Store(); using var code = Code(); var saved = await store.AddAsync("Delete me", 5, 6, null, null, code, default);
         await Assert.ThrowsAsync<PrivateServerConflictException>(() => store.DeleteAsync(saved.Id, saved.Revision + 1, default));
         await Assert.ThrowsAsync<PrivateServerConflictException>(() => store.DeleteAsync(Guid.NewGuid(), 1, default));
         Assert.Single(await store.ReadAsync(default));
@@ -71,19 +93,19 @@ public sealed class PrivateServerStoreTests : IDisposable
         var error = await Assert.ThrowsAsync<PrivateServerStorageException>(() => store.ReadAsync(default));
         Assert.Equal(PrivateServerStorageProblem.Damaged, error.Problem);
         using var code = Code();
-        await Assert.ThrowsAsync<PrivateServerStorageException>(() => store.AddAsync("Blocked", 5, 6, null, code, default));
+        await Assert.ThrowsAsync<PrivateServerStorageException>(() => store.AddAsync("Blocked", 5, 6, null, null, code, default));
         Assert.Equal(garbage, await File.ReadAllBytesAsync(store.Path)); Assert.False(File.Exists(store.Path + ".tmp"));
     }
 
     [Fact]
     public async Task TornCodeIsRefusedAndExistingServersStayReadable()
     {
-        using var store = Store(); using (var first = Code()) await store.AddAsync("Kept", 5, 6, null, first, default);
+        using var store = Store(); using (var first = Code()) await store.AddAsync("Kept", 5, 6, null, null, first, default);
         using var torn = Code("12345678");
         // Simulates a holder cleared while its characters were being copied: the store must not persist a damaged code.
         typeof(ProtectedCode).GetField("_value", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
             .SetValue(torn, new[] { '1', '2', '3', '4', '\0', '\0', '\0', '\0' });
-        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => store.AddAsync("Torn", 5, 6, null, torn, default));
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => store.AddAsync("Torn", 5, 6, null, null, torn, default));
         Assert.DoesNotContain("1234", error.ToString(), StringComparison.Ordinal);
         Assert.Equal("Kept", Assert.Single(await store.ReadAsync(default)).Name);
     }
@@ -97,11 +119,11 @@ public sealed class PrivateServerStoreTests : IDisposable
     public async Task NamesAreBoundedAndNeverCodes(string name)
     {
         using var store = Store(); using var code = Code();
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync(name, 5, 6, null, code, default));
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync(name, 5, 6, null, null, code, default));
         Assert.DoesNotContain("secret-marker", error.ToString(), StringComparison.Ordinal); Assert.Empty(await store.ReadAsync(default));
         using var longCode = Code();
-        await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync(new string('x', 81), 5, 6, null, longCode, default));
-        await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync("Bad place", 0, 6, null, longCode, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync(new string('x', 81), 5, 6, null, null, longCode, default));
+        await Assert.ThrowsAsync<ArgumentException>(() => store.AddAsync("Bad place", 0, 6, null, null, longCode, default));
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }

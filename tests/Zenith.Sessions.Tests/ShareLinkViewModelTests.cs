@@ -114,11 +114,28 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task SavedServersShowTheCheckedGameNameNotThePlaceId()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        vm.LinkInput=Link("Server");await vm.CheckAsync();vm.SaveName="Weekend VIP";await vm.SaveAsFavoriteAsync();
+        var saved=Assert.Single(vm.Saved);Assert.Equal("Weekend VIP",saved.Name);
+        Assert.Equal("Synthetic details",saved.GameName);Assert.Equal("Synthetic details",saved.GameLabel);
+        await vm.LoadSavedAsync();Assert.Equal("Synthetic details",Assert.Single(vm.Saved).GameLabel);
+        Assert.Equal(1,f.Directory.GameRequests); // The name is kept with the server; listing never looks it up again.
+        // When the check could not name the game, the list still says which place it is.
+        var unnamedStore=new Store();
+        await using var unnamed=new ShareLinkViewModel(resolver,unnamedStore,f.Browser,()=>ProfileA,()=>f.Allowed);
+        unnamed.LinkInput=Link("Server");await unnamed.CheckAsync();await unnamed.SaveAsFavoriteAsync();
+        var plain=Assert.Single(unnamed.Saved);Assert.Null(plain.GameName);Assert.Equal("Place 5",plain.GameLabel);
+    });
+
+    [Fact]
     public Task LoadSavedListsExistingServersAndCancelClearsEverything()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private(),Hold=true};var store=new Store();
-        using(var one=new ProtectedPrivateServerCode(LinkCode)) await store.AddAsync("One",5,6,null,one,default);
-        using(var two=new ProtectedPrivateServerCode("1111222233334444")) await store.AddAsync("Two",8,9,3,two,default);
+        using(var one=new ProtectedPrivateServerCode(LinkCode)) await store.AddAsync("One",5,6,null,null,one,default);
+        using(var two=new ProtectedPrivateServerCode("1111222233334444")) await store.AddAsync("Two",8,9,3,null,two,default);
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         await vm.LoadSavedAsync();Assert.Equal(new[]{"One","Two"},vm.Saved.Select(saved=>saved.Name).ToArray());Assert.Equal(1,store.Reads);
         vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
@@ -142,7 +159,7 @@ public sealed class ShareLinkViewModelTests
     public Task LeavingThePageCancelsAndFencesAHeldSavedListRead()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var store=new Store{HoldRead=true};
-        using(var one=new ProtectedPrivateServerCode(LinkCode)) await store.AddAsync("One",5,6,null,one,default);
+        using(var one=new ProtectedPrivateServerCode(LinkCode)) await store.AddAsync("One",5,6,null,null,one,default);
         await using var vm=new ShareLinkViewModel(new Resolver(),store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         Task load=vm.LoadSavedAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
         vm.Cancel();Assert.True(store.LastToken.IsCancellationRequested);
@@ -208,10 +225,10 @@ public sealed class ShareLinkViewModelTests
             if(ReadFailure is { } failure) throw failure;
             return Items.ToArray();
         }
-        public async Task<SavedPrivateServer> AddAsync(string name,long placeId,long universeId,long? ownerUserId,ProtectedPrivateServerCode code,CancellationToken ct)
+        public async Task<SavedPrivateServer> AddAsync(string name,long placeId,long universeId,long? ownerUserId,string? gameName,ProtectedPrivateServerCode code,CancellationToken ct)
         {
             LastToken=ct;Entered.TrySetResult();if(HoldAdd) await _release.Task;
-            var saved=new SavedPrivateServer(Guid.NewGuid(),SavedPrivateServer.NormalizeName(name),placeId,universeId,ownerUserId,code.Last4,1).Validated();
+            var saved=new SavedPrivateServer(Guid.NewGuid(),SavedPrivateServer.NormalizeName(name),placeId,universeId,ownerUserId,code.Last4,1,gameName).Validated();
             string value="";code.Reveal(span=>value=new string(span));Codes[saved.Id]=value;Items.Add(saved);return saved;
         }
         public Task DeleteAsync(Guid id,long revision,CancellationToken ct)

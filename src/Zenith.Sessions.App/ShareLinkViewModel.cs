@@ -28,6 +28,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private long _generation,_storeGeneration;
     private bool _busy,_storeBusy,_disposed;
     private string _input="",_saveName="",_status=IdleStatus,_resultTitle="",_resultDetail="";
+    private string? _resultGame; // The checked game's public name, kept with a saved server so the list shows the game, not its place ID.
     private RobloxShareLinkResolution? _result;
     private SavedPrivateServer? _selectedSaved;
     public ObservableCollection<SavedPrivateServer> Saved {get;}=[];
@@ -122,7 +123,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         string? name=await LookupNameAsync(placeId,stop.Token);
         if(!Current(generation,stop)) {resolution.Dispose();return;}
         string place=placeId.ToString(CultureInfo.InvariantCulture);
-        _result=resolution;_resultTitle=name is null?"Place "+place:name+" · Place "+place;
+        _result=resolution;_resultGame=name;_resultTitle=name is null?"Place "+place:name+" · Place "+place;
         if(resolution.Outcome==RobloxShareLinkOutcome.Experience && StillRequested(requested))
         {
             _browser.UsePreferredPlace(placeId);
@@ -167,14 +168,14 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
         if(_store is not { } store) {SetStatus("Saved private servers are unavailable in this build.");return Task.CompletedTask;}
         string name=SavedPrivateServer.NormalizeName(_saveName);
         if(name.Length==0) name=_resultTitle.Length==0?"Private server":_resultTitle.Split(" · ")[0];
-        long? owner=result.OwnerUserId;ProtectedPrivateServerCode? copy=null;
+        long? owner=result.OwnerUserId;string? game=SavedPrivateServer.NormalizeGameName(_resultGame);ProtectedPrivateServerCode? copy=null;
         code.Reveal(span=>copy=new ProtectedPrivateServerCode(span)); // UI thread, like ClearResult: no torn copy is possible.
         return StartStore(async(token,current)=>
         {
             try
             {
                 SavedPrivateServer saved;
-                try {saved=await store.AddAsync(name,placeId,universeId,owner,copy!,token);}
+                try {saved=await store.AddAsync(name,placeId,universeId,owner,game,copy!,token);}
                 catch(ArgumentException) {if(current()) SetStatus("Choose a short plain name without links or codes.");return;}
                 catch(PrivateServerCapacityException) {if(current()) SetStatus("The 100-server limit for saved private servers is reached. Remove one before saving another.");return;}
                 catch(PrivateServerStorageException) {if(current()) SetStatus("Saved private servers could not be written. Existing files were preserved.");return;}
@@ -254,7 +255,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private void ClearInput() {if(_input.Length!=0) {_input="";Raise(nameof(LinkInput));Raise(nameof(CanCheck));}}
     private void ClearResult()
     {
-        _result?.Dispose();_result=null;_resultTitle="";_resultDetail="";
+        _result?.Dispose();_result=null;_resultGame=null;_resultTitle="";_resultDetail="";
         Raise(nameof(HasResult));Raise(nameof(HasPrivateResult));Raise(nameof(ResultTitle));Raise(nameof(ResultDetail));
     }
     private bool Current(long generation,CancellationTokenSource stop)=>Allowed && generation==Interlocked.Read(ref _generation) && !stop.IsCancellationRequested;

@@ -164,6 +164,17 @@ public sealed class JoinWorkspacePresentationTests
         Assert.DoesNotContain(tab.Descendants(Ui+"TextBlock"),block=>((string?)block.Attribute("Text"))?.Contains("isn’t connected yet",StringComparison.Ordinal)==true);
     }
 
+    [Fact]
+    public void SavedPrivateServersListTheGameByNameNotByPlaceId()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var list=join.Descendants(Ui+"ListView").Single(element=>(string?)element.Attribute("ItemsSource")=="{Binding Saved}");
+        var columns=list.Descendants(Ui+"GridViewColumn").ToList();
+        Assert.Equal(new[]{"Name","Game","Code"},columns.Select(column=>(string?)column.Attribute("Header")).ToArray());
+        Assert.Equal("{Binding GameLabel}",(string?)columns[1].Attribute("DisplayMemberBinding"));
+        Assert.DoesNotContain(columns,column=>((string?)column.Attribute("DisplayMemberBinding"))?.Contains("PlaceId",StringComparison.Ordinal)==true);
+    }
+
     [Theory]
     [InlineData("graphite-mint",960,640)]
     [InlineData("graphite-mint",1320,840)]

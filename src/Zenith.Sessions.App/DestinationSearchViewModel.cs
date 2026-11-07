@@ -22,14 +22,15 @@ public sealed class PublicGameSearchRow(PublicRobloxGameSearchResult result):Obs
     public string Creator=>Result.CreatorName is { } name?"Creator: "+name:Result.CreatorId is { } id?$"Creator ID {id.ToString(CultureInfo.InvariantCulture)}":"Creator unavailable";
     public string Activity=>Result.Playing is { } count?$"{count:N0} players across the experience":"Player count unavailable";
     public string Promotion=>Result.Sponsored switch {true=>"Sponsored result",false=>"Not marked sponsored",_=>"Promotion status unavailable"};
-    // Card labels. The verified badge is shown only when Roblox reported it as true; unknown stays unmarked.
+    // Card labels. The verified badge and the Sponsored label are shown only when Roblox reported them as true; unknown stays unmarked.
     public bool IsCreatorVerified=>Result.CreatorVerified==true;
+    public bool IsSponsored=>Result.Sponsored==true;
     public string CreatorLine=>Result.CreatorName is { } name?"by "+name:Creator;
     public string PlayingLabel=>Result.Playing is { } count?CompactCount(count)+" playing":"Player count unavailable";
     public string? RatingLabel=>Result is {UpVotes:{ } up,DownVotes:{ } down} && up+down>0
         ?Math.Round(up*100.0/(up+down),MidpointRounding.AwayFromZero).ToString("0",CultureInfo.InvariantCulture)+"% liked":null;
     public bool HasRating=>RatingLabel is not null;
-    public string AutomationName=>Name+". "+Identifiers+". "+Creator+". Public listing, not verified access or arrival.";
+    public string AutomationName=>Name+". "+(IsSponsored?"Sponsored. ":"")+Identifiers+". "+Creator+". Public listing, not verified access or arrival.";
     private static string CompactCount(long count)=>count<1_000?count.ToString(CultureInfo.InvariantCulture)
         :count<1_000_000?(count/1_000.0).ToString("0.#",CultureInfo.InvariantCulture)+"K"
         :(count/1_000_000.0).ToString("0.#",CultureInfo.InvariantCulture)+"M";
