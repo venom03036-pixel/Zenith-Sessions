@@ -40,6 +40,24 @@ public sealed class SessionLogProjectionTests
         Assert.False(view.CanAuthorizeAccountAction);
     }
 
+    [Theory]
+    [InlineData(null, false, "Disconnected")]
+    [InlineData(285, false, "Disconnected · reason 285 · you left")]
+    [InlineData(273, false, "Disconnected · reason 273 · account launched elsewhere")]
+    [InlineData(267, true, "Disconnected · reason 267 · connection lost · Roblox asked for a human check")]
+    public void DisconnectStateNamesTheReasonAndWhetherThePlayerLeft(int? reason, bool humanCheck, string expected)
+    {
+        var process = Process(); var projection = new SessionLogProjection(); var logs = Logs(process);
+        var old = logs.Sessions[0];
+        ClientLogObservation[] extra = humanCheck
+            ? [new(Stream, 30, 40, Now, Now, ClientLogFact.HumanCheck), new(Stream, 40, 50, Now, Now, ClientLogFact.Disconnected, DisconnectReason: reason)]
+            : [new(Stream, 30, 40, Now, Now, ClientLogFact.Disconnected, DisconnectReason: reason)];
+        var batch = old.Batch! with { Observations = [.. old.Batch!.Observations, .. extra], ReadOffset = 50, CompleteLineOffset = 50 };
+        projection.Update([process], logs with { Sessions = [old with { Batch = batch }] }, Now);
+        Assert.Equal(expected, Assert.Single(projection.Snapshot(Now)).Value.State);
+        Assert.Equal("Unknown", Assert.Single(projection.Snapshot(Now.AddSeconds(10))).Value.State); // Expired leases show no current state.
+    }
+
     [Fact]
     public void CurrentViewCarriesTheObservedDestinationTimeForRecentlyPlayed()
     {

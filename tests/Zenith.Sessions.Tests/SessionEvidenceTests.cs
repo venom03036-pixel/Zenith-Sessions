@@ -83,6 +83,38 @@ public sealed class SessionEvidenceTests
         Assert.Equal(SessionEvidenceConfidence.UnverifiedDiagnostic, disconnected.Confidence);
     }
 
+    [Fact]
+    public void DisconnectKeepsTheFirstReasonUntilTheNextJoinAndHumanCheckIsDatedDisplayEvidence()
+    {
+        var registry = new SessionEvidenceRegistry(); var key = Key(); var stream = Stream();
+        registry.RegisterProcess(key, Now); Assert.True(registry.CorroborateLog(Proof(key, stream), Now));
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Joining), Now));
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.HumanCheck, 10), Now));
+        Assert.Equal(Now, Assert.Single(registry.Snapshot(Now)).HumanCheckObservedUtc);
+        Assert.Equal(ObservedSessionLifecycle.Joining, Assert.Single(registry.Snapshot(Now)).Lifecycle);
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 20), Now));
+        Assert.Null(Assert.Single(registry.Snapshot(Now)).DisconnectReason);
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 30) with { DisconnectReason = 285 }, Now));
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 40) with { DisconnectReason = 288 }, Now));
+        var left = Assert.Single(registry.Snapshot(Now));
+        Assert.Equal(ObservedSessionLifecycle.Disconnected, left.Lifecycle);
+        Assert.Equal(285, left.DisconnectReason); Assert.True(left.PlayerInitiatedDisconnect);
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Joining, 50), Now));
+        var rejoining = Assert.Single(registry.Snapshot(Now));
+        Assert.Null(rejoining.DisconnectReason); Assert.False(rejoining.PlayerInitiatedDisconnect); Assert.Null(rejoining.HumanCheckObservedUtc);
+        Assert.True(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 60) with { DisconnectReason = 267 }, Now));
+        var dropped = Assert.Single(registry.Snapshot(Now));
+        Assert.Equal(267, dropped.DisconnectReason); Assert.False(dropped.PlayerInitiatedDisconnect);
+
+        // A reason belongs only to a disconnect and stays bounded; an undated human check is not current evidence.
+        Assert.False(registry.Apply(Observation(stream, ClientLogFact.Connected, 70) with { DisconnectReason = 285 }, Now));
+        Assert.False(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 70) with { DisconnectReason = 0 }, Now));
+        Assert.False(registry.Apply(Observation(stream, ClientLogFact.Disconnected, 70) with { DisconnectReason = 10_000 }, Now));
+        Assert.False(registry.Apply(Observation(stream, ClientLogFact.HumanCheck, 70) with { LoggedUtc = null }, Now));
+        Assert.False(registry.Apply(Observation(stream, ClientLogFact.HumanCheck, 70) with { UserId = SyntheticClientLogFixtures.User }, Now));
+        Assert.Null(Assert.Single(registry.Snapshot(Now)).HumanCheckObservedUtc);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

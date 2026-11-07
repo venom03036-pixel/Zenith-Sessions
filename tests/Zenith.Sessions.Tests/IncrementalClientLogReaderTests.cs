@@ -154,6 +154,44 @@ public sealed class IncrementalClientLogReaderTests : IDisposable
         Assert.DoesNotContain(secret, exported); Assert.DoesNotContain("ticket=", exported); Assert.DoesNotContain(Log, exported);
     }
 
+    [Fact]
+    public async Task DisconnectMarkersKeepOnlyABoundedReasonCodeAndHumanChecksIgnoreGameWritableTags()
+    {
+        const string secret = "SYNTHETIC_KICK_TEXT_DO_NOT_EXPORT";
+        string[] lines =
+        [
+            SyntheticClientLogFixtures.Line("FLog::Network", "Disconnection Notification. Reason: 267"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Time to disconnect replication data: 0.250000"),
+            SyntheticClientLogFixtures.Line("DFLog::RbxTransportDummyClient", "Disconnected from server for reason: Player: 285 (SyntheticName)"),
+            SyntheticClientLogFixtures.Line("DFLog::RbxTransportDummyClient", "Connection closed by server for reason: RCC: 288 (SyntheticName)"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Sending disconnect with reason: 273"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Lost connection with reason : " + secret),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Disconnection Notification. Reason: 2851"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Sending disconnect with reason: 99999"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Sending disconnect with reason: 285x"),
+            SyntheticClientLogFixtures.Line("FLog::SyntheticChannel", "join status: challengedByGcs"),
+            // Spoofs: game-writable channels, a second tag inside the body, a marker under the wrong tag, a partial token.
+            SyntheticClientLogFixtures.Line("FLog::Output", "Disconnected from server for reason: Player: 285"),
+            SyntheticClientLogFixtures.Line("FLog::Output", "[FLog::Network] Disconnection Notification. Reason: 285"),
+            SyntheticClientLogFixtures.Line("FLog::Warning", "[DFLog::RbxTransportDummyClient] Disconnected from server for reason: 285"),
+            SyntheticClientLogFixtures.Line("FLog::Network", "Disconnected from server for reason: Player: 285"),
+            SyntheticClientLogFixtures.Line("FLog::Output", "challengedByGcs"),
+            SyntheticClientLogFixtures.Line("FLog::Warning", "status: challengedByGcs"),
+            SyntheticClientLogFixtures.Line("FLog::Error", "status: challengedByGcs"),
+            SyntheticClientLogFixtures.Line("FLog::SyntheticChannel", "status: notchallengedByGcsYet"),
+        ];
+        await File.WriteAllTextAsync(Log, string.Concat(lines), new UTF8Encoding(false));
+        using var reader = new IncrementalClientLogReader(Log);
+        var batch = await reader.ReadAsync(default);
+
+        Assert.Equal(Enumerable.Repeat(ClientLogFact.Disconnected, 9).Append(ClientLogFact.HumanCheck), batch.Observations.Select(o => o.Fact));
+        Assert.Equal(new int?[] { 267, null, 285, 288, 273, null, 2851, null, null, null }, batch.Observations.Select(o => o.DisconnectReason));
+        Assert.Equal(new[] { false, false, true, false, true, false, false, false, false, false }, batch.Observations.Select(o => o.PlayerInitiated));
+        Assert.All(batch.Observations, o => { Assert.Null(o.UserId); Assert.Null(o.PlaceId); Assert.Null(o.JobId); Assert.Equal(SyntheticClientLogFixtures.Time, o.LoggedUtc); });
+        string exported = JsonSerializer.Serialize(batch);
+        Assert.DoesNotContain(secret, exported); Assert.DoesNotContain("challengedByGcs", exported); Assert.DoesNotContain("Synthetic", exported);
+    }
+
     [Theory]
     [InlineData("0")]
     [InlineData("-1")]

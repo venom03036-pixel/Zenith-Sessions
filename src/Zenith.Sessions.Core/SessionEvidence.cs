@@ -11,7 +11,7 @@ public readonly record struct ClientLogStreamId(Guid ReaderId, long Generation)
     public bool IsValid => ReaderId != Guid.Empty && Generation > 0;
 }
 
-public enum ClientLogFact { Joining, Connected, Teleporting, Disconnected, UserIdentityObserved }
+public enum ClientLogFact { Joining, Connected, Teleporting, Disconnected, UserIdentityObserved, HumanCheck }
 public enum ClientLogFormatSupport { Unverified, SanitizedRealFixtureVerified }
 public enum ClientLogReadStatus { Ready, Missing, AccessDenied, IoFailure, DeadlineExceeded, Busy }
 public enum ClientLogDiscontinuity { None, Initial, Replaced, TruncatedOrRewritten, Missing }
@@ -20,7 +20,14 @@ public enum ClientLogDiscontinuity { None, Initial, Replaced, TruncatedOrRewritt
 public sealed record ClientLogObservation(ClientLogStreamId Stream, long StartOffset, long EndOffset,
     DateTimeOffset? LoggedUtc, DateTimeOffset ReadUtc, ClientLogFact Fact, long? UserId = null,
     long? PlaceId = null, Guid? JobId = null, long? UniverseId = null,
-    ClientLogFormatSupport FormatSupport = ClientLogFormatSupport.Unverified);
+    ClientLogFormatSupport FormatSupport = ClientLogFormatSupport.Unverified, int? DisconnectReason = null)
+{
+    /// <summary>Largest disconnect reason code kept. A longer or non-numeric reason is never stored.</summary>
+    public const int MaximumDisconnectReason = 9999;
+    /// <summary>Reason 285 is the player's own leave; 273 is the same account launched elsewhere. Neither is a dropped connection.</summary>
+    public static bool IsPlayerInitiated(int? reason) => reason is 285 or 273;
+    public bool PlayerInitiated => IsPlayerInitiated(DisconnectReason);
+}
 
 public sealed record ClientLogBatch(ClientLogStreamId Stream, ClientLogReadStatus Status,
     ClientLogDiscontinuity Discontinuity, long ReadOffset, long CompleteLineOffset, bool HasMore,
@@ -50,6 +57,11 @@ public sealed record SessionEvidenceSnapshot(Guid SessionId, SessionProcessKey P
     // A diagnostic log, even with corroborated ownership, is never authorization or an input/launch permit.
     public bool CanAuthorizeAccountAction => false;
     public bool AwaitingLogTail { get; init; }
+    /// <summary>The first numeric reason logged for the current disconnect; null outside Disconnected.</summary>
+    public int? DisconnectReason { get; init; }
+    public bool PlayerInitiatedDisconnect => ClientLogObservation.IsPlayerInitiated(DisconnectReason);
+    /// <summary>When the client last logged a human-check request since its latest join; display only.</summary>
+    public DateTimeOffset? HumanCheckObservedUtc { get; init; }
 }
 
 /// <summary>
@@ -187,12 +199,15 @@ public sealed class SessionEvidenceRegistry
     public bool Apply(ClientLogObservation observation, DateTimeOffset now)
     {
         // Reading old, undated bytes now does not make them current positive evidence.
-        if(observation.LoggedUtc is null && observation.Fact is (ClientLogFact.Joining or ClientLogFact.Connected or ClientLogFact.UserIdentityObserved)) return false;
+        if(observation.LoggedUtc is null && observation.Fact is (ClientLogFact.Joining or ClientLogFact.Connected
+            or ClientLogFact.UserIdentityObserved or ClientLogFact.HumanCheck)) return false;
         var time = observation.LoggedUtc ?? observation.ReadUtc;
         if (!observation.Stream.IsValid || observation.StartOffset < 0 || observation.EndOffset <= observation.StartOffset
             || !Fresh(observation.ReadUtc, now) || !Fresh(time, now) || time-observation.ReadUtc>TimeSpan.FromSeconds(2)
             || observation.UserId is <= 0 || observation.PlaceId is <= 0 || observation.UniverseId is <= 0
-            || observation.JobId == Guid.Empty || !Enum.IsDefined(observation.Fact) || !Enum.IsDefined(observation.FormatSupport)) return false;
+            || observation.JobId == Guid.Empty || !Enum.IsDefined(observation.Fact) || !Enum.IsDefined(observation.FormatSupport)
+            || observation.DisconnectReason is { } code && (observation.Fact != ClientLogFact.Disconnected
+                || code is <= 0 or > ClientLogObservation.MaximumDisconnectReason)) return false;
         if (observation.Fact == ClientLogFact.UserIdentityObserved
             ? observation.UserId is null || observation.PlaceId is not null || observation.JobId is not null || observation.UniverseId is not null
             : observation.Fact == ClientLogFact.Joining
@@ -238,21 +253,30 @@ public sealed class SessionEvidenceRegistry
             {
                 RememberCurrent(entry);
                 entry.Pending = new(observation.PlaceId!.Value, observation.JobId!.Value, observation.UniverseId, time);
-                state = entry.Snapshot with { Lifecycle = ObservedSessionLifecycle.Joining, CurrentDestination = null };
+                // A new join supersedes the previous disconnect reason and any human check that preceded it.
+                state = entry.Snapshot with { Lifecycle = ObservedSessionLifecycle.Joining, CurrentDestination = null,
+                    DisconnectReason = null, HumanCheckObservedUtc = null };
             }
             else if (observation.Fact == ClientLogFact.Connected && entry.Pending is { } pending)
             {
                 state = state with { Lifecycle = ObservedSessionLifecycle.Connected,
-                    CurrentDestination = pending with { ObservedUtc = time } };
+                    CurrentDestination = pending with { ObservedUtc = time }, DisconnectReason = null };
                 entry.Pending = null;
             }
             else if (observation.Fact is ClientLogFact.Teleporting or ClientLogFact.Disconnected)
             {
+                // One disconnect logs several lines; the first that names a reason code describes it.
+                int? reason = observation.Fact == ClientLogFact.Teleporting ? null
+                    : state.Lifecycle == ObservedSessionLifecycle.Disconnected ? state.DisconnectReason ?? observation.DisconnectReason
+                    : observation.DisconnectReason;
                 RememberCurrent(entry);
                 entry.Pending = null;
-                state = entry.Snapshot with { CurrentDestination = null, Lifecycle = observation.Fact == ClientLogFact.Teleporting
+                state = entry.Snapshot with { CurrentDestination = null, DisconnectReason = reason,
+                    Lifecycle = observation.Fact == ClientLogFact.Teleporting
                     ? ObservedSessionLifecycle.Teleporting : ObservedSessionLifecycle.Disconnected };
             }
+            else if (observation.Fact == ClientLogFact.HumanCheck)
+                state = state with { HumanCheckObservedUtc = time };
             entry.Snapshot = state with { ObservedUserId = observation.UserId ?? state.ObservedUserId,
                 UserIdentityObservedUtc=observation.UserId is not null?time:state.UserIdentityObservedUtc,
                 LastKnownUserId=observation.UserId??state.LastKnownUserId,
@@ -383,7 +407,8 @@ public sealed class SessionEvidenceRegistry
                 {
                     AwaitingLogTail = true, Lifecycle = ObservedSessionLifecycle.Unknown,
                     LastKnownDestination = entry.Snapshot.CurrentDestination ?? entry.Snapshot.LastKnownDestination,
-                    CurrentDestination = null, ObservedUserId = null, UserIdentityObservedUtc = null
+                    CurrentDestination = null, ObservedUserId = null, UserIdentityObservedUtc = null,
+                    DisconnectReason = null, HumanCheckObservedUtc = null
                 }
                 : entry.Snapshot).ToArray());
         }
@@ -424,7 +449,8 @@ public sealed class SessionEvidenceRegistry
         RememberCurrent(entry);
         entry.Pending = null;
         entry.Snapshot = entry.Snapshot with { Lifecycle = lifecycle, CurrentDestination = null, ObservedUserId = null,
-            UserIdentityObservedUtc = null, Confidence = SessionEvidenceConfidence.Unknown };
+            UserIdentityObservedUtc = null, Confidence = SessionEvidenceConfidence.Unknown,
+            DisconnectReason = null, HumanCheckObservedUtc = null };
     }
 
     private static void Invalidate(Entry entry, DateTimeOffset time, ObservedSessionLifecycle lifecycle, bool ambiguous)
