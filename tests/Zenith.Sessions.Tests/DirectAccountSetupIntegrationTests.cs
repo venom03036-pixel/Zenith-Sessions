@@ -1,4 +1,5 @@
 using System.IO;
+using System.Text;
 using System.Windows.Threading;
 using Xunit;
 using Zenith.Sessions.App;
@@ -12,6 +13,11 @@ public sealed partial class ClientWindowIntegrationTests
     private const string DirectCookie = "synthetic-direct-account-owned-sign-in";
     private static ShellViewModel DirectShell(string root, DirectSignIn signIn, DirectClient client, IAccountRepository? accounts = null)
         => new(root, false, Dispatcher.CurrentDispatcher, new Monitor(), accounts: accounts, signIn: signIn, sessionClient: client);
+    // The share-link client, the private server list and every public directory are supplied, so no request can reach the network.
+    private static ShellViewModel DirectShell(string root, DirectSignIn signIn, DirectClient client, IRobloxShareLinkClient shareLinks,
+        IPrivateServerStore privateServers, SearchDirectory directory)
+        => new(root, false, Dispatcher.CurrentDispatcher, new Monitor(), publicDirectory: directory, serverDirectory: new SearchServers(), gameDirectory: directory,
+            signIn: signIn, sessionClient: client, shareLinkClient: shareLinks, privateServerStore: privateServers);
 
     [Fact]
     public Task AddAccountNeedsNoAliasOrExistingProfileAndPublishesOnlyTheVerifiedResult() => OnUi(async () =>
@@ -226,8 +232,117 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(0, signIn.Calls); Assert.Equal(0, client.Calls); Assert.Equal(notice, shell.Notice); Assert.Empty(shell.Accounts);
     });
 
+    [Fact]
+    public Task ShareLinkAndSavedPrivateServerFlowsLeaveNoCodeInTheDataFolderOrDiagnostics() => OnUi(async () =>
+    {
+        // Synthetic values only. The account signs in through the local fakes above; the share-link client, game lookup and
+        // server list are local fakes. The saved list is the real DPAPI store on the fixture root, wrapped to inject one failure.
+        const string LinkCode = "Wq3Er7Ty1Ui5Op9As2Df6Gh0Jk4Lz8Xc", ShareCode = "c4e8a2f6b0d3e7a1c5f9b2d6e0a4c8f3";
+        const string ShareUrl = "https://www.roblox.com/share?code=" + ShareCode + "&type=Server";
+        string[] markers = [ShareCode, LinkCode[..^4]]; // Only the last four characters of a private server code may ever be shown.
+        AssertCodeScanFindsPlantedMarkers(markers);
+        var shareClient = new DirectShareClient(LinkCode, ShareUrl); var store = new DirectPrivateServers(new PrivateServerStore(_root), LinkCode);
+        var directory = new SearchDirectory(new()); var shell = DirectShell(_root, new DirectSignIn(), new DirectClient(), shareClient, store, directory);
+        var shown = new StringBuilder(); string saved = Path.Combine(_root, "private-servers.dat");
+        void Capture() => shown.AppendLine(shell.Notice).AppendLine(shell.ShareLink.Status).AppendLine(shell.ShareLink.ResultTitle)
+            .AppendLine(shell.ShareLink.ResultDetail).AppendLine(shell.DestinationSearch.Status);
+        try
+        {
+            await shell.InitializeAsync(); shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
+            Assert.Same(Assert.Single(shell.Accounts), shell.SelectedAccount);
+            shell.Navigate.Execute("JoinGame"); shell.SetPreviewWindowVisible(true); await shell.ShareLink.ActiveOperation; Capture();
+            shell.ShareLink.LinkInput = ShareUrl; await shell.ShareLink.CheckAsync(); Capture();
+            Assert.True(shell.ShareLink.HasPrivateResult); Assert.Contains("…" + LinkCode[^4..], shell.ShareLink.ResultDetail);
+            await shell.ShareLink.SaveAsFavoriteAsync(); Capture(); var row = Assert.Single(shell.ShareLink.Saved);
+            // The code is stored now, so a clean scan of the saved list proves it is held only as DPAPI ciphertext.
+            using (var code = await store.Inner.ReadCodeAsync(row.Id, default))
+            { bool same = false; code.Reveal(span => same = span.SequenceEqual(LinkCode.AsSpan())); Assert.True(same); }
+            Assert.Empty(FilesQuoting(_root, [saved], markers));
+            store.FailNextRead = true; await shell.ShareLink.LoadSavedAsync(); Capture(); // The store fails with text that quotes the code.
+            await shell.ShareLink.LoadSavedAsync(); Capture(); shell.ShareLink.SelectedSaved = Assert.Single(shell.ShareLink.Saved);
+            await shell.ShareLink.RemoveSelectedAsync(); Capture(); Assert.Empty(shell.ShareLink.Saved);
+            // The client now fails with transport text that quotes the link and the code: once from the box, once from the Find box.
+            shell.ShareLink.LinkInput = ShareUrl; await shell.ShareLink.CheckAsync(); Capture(); Assert.False(shell.ShareLink.HasResult);
+            shell.ServerBrowser.LinkInput = ShareUrl; await shell.DestinationSearch.SearchOrUseAsync(); Capture();
+            Assert.Equal(3, shareClient.Calls); Assert.True(shareClient.UsedLinkedSession); Assert.Equal(1, store.FailedReads); Assert.Empty(directory.Queries);
+            shell.Navigate.Execute("Diagnostics"); shell.RefreshDiagnostics.Execute(null);
+            // An empty log would pass vacuously, so the injected store failure must be visible as a typed event.
+            Assert.Contains(shell.DiagnosticRows, item => item.Event.Kind == ManagerEventKind.OperationFailed);
+            shown.AppendLine(shell.BuildDiagnosticReport()).AppendLine(shell.BuildVisibleDiagnosticText());
+            foreach (string line in shell.Events) shown.AppendLine(line);
+            Capture();
+        }
+        finally { await shell.DisposeAsync(); } // Flushes and releases diagnostics, history, settings and the saved list before the scan.
+        string[] files = Directory.GetFiles(_root, "*", SearchOption.AllDirectories);
+        Assert.Contains(saved, files); Assert.Contains(Path.Combine(_root, "diagnostics", "manager.jsonl"), files);
+        Assert.Empty(FilesQuoting(_root, files, markers)); // Names each leaking file relative to the data folder.
+        foreach (string forbidden in markers.Append("?code=")) Assert.DoesNotContain(forbidden, shown.ToString(), StringComparison.Ordinal);
+    });
+
+    /// <summary>Files (relative to root) whose bytes contain any marker in UTF-8 or UTF-16LE. Files still open elsewhere are read shared.</summary>
+    private static string[] FilesQuoting(string root, IEnumerable<string> files, IReadOnlyList<string> markers)
+    {
+        byte[][] patterns = markers.SelectMany(marker => new[] { Encoding.UTF8.GetBytes(marker), Encoding.Unicode.GetBytes(marker) }).ToArray();
+        var hits = new List<string>();
+        foreach (string file in files)
+        {
+            byte[] bytes;
+            using (var stream = new FileStream(file, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+            { bytes = new byte[stream.Length]; stream.ReadExactly(bytes); }
+            foreach (byte[] pattern in patterns)
+                if (new ReadOnlySpan<byte>(bytes).IndexOf(new ReadOnlySpan<byte>(pattern)) >= 0) { hits.Add(Path.GetRelativePath(root, file)); break; }
+        }
+        return hits.ToArray();
+    }
+    /// <summary>The scan must be able to fail: each marker planted in either encoding is found, and a clean file is not.</summary>
+    private static void AssertCodeScanFindsPlantedMarkers(IReadOnlyList<string> markers)
+    {
+        string folder = Path.Combine(Path.GetTempPath(), "zenith-code-scan-guard-" + Guid.NewGuid().ToString("N")); Directory.CreateDirectory(folder);
+        try
+        {
+            var planted = new List<string>();
+            foreach (string marker in markers)
+                foreach (var encoding in new Encoding[] { new UTF8Encoding(false), Encoding.Unicode })
+                {
+                    string file = Path.Combine(folder, planted.Count + ".dat"); File.WriteAllText(file, "{\"note\":\"before " + marker + " after\"}", encoding); planted.Add(file);
+                }
+            string clean = Path.Combine(folder, "clean.dat"); File.WriteAllText(clean, "…" + markers[0][^4..] + " " + markers[1][..4]);
+            Assert.Equal(planted.Select(file => Path.GetFileName(file)), FilesQuoting(folder, planted.Append(clean), markers));
+        }
+        finally { Directory.Delete(folder, true); }
+    }
+
     private static void DirectNoSecrets(ShellViewModel shell)
     { Assert.DoesNotContain(DirectCookie, shell.Notice); Assert.DoesNotContain(shell.Events, item => item.Contains(DirectCookie, StringComparison.Ordinal)); }
+    private sealed class DirectShareClient(string code, string link) : IRobloxShareLinkClient
+    {
+        public int Calls; public bool UsedLinkedSession = true;
+        public void ForgetTokens(Guid profileId) { }
+        public void ForgetAllTokens() { }
+        // The first check resolves a private server; every later one fails with transport text that quotes the link and the code.
+        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink shareLink, RobloxSessionCredential credential, RobloxShareLinkTokenScope scope, CancellationToken ct)
+        {
+            UsedLinkedSession &= credential.CopyValue() == DirectCookie;
+            return ++Calls == 1 ? Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.PrivateServer, 5, 6, 7, new ProtectedPrivateServerCode(code)))
+                : Task.FromException<RobloxShareLinkResolution>(new System.Net.Http.HttpRequestException("synthetic failure for " + link + " code " + code));
+        }
+    }
+    /// <summary>The real store, plus one flagged read that fails with text quoting the code. Disposed by the shell with the store.</summary>
+    private sealed class DirectPrivateServers(PrivateServerStore inner, string code) : IPrivateServerStore, IDisposable
+    {
+        public PrivateServerStore Inner { get; } = inner;
+        public bool FailNextRead; public int FailedReads;
+        public Task<IReadOnlyList<SavedPrivateServer>> ReadAsync(CancellationToken ct)
+        {
+            if (!FailNextRead) return Inner.ReadAsync(ct);
+            FailNextRead = false; FailedReads++; return Task.FromException<IReadOnlyList<SavedPrivateServer>>(new IOException("synthetic lock on code " + code));
+        }
+        public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, ProtectedPrivateServerCode protectedCode, CancellationToken ct)
+            => Inner.AddAsync(name, placeId, universeId, ownerUserId, protectedCode, ct);
+        public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => Inner.DeleteAsync(id, revision, ct);
+        public Task<ProtectedPrivateServerCode> ReadCodeAsync(Guid id, CancellationToken ct) => Inner.ReadCodeAsync(id, ct);
+        public void Dispose() => Inner.Dispose();
+    }
     private sealed class DirectSignIn : IRobloxSessionSignIn, IAsyncDisposable
     {
         public bool Hold, Expired, DialogCancelled; public int Calls, Disposals; public Guid ProfileId; public CancellationToken Token;

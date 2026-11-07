@@ -28,7 +28,7 @@ public sealed partial class ShellViewModel
     private static readonly TimeSpan SignInCheckGap = TimeSpan.FromMilliseconds(400);
     public AsyncCommand CheckCheckedSignIns { get; private set; } = null!;
 
-    private void InitializeAccountHealthFeatures() => CheckCheckedSignIns = new(_ => CheckCheckedSignInsAsync(), Fail);
+    private void InitializeAccountHealthFeatures() => CheckCheckedSignIns = new(_ => CheckCheckedSignInsAsync(), error => Fail(error, ManagerSubsystem.SignIn));
 
     private async Task CheckCheckedSignInsAsync()
     {

@@ -44,7 +44,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         long previousGeneration = (await vault.GetSummaryAsync(profile.Id, default))?.Generation ?? 0;
         int priorSuccessEvents = shell.Events.Count(item => item.Contains(SuccessEvent, StringComparison.Ordinal));
         shell.RefreshDiagnostics.Execute(null);
-        int priorLinkedDiagnostics = shell.DiagnosticRows.Count(item => item.Event.Kind == ManagerEventKind.AuthorizationLinked);
+        int priorLinkedDiagnostics = shell.DiagnosticRows.Count(item => IsAuthorizationSuccess(item.Event.Kind));
         var command = checkSaved ? shell.RefreshAuthorization : shell.LinkAccount;
         string? stopNotice = null;
         accounts.Arm(previousGeneration);
@@ -103,7 +103,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
 
         if (shell.IsLocked) shell.Unlock.Execute(null);
         shell.RefreshDiagnostics.Execute(null);
-        Assert.Equal(priorLinkedDiagnostics, shell.DiagnosticRows.Count(item => item.Event.Kind == ManagerEventKind.AuthorizationLinked));
+        Assert.Equal(priorLinkedDiagnostics, shell.DiagnosticRows.Count(item => IsAuthorizationSuccess(item.Event.Kind)));
         Assert.Equal(1, signIn.Calls); // Unlock does not silently restart the cancelled sign-in.
         Assert.Equal(checkSaved ? 2 : 1, client.Calls);
     });
@@ -164,9 +164,13 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         Assert.Equal(profile.Id, shell.SelectedAccount?.Profile.Id);
         if (shell.IsLocked) shell.Unlock.Execute(null);
         shell.RefreshDiagnostics.Execute(null);
-        Assert.DoesNotContain(shell.DiagnosticRows, item => item.Event.Kind == ManagerEventKind.AuthorizationLinked);
+        Assert.DoesNotContain(shell.DiagnosticRows, item => IsAuthorizationSuccess(item.Event.Kind));
         Assert.Equal(1, signIn.Calls); Assert.Equal(1, client.Calls);
     });
+
+    // A late check publishes AuthorizationChecked, a late new sign-in AuthorizationLinked; either is a leak.
+    private static bool IsAuthorizationSuccess(ManagerEventKind kind) =>
+        kind is ManagerEventKind.AuthorizationLinked or ManagerEventKind.AuthorizationChecked;
 
     private sealed class CommittedReloadGate(IAccountRepository inner, IAuthorizationMetadataReader metadata, Guid profileId) : IAccountRepository
     {

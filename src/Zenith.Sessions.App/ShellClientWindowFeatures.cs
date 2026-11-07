@@ -166,7 +166,7 @@ public sealed partial class ShellViewModel
         catch (Exception error) when (stop.IsCancellationRequested || generation != _windowOperationsGeneration || IsLocked || _shuttingDown)
         {
             if (!_shuttingDown) ClientWindowStatus = "Content resizing stopped. Final client sizes could not be confirmed; requests already sent to Windows cannot be undone automatically.";
-            if (error is not OperationCanceledException) _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            if (error is not OperationCanceledException) _diagnostics.RecordFailure(ManagerSubsystem.ClientWindows, error.GetType());
         }
         finally
         {
@@ -249,14 +249,14 @@ public sealed partial class ShellViewModel
             || result.Results.Select(item => (item.Session.InstanceKey, item.Session.Window)).Distinct().Count() != selected.Length)
         {
             if (!stopped) throw new InvalidOperationException("The window provider returned inconsistent client results.");
-            _diagnostics.Record(ManagerEventKind.OperationFailed); return;
+            _diagnostics.RecordFailure(ManagerSubsystem.ClientWindows); return;
         }
         foreach (var item in result.Results) ClientPlacementResults.Add(new(item, contentSize));
         ClientWindowStatus = stopped ? $"Stopped operation report: {result.Results.Count(item => item.Status == ClientWindowPlacementStatus.Applied)} of {selected.Length} {(contentSize ? "content sizes" : positions ? "positions" : "window states")} were confirmed. No automatic continuation; requests already issued cannot be undone."
             : result.Explanation;
     }
     private void ReportClientWindowFailure(Exception exception)
-    { ClientWindowStatus = "The window operation could not finish. Refresh clients and monitors before retrying."; Fail(exception); }
+    { ClientWindowStatus = "The window operation could not finish. Refresh clients and monitors before retrying."; Fail(exception, ManagerSubsystem.ClientWindows); }
     private void StopClientWindowOperations()
     {
         Interlocked.Increment(ref _windowOperationsGeneration);

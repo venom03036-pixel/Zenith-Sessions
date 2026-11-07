@@ -77,22 +77,22 @@ public sealed partial class ShellViewModel
         if(publicDirectory is null) {_publicHttp=RobloxPublicDirectory.CreateAnonymousHttpClient();publicDirectory=new RobloxPublicDirectory(_publicHttp,maximumEncodedMemoryBytes:32L*1024*1024);}
         ServerBrowser=new(serverDirectory,CanUseDirectories);_publicPresentation=new(publicDirectory);
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         // A universe-only share link opens the universe's root place, read anonymously after the signed-in resolve.
         var shareLinkResolver=new RootPlaceShareLinkResolver(_linkService,publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory);
         ShareLink=new(shareLinkResolver,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory,
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory,
             sessionRejected:(_,ct)=>ReloadAccountsAfterRejectedSessionAsync(ct));
         DestinationSearch=new(publicDirectory as IPublicRobloxGameSearchDirectory ?? gameDirectory as IPublicRobloxGameSearchDirectory,
-            ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()),
+            ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()),
             art:publicDirectory as IPublicRobloxGameArtDirectory ?? gameDirectory as IPublicRobloxGameArtDirectory,shareLinkHandler:RouteShareLinkAsync);
         RobloxFavorites=new(publicDirectory as IPublicRobloxFavoriteGamesDirectory ?? gameDirectory as IPublicRobloxFavoriteGamesDirectory,
-            ServerBrowser,CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            ServerBrowser,CanUseDirectories,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         RecentlyPlayed=new(publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory,
-            gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         RecentClients.Rows.CollectionChanged+=(_,_)=>{if(!_shuttingDown && IsJoinGame) RefreshRecentlyPlayed();};
         _publicImageLoader=new(_publicPresentation,CanUseDirectories,PublishPublicImageAsync,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         RefreshPublicAccount=new(async parameter=>
         {
             if(!CanUseDirectories()) return;
@@ -112,7 +112,7 @@ public sealed partial class ShellViewModel
             catch(OperationCanceledException)
             {if(epoch==_directoryGeneration && CanUseDirectories() && Notice=="Loading this account's public profile and avatar…") Notice="The public image request stopped. Refresh explicitly when ready.";}
             finally {if(ReferenceEquals(_publicRefreshStop,stop)) _publicRefreshStop=null;}
-        },Fail);
+        },error=>Fail(error,ManagerSubsystem.Directory));
         OpenJoinGameForSelectedAccount=new(_=>
         {
             if(!CanUseDirectories() || SelectedAccount is not { } selected || !Accounts.Contains(selected)) return;
@@ -123,7 +123,7 @@ public sealed partial class ShellViewModel
             if(!CanUseDirectories() || SelectedAccount?.Profile.PreferredPlaceId is not { } place) {Notice="Select an account with a preferred game first.";return;}
             ServerBrowser.UsePreferredPlace(place);Tab="JoinGame";
         });
-        QueueTargetedAccounts=new(parameter=>QueueTargetedAccountsAsync((TargetedRequest?)parameter),Fail,_=>CaptureTargetedRequest());
+        QueueTargetedAccounts=new(parameter=>QueueTargetedAccountsAsync((TargetedRequest?)parameter),error=>Fail(error,ManagerSubsystem.Queue),_=>CaptureTargetedRequest());
         AccountPower=new(async parameter=>
         {
             if(!CanUseDirectories() || parameter is not AccountRow row || !Accounts.Contains(row)) return;
@@ -154,7 +154,7 @@ public sealed partial class ShellViewModel
             var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
             var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
             Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
-        },Fail);
+        },error=>Fail(error,ManagerSubsystem.Queue));
         RefreshPublicImageActivity();
     }
     private Task PublishPublicImageAsync(PublicAccountPageUpdate update,CancellationToken ct)=>_dispatcher.InvokeAsync(()=>
@@ -194,7 +194,7 @@ public sealed partial class ShellViewModel
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
         try {await LoadAccountsAsync(stop.Token);}
         catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
-        catch(Exception error) {Fail(error);}
+        catch(Exception error) {Fail(error,ManagerSubsystem.Library);}
     }
     /// <summary>A share link pasted in the Find box: open Browse servers → Private server and check it there. The code never enters search.</summary>
     private Task RouteShareLinkAsync(RobloxShareLink link)
@@ -299,7 +299,7 @@ public sealed partial class ShellViewModel
                 {
                     if(!LaunchDescriptions.Terminal(operation.State))
                         try{await _launchQueue.CancelAsync(operation.Intent.OperationId,CancellationToken.None);}
-                        catch(Exception error){_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());}
+                        catch(Exception error){_diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());}
                 }
                 else if(operation.State==LaunchState.Blocked) blocked++;
                 else if(!LaunchDescriptions.Terminal(operation.State)) queued++;
@@ -368,7 +368,7 @@ public sealed partial class ShellViewModel
             }
         }
         catch(OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
-        catch(Exception ex) { if(!_shuttingDown && !_preserveStopNotice) Fail(ex); else _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType()); }
+        catch(Exception ex) { if(!_shuttingDown && !_preserveStopNotice) Fail(ex,ManagerSubsystem.Directory); else _diagnostics.RecordFailure(ManagerSubsystem.Directory,ex.GetType()); }
         finally {_favoritesReloadRunning=false;}
     }
 }

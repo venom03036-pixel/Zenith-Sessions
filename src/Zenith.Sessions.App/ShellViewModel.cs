@@ -315,7 +315,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
         RecentClients=new(historyStore??new RecentClientHistoryStore(root),CanUseDirectories,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,error.GetType()));
         _queueStore=new(root);
         _nativeCapture=new OwnedRobloxNativeHandoffCapture(root,dispatcher);
         // An injected development provider transfers ownership; it must remain Unverified.
@@ -337,17 +337,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
-        OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex); } });
+        OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { IsLocked = false; ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
-        SaveSettings = new(_ => SavePreferencesAsync(), Fail);
-        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, Fail);
-        NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, Fail);
-        PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, Fail);
-        FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, Fail);
-        MinimizeSession=new(p=>ChangeWindowAsync(p,ClientWindowAction.Minimize),Fail);
-        RestoreSession=new(p=>ChangeWindowAsync(p,ClientWindowAction.Restore),Fail);
-        ToggleFavorite=new(async _=> { if(!IsLocked && SelectedAccount is { } row) await SaveAccountAsync(row.Profile with { IsFavorite=!row.Profile.IsFavorite }); },Fail);
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; });
+        SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
+        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
+        PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
+        FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
+        MinimizeSession=new(p=>ChangeWindowAsync(p,ClientWindowAction.Minimize),error=>Fail(error,ManagerSubsystem.ClientWindows));
+        RestoreSession=new(p=>ChangeWindowAsync(p,ClientWindowAction.Restore),error=>Fail(error,ManagerSubsystem.ClientWindows));
+        ToggleFavorite=new(async _=> { if(!IsLocked && SelectedAccount is { } row) await SaveAccountAsync(row.Profile with { IsFavorite=!row.Profile.IsFavorite }); },error=>Fail(error,ManagerSubsystem.Library));
         QueueSelected=new(async _=>
         {
             if(IsLocked || !QueueReady || SelectedAccount is not { } selected) return;
@@ -355,18 +355,18 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             var operation=await _launchQueue.EnqueueAsync(selected.Profile,_lifetime.Token,binding);
             Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Launch request queued. It is not a running client.";
             QueueExpanded=true;
-        },Fail);
-        ToggleQueuePause=new(_=>ToggleQueuePausePresentationAsync(),Fail);
-        CancelLaunch=new(async p=> { if(!IsLocked && QueueReady && p is LaunchRow row) await _launchQueue.CancelAsync(row.Id,_lifetime.Token); },Fail);
-        SetAsideInterruptedQueueWrite=new(_=>SetAsideInterruptedQueueWriteAsync(),Fail);
-        Refresh = new(async _ => { if(!_ready) throw new AccountLinkException("Resolve the startup error and restart Zenith Sessions before refreshing the library."); await LoadAccountsAsync(_lifetime.Token); await SampleAsync(_lifetime.Token,forcePresentation:true); Notice = "Latest available observations shown. Measurement times are listed."; }, Fail);
-        LinkAccount=new(_=>AuthorizeSelectedAsync(false),Fail);
-        AddRobloxAccount=new(_=>AddRobloxAccountAsync(),Fail);
-        RefreshAuthorization=new(_=>AuthorizeSelectedAsync(true),Fail);
-        DisconnectAccount=new(_=>DisconnectSelectedAsync(),Fail);
+        },error=>Fail(error,ManagerSubsystem.Queue));
+        ToggleQueuePause=new(_=>ToggleQueuePausePresentationAsync(),error=>Fail(error,ManagerSubsystem.Queue));
+        CancelLaunch=new(async p=> { if(!IsLocked && QueueReady && p is LaunchRow row) await _launchQueue.CancelAsync(row.Id,_lifetime.Token); },error=>Fail(error,ManagerSubsystem.Queue));
+        SetAsideInterruptedQueueWrite=new(_=>SetAsideInterruptedQueueWriteAsync(),error=>Fail(error,ManagerSubsystem.Queue));
+        Refresh = new(async _ => { if(!_ready) throw new AccountLinkException("Resolve the startup error and restart Zenith Sessions before refreshing the library."); await LoadAccountsAsync(_lifetime.Token); await SampleAsync(_lifetime.Token,forcePresentation:true); Notice = "Latest available observations shown. Measurement times are listed."; }, error => Fail(error,ManagerSubsystem.Library));
+        LinkAccount=new(_=>AuthorizeSelectedAsync(false),error=>Fail(error,ManagerSubsystem.SignIn));
+        AddRobloxAccount=new(_=>AddRobloxAccountAsync(),error=>Fail(error,ManagerSubsystem.SignIn));
+        RefreshAuthorization=new(_=>AuthorizeSelectedAsync(true),error=>Fail(error,ManagerSubsystem.SignIn));
+        DisconnectAccount=new(_=>DisconnectSelectedAsync(),error=>Fail(error,ManagerSubsystem.SignIn));
         CancelAuthorization=new(_=>_authorizationStop?.Cancel());
         InitializeAccountHealthFeatures();
-        CleanupCredentials=new(async _=> { if(!_ready) throw new AccountLinkException("Resolve the library startup error before retrying credential cleanup."); await CleanupCredentialsAsync(); },Fail);
+        CleanupCredentials=new(async _=> { if(!_ready) throw new AccountLinkException("Resolve the library startup error before retrying credential cleanup."); await CleanupCredentialsAsync(); },error=>Fail(error,ManagerSubsystem.Vault));
         InitializeHandoffProbe(handoffProbe);
         InitializeNativeTrialFeatures();
         InitializeSettingsSearch();
@@ -376,6 +376,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     { if(!_initializationStarted) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
     private async Task InitializeCoreAsync()
     {
+        // The startup catch-all names the stage that was running, so a failure says which subsystem stopped startup.
+        var stage=ManagerSubsystem.Settings;
         try
         {
             var loaded = await Task.Run(() => _settingsStore.LoadAsync(_lifetime.Token)); _settings = _savedSettings = loaded.Settings;
@@ -388,9 +390,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             LoadClientLayoutDraft(_settings.WindowLayout!);
             foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
-            await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
-            await SweepSignInFoldersAsync();
-            await CleanupCredentialsAsync();
+            stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
+            stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
+            stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
+            stage=ManagerSubsystem.Library;
             string? projectionNotice=null;
             try
             {
@@ -400,7 +403,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             catch(Exception ex) when(ex is IOException or UnauthorizedAccessException || ex is OperationCanceledException && !_lifetime.IsCancellationRequested)
             {
                 projectionNotice="Linked-name recovery needs attention. Existing metadata journals were preserved; your account library is still available.";
-                _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+                _diagnostics.RecordFailure(ManagerSubsystem.Library,ex.GetType());
             }
             if(projectionNotice is not null) AddEvent(projectionNotice);
             string? queueRecoveryNotice=null;
@@ -410,15 +413,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 queueRecoveryNotice=_queueStore.RecoveryNotice;
                 if(queueRecoveryNotice is not null)AddEvent(queueRecoveryNotice);
             }
-            catch(Exception ex) when(ex is not OperationCanceledException) {ShowQueueBlocker("Launch queue unavailable. Existing queue files were preserved; account profiles remain usable.");_diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());}
+            catch(Exception ex) when(ex is not OperationCanceledException) {ShowQueueBlocker("Launch queue unavailable. Existing queue files were preserved; account profiles remain usable.");_diagnostics.RecordFailure(ManagerSubsystem.Queue,ex.GetType());}
             if (IsSample)
             {
                 var initial = await Task.Run(() => _accounts.ReadAsync(new(), _lifetime.Token));
                 if (initial.Total == 0) for (int i = 1; i <= 16; i++)
                     await Task.Run(() => _accounts.SaveAsync(AccountProfile.Create($"Sample account {i:00}") with { Group = i <= 8 ? "Card Clash" : "Bubble Gum", PreferredPlaceId = i <= 8 ? 110829983956014 : 2512643572 }, _lifetime.Token));
             }
-            await RecentClients.InitializeAsync();
-            await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();
+            stage=ManagerSubsystem.Telemetry;await RecentClients.InitializeAsync();
+            stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();
             PreferencesEdited(); Notice = loaded.Notice ?? queueRecoveryNotice ?? projectionNotice ?? "Ready. Account metadata stays local; running processes require verified identity before automation.";
             AddEvent(IsSample ? "Isolated sample profile library opened; no sample session is shown as a live client." : "Local account library opened.");
             _diagnostics.Record(ManagerEventKind.Started);
@@ -426,11 +429,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             // sample/injected-monitor tests never inspect unrelated desktop logs.
             if (!IsSample && _monitor is WindowsDesktopMonitor) _logCorrelator = new();
             _monitorTask = MonitorLoopAsync(_lifetime.Token);
-            await DestinationFavorites.LoadAsync(_lifetime.Token);
+            stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
-        catch (Exception ex) { _ready=false; _libraryUnavailable=true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex); }
+        catch (Exception ex) { _ready=false; _libraryUnavailable=true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
     }
     private void ScheduleQuery()
     {
@@ -450,7 +453,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         try { await Task.Delay(180, ct); if(intentGeneration==_queryGeneration)await LoadAccountsAsync(ct,intentGeneration); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { Fail(ex); }
+        catch (Exception ex) { Fail(ex,ManagerSubsystem.Library); }
     }
     private async Task LoadAccountsAsync(CancellationToken ct,int? reservedGeneration=null,AccountGroupDefinition? expectedGroup=null)
     {
@@ -563,7 +566,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         try { await prior; } finally { priorCancellation?.Dispose(); }
         try { await Task.Delay(BusyStoreRetryDelay,ct); if(generation==_queryGeneration && !_libraryUnavailable) await LoadAccountsAsync(ct,generation); }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { Fail(ex); }
+        catch (Exception ex) { Fail(ex,ManagerSubsystem.Library); }
     }
     public Task SaveAccountAsync(AccountProfile profile)=>OwnProfileOperation(()=>SaveAccountCoreAsync(profile));
     private async Task ChangeWindowAsync(object? parameter,ClientWindowAction action)
@@ -574,7 +577,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var result=await windows.ChangeAsync(session.Observation,action,_lifetime.Token);
         if(generation!=_windowOperationsGeneration || IsLocked || _shuttingDown) return;
         Notice=result.Explanation;
-        if(!result.Applied) _diagnostics.Record(ManagerEventKind.OperationFailed);
+        if(!result.Applied) _diagnostics.RecordFailure(ManagerSubsystem.ClientWindows);
     }
     private async Task SaveAccountCoreAsync(AccountProfile profile)
     {
@@ -763,7 +766,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { }
-        catch (Exception ex) { await _dispatcher.InvokeAsync(() => {MarkOverviewMonitorStopped();Fail(ex);}); }
+        catch (Exception ex) { await _dispatcher.InvokeAsync(() => {MarkOverviewMonitorStopped();Fail(ex,ManagerSubsystem.Telemetry);}); }
     }
     private async Task SampleAsync(CancellationToken ct,bool forcePresentation=false)
     {
@@ -801,7 +804,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             Capacity=(projection.ForecastsKnown?capacity.Explanation+" ":"")+projection.Explanation;
             RefreshNativeTrialFeatures();
             PressureNotice=pressure.Explanation;RecordOverviewSample(snapshot,capacity,projection);
-            DiagnosticsStatus=_diagnostics.Failure??(_diagnostics.DroppedEvents>0?$"Diagnostics busy: {_diagnostics.DroppedEvents} routine events skipped.":"Diagnostics active · bounded to three log files");
             RefreshDiagnosticsView();
             RefreshDestinationCapacity();
             foreach(var account in Accounts) account.UpdateAuthorizationClock(DateTimeOffset.UtcNow);
@@ -898,20 +900,37 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
     }
     public void LockDashboard() { StopOperations("Controls locked. Monitoring continues; automation requires explicit restart.",ManagerEventKind.ControlsLocked);ClearSettingsSearch.Execute(null); IsLocked = true; }
-    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
+    private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic) { HoldQueuePresentation();MacroAssignments.CancelWork(); MacroHostCatalog.CancelWork(); Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying.");CancelDiagnosticExport();CancelOverviewFocus();ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."); _authorizationStop?.Cancel();HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying."; _launchQueue.SignalPanic();StopClientWindowOperations();StopClientPriorityOperations();StopGroupChanges();CancelPerformanceTransfers();CancelInstallationWork();CancelDirectoryFeatures(kind==ManagerEventKind.ControlsLocked);_queuePaused=true;Raise(nameof(QueuePauseLabel));QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.";RefreshOverview();PanicRequested?.Invoke(); Notice = reason; AddEvent(reason); _diagnostics.Record(kind); }
     private void AddEvent(string text) { Events.Insert(0, $"{DateTime.Now:T}  {text}"); while (Events.Count > 100) Events.RemoveAt(Events.Count - 1); }
-    public void Fail(Exception exception)
+    public void Fail(Exception exception,ManagerSubsystem subsystem)
     {
         Notice = exception is JsonException?"The selected file is not a valid profile export. Existing profiles were preserved."
-            :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException ? exception.Message
+            :exception is ArgumentException or InvalidDataException or RevisionConflictException or AccountLinkException or RobloxSessionException or LaunchQueueException or ReportFileException ? exception.Message
             : "The operation could not finish. Your existing data was preserved. Check the data folder permissions and retry.";
         AddEvent($"Operation failed ({exception.GetType().Name}).");
-        _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
+        _diagnostics.RecordFailure(subsystem,exception.GetType());
+        // After a startup failure or monitor fault no sample loop refreshes diagnostics, so the
+        // failure itself updates the status and, when the tab is open, the visible rows.
+        RefreshDiagnosticsView();
     }
     public void Inform(string message) => Notice = message;
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
     public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
+    // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
     private async Task DisposeCoreAsync()
+    {
+        try { await DisposeOwnersAsync(); }
+        catch(Exception ex) when(RecordShutdownFault(ex)) { } // Never entered: the filter records and the fault keeps propagating.
+        finally { _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); }
+        _lifetime.Dispose();
+    }
+    private bool RecordShutdownFault(Exception ex)
+    {
+        if(ex is not OperationCanceledException) _diagnostics.RecordFailure(ManagerSubsystem.Lifecycle,ex.GetType());
+        return false;
+    }
+    private async Task DisposeOwnersAsync()
     {
         _shuttingDown=true;
         StopClientPriorityOperations();
@@ -929,18 +948,18 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await _initializeTask;
         await DisposeMacroAssignmentsAsync();
         await MacroHostCatalog.DisposeAsync();
-        try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex);}
+        try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
         await _executableTrust.DisposeAsync();
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
-            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
-        try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex); }
+            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
+        try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
         await DisposeRecipientBundlesAsync();
         await StopDirectoryFeaturesAsync();
         await RecentClients.DisposeAsync();
-        try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex);}
+        try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex,ManagerSubsystem.Previews);}
         await DisposeClientWindowFeaturesAsync();
         await _favoritesReloadTask;
         await DestinationFavorites.DisposeAsync();
@@ -948,14 +967,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         (_favoriteStore as IDisposable)?.Dispose();
         if (_logCorrelator is not null)
             try { await _logCorrelator.DisposeAsync(); }
-            catch (Exception ex) { Fail(ex); } // Optional diagnostics must not prevent vault/queue/native owner cleanup.
+            catch (Exception ex) { Fail(ex,ManagerSubsystem.Telemetry); } // Optional diagnostics must not prevent vault/queue/native owner cleanup.
         await _launchQueue.DisposeAsync();_launchQueue.Changed-=QueueChanged;_launchQueue.Faulted-=QueueFaulted;_queueStore.Dispose();
         await DisposeNativeTrialFeaturesAsync();
         _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); _credentialCleanup.Dispose(); await _linkService.DisposeAsync();
         if(_signIn is IAsyncDisposable signInOwner) await signInOwner.DisposeAsync();
         _identityProjection.Dispose(); _vault.Dispose(); (_sessionClient as IDisposable)?.Dispose();
         (_accounts as IDisposable)?.Dispose(); (_monitor as IDisposable)?.Dispose(); _settingsStore.Dispose();_sampleSerial.Dispose();
-        _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); _lifetime.Dispose();
     }
     private async Task AuthorizeSelectedAsync(bool refresh)
     {
@@ -973,7 +991,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(IsLocked || _shuttingDown) return;
             Notice=$"Saved sign-in verified for @{identity.Username}. Native client launch and arrival remain separately unverified.";
             AddEvent("Roblox sign-in identity verified; selected account session stored with Windows protection.");
-            _diagnostics.Record(ManagerEventKind.AuthorizationLinked);
+            _diagnostics.Record(refresh?ManagerEventKind.AuthorizationChecked:ManagerEventKind.AuthorizationLinked);
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested)
         { if(!_lifetime.IsCancellationRequested) { await LoadAccountsAsync(_lifetime.Token); if(!_preserveStopNotice) Notice="Account sign-in cancelled. Existing profiles were preserved."; } }
@@ -1018,7 +1036,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
             :result.ErrorType==nameof(InvalidDataException)?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete."
             :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+_signInFolderNote;
-        if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.Record(ManagerEventKind.OperationFailed); }
+        if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.RecordFailure(ManagerSubsystem.Vault); }
     }
     // Startup only: it runs under the single-instance lock and before the library is ready, so no sign-in or handoff
     // check in this process can be using a folder. A crash otherwise left its browser data until the next sign-in.
@@ -1105,7 +1123,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private void QueueFaulted(Exception error)
     {
-        _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());
         if(!_dispatcher.HasShutdownStarted) _dispatcher.BeginInvoke(new Action(()=>
         {
             if(_shuttingDown) return;

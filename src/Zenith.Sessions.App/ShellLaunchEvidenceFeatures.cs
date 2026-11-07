@@ -83,6 +83,7 @@ public sealed partial class ShellViewModel
     private string _launchPacingStatus="No startup pacing delay.";
     private long _launchEvidenceSelectionEpoch;
     private NativeLaunchDiagnosticPresentation _selectedNativeDiagnostics=NativeLaunchDiagnosticPresentation.Unavailable();
+    private (Guid Id,Type Error)? _nativeDiagnosticFailure;
     public NativeLaunchDiagnosticPresentation SelectedNativeDiagnostics=>_selectedNativeDiagnostics;
     public ObservableCollection<LaunchEvidenceRow> LaunchEvidenceRows {get;}=[];
     public LaunchEvidenceRow? SelectedLaunchEvidence
@@ -109,13 +110,24 @@ public sealed partial class ShellViewModel
     {
         var selected=SelectedLaunchEvidence;long selectionEpoch=_launchEvidenceSelectionEpoch,nativeEpoch=Interlocked.Read(ref _nativeTrialEpoch);
         if(IsLocked||_shuttingDown||selected is null||!LaunchEvidenceRows.Contains(selected)) {ClearSelectedNativeDiagnostics();return;}
+        bool readFailed=false;
         var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,selected.Id,()=>!IsLocked&&!_shuttingDown
             &&selectionEpoch==_launchEvidenceSelectionEpoch&&nativeEpoch==Interlocked.Read(ref _nativeTrialEpoch)
-            &&ReferenceEquals(selected,SelectedLaunchEvidence)&&LaunchEvidenceRows.Contains(selected));
+            &&ReferenceEquals(selected,SelectedLaunchEvidence)&&LaunchEvidenceRows.Contains(selected),
+            failed:error=>{readFailed=true;RecordNativeDiagnosticFailure(selected.Id,error);});
+        if(view is not null&&!readFailed)_nativeDiagnosticFailure=null;
         if(view is not null&&_selectedNativeDiagnostics!=view){_selectedNativeDiagnostics=view;Raise(nameof(SelectedNativeDiagnostics));}
+    }
+    // This read runs on every telemetry sample, so a failing source records one typed row per
+    // (operation, error type) until a read succeeds or the selection is cleared, not one per tick.
+    private void RecordNativeDiagnosticFailure(Guid operationId,Type error)
+    {
+        if(_nativeDiagnosticFailure==(operationId,error))return;
+        _nativeDiagnosticFailure=(operationId,error);_diagnostics.RecordFailure(ManagerSubsystem.Launch,error);
     }
     private void ClearSelectedNativeDiagnostics()
     {
+        _nativeDiagnosticFailure=null;
         var view=NativeLaunchDiagnosticPresentation.Unavailable(IsLocked||_shuttingDown?null:SelectedLaunchEvidence?.Id);
         if(_selectedNativeDiagnostics==view)return;_selectedNativeDiagnostics=view;Raise(nameof(SelectedNativeDiagnostics));
     }
@@ -129,7 +141,7 @@ public sealed partial class ShellViewModel
             if(matches.Length!=1)return;SelectedSession=matches[0];Tab="Sessions";
             Notice="Selected the exact observed process. Its account and arrival remain unverified.";
         });
-        ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,Fail);
+        ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Launch));
     }
     private void RefreshLaunchEvidence()=>RefreshLaunchEvidenceWith(null);
     // The sample tick passes the log snapshot it already took; other callers take their own.
@@ -199,24 +211,15 @@ public sealed partial class ShellViewModel
         long epoch=Interlocked.Read(ref _nativeTrialEpoch);string report;
         try{report=BuildNativeTrialEvidenceReport();}
         catch(Exception error)when(epoch!=Interlocked.Read(ref _nativeTrialEpoch)||IsLocked||_shuttingDown)
-        {_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());return;}
+        {_diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());return;}
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_launchEvidenceExportStop=stop;
         try
         {
-            await Task.Run(async()=>
+            string dataRoot=DataRoot,applicationRoot=AppContext.BaseDirectory;
+            await Task.Run(()=>
             {
-                string destination=DiagnosticExportPath.Validate(path,DataRoot,AppContext.BaseDirectory);
-                string temporary=destination+"."+Guid.NewGuid().ToString("N")+".tmp";
-                try
-                {
-                    byte[] bytes=Encoding.UTF8.GetBytes(report);if(bytes.Length>65536)throw new InvalidDataException("The launch evidence report exceeds its size limit.");
-                    await using(var file=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None,4096,FileOptions.Asynchronous|FileOptions.WriteThrough))
-                    {await file.WriteAsync(bytes,stop.Token);await file.FlushAsync(stop.Token);file.Flush(true);}
-                    stop.Token.ThrowIfCancellationRequested();DiagnosticExportPath.Validate(destination,DataRoot,AppContext.BaseDirectory);
-                    stop.Token.ThrowIfCancellationRequested();
-                    if(File.Exists(destination))File.Replace(temporary,destination,null);else File.Move(temporary,destination);
-                }
-                finally{if(File.Exists(temporary))File.Delete(temporary);}
+                byte[] bytes=Encoding.UTF8.GetBytes(report);if(bytes.Length>65536)throw new InvalidDataException("The launch evidence report exceeds its size limit.");
+                return ExplicitReportFile.WriteReportAsync(path,bytes,dataRoot,applicationRoot,stop.Token);
             },stop.Token);
             if(epoch==Interlocked.Read(ref _nativeTrialEpoch)&&!IsLocked&&!_shuttingDown)Notice="Launch evidence saved. It contains player/place/server IDs and timestamps; no credentials, raw logs or executable paths.";
         }
@@ -225,7 +228,7 @@ public sealed partial class ShellViewModel
         {
             // A late disk/path failure remains observable without replacing a newer stop/lock
             // message. The actual write task has completed; no worker or temp file is abandoned.
-            _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());
         }
         finally{if(ReferenceEquals(_launchEvidenceExportStop,stop))_launchEvidenceExportStop=null;}
     }

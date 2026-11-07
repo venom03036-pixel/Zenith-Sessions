@@ -4,7 +4,16 @@ using System.Threading.Channels;
 namespace Zenith.Sessions.Windows;
 
 public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImported,MetadataExported,SettingsSaved,AuthorizationLinked,
-    AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents }
+    AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents,
+    // Appended so earlier numeric values keep their meaning; the disk log and export store names.
+    AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked }
+
+/// <summary>
+/// The closed set of manager areas a failure can be attributed to, so a record says which subsystem failed
+/// without any free text. Append new members only; the live journal and the report carry the name.
+/// </summary>
+public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
+    Launch,Installation,ClientPriority,Lifecycle }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable
@@ -42,11 +51,21 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
     public void Record(ManagerEventKind kind,Type? errorType=null)
     {
         if(!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        Append(kind,errorType,null);
+    }
+    /// <summary>Records an <see cref="ManagerEventKind.OperationFailed"/> event that names the subsystem that failed.</summary>
+    public void RecordFailure(ManagerSubsystem subsystem,Type? errorType=null)
+    {
+        if(!Enum.IsDefined(subsystem)) throw new ArgumentOutOfRangeException(nameof(subsystem));
+        Append(ManagerEventKind.OperationFailed,errorType,subsystem);
+    }
+    private void Append(ManagerEventKind kind,Type? errorType,ManagerSubsystem? subsystem)
+    {
         string? safeError=SafeErrorType(errorType);
         lock(_gate)
         {
             if(_disposed || _sequence==long.MaxValue) return;
-            var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError);
+            var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError,Subsystem:subsystem);
             _journal[_nextJournal]=entry;_nextJournal=(_nextJournal+1)%JournalCapacity;
             if(_journalCount<JournalCapacity) _journalCount++;
             switch(entry.Level)
@@ -68,6 +87,37 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             return new(_sequence,_sequence,_infoCount,_warningCount,_errorCount,_dropped,_failure,Array.AsReadOnly(entries));
         }
     }
+    /// <summary>
+    /// True when a snapshot taken now would differ from <paramref name="prior"/>, without copying the ring.
+    /// One lock covers all three values: the writer changes Failure and DroppedEvents without a new sequence.
+    /// </summary>
+    public bool HasChangedSince(ManagerDiagnosticSnapshot? prior)
+    {
+        lock(_gate)
+            return prior is null || prior.LatestSequence!=_sequence || prior.DroppedEvents!=_dropped
+                || !string.Equals(prior.Failure,_failure,StringComparison.Ordinal);
+    }
+    // Fixed texts by cause (never the exception message). Only an access denial points at permissions:
+    // a log held by a tailer, backup or scanner, or a full disk, would otherwise send the user to the wrong fix.
+    private const string AccessDeniedText="Diagnostics could not be written. Check the data-folder permissions.";
+    private const string LogInUseText="Diagnostics could not be written: another program is using the log file. Zenith retries on the next event.";
+    private const string DiskFullText="Diagnostics could not be written: the disk is full. Zenith retries on the next event.";
+    private const string WriteFailedText="Diagnostics could not be written to the data folder. Zenith retries on the next event.";
+    internal static string WriteFailureText(Exception error)
+    {
+        if(error is UnauthorizedAccessException) return AccessDeniedText;
+        // Win32 I/O errors surface as HRESULT_FROM_WIN32(code): facility 7 with the code in the low word.
+        if((error.HResult & unchecked((int)0xFFFF0000))!=unchecked((int)0x80070000)) return WriteFailedText;
+        return (error.HResult & 0xFFFF) switch
+        {
+            32 or 33 => LogInUseText,   // ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION
+            112 or 39 => DiskFullText,  // ERROR_DISK_FULL, ERROR_HANDLE_DISK_FULL
+            _ => WriteFailedText,
+        };
+    }
+    private static bool IsWriteFailureText(string? text)=>text is AccessDeniedText or LogInUseText or DiskFullText or WriteFailedText;
+    // One writer for the whole session: a disk error costs only the entry being written, never the writer.
+    // A deleted folder, a log held open by another program or a full disk recovers on the next event.
     private async Task WriteAsync(CancellationToken ct)
     {
         ManagerDiagnosticEvent? inFlight=null;
@@ -75,20 +125,17 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         {
             if(_beforeWriter is not null) await _beforeWriter(ct).ConfigureAwait(false);
             ct.ThrowIfCancellationRequested();
-            Directory.CreateDirectory(_folder);
             await foreach(var entry in _events.Reader.ReadAllAsync(ct).ConfigureAwait(false))
             {
                 inFlight=entry;
-                await WriteEntryAsync(new(entry.Utc,entry.Kind.ToString(),entry.ErrorType,entry.Count),ct).ConfigureAwait(false);
+                await TryWriteEntryAsync(new(entry.Utc,entry.Kind.ToString(),entry.ErrorType,entry.Count),countsAsDropped:true,ct).ConfigureAwait(false);
                 inFlight=null;
             }
             long dropped=DroppedEvents;
-            if(dropped>0) await WriteEntryAsync(new(DateTimeOffset.UtcNow,ManagerEventKind.DroppedEvents.ToString(),Count:dropped),ct).ConfigureAwait(false);
+            if(dropped>0) await TryWriteEntryAsync(new(DateTimeOffset.UtcNow,ManagerEventKind.DroppedEvents.ToString(),Count:dropped),countsAsDropped:false,ct).ConfigureAwait(false);
         }
         catch(OperationCanceledException) when(ct.IsCancellationRequested)
         {lock(_gate) _failure="Diagnostics shutdown timed out; some events were not confirmed written.";}
-        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
-        {lock(_gate) _failure="Diagnostics could not be written. Check the data-folder permissions.";}
         finally
         {
             lock(_gate)
@@ -99,10 +146,29 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             }
         }
     }
+    // An I/O failure is counted here exactly once (the caller then clears its in-flight entry); cancellation propagates.
+    private async Task TryWriteEntryAsync(Entry entry,bool countsAsDropped,CancellationToken ct)
+    {
+        try
+        {
+            await WriteEntryAsync(entry,ct).ConfigureAwait(false);
+            lock(_gate) if(IsWriteFailureText(_failure)) _failure=null;
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            lock(_gate)
+            {
+                _failure=WriteFailureText(ex);
+                if(countsAsDropped) _dropped++;
+            }
+        }
+    }
     private async Task WriteEntryAsync(Entry entry,CancellationToken ct)
     {
-        // Explicitly preserve the established four-property disk format; journal UI fields stay in memory.
+        // Explicitly preserve the established four-property disk format; journal UI fields (Sequence, Subsystem) stay in memory.
         byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(entry);
+        // Recreated per entry so a folder deleted while the app runs (e.g. after "Open logs") is restored; no-op when present.
+        Directory.CreateDirectory(_folder);
         string current=Path.Combine(_folder,"manager.jsonl");
         if(File.Exists(current) && new FileInfo(current).Length+bytes.Length+1>_fileLimit)
         {

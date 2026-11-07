@@ -178,15 +178,15 @@ public partial class MainWindow : Window
             _vm.SetAsideInterruptedQueueWrite.Execute(null);
     }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)
-    {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex);}}
+    {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex,ManagerSubsystem.Diagnostics);}}
     private void CopyDiagnosticReport(object sender,RoutedEventArgs e)
-    {try {Clipboard.SetText(_vm.BuildDiagnosticReport());_vm.Inform("Redacted diagnostic report copied. Nothing was uploaded.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex);}}
+    {try {Clipboard.SetText(_vm.BuildDiagnosticReport());_vm.Inform("Redacted diagnostic report copied. Nothing was uploaded.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex,ManagerSubsystem.Diagnostics);}}
     private void CopyRequestedServerLink(object sender,RoutedEventArgs e)
     {
         var link=_vm.BuildRequestedDestinationLink();
         if(link is null) {_vm.Inform("Use or discard the pending destination, then choose a request to copy.");return;}
         try {Clipboard.SetText(link);_vm.Inform("Requested destination link copied. No account was launched or joined.");}
-        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex);}
+        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex,ManagerSubsystem.Directory);}
     }
     private void CopyReportedServerLink(object sender,RoutedEventArgs e)
     {
@@ -194,7 +194,7 @@ public partial class MainWindow : Window
         var link=_vm.BuildReportedDestinationLink(row);
         if(link is null) {_vm.Inform("This client has no current diagnostic destination. Refresh observations; stale or ambiguous values are not copied.");return;}
         try {Clipboard.SetText(link);_vm.Inform("Unverified reported destination link copied. Access and arrival remain unverified.");}
-        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex);}
+        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex,ManagerSubsystem.Directory);}
     }
     private void OpenGamePageClick(object sender,RoutedEventArgs e)
     {
@@ -203,14 +203,14 @@ public partial class MainWindow : Window
         // Only the public game page ever leaves the app: never a server, share or private code.
         if(!link.StartsWith("https://www.roblox.com/games/",StringComparison.Ordinal)) return;
         try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link) {UseShellExecute=true});_vm.Inform("Opened the public game page in your browser. No account was launched or signed in.");}
-        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex);_vm.Inform("The browser could not be opened. Use Copy link instead.");}
+        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex,ManagerSubsystem.Directory);_vm.Inform("The browser could not be opened. Use Copy link instead.");}
     }
     private void CopyGamePageLinkClick(object sender,RoutedEventArgs e)
     {
         var link=_vm.BuildRequestedGamePageLink();
         if(link is null) {_vm.Inform("Choose a game first. A pending draft must be used or discarded before its link can be copied.");return;}
         try {Clipboard.SetText(link);_vm.Inform("Game page link copied. IDs only; no account was launched or joined.");}
-        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex);}
+        catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex,ManagerSubsystem.Directory);}
     }
     private void JoinSameGameClick(object sender,RoutedEventArgs e)
     {
@@ -224,8 +224,8 @@ public partial class MainWindow : Window
         if (!_vm.JoinSameAsReported(row, sameServer: true)) { _vm.Inform("This client has no current reported server. Refresh observations; stale or ambiguous values are not used."); return; }
         JoinGamePage.ScrollToTop();
     }
-    private void ClipboardUnavailable(Exception error)
-    { _vm.Fail(error);_vm.Inform("The clipboard is busy or unavailable. Try copying again."); }
+    private void ClipboardUnavailable(Exception error,ManagerSubsystem subsystem)
+    { _vm.Fail(error,subsystem);_vm.Inform("The clipboard is busy or unavailable. Try copying again."); }
     private void CopyPerformanceShareCode(object sender, RoutedEventArgs e)
     {
         try
@@ -235,9 +235,9 @@ public partial class MainWindow : Window
             Clipboard.SetText(code);
             _vm.Inform("Manager performance code copied. Accounts, sign-in and local safety settings were excluded.");
         }
-        catch (Exception error) when (error is System.Runtime.InteropServices.COMException or InvalidOperationException) { ClipboardUnavailable(error); }
-        catch (ArgumentException error) { _vm.Fail(error); }
-        catch (PerformanceSettingsTransferException error) { _vm.Fail(error); }
+        catch (Exception error) when (error is System.Runtime.InteropServices.COMException or InvalidOperationException) { ClipboardUnavailable(error, ManagerSubsystem.Settings); }
+        catch (ArgumentException error) { _vm.Fail(error, ManagerSubsystem.Settings); }
+        catch (PerformanceSettingsTransferException error) { _vm.Fail(error, ManagerSubsystem.Settings); }
     }
     private void ImportPerformanceFile(object sender, RoutedEventArgs e)
     {
@@ -275,7 +275,7 @@ public partial class MainWindow : Window
     {
         if(!_vm.HasLaunchEvidence)return;
         try{Clipboard.SetText(_vm.BuildNativeTrialEvidenceReport());_vm.Inform("Unverified launch evidence copied. Player/place/server IDs are included; no credentials or raw logs.");}
-        catch(Exception error)when(error is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(error);}
+        catch(Exception error)when(error is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(error,ManagerSubsystem.Launch);}
     }
     private void SaveLaunchEvidence(object sender,RoutedEventArgs e)
     {
@@ -355,7 +355,7 @@ public partial class MainWindow : Window
     {
         if (_vm.SelectedAccount is not { } row || _vm.IsLocked || _vm.ReportPendingRemoval([row])) return;
         if (MessageBox.Show(this, $"Remove the saved profile “{row.Label}”? Its running client will remain open.", "Remove profile", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        try { await _vm.DeleteAccountsAsync([row]); } catch (Exception ex) { _vm.Fail(ex); }
+        try { await _vm.DeleteAccountsAsync([row]); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
     private async void RemoveSelected(object sender, RoutedEventArgs e)
     {
@@ -363,17 +363,17 @@ public partial class MainWindow : Window
         if (rows.Length == 0) { _vm.Inform("Select profiles using their checkboxes before removing them."); return; }
         if (_vm.ReportPendingRemoval(rows)) return;
         if (MessageBox.Show(this, $"Remove {rows.Length} selected profiles? Running clients will remain open.", "Remove selected profiles", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        try { await _vm.DeleteAccountsAsync(rows); } catch (Exception ex) { _vm.Fail(ex); }
+        try { await _vm.DeleteAccountsAsync(rows); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
     private async void ImportProfiles(object sender, RoutedEventArgs e)
     {
         var dialog = new OpenFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", CheckFileExists = true };
-        if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ImportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex); }
+        if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ImportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
     private async void ExportProfiles(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", FileName = "Zenith-Sessions-Profiles.json", AddExtension = true };
-        if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ExportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex); }
+        if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ExportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
     private void ClearRecentClientHistory(object sender,RoutedEventArgs e)
     {
@@ -386,7 +386,7 @@ public partial class MainWindow : Window
         if (sender is not FrameworkElement { DataContext: SessionRow row }) return;
         var session = row.Observation;
         if (MessageBox.Show(this, $"Ask Roblox process {session.ProcessId} to close? Unsaved game activity may be lost. Account identity is unverified.", "Close selected client", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
-        try { await _vm.RequestCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex); }
+        try { await _vm.RequestCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.ClientWindows); }
     }
     private async void ReviewLaunch(object sender,RoutedEventArgs e)
     {
@@ -394,6 +394,6 @@ public partial class MainWindow : Window
         if(!row.CanReview)
         { _vm.Inform("Use Cancel for a pending or blocked request. Review is for an uncertain, interrupted or previously arrived client.");return; }
         if(MessageBox.Show(this,"Confirm that this account has no remaining client or startup attempt. This releases its launch reservation; it does not close any game or automatically retry. If you are unsure, choose No.","Review interrupted launch",MessageBoxButton.YesNo,MessageBoxImage.Question)!=MessageBoxResult.Yes) return;
-        try {await _vm.ConfirmLaunchClientClosedAsync(row.Id);}catch(Exception ex) {_vm.Fail(ex);}
+        try {await _vm.ConfirmLaunchClientClosedAsync(row.Id);}catch(Exception ex) {_vm.Fail(ex,ManagerSubsystem.Queue);}
     }
 }

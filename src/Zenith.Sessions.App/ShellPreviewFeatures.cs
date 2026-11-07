@@ -28,7 +28,7 @@ public sealed partial class ShellViewModel
     private void InitializeClientPreviews(IClientPreviewProvider? provider)
     {
         ClientPreviews=new(provider??new WindowsClientPreviewProvider(),_dispatcher,()=>_clientPreviewAllowed,
-            error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            error=>_diagnostics.RecordFailure(ManagerSubsystem.Previews,error.GetType()));
         ClientPreviews.PropertyChanged+=(_,args)=>
         {if(args.PropertyName==nameof(ClientPreviewsViewModel.IsAvailable)) {Raise(nameof(CanStartClientPreviews));Raise(nameof(CanStartWindowsOverview));}
             if(args.PropertyName==nameof(ClientPreviewsViewModel.SelectedOverviewRow)) Raise(nameof(CanFocusOverviewClient));};
@@ -43,7 +43,7 @@ public sealed partial class ShellViewModel
             if(!CanStartWindowsOverview) {ClientPreviews.Fence("Overview previews need a visible unlocked Windows page and fresh healthy resources. Sample mode never captures real windows.");return;}
             ClientPreviews.StartOverview(Volatile.Read(ref _latestDesktop)!.Resources.ObservedUtc.AddSeconds(3));
         });
-        FocusOverviewClient=new(_=>FocusOverviewClientAsync(),Fail);
+        FocusOverviewClient=new(_=>FocusOverviewClientAsync(),error=>Fail(error,ManagerSubsystem.ClientWindows));
     }
     private bool FreshPreviewResources()
     {
@@ -112,8 +112,8 @@ public sealed partial class ShellViewModel
         catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
         catch(Exception error)
         {
-            if(epoch==Volatile.Read(ref _overviewFocusEpoch) && !stop.IsCancellationRequested) Fail(error);
-            else _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+            if(epoch==Volatile.Read(ref _overviewFocusEpoch) && !stop.IsCancellationRequested) Fail(error,ManagerSubsystem.ClientWindows);
+            else _diagnostics.RecordFailure(ManagerSubsystem.ClientWindows,error.GetType());
         }
         finally {if(ReferenceEquals(_overviewFocusStop,stop)) _overviewFocusStop=null;}
     }

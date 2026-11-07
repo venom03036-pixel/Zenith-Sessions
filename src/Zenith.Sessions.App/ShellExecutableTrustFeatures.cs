@@ -61,7 +61,7 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             if (Current()) ReportPublisherFailure(error);
-            else _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            else _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType());
         }
         finally
         {
@@ -73,7 +73,7 @@ public sealed partial class ShellViewModel
     private void ReportPublisherFailure(Exception error)
     {
         PublisherVerificationStatus = "The publisher check failed. Trust remains unknown; no launch was enabled.";
-        _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType());
     }
 
     private void CancelPublisherVerificationWork()

@@ -144,19 +144,19 @@ public sealed partial class ShellViewModel
     private void ReportClientPriorityFailure(Exception error)
     {
         ClientPriorityStatus = "The priority operation could not be confirmed. Review pending restores before trying again.";
-        Fail(error);
+        Fail(error, ManagerSubsystem.ClientPriority);
     }
 
     private async Task DisposeClientPriorityFeaturesAsync()
     {
         StopClientPriorityOperations();
         try { await _clientPriorityWork; }
-        catch (Exception error) { _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()); }
+        catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType()); }
         PropertyChanged -= ClientPriorityOwnerChanged;
         try { await _clientPriority.DisposeAsync(); }
         catch (Exception error)
         {
-            _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType());
             ClientPriorityStatus = "Windows could not confirm every original priority was restored. Review those clients in Task Manager.";
         }
     }

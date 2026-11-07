@@ -19,7 +19,7 @@ public sealed partial class ShellViewModel
                 long epoch=_directoryGeneration;
                 var snapshot=members.Select(member=>(Profile:member.Profile!,member.Binding)).ToArray();
                 return await QueueFrozenRecipientsAsync(destination,snapshot,epoch,ct);
-            },CanUseDirectories,error=>_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType()));
+            },CanUseDirectories,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         ServerBrowser.PropertyChanged+=BundleDestinationChanged;
         RecipientBundles.PropertyChanged+=BundleSelectionChanged;
         RefreshDestinationCapacity();

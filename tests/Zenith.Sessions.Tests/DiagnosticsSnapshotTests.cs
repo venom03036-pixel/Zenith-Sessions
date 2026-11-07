@@ -93,6 +93,7 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         Assert.All(snapshot.Events,entry=>
         {
             Assert.False(string.IsNullOrWhiteSpace(entry.Summary));
+            Assert.NotEqual("Unrecognized diagnostic event.",entry.Summary);
             Assert.InRange(entry.Summary.Length,1,100);
             Assert.Equal(entry.Summary,(entry with {ErrorType="synthetic-do-not-display",Count=long.MaxValue}).Summary);
             Assert.Equal(entry.Kind==ManagerEventKind.OperationFailed?DiagnosticLevel.Error:
@@ -100,6 +101,31 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         });
         Assert.Throws<ArgumentOutOfRangeException>(()=>diagnostics.Record((ManagerEventKind)int.MaxValue));
         Assert.Equal(snapshot.TotalEvents,diagnostics.GetSnapshot().TotalEvents);
+    }
+
+    [Fact]
+    public async Task HasChangedSinceSeesNewEventsAndWriterOnlyChangesToFailureOrSkips()
+    {
+        // A file where the diagnostics folder should be makes the writer fail; the gate holds it until the snapshot is taken.
+        Directory.CreateDirectory(Root);await File.WriteAllTextAsync(Path.Combine(Root,"diagnostics"),"not a folder");
+        var release=Signal();
+        await using var diagnostics=new ManagerDiagnostics(Root,8,1024*1024,async ct=>await release.Task.WaitAsync(ct));
+        try
+        {
+            Assert.True(diagnostics.HasChangedSince(null));
+            var empty=diagnostics.GetSnapshot();Assert.False(diagnostics.HasChangedSince(empty));
+            diagnostics.Record(ManagerEventKind.Started);Assert.True(diagnostics.HasChangedSince(empty));
+            var recorded=diagnostics.GetSnapshot();Assert.False(diagnostics.HasChangedSince(recorded));
+            Assert.True(diagnostics.HasChangedSince(recorded with {DroppedEvents=recorded.DroppedEvents+1}));
+            Assert.True(diagnostics.HasChangedSince(recorded with {Failure="An earlier failure text."}));
+            release.TrySetResult(true);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            // The failed write changes Failure and the skip count but not the sequence, so a sequence-only check would miss it.
+            var failed=diagnostics.GetSnapshot();
+            Assert.Equal(recorded.LatestSequence,failed.LatestSequence);Assert.Equal(1,failed.DroppedEvents);
+            Assert.True(diagnostics.HasChangedSince(recorded));Assert.False(diagnostics.HasChangedSince(failed));
+        }
+        finally {release.TrySetResult(true);}
     }
 
     [Fact]
@@ -116,6 +142,112 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         Assert.Equal(100,snapshot.DroppedEvents);Assert.Equal(100,snapshot.Events.Count);
         Assert.NotNull(snapshot.Failure);Assert.DoesNotContain(marker,snapshot.Failure);
         Assert.Equal(marker,await File.ReadAllTextAsync(Path.Combine(Root,"diagnostics")));
+    }
+
+    [Fact]
+    public async Task WriterRecoversAfterTheDiagnosticsFolderIsDeleted()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.Record(ManagerEventKind.Started);
+        await UntilAsync(()=>ReadShared(log).Contains("Started"));
+        // Same effect as the user deleting the folder after "Open logs"; the writer holds no handle between events.
+        await UntilAsync(()=>TryDeleteFolder(folder));
+        diagnostics.Record(ManagerEventKind.ProfileSaved);diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(0,diagnostics.DroppedEvents);
+        Assert.True(File.Exists(log));
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("ProfileSaved",text);Assert.Contains("SettingsSaved",text);
+    }
+
+    [Fact]
+    public async Task WriterRecoversAfterATransientSharingViolation()
+    {
+        string log=Path.Combine(Root,"diagnostics","manager.jsonl");
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.Record(ManagerEventKind.Started);
+        await UntilAsync(()=>ReadShared(log).Contains("Started"));
+        FileStream? blocker=null;
+        // Another program (scanner, indexer, viewer) holds the log and denies writers.
+        await UntilAsync(()=>(blocker=TryOpenDenyingWriters(log)) is not null);
+        using(blocker)
+        {
+            diagnostics.Record(ManagerEventKind.ProfileSaved);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+        }
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("SettingsSaved",text);Assert.DoesNotContain("ProfileSaved",text);
+        Assert.Contains("\"Kind\":\"DroppedEvents\",\"ErrorType\":null,\"Count\":1",text);
+    }
+
+    [Fact]
+    public async Task TransientWriteFailureNamesTheBusyLogAndDoesNotStopLaterEventsFromReachingDisk()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        Directory.CreateDirectory(folder);await File.WriteAllBytesAsync(log,[]);
+        await using var diagnostics=new ManagerDiagnostics(Root,8);
+        string? failure;
+        // A log tailer, backup or sync tool that shares only Read denies the writer's append.
+        using(new FileStream(log,FileMode.Open,FileAccess.Read,FileShare.Read))
+        {
+            diagnostics.Record(ManagerEventKind.Started);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            failure=diagnostics.Failure;
+        }
+        // The folder permissions are fine, so the status must not send the user to check them.
+        Assert.DoesNotContain("permission",failure,StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("another program is using the log file",failure);
+        Assert.Contains("retries on the next event",failure);
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        string text=await File.ReadAllTextAsync(log);
+        Assert.Contains("\"Kind\":\"SettingsSaved\"",text);Assert.DoesNotContain("\"Kind\":\"Started\"",text);
+        Assert.Contains("\"Kind\":\"DroppedEvents\",\"ErrorType\":null,\"Count\":1",text);
+    }
+
+    [Fact]
+    public async Task AccessDeniedStillPointsAtPermissionsAndClearsOnceTheLogIsWritableAgain()
+    {
+        string folder=Path.Combine(Root,"diagnostics"),log=Path.Combine(folder,"manager.jsonl");
+        Directory.CreateDirectory(folder);await File.WriteAllBytesAsync(log,[]);
+        await using var diagnostics=new ManagerDiagnostics(Root,8);
+        File.SetAttributes(log,FileAttributes.ReadOnly);
+        try
+        {
+            diagnostics.Record(ManagerEventKind.Started);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            Assert.Equal("Diagnostics could not be written. Check the data-folder permissions.",diagnostics.Failure);
+        }
+        finally {File.SetAttributes(log,FileAttributes.Normal);}
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        await diagnostics.DisposeAsync();
+        Assert.Null(diagnostics.Failure);Assert.Equal(1,diagnostics.DroppedEvents);
+        Assert.Contains("\"Kind\":\"SettingsSaved\"",await File.ReadAllTextAsync(log));
+    }
+
+    [Fact]
+    public void WriteFailureTextNamesTheCauseWithoutCopyingTheExceptionMessage()
+    {
+        const string marker="synthetic-path-must-not-enter-failure";
+        // HRESULT_FROM_WIN32 of ERROR_SHARING_VIOLATION, ERROR_LOCK_VIOLATION, ERROR_DISK_FULL and ERROR_HANDLE_DISK_FULL.
+        foreach(int code in new[]{32,33})
+            Assert.Contains("another program is using the log file",ManagerDiagnostics.WriteFailureText(new IOException(marker,unchecked((int)0x80070000)|code)));
+        foreach(int code in new[]{112,39})
+            Assert.Contains("the disk is full",ManagerDiagnostics.WriteFailureText(new IOException(marker,unchecked((int)0x80070000)|code)));
+        Assert.Equal("Diagnostics could not be written to the data folder. Zenith retries on the next event.",
+            ManagerDiagnostics.WriteFailureText(new DirectoryNotFoundException(marker)));
+        Assert.Contains("permissions",ManagerDiagnostics.WriteFailureText(new UnauthorizedAccessException(marker)));
+        foreach(Exception error in new Exception[]{new IOException(marker,unchecked((int)0x80070020)),new IOException(marker,unchecked((int)0x80070070)),new IOException(marker),new UnauthorizedAccessException(marker)})
+        {
+            string text=ManagerDiagnostics.WriteFailureText(error);
+            Assert.DoesNotContain(marker,text);
+            if(error is not UnauthorizedAccessException) Assert.DoesNotContain("permission",text,StringComparison.OrdinalIgnoreCase);
+        }
     }
 
     [Fact]
@@ -172,6 +304,32 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task FailureRecordsNameAClosedSubsystemInTheJournalWhileDiskKeepsFourProperties()
+    {
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.RecordFailure(ManagerSubsystem.Vault,typeof(IOException));
+        diagnostics.RecordFailure(ManagerSubsystem.Queue,typeof(InvalidOperationException));
+        diagnostics.RecordFailure(ManagerSubsystem.SignIn);
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        // A value outside the closed set is a programming error and records nothing.
+        Assert.Throws<ArgumentOutOfRangeException>(()=>diagnostics.RecordFailure((ManagerSubsystem)999,typeof(IOException)));
+        await diagnostics.DisposeAsync();
+        var snapshot=diagnostics.GetSnapshot();
+        Assert.Equal(new ManagerSubsystem?[]{ManagerSubsystem.Vault,ManagerSubsystem.Queue,ManagerSubsystem.SignIn,null},snapshot.Events.Select(entry=>entry.Subsystem).ToArray());
+        Assert.Equal(new[]{ManagerEventKind.OperationFailed,ManagerEventKind.OperationFailed,ManagerEventKind.OperationFailed,ManagerEventKind.SettingsSaved},snapshot.Events.Select(entry=>entry.Kind).ToArray());
+        Assert.Equal(new string?[]{"IOException","InvalidOperationException",null,null},snapshot.Events.Select(entry=>entry.ErrorType).ToArray());
+        Assert.Equal(3,snapshot.ErrorCount);Assert.Equal(1,snapshot.InfoCount);Assert.Equal(4,snapshot.TotalEvents);
+        AssertCoherent(snapshot);
+        // The subsystem is a journal field like Sequence: the rotating disk log keeps its established four properties.
+        string[] lines=await File.ReadAllLinesAsync(Path.Combine(Root,"diagnostics","manager.jsonl"));Assert.Equal(4,lines.Length);
+        foreach(string line in lines)
+        {
+            using var json=JsonDocument.Parse(line);
+            Assert.Equal(new[]{"Utc","Kind","ErrorType","Count"},json.RootElement.EnumerateObject().Select(property=>property.Name).ToArray());
+        }
+    }
+
+    [Fact]
     public async Task NewInstanceNeverReplaysOldDiskHistoryIntoLiveCounters()
     {
         await using(var first=new ManagerDiagnostics(Root))
@@ -196,6 +354,35 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         }
     }
     private static TaskCompletionSource<bool> Signal()=>new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        // Bounded wait for the background writer; the disk has no completion event to observe.
+        var deadline=DateTime.UtcNow.AddSeconds(10);
+        while(!condition())
+        {
+            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
+            await Task.Delay(10);
+        }
+    }
+    private static string ReadShared(string path)
+    {
+        try
+        {
+            using var stream=new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.ReadWrite|FileShare.Delete);
+            using var reader=new StreamReader(stream);return reader.ReadToEnd();
+        }
+        catch(IOException) {return "";}
+    }
+    private static bool TryDeleteFolder(string folder)
+    {
+        try {Directory.Delete(folder,recursive:true);return true;}
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException) {return false;}
+    }
+    private static FileStream? TryOpenDenyingWriters(string path)
+    {
+        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
+        catch(IOException) {return null;}
+    }
     public void Dispose()
     {
         string full=Path.GetFullPath(Root);

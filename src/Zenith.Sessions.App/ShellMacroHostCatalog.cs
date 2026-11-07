@@ -11,6 +11,6 @@ public sealed partial class ShellViewModel
     {
         bool permitted = !IsSample || client is not null;
         MacroHostCatalog = new(client ?? new MacroCatalogPipeClient(), () => permitted && CanUseDirectories(),
-            error => _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()));
+            error => _diagnostics.RecordFailure(ManagerSubsystem.MacroHost, error.GetType()));
     }
 }

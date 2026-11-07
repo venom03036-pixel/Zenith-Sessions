@@ -560,10 +560,11 @@ internal static class DistributionSelfCheck
             stage="Bounded typed diagnostics journal";
             await using(var diagnostics=new ManagerDiagnostics(root))
             {
-                for(int index=0;index<520;index++) diagnostics.Record(ManagerEventKind.OperationFailed,typeof(IOException));
+                for(int index=0;index<520;index++) diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,typeof(IOException));
                 var snapshot=diagnostics.GetSnapshot();
-                if(snapshot.Events.Count!=512 || snapshot.TotalEvents!=520 || snapshot.ErrorCount!=520 || snapshot.Events[0].Sequence!=9 || snapshot.Events[^1].Sequence!=520)
-                    throw new InvalidDataException("The packaged diagnostic journal exceeded its bound or lost sequence coherence.");
+                if(snapshot.Events.Count!=512 || snapshot.TotalEvents!=520 || snapshot.ErrorCount!=520 || snapshot.Events[0].Sequence!=9 || snapshot.Events[^1].Sequence!=520
+                    || snapshot.Events.Any(entry=>entry.Subsystem!=ManagerSubsystem.Diagnostics))
+                    throw new InvalidDataException("The packaged diagnostic journal exceeded its bound, lost sequence coherence or dropped the failing subsystem.");
                 await diagnostics.DisposeAsync();
                 if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
             }

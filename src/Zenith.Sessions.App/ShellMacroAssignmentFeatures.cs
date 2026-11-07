@@ -13,7 +13,7 @@ public sealed partial class ShellViewModel
         _macroAssignmentStore = store ?? new MacroAssignmentStore(DataRoot);
         MacroAssignments = new(_macroAssignmentStore, MacroHostCatalog, ChooseMacroAssignmentTarget,
             ResolveMacroAssignmentTargetNameAsync, CanUseDirectories,
-            error => _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType()));
+            error => _diagnostics.RecordFailure(ManagerSubsystem.MacroHost, error.GetType()));
     }
 
     private MacroAssignmentTargetChoice? ChooseMacroAssignmentTarget(MacroAssignmentTargetKind kind)

@@ -84,7 +84,7 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             if (generation == _installationGeneration && !IsLocked && !_shuttingDown) ReportInstallationFailure(error);
-            else _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            else _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType());
         }
         finally
         {
@@ -96,7 +96,7 @@ public sealed partial class ShellViewModel
     {
         InstallationObserved = "Check failed";
         InstallationStatus = "Installation metadata could not be checked. No executable or provider was selected; retry when the files are available.";
-        _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType());
     }
     private void CancelInstallationWork()
     {
