@@ -168,6 +168,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             catch (ArgumentException) { return new(RobloxHandoffProbeOutcome.SignInRequired); }
             if (previous.Provider != RobloxSessionIdentity.Provider || previous.Health != AuthorizationHealth.Linked)
                 return new(RobloxHandoffProbeOutcome.SignInRequired);
+            // A probe that would refuse never receives the cookie, so nothing can rotate: answer before
+            // reserving. Every probe caller is serialized here, so a later refusal still fails closed below.
+            if (probe.Refusal is { } refused) return new(refused);
             var pendingTemplate = previous with { Health = AuthorizationHealth.SignInRequired };
             var reservation = await conditional.TryReplaceNextAsync(previous, pendingTemplate, Guid.NewGuid(), operation.Token).ConfigureAwait(false);
             Ensure(operation);

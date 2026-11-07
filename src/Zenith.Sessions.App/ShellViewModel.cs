@@ -186,6 +186,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private bool _panicRegistered;
     private string _pressureNotice="Waiting for a coherent resource sample.",_diagnosticsStatus="Diagnostics starting";
     private string _credentialCleanupStatus="Credential cleanup has not run.";
+    // Set once by the startup sign-in folder sweep; empty when nothing was kept. Kept with each credential cleanup status.
+    private string _signInFolderNote="";
     public string CredentialCleanupStatus { get=>_credentialCleanupStatus; private set=>Set(ref _credentialCleanupStatus,value); }
     public string PressureNotice { get=>_pressureNotice; private set=>Set(ref _pressureNotice,value); }
     public string DiagnosticsStatus { get=>_diagnosticsStatus; private set=>Set(ref _diagnosticsStatus,value); }
@@ -387,6 +389,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
             await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
+            await SweepSignInFoldersAsync();
             await CleanupCredentialsAsync();
             string? projectionNotice=null;
             try
@@ -974,6 +977,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested)
         { if(!_lifetime.IsCancellationRequested) { await LoadAccountsAsync(_lifetime.Token); if(!_preserveStopNotice) Notice="Account sign-in cancelled. Existing profiles were preserved."; } }
+        catch(OperationCanceledException ended) when(!_lifetime.IsCancellationRequested)
+        {
+            // The sign-in or check ended on its own side; the user's stop was never used. The command discards
+            // cancellations, so rethrowing left the prompt to finish signing in after its window had closed.
+            await LoadAccountsAsync(_lifetime.Token);
+            if(_preserveStopNotice || IsLocked || _shuttingDown) return;
+            Notice=refresh?"The saved sign-in check ended before it finished. Existing profiles were preserved; review this account's sign-in status, then check again."
+                :"Roblox sign-in ended before a session was saved. Existing profiles were preserved; start sign-in again when you are ready.";
+            AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
+            _diagnostics.Record(ManagerEventKind.OperationFailed,ended.GetType());
+        }
         catch(Exception)
         {
             if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
@@ -1001,10 +1015,30 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task CleanupCredentialsAsync()
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
-        CredentialCleanupStatus=result.Remaining==0?"No pending credential cleanup."
+        CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
             :result.ErrorType==nameof(InvalidDataException)?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete."
-            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.";
+            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+_signInFolderNote;
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.Record(ManagerEventKind.OperationFailed); }
+    }
+    // Startup only: it runs under the single-instance lock and before the library is ready, so no sign-in or handoff
+    // check in this process can be using a folder. A crash otherwise left its browser data until the next sign-in.
+    private async Task SweepSignInFoldersAsync()
+    {
+        try
+        {
+            var swept=await Task.Run(()=>SignInProfileDirectory.SweepOwned(DataRoot,_lifetime.Token));
+            if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
+            if(swept.Kept==0) return;
+            _signInFolderNote=$" {swept.Kept} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use, not recognized or could not be removed. If sign-in reports a problem with this folder, close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
+            _diagnostics.Record(ManagerEventKind.OperationFailed);
+        }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
+        {
+            _signInFolderNote=" Leftover private sign-in folders could not be checked at startup, so signin-browser-data was left unchanged. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            AddEvent("Leftover private sign-in folders could not be checked and were kept for review. See Settings, Protected-file recovery.");
+            _diagnostics.Record(ManagerEventKind.OperationFailed,ex.GetType());
+        }
     }
     private LaunchAdmission ReadLaunchAdmission(IReadOnlyList<LaunchOperation> operations)
         => ReadLaunchAdmissionForBudget(operations,LaunchResourceBudget.FromSettings(Volatile.Read(ref _savedSettings).Capacity!));

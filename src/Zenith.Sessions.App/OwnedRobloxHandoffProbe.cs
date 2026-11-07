@@ -17,6 +17,8 @@ namespace Zenith.Sessions.App;
 /// <summary>Shared private-browser owner. Inspection and candidate preparation both cancel every external request.</summary>
 public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatcher) : IRobloxHandoffProbe
 {
+    private static readonly TimeSpan InspectionDeadline=TimeSpan.FromMinutes(3);
+    private readonly TimeProvider _time=TimeProvider.System;
     private readonly object _state=new();
     private readonly CancellationTokenSource _lifetime=new();
     private TaskCompletionSource? _owner;
@@ -24,6 +26,30 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     private SignInProfileDirectory? _retainedDirectory;
     private bool _blocked,_disposed;
     private Task? _dispose;
+
+    /// <summary>Tests fire the unchanged 3-minute deadline through <paramref name="time"/> instead of waiting for it.</summary>
+    internal OwnedRobloxHandoffProbe(string dataRoot,Dispatcher dispatcher,TimeProvider time):this(dataRoot,dispatcher)=>_time=time;
+
+    /// <summary>
+    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched or while
+    /// leftover sign-in data kept by the startup sweep or any admission waits for review, Busy while this or another
+    /// owner holds a private folder, Cancelled after disposal. Memory only.
+    /// </summary>
+    public RobloxHandoffProbeOutcome? Refusal
+    {
+        get
+        {
+            lock(_state)
+            {
+                if(_disposed)return RobloxHandoffProbeOutcome.Cancelled;
+                if(_blocked)return RobloxHandoffProbeOutcome.CleanupFailed;
+                if(_owner is not null)return RobloxHandoffProbeOutcome.Busy;
+            }
+            // That leftover survives restarts and stops every owner's admission, including a fresh probe's first one.
+            if(SignInProfileDirectory.LeftoverNeedsReview(dataRoot))return RobloxHandoffProbeOutcome.CleanupFailed;
+            return SignInProfileDirectory.HasLiveOwner(dataRoot)?RobloxHandoffProbeOutcome.Busy:null;
+        }
+    }
 
     public async Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential,CancellationToken ct)
     {
@@ -42,26 +68,30 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         ArgumentNullException.ThrowIfNull(credential);ct.ThrowIfCancellationRequested();
         if(context is null)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.ContextRejected));
         try{context.Validated();}catch(ArgumentException){return Task.FromResult(Capture(RobloxHandoffProbeOutcome.ContextRejected));}
-        TaskCompletionSource owner;CancellationTokenSource stop;
+        TaskCompletionSource owner;CancellationTokenSource deadline,stop;
         lock(_state)
         {
             ObjectDisposedException.ThrowIf(_disposed,this);
             if(_owner is not null)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.Busy));
             if(_blocked)return Task.FromResult(Capture(RobloxHandoffProbeOutcome.CleanupFailed));
             owner=new(TaskCreationOptions.RunContinuationsAsynchronously);_owner=owner;
-            stop=CancellationTokenSource.CreateLinkedTokenSource(ct,_lifetime.Token);
+            deadline=new(InspectionDeadline,_time);
+            stop=CancellationTokenSource.CreateLinkedTokenSource(ct,_lifetime.Token,deadline.Token);
         }
-        stop.CancelAfter(TimeSpan.FromMinutes(3));
-        return RunOwnedAsync(context,credential,stop,owner,ct,native);
+        return RunOwnedAsync(context,credential,deadline,stop,owner,ct,native);
     }
 
     private async Task<OwnedCapture> RunOwnedAsync(RobloxHandoffProbeContext context,RobloxSessionCredential credential,
-        CancellationTokenSource stop,TaskCompletionSource owner,CancellationToken caller,NativeHandoffContext? native)
+        CancellationTokenSource deadline,CancellationTokenSource stop,TaskCompletionSource owner,CancellationToken caller,NativeHandoffContext? native)
     {
         SignInProfileDirectory? directory=null;bool browserStarted=false;OwnedCapture? result=null;
         try
         {
-            directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);
+            try{directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);}
+            // Unrecognized, redirected or unremovable leftover data persists until someone reviews it. Latch so
+            // later checks are refused before any account's grant is reserved, instead of blaming WebView2 each time.
+            catch(Exception error)when(error is (IOException or UnauthorizedAccessException) and not SignInDirectoryInUseException)
+            {lock(_state)_blocked=true;result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);return result;}
             result=await dispatcher.InvokeAsync(()=>
             {
                 stop.Token.ThrowIfCancellationRequested();
@@ -69,6 +99,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             },DispatcherPriority.Normal,CancellationToken.None).Task.Unwrap().ConfigureAwait(false);
         }
         catch(OperationCanceledException){result=Capture(RobloxHandoffProbeOutcome.Cancelled);}
+        // Another owner's folder (for example a sign-in browser still closing) is busy, not a missing
+        // runtime. This attempt created and cleaned nothing, so it is not this probe's cleanup failure.
+        catch(SignInDirectoryInUseException){result=Capture(RobloxHandoffProbeOutcome.Busy);}
         catch(Exception){result=Capture(RobloxHandoffProbeOutcome.BrowserUnavailable);}
         finally
         {
@@ -79,7 +112,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             }
             if(result?.Outcome==RobloxHandoffProbeOutcome.Cancelled&&stop.IsCancellationRequested&&!caller.IsCancellationRequested&&!_lifetime.IsCancellationRequested)
             {result.Dispose();result=Capture(RobloxHandoffProbeOutcome.TimedOut);}
-            stop.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;}owner.TrySetResult();
+            stop.Dispose();deadline.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;}owner.TrySetResult();
         }
         return result??Capture(RobloxHandoffProbeOutcome.Failed);
     }
@@ -259,7 +292,13 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         void NewWindowRequested(object? _,CoreWebView2NewWindowRequestedEventArgs e){e.Handled=true;status.Text="The page requested a pop-up, which this inspection blocks. No external launch was permitted.";}
         void DownloadStarting(object? _,CoreWebView2DownloadStartingEventArgs e){e.Cancel=true;}
         void PermissionRequested(object? _,CoreWebView2PermissionRequestedEventArgs e){e.State=CoreWebView2PermissionState.Deny;}
-        void ProcessFailed(object? _,CoreWebView2ProcessFailedEventArgs e){completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));}
+        void ProcessFailed(object? _,CoreWebView2ProcessFailedEventArgs e)
+        {
+            // A helper or subframe process WebView2 restarts by itself keeps the check and its guards; ending it here
+            // would leave native preparation's pending record needing a new sign-in.
+            if(!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)){status.Text=WebView2ProcessFailurePolicy.RecoveredNotice;return;}
+            completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));
+        }
         void DetachClosedGuards()
         {
             if(core is null)return;

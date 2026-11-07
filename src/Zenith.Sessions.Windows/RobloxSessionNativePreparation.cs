@@ -70,6 +70,15 @@ public sealed partial class RobloxSessionLinkService
                 || snapshot.HighestAllocated != previous.Generation || snapshot.LastCommitted != previous.Generation
                 || snapshot.NextGeneration >= long.MaxValue - 1)
                 return new(NativeHandoffPreparationStatus.AuthorizationChanged);
+            // Refused before the pending grant is committed, so the saved sign-in stays Linked. CleanupFailed
+            // keeps its status so the configured provider still poisons itself.
+            if (browser.Refusal is { } refused)
+                return new(refused switch
+                {
+                    RobloxHandoffProbeOutcome.CleanupFailed => NativeHandoffPreparationStatus.CleanupFailed,
+                    RobloxHandoffProbeOutcome.Cancelled => NativeHandoffPreparationStatus.Cancelled,
+                    _ => NativeHandoffPreparationStatus.Busy
+                });
             var pending = previous with { Generation = snapshot.NextGeneration, Health = AuthorizationHealth.SignInRequired };
             context = new(intent.OperationId, intent.ProfileId, intent.UserId, pending.Generation,
                 new(intent.PlaceId, intent.RequestedJobId, intent.RequestedServerKind));

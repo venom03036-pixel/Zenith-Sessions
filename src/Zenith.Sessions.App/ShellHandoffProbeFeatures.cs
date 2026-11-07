@@ -11,7 +11,10 @@ public sealed partial class ShellViewModel
     public AsyncCommand InspectNativeHandoff {get;private set;}=null!;
     public string HandoffInspectionStatus {get=>_handoffInspectionStatus;private set=>Set(ref _handoffInspectionStatus,value);}
     public bool CanInspectNativeHandoff=>_ready&&!IsLocked&&!IsAuthorizing&&!_nativeLaunch.IsBusy&&!_shuttingDown&&!_lifetime.IsCancellationRequested
-        &&SelectedAccount?.KnownUserId is >0&&ServerBrowser.ReadyDestination is {PlaceId:>0,JobId:null};
+        &&SelectedAccount?.KnownUserId is >0&&ServerBrowser.ReadyDestination is {PlaceId:>0,JobId:null}
+        // Only the permanent cleanup latch disables the button; a transient Busy is answered on click,
+        // since nothing would re-enable the button when another browser finishes closing.
+        &&_handoffProbe.Refusal is not RobloxHandoffProbeOutcome.CleanupFailed;
     public string HandoffSelectionSummary=>SelectedAccount is { } row
         ?$"Selected: {row.Profile.Label} · "+(row.KnownUserId is { } id?$"last-known player ID {id}":"saved sign-in required")
         :"Select an account in Accounts first.";
@@ -42,7 +45,10 @@ public sealed partial class ShellViewModel
             if(!_lifetime.IsCancellationRequested)await LoadAccountsAsync(_lifetime.Token);
             stop.Token.ThrowIfCancellationRequested();if(IsLocked||_shuttingDown)return;
             HandoffInspectionStatus=DescribeHandoffResult(result,place);Notice=HandoffInspectionStatus;
-            _diagnostics.Record(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented?ManagerEventKind.AuthorizationLinked:ManagerEventKind.OperationFailed);
+            // A cancel from the inspection window is expected, like the shell's own Cancel below: not an error.
+            // TimedOut, refusals and failures still need review, and a cancel whose cleanup failed arrives as CleanupFailed.
+            if(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented)_diagnostics.Record(ManagerEventKind.AuthorizationLinked);
+            else if(result.Outcome!=RobloxHandoffProbeOutcome.Cancelled)_diagnostics.Record(ManagerEventKind.OperationFailed);
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested)
         {
@@ -65,9 +71,9 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.SignInRequired=>"The selected saved sign-in needs renewal. Sign in again before another inspection; no client was started.",
         RobloxHandoffProbeOutcome.IdentityMismatch=>"The private page's current sign-in did not match the selected player ID. It was not saved as that account; no client was started.",
         RobloxHandoffProbeOutcome.AuthorizationChanged=>"The account's saved authorization changed during inspection. The old result was discarded; no client was started.",
-        RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying.",
+        RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying; if this repeats, review signin-browser-data in the Zenith data folder.",
         RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser is unavailable or its required launch-cancellation guard could not be installed. Check WebView2 Runtime; no page handoff was allowed.",
-        RobloxHandoffProbeOutcome.Busy=>"Another account operation is in progress. Finish or cancel it before inspecting a handoff.",
+        RobloxHandoffProbeOutcome.Busy=>"Another account operation or private browser window is still open or closing. Finish or cancel it, then retry the inspection; no page was opened.",
         RobloxHandoffProbeOutcome.ContextRejected=>"The game page changed or was not the approved game-only destination. No handoff was accepted. Renew sign-in if required, then retry with the intended game.",
         RobloxHandoffProbeOutcome.OriginRejected=>"The request did not report the expected official Roblox page origin. It was cancelled and no client was started.",
         RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"The page requested an unexpected external application. The request was cancelled and no client was started.",
