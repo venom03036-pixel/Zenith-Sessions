@@ -184,6 +184,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private string _pageLabel = "0 accounts", _saveStatus = "Not loaded";
     public string DataRoot { get; }
     public bool IsSample { get; }
+    // Several managers can run at once (one per data folder), so the tray, window and taskbar say which one this is.
+    public string InstanceTitle { get; }
     public bool IsReady=>_ready;
     public string ProductLabel => IsSample ? "ISOLATED SAMPLE LIBRARY" : "PERSONAL · LOCAL STORAGE";
     public ObservableCollection<AccountRow> Accounts { get; } = [];
@@ -278,7 +280,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null)
     {
-        DataRoot = root; IsSample = sample; _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);

@@ -32,7 +32,8 @@ public partial class MainWindow : Window
         vm.ThemeChanged += SetTheme;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Zenith_Macros_Teal.ico")).Stream;
         using var original = new System.Drawing.Icon(stream);
-        _tray = new Forms.NotifyIcon { Text = "Zenith Sessions · Personal", Icon = (System.Drawing.Icon)original.Clone(), Visible = true };
+        // Tray Panic, Lock and Exit act on this manager only, so its icon names it (personal, sample preview or another library).
+        _tray = new Forms.NotifyIcon { Text = vm.InstanceTitle, Icon = (System.Drawing.Icon)original.Clone(), Visible = true };
         var menu = new Forms.ContextMenuStrip();
         menu.Items.Add("Open Zenith Sessions", null, (_, _) => Dispatcher.Invoke(Restore));
         menu.Items.Add("Panic stop", null, (_, _) => Dispatcher.Invoke(() => vm.Panic.Execute(null)));

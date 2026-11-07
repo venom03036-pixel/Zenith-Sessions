@@ -264,6 +264,29 @@ public sealed class ViewModelTests : IDisposable
         Assert.Equal(16,vm.AccountCount);
     }).WaitAsync(TimeSpan.FromSeconds(10));
     [Fact]
+    public Task InstanceTitleDistinguishesPersonalSampleAndOtherLibrariesWithinTrayLimit()=>OnDispatcherAsync(async ()=>
+    {
+        // Personal, sample and other-folder managers can run side by side, so each tray icon and window says which one it is.
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(StartupOptions.DefaultRoot,false));
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(StartupOptions.DefaultRoot+Path.DirectorySeparatorChar,false));
+        Assert.Equal("Sample preview",StartupOptions.DescribeInstance(_root,true));
+        string other=StartupOptions.DescribeInstance(_root,false);
+        Assert.Contains(Path.GetFileName(_root),other); Assert.NotEqual("Personal",other);
+        // A separate folder that happens to be named Personal is not the personal library.
+        Assert.Equal("Library Personal",StartupOptions.DescribeInstance(Path.Combine(_root,"Personal"),false));
+        string personal=Path.Combine(_root,"personal-stand-in"); Directory.CreateDirectory(personal);
+        Assert.Equal("Personal",StartupOptions.DescribeInstance(personal.ToUpperInvariant()+"\\",false,personal));
+        await using(var sample=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new SyntheticMonitor()))
+            Assert.Equal("Zenith Sessions · Sample preview",sample.InstanceTitle);
+        await using var library=new ShellViewModel(Path.Combine(_root,new string('n',200)),false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
+        Assert.InRange(library.InstanceTitle.Length,1,127); Assert.StartsWith("Zenith Sessions · Library nnn",library.InstanceTitle);
+        // The real tray icon refuses text over its limit, which would stop the window from opening.
+        using var tray=new System.Windows.Forms.NotifyIcon { Text=library.InstanceTitle };
+        // Taskbar and Alt-Tab entries use the window title, so it carries the same name as the tray icon.
+        using var xaml=typeof(ViewModelTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        Assert.Equal("{Binding InstanceTitle, Mode=OneTime}",(string?)System.Xml.Linq.XDocument.Load(xaml).Root!.Attribute("Title"));
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
     public Task FavoritesAndNotesRoundTripThroughTheActualMetadataCommands()=>CheckAsync(async vm=>
     {
         await vm.SaveAccountAsync(AccountProfile.Create("Source") with { Notes="Synthetic note\nSecond line" });

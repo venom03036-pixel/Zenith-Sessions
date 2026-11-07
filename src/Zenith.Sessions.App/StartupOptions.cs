@@ -7,6 +7,27 @@ public sealed record StartupOptions(string DataRoot,bool SampleProfiles,bool Sel
 {
     public static string DefaultRoot=>Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),"ZenithSessions","Personal");
     public static StartupOptions Parse(IReadOnlyList<string> arguments)=>Parse(arguments,DefaultRoot);
+    // Windows keeps at most 127 characters of tray-icon text, and NotifyIcon.Text throws above that.
+    public const int TrayTextLimit=127;
+    /// <summary>Names which manager this is, so copies running side by side (personal, sample preview, another folder) can be told apart.</summary>
+    public static string DescribeInstance(string dataRoot,bool sample)=>DescribeInstance(dataRoot,sample,DefaultRoot);
+    public static string DescribeInstance(string dataRoot,bool sample,string personalRoot)
+    {
+        if(sample) return "Sample preview";
+        if(NamesSameFolder(dataRoot,personalRoot)) return "Personal";
+        string full=Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)),name=Path.GetFileName(full);
+        // "Library" keeps a separate folder that happens to be named Personal from reading as the personal library.
+        return "Library "+(name.Length>0?name:full);
+    }
+    /// <summary>The tray, window and taskbar title for this manager, cut to fit the tray.</summary>
+    public static string TitleFor(string dataRoot,bool sample)
+    {
+        string title="Zenith Sessions · "+DescribeInstance(dataRoot,sample);
+        if(title.Length<=TrayTextLimit) return title;
+        int cut=TrayTextLimit-1;
+        if(char.IsHighSurrogate(title[cut-1])) cut--;
+        return title[..cut]+"…";
+    }
     public static StartupOptions Parse(IReadOnlyList<string> arguments,string defaultRoot)
     {
         string root=defaultRoot; bool explicitRoot=false,sample=false,selfCheck=false;
@@ -35,13 +56,22 @@ public sealed record StartupOptions(string DataRoot,bool SampleProfiles,bool Sel
     // Compares what Windows resolves both folders to, so a junction, subst-drive or 8.3 spelling of the personal library is still that library.
     private static bool IsSameFolder(string root,string personal)
     {
-        try
-        {
-            return Path.TrimEndingDirectorySeparator(DirectoryIdentity.Canonical(root))
-                .Equals(Path.TrimEndingDirectorySeparator(DirectoryIdentity.Canonical(personal)),StringComparison.OrdinalIgnoreCase);
-        }
+        try { return ResolvesToSameFolder(root,personal); }
         // Fails closed: a test mode never starts on a folder that could not be told apart from the personal library.
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or Win32Exception)
         { throw new ArgumentException("The test folder could not be checked against your normal personal library. Choose a separate local test folder. No data was changed."); }
     }
+    // Only a label depends on this, so a folder Windows cannot resolve is compared by its full spelling instead of stopping startup.
+    private static bool NamesSameFolder(string root,string personal)
+    {
+        try { return ResolvesToSameFolder(root,personal); }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or Win32Exception)
+        {
+            return Path.TrimEndingDirectorySeparator(Path.GetFullPath(root))
+                .Equals(Path.TrimEndingDirectorySeparator(Path.GetFullPath(personal)),StringComparison.OrdinalIgnoreCase);
+        }
+    }
+    private static bool ResolvesToSameFolder(string root,string personal)=>
+        Path.TrimEndingDirectorySeparator(DirectoryIdentity.Canonical(root))
+            .Equals(Path.TrimEndingDirectorySeparator(DirectoryIdentity.Canonical(personal)),StringComparison.OrdinalIgnoreCase);
 }
