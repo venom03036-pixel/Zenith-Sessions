@@ -21,6 +21,11 @@ public sealed class ClientWindowArrangementTests
         public bool Current = true, Minimized, Maximized, Resizable = true, Denied, Block, Confirm = true;
         public Func<ClientDisplayList>? DisplayQuery;
         public Action? BeforeMutation, AfterMutation;
+        // Observed physical geometry; null keeps the legacy single-post behaviour.
+        public Func<SessionObservation, ClientWindowGeometry?>? GeometryQuery;
+        // Rectangle the client actually keeps for the Nth accepted move (1-based), e.g. a WM_DPICHANGED suggested size.
+        public Func<int, PixelRectangle, PixelRectangle>? Landed;
+        public ClientWindowGeometry? Geometry(SessionObservation session) => GeometryQuery?.Invoke(session);
         public ClientDisplayList Displays(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return DisplayQuery?.Invoke() ?? new(Array.AsReadOnly(Monitors), "Synthetic"); }
         public ClientWindowCheck Check(SessionObservation session) => new(Current && session.ProcessStartUtcTicks == Now.AddMinutes(-1).UtcTicks
             && session.Window == (nint)(1000 + session.ProcessId), Minimized, true, Resizable && !Minimized && !Maximized, "Synthetic client identity changed.", Maximized);
@@ -34,7 +39,7 @@ public sealed class ClientWindowArrangementTests
             if (Denied) return WindowPostStatus.Denied;
             Entered.Set();
             if (Block && !Release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Synthetic mutation was not released.");
-            Moves.Add((session, bounds)); if (Confirm) Positions[session.Window] = bounds;
+            Moves.Add((session, bounds)); if (Confirm) Positions[session.Window] = Landed?.Invoke(Moves.Count, bounds) ?? bounds;
             AfterMutation?.Invoke(); return WindowPostStatus.Accepted;
         }
         public WindowPostStatus Change(SessionObservation session, ClientWindowAction action, Func<bool> stopped)
@@ -151,8 +156,72 @@ public sealed class ClientWindowArrangementTests
         var adapter = new Adapter { Denied = true }; using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
         Assert.Equal(ClientWindowPlacementStatus.Denied, Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results).Status);
         adapter.Denied = false; adapter.Confirm = false;
+        // The client already sits on a monitor with the target's scale, so no rescale can explain the mismatch.
+        adapter.GeometryQuery = _ => new(new(-1800, 0, 800, 600), new(-1792, 31, 784, 561), Display());
         var result = await operations.ArrangeAsync([Session(1)], Display().Id, new(), default);
-        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, Assert.Single(result.Results).Status); Assert.False(result.AllApplied);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.False(result.AllApplied);
+        Assert.Single(adapter.Moves); Assert.Contains("size constraints", row.Explanation);
+    }
+
+    // The client starts on a 100% monitor; after a move it reports the 150% target as its monitor.
+    private static Adapter CrossScaleAdapter(Func<int, PixelRectangle, PixelRectangle> landed)
+    {
+        var target = Display(scale: 150); var source = Display("synthetic-right") with { WorkArea = new(0, 0, 1920, 1080) };
+        var adapter = new Adapter { Monitors = [target, source], Landed = landed };
+        adapter.GeometryQuery = session => adapter.Moves.Count == 0 ? new(new(100, 100, 800, 600), new(108, 131, 784, 561), source)
+            : adapter.Positions.TryGetValue(session.Window, out var at) ? new(at, at, target) : null;
+        return adapter;
+    }
+    // Simulates a per-monitor-DPI-aware client applying the WM_DPICHANGED suggested size (old/new or new/old scale).
+    private static PixelRectangle Rescaled(PixelRectangle bounds, bool shrink) => shrink
+        ? bounds with { Width = bounds.Width * 100 / 150, Height = bounds.Height * 100 / 150 }
+        : bounds with { Width = bounds.Width * 150 / 100, Height = bounds.Height * 150 / 100 };
+
+    [Theory]
+    [InlineData(true)] [InlineData(false)]
+    public async Task CrossScaleMoveIsPostedOnceMoreAfterTheClientRescalesItself(bool shrink)
+    {
+        var adapter = CrossScaleAdapter((move, bounds) => move == 1 ? Rescaled(bounds, shrink) : bounds);
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var result = await operations.ArrangeAsync([Session(1)], Display().Id, new(), default);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientWindowPlacementStatus.Applied, row.Status);
+        Assert.Equal(2, adapter.Moves.Count); Assert.All(adapter.Moves, move => Assert.Equal(row.RequestedBounds, move.Bounds));
+    }
+
+    [Theory]
+    [InlineData(true)] [InlineData(false)]
+    public async Task PersistentCrossScaleMismatchIsExplainedAsAScaleChangeAndRetriedOnlyOnce(bool shrink)
+    {
+        var adapter = CrossScaleAdapter((_, bounds) => Rescaled(bounds, shrink));
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var result = await operations.ArrangeAsync([Session(1)], Display().Id, new(), default);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Equal(2, adapter.Moves.Count);
+        Assert.Contains("different scale", row.Explanation); Assert.Contains("Arrange again", row.Explanation);
+    }
+
+    [Fact]
+    public async Task CrossScaleClientThatHasNotReachedTheTargetMonitorIsNotPostedAgain()
+    {
+        var adapter = CrossScaleAdapter((_, bounds) => Rescaled(bounds, true)); var source = adapter.Monitors[1];
+        adapter.GeometryQuery = _ => new(new(100, 100, 800, 600), new(108, 131, 784, 561), source);
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var row = Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results);
+        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Single(adapter.Moves);
+        Assert.Contains("different scale", row.Explanation);
+    }
+
+    [Fact]
+    public async Task PanicAfterTheFirstCrossScalePostPreventsTheSecondPost()
+    {
+        var adapter = CrossScaleAdapter((_, bounds) => Rescaled(bounds, true));
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        adapter.AfterMutation = operations.Cancel;
+        var result = await operations.ArrangeAsync([Session(1), Session(2)], Display().Id, new(), default);
+        Assert.True(result.Cancelled); Assert.Single(adapter.Moves);
+        Assert.All(result.Results, row => Assert.Equal(ClientWindowPlacementStatus.Cancelled, row.Status));
     }
 
     [Fact]
