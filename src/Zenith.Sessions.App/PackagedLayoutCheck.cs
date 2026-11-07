@@ -1,5 +1,7 @@
 using System.Runtime.ExceptionServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Data;
 using System.Windows.Threading;
 using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
@@ -72,6 +74,9 @@ internal static class PackagedLayoutCheck
                 || window.FindName("DestinationSearchPanel") is not FrameworkElement
                 || window.FindName("NativeLaunchStages") is not System.Windows.Controls.Expander)
                 throw new InvalidOperationException("The packaged Sessions join route lost its production controls or workspace state.");
+            // Ancestor-relative DataContexts (the private-server card) resolve at DataBind priority in a never-shown window.
+            await Dispatcher.Yield(DispatcherPriority.DataBind);
+            RequireJoinGameSources(window, vm);
             var diagnosticId = Guid.NewGuid(); var at = DateTimeOffset.UtcNow;
             var diagnostic = new NativeLaunchDiagnosticSnapshot(diagnosticId, 1, at, at,
                 NativeLaunchDiagnosticStage.Finished, NativeLaunchCleanupStatus.Complete,
@@ -118,5 +123,19 @@ internal static class PackagedLayoutCheck
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    // Loading the BAML alone does not notice a renamed or removed control or a lost DataContext. Require the
+    // private-server box and both game-source chip lists by name, each bound to its own view model.
+    internal static void RequireJoinGameSources(FrameworkElement scope, ShellViewModel vm)
+    {
+        if (scope.FindName("ShareLinkInput") is not TextBox shareLink || !ReferenceEquals(shareLink.DataContext, vm.ShareLink)
+            || BindingOperations.GetBindingExpression(shareLink, TextBox.TextProperty) is not { } linkInput
+            || !ReferenceEquals(linkInput.ResolvedSource, vm.ShareLink) || linkInput.ResolvedSourcePropertyName != nameof(ShareLinkViewModel.LinkInput)
+            || scope.FindName("RobloxFavoriteChips") is not ItemsControl favorites || !ReferenceEquals(favorites.DataContext, vm.RobloxFavorites)
+            || !ReferenceEquals(favorites.ItemsSource, vm.RobloxFavorites.Chips)
+            || scope.FindName("RecentlyPlayedChips") is not ItemsControl recent || !ReferenceEquals(recent.DataContext, vm.RecentlyPlayed)
+            || !ReferenceEquals(recent.ItemsSource, vm.RecentlyPlayed.Chips))
+            throw new InvalidOperationException("The packaged join route lost its private-server or game-source controls.");
     }
 }

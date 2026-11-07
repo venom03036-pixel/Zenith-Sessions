@@ -12,10 +12,31 @@ namespace Zenith.Sessions.Tests;
 public sealed class PowerShellScriptCompatibilityTests : IDisposable
 {
     private const string Prefix="zenith-ps51-scripts-";
-    internal static readonly string RepositoryRoot=Path.GetFullPath(Path.Combine(AppContext.BaseDirectory,"..","..","..","..",".."));
-    internal static readonly string LuauDirectory=Path.Combine(RepositoryRoot,"artifacts","sessions-owned-bridge-0.57","luau");
+    internal static readonly string? FoundRepository=FindRepository(AppContext.BaseDirectory);
+    internal static string RepositoryRoot=>FoundRepository??throw new InvalidOperationException("No repository (scripts\\Check-ZenithSessionsManager.ps1) was found within 8 folders above the test output "+AppContext.BaseDirectory+".");
+    internal static string LuauDirectory=>Path.Combine(RepositoryRoot,"artifacts","sessions-owned-bridge-0.57","luau");
     private static readonly char EmDash=(char)0x2014;
     private readonly string _root=Path.Combine(Path.GetTempPath(),Prefix+Guid.NewGuid().ToString("N"));
+
+    [Fact]
+    public void RepositoryRootFollowsTheRepositoryNotTheOutputDepth()
+    {
+        string repo=Path.Combine(_root,"repo");
+        Directory.CreateDirectory(Path.Combine(repo,"scripts"));
+        File.WriteAllBytes(Path.Combine(repo,"scripts","Check-ZenithSessionsManager.ps1"),[]);
+        // The manager check script builds the tests into artifacts\sessions-tests-bin\, two levels below the repository.
+        string runnerOutput=Path.Combine(repo,"artifacts","sessions-tests-bin")+Path.DirectorySeparatorChar;Directory.CreateDirectory(runnerOutput);
+        Assert.Equal(repo,FindRepository(runnerOutput));
+        // The default layout is tests\Zenith.Sessions.Tests\bin\<Config>\<tfm>\, five levels below it.
+        string defaultOutput=Path.Combine(repo,"tests","Zenith.Sessions.Tests","bin","Release","net10.0-windows10.0.19041.0")+Path.DirectorySeparatorChar;Directory.CreateDirectory(defaultOutput);
+        Assert.Equal(repo,FindRepository(defaultOutput));
+        // No repository above the output: null, so the script tests fail with a plain message instead of reading another folder.
+        string elsewhere=Path.Combine(_root,"elsewhere","a","b")+Path.DirectorySeparatorChar;Directory.CreateDirectory(elsewhere);
+        Assert.Null(FindRepository(elsewhere));
+        // Whichever layout this run uses, the shared root is the repository that holds the scripts the tests copy and scan.
+        Assert.True(File.Exists(Path.Combine(RepositoryRoot,"scripts","Check-ZenithSessionsManager.ps1")),"RepositoryRoot is "+RepositoryRoot);
+        Assert.Equal(Path.Combine(RepositoryRoot,"artifacts","sessions-owned-bridge-0.57","luau"),LuauDirectory);
+    }
 
     [Fact]
     public async Task ReviewCheckpointRecordsUnderWindowsPowerShell51()
@@ -99,6 +120,20 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         Assert.True(problems.Count==0,"Windows PowerShell 5.1 cannot run these scripts as written:"+Environment.NewLine+string.Join(Environment.NewLine,problems));
     }
 
+    /// <summary>
+    /// The repository these script tests copy and scan, found by walking up from the test output (at most 8 levels) to the
+    /// folder that holds scripts\Check-ZenithSessionsManager.ps1, so the default bin\ layout and the check script's
+    /// artifacts\sessions-tests-bin\ output both find the same place. The marker is a file this project already embeds, so
+    /// renaming it breaks the build first. Null when no repository is above the output.
+    /// </summary>
+    internal static string? FindRepository(string baseDirectory)
+    {
+        var directory=new DirectoryInfo(Path.GetFullPath(baseDirectory));
+        for(int depth=0;directory is not null&&depth<8;depth++,directory=directory.Parent)
+            if(File.Exists(Path.Combine(directory.FullName,"scripts","Check-ZenithSessionsManager.ps1")))return directory.FullName;
+        return null;
+    }
+
     internal static async Task<(int ExitCode,string Output,string Errors)> RunWindowsPowerShell(string workingDirectory,IReadOnlyDictionary<string,string> environment,params string[] arguments)
     {
         var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe"))
@@ -125,6 +160,8 @@ public sealed class LuauBinariesFactAttribute : FactAttribute
 {
     public LuauBinariesFactAttribute()
     {
+        // No repository above the output is not a reason to skip: the test then runs and fails with RepositoryRoot's message.
+        if(PowerShellScriptCompatibilityTests.FoundRepository is null)return;
         if(!File.Exists(Path.Combine(PowerShellScriptCompatibilityTests.LuauDirectory,"luau.exe"))||!File.Exists(Path.Combine(PowerShellScriptCompatibilityTests.LuauDirectory,"luau-compile.exe")))
             Skip="Needs the official Luau 0.745 binaries under artifacts/sessions-owned-bridge-0.57/luau.";
     }

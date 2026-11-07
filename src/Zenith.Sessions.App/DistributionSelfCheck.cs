@@ -238,6 +238,10 @@ internal static class DistributionSelfCheck
             if((await vault.ReadAsync(saved.Id,ct))?.Generation!=secondGeneration) throw new InvalidDataException("Protected record round trip failed.");
             cases.Add(new(stage,true));step=null;
 
+            stage="Protected private-server store round trip";
+            await PackagedPrivateServerCheck.VerifyAsync(root,ct);
+            cases.Add(new(stage,true));
+
             stage="Saved session and browser runtime boundaries";
             var sessionProfile=await repository.SaveAsync(AccountProfile.Create("synthetic session") with { Id=SessionFixtureId },ct);
             long sessionGeneration=await vault.AllocateNextGenerationAsync(sessionProfile.Id,0,ct);
@@ -797,7 +801,7 @@ internal static class DistributionSelfCheck
     }
 
     // Every stage RunAsync codes. Keep in step with $expectedCases in scripts/Check-ZenithSessionsManager.ps1.
-    internal const int PlannedStageCount=42;
+    internal const int PlannedStageCount=43;
     // The run stops at the first failing stage, so the console line counts against every planned stage and names the
     // failed one: "3/42 (failed at ...)" instead of "3/4". Stage names are static literals (no paths or secrets).
     // The success line is unchanged so stored "42/42" evidence still matches.

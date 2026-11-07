@@ -226,8 +226,42 @@ public sealed class JoinWorkspacePresentationTests
         return null;
     }
 
+    // The packaged --self-check composes the real window; its join-route assertion must see the private-server box and
+    // both game-source chip lists bound to their own view models, so a rename or lost DataContext fails the packaged stage.
+    [Fact]
+    public Task PackagedJoinRouteCheckAcceptsTheProductionShareLinkAndGameSourceControls()=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint");Layout(fixture.View,1088,480);
+        PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model);
+    });
+
+    [Theory]
+    [InlineData("ShareLinkInput")]
+    [InlineData("RobloxFavoriteChips")]
+    [InlineData("RecentlyPlayedChips")]
+    public Task PackagedJoinRouteCheckRejectsARenamedJoinSourceControl(string name)=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint",page=>Named(page,name).SetAttributeValue(X+"Name",name+"Renamed"));Layout(fixture.View,1088,480);
+        var error=Assert.Throws<InvalidOperationException>(()=>PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model));
+        Assert.Equal("The packaged join route lost its private-server or game-source controls.",error.Message);
+    });
+
+    [Theory]
+    [InlineData("ShareLinkInput")]
+    [InlineData("RobloxFavoriteChips")]
+    [InlineData("RecentlyPlayedChips")]
+    public Task PackagedJoinRouteCheckRejectsAJoinSourceControlThatLostItsDataContext(string name)=>SearchTest.OnUi(async()=>
+    {
+        // Drop the nearest DataContext above the control: it then inherits the shell itself instead of its own view model.
+        await using var fixture=new Fixture("graphite-mint",page=>Named(page,name).Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext")!.Remove());
+        Layout(fixture.View,1088,480);
+        var error=Assert.Throws<InvalidOperationException>(()=>PackagedLayoutCheck.RequireJoinGameSources(fixture.View,fixture.Model));
+        Assert.Equal("The packaged join route lost its private-server or game-source controls.",error.Message);
+    });
+
     private static XDocument Source(){using var stream=typeof(JoinWorkspacePresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;return XDocument.Load(stream);}
     private static XElement Page(XDocument source,string name)=>source.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
+    private static XElement Named(XElement page,string name)=>page.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
     private sealed class Fixture:IAsyncDisposable
     {
         private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-join-layout-"+Guid.NewGuid().ToString("N"));
@@ -237,10 +271,10 @@ public sealed class JoinWorkspacePresentationTests
         public ShellViewModel Model {get;}
         public ScrollViewer View {get;}
         public string Root=>_root;
-        public Fixture(string theme)
+        public Fixture(string theme,Action<XElement>? edit=null)
         {
             _=Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml",UriKind.Relative));
-            var source=Source();var page=new XElement(Page(source,"JoinGamePage"));
+            var source=Source();var page=new XElement(Page(source,"JoinGamePage"));edit?.Invoke(page);
             // Loose offscreen composition has no code-behind event connection. Assert the
             // actual handler names above; preserve every visual, binding and named control.
             foreach(var element in page.DescendantsAndSelf())foreach(var attribute in element.Attributes().Where(attribute=>attribute.Name.LocalName=="Click").ToArray())attribute.Remove();

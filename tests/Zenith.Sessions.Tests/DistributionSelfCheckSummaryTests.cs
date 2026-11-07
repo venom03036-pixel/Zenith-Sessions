@@ -12,11 +12,11 @@ public sealed class DistributionSelfCheckSummaryTests
     [Fact]
     public void SummaryUsesPlannedStageCountAndNamesTheFailedStage()
     {
-        Assert.Equal("Distribution self-check: 3/42 (failed at Packaged native SQLite and profile round trip); release readiness remains false.",
+        Assert.Equal("Distribution self-check: 3/43 (failed at Packaged native SQLite and profile round trip); release readiness remains false.",
             DistributionSelfCheck.Summary(3,DistributionSelfCheck.PlannedStageCount,"Packaged native SQLite and profile round trip"));
-        // The success line stays byte-identical to the stored "42/42" evidence.
-        Assert.Equal("Distribution self-check: 42/42; release readiness remains false.",
-            DistributionSelfCheck.Summary(42,DistributionSelfCheck.PlannedStageCount,null));
+        // The success line keeps the stored "N/N" evidence format; Z1051 added the protected private-server stage (43).
+        Assert.Equal("Distribution self-check: 43/43; release readiness remains false.",
+            DistributionSelfCheck.Summary(43,DistributionSelfCheck.PlannedStageCount,null));
     }
 
     [Fact]
