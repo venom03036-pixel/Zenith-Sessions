@@ -1,6 +1,7 @@
 using System.Windows.Threading;
 using System.IO;
 using System.IO.Pipes;
+using System.Security.AccessControl;
 using Microsoft.Data.Sqlite;
 using Xunit;
 using Zenith.Sessions.App;
@@ -113,6 +114,30 @@ public sealed class ViewModelTests : IDisposable
         // Mirrors EntryPoint's final synchronous teardown, after the dispatcher has stopped pumping.
         owner.StopAsync().GetAwaiter().GetResult();
     }).WaitAsync(TimeSpan.FromSeconds(5));
+    [Fact]
+    public void SecondLaunchAgainstAnInstanceMutexItMayNotUseExplainsDifferentPermissions()
+    {
+        string name; using(var probe=new SingleInstanceCoordinator(_root)) name=probe.MutexName;
+        // Stands in for a copy started as administrator: its mutex's security refuses this launch's token.
+        var refuseAll=new MutexSecurity(); refuseAll.SetSecurityDescriptorSddlForm("D:");
+        using var elevated=MutexAcl.Create(false,name,out bool created,refuseAll); Assert.True(created);
+        Assert.True(EntryPoint.TryOpen(_root,out var second,out string? problem),$"The second launch stopped with: {problem}");
+        using(second)
+        {
+            Assert.False(second.IsOwner);
+            Assert.Equal(EntryPoint.DifferentPermissionsMessage,EntryPoint.RestoreOrExplain(second));
+        }
+    }
+    [Fact]
+    public void SecondLaunchRefusedByTheRestorePipeExplainsInsteadOfThrowing()
+    {
+        using var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        // Stands in for the owner's restore pipe when the two copies run with different permissions: Windows refuses the connection.
+        var refuseAll=new PipeSecurity(); refuseAll.SetSecurityDescriptorSddlForm("D:");
+        using var refusing=NamedPipeServerStreamAcl.Create(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.None,0,0,refuseAll);
+        using var second=OnOwnThread(()=>new SingleInstanceCoordinator(_root)); Assert.False(second.IsOwner);
+        Assert.Equal(EntryPoint.DifferentPermissionsMessage,EntryPoint.RestoreOrExplain(second));
+    }
     [Fact]
     public void ALingeringSecondLaunchCannotKeepTheAppFromOpeningAfterTheOwnerExits()
     {

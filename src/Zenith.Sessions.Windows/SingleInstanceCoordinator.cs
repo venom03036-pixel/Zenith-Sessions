@@ -7,7 +7,7 @@ namespace Zenith.Sessions.Windows;
 
 public sealed class SingleInstanceCoordinator : IDisposable
 {
-    private readonly Mutex _mutex;
+    private readonly Mutex? _mutex;
     private readonly string _pipe;
     private readonly CancellationTokenSource _lifetime = new();
     private Task _server = Task.CompletedTask;
@@ -18,6 +18,9 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private volatile bool _listenerFaulted;
     private bool _disposed;
     public bool IsOwner { get; }
+    /// <summary>True when another copy holds this data folder under a Windows token this launch may not use (for example one
+    /// started as administrator). This launch is then not the owner and cannot ask that copy to show its window.</summary>
+    public bool OwnerHasDifferentPermissions { get; }
     /// <summary>Type of the latest pipe or restore fault the listener survived or stopped on; never its message (Rule 10).</summary>
     public Type? LastListenerFault => _lastListenerFault;
     /// <summary>True once repeated consecutive faults stopped the listener; later launches then cannot restore this instance.</summary>
@@ -40,9 +43,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
         // Ownership means acquiring the mutex, not creating it: a lingering second launch (for example its "already
         // starting" box) keeps the named object alive after the owner exits, and "created" would then refuse every launch.
         // Ownership is held by the constructing thread, which must also run Dispose (EntryPoint's Main thread does both).
-        _mutex = new Mutex(initiallyOwned:false, MutexName);
+        Mutex mutex;
+        try { mutex = new Mutex(initiallyOwned:false, MutexName); }
+        // Only another copy for this user and folder creates this name. Access is refused when that copy runs under a
+        // different token (an elevated copy's default security does not admit a normal one), so it is not a data-folder fault.
+        catch (UnauthorizedAccessException) { OwnerHasDifferentPermissions = true; return; }
+        _mutex = mutex;
         bool acquired;
-        try { acquired = _mutex.WaitOne(0); }
+        try { acquired = mutex.WaitOne(0); }
         // The previous owner ended without releasing (a crash); Windows hands ownership to this thread, so this launch opens.
         catch (AbandonedMutexException) { acquired = true; }
         if (!acquired) return;
@@ -51,7 +59,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
         // and the mutex is released at once so it never stands in for a phantom owner.
         bool completed = false;
         try { _instanceLock = TryLockFolder(root); IsOwner = _instanceLock is not null; completed = true; }
-        finally { if (!IsOwner) { _mutex.ReleaseMutex(); if (!completed) { _mutex.Dispose(); _lifetime.Dispose(); } } }
+        finally { if (!IsOwner) { mutex.ReleaseMutex(); if (!completed) { mutex.Dispose(); _lifetime.Dispose(); } } }
     }
     private static FileStream? TryLockFolder(string root)
     {
@@ -106,6 +114,8 @@ public sealed class SingleInstanceCoordinator : IDisposable
         // A restore failure (for example a window that is already closing) reaches ListenAsync, which records it and keeps listening.
         if (count == 8 && message.AsSpan().SequenceEqual("RESTORE\n"u8)) await restore(ct).ConfigureAwait(false);
     }
+    /// <summary>Asks the owner to show its window. False when no owner answers in time. Throws UnauthorizedAccessException
+    /// when the owner's pipe refuses this launch because the two copies run with different permissions.</summary>
     public async Task<bool> RestoreExistingAsync(CancellationToken ct)
     {
         if (IsOwner) return false;
@@ -125,8 +135,8 @@ public sealed class SingleInstanceCoordinator : IDisposable
         try { _instanceLock?.Dispose(); }
         finally
         {
-            try { if (IsOwner) _mutex.ReleaseMutex(); }
-            finally { _mutex.Dispose(); _lifetime.Dispose(); }
+            try { if (IsOwner) _mutex!.ReleaseMutex(); }
+            finally { _mutex?.Dispose(); _lifetime.Dispose(); }
         }
     }
 }
