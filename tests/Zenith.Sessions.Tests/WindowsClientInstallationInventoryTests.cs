@@ -130,6 +130,31 @@ public sealed class WindowsClientInstallationInventoryTests : IDisposable
         }
         Assert.False(File.Exists(player));
     }
+    [Fact]
+    public async Task VersionResourceOfARealPeIsParsedIntoAFourPartVersionAndProductName()
+    {
+        // Our own build-output PE (never a system binary), copied inertly under a Roblox-shaped name and never run. Its resource
+        // has a product name unlike its description and an asymmetric version, so a wrong string block or field order is visible.
+        string version=Path.Combine(_root,"Roblox","Versions","version-fixture"),player=Path.Combine(version,"RobloxPlayerBeta.exe");
+        Directory.CreateDirectory(version);File.Copy(typeof(Zenith.Sessions.App.ShellViewModel).Assembly.Location,player);
+        byte[] before=await File.ReadAllBytesAsync(player);
+        // Independent oracle: the framework's own VS_FIXEDFILEINFO and StringFileInfo reader over the same file.
+        var oracle=System.Diagnostics.FileVersionInfo.GetVersionInfo(player);
+        string expectedVersion=$"{oracle.FileMajorPart}.{oracle.FileMinorPart}.{oracle.FileBuildPart}.{oracle.FilePrivatePart}";
+        Assert.False(string.IsNullOrEmpty(oracle.ProductName));Assert.NotEqual(oracle.FileDescription,oracle.ProductName);
+        Assert.NotEqual(oracle.FileMajorPart,oracle.FileMinorPart);
+        var source=new WindowsClientInstallationInventorySource(_root,includeCurrentUserRegistry:false);
+        var metadata=source.InspectExecutable(player,default);
+        Assert.Equal(ClientInstallationFileState.PresentUnverified,metadata.State);
+        Assert.Matches(@"^\d+\.\d+\.\d+\.\d+$",metadata.FileVersion);Assert.Equal(expectedVersion,metadata.FileVersion);
+        Assert.Equal(oracle.ProductName,metadata.ProductName);
+        var snapshot=await new WindowsClientInstallationDiscovery(source).DiscoverAsync(default);
+        var candidate=Assert.Single(snapshot.Candidates);
+        Assert.Equal(player,candidate.ExecutablePath);Assert.Equal(ClientInstallationFileState.PresentUnverified,candidate.FileState);
+        Assert.Equal(expectedVersion,candidate.FileVersion);Assert.Equal(oracle.ProductName,candidate.ProductName);
+        Assert.Equal(CapabilityState.Unverified,candidate.Authenticity);Assert.Equal(CapabilityState.Unavailable,candidate.NamedAccountLaunch);
+        Assert.Equal(before,await File.ReadAllBytesAsync(player));Assert.Single(Directory.GetFiles(_root,"*",SearchOption.AllDirectories));
+    }
     /// <summary>A private application hive (RegLoadAppKey) in the test's owned temp folder, so the user's real HKCU is never opened or written.</summary>
     private sealed class OwnedApplicationHive : IDisposable
     {

@@ -703,8 +703,9 @@ internal static class DistributionSelfCheck
                 var inventory=await discovery.DiscoverAsync(ct);
                 var candidate=inventory.Candidates.SingleOrDefault(item=>string.Equals(item.ExecutablePath,inventoryFile,StringComparison.OrdinalIgnoreCase));
                 if(candidate is null || candidate.FileState!=ClientInstallationFileState.PresentUnverified || candidate.FileVersion is null
+                    || candidate.ProductName is null
                     || candidate.Authenticity!=CapabilityState.Unverified || candidate.NamedAccountLaunch!=CapabilityState.Unavailable)
-                    throw new InvalidDataException("The packaged metadata inventory failed or upgraded a filename hint to launch authority.");
+                    throw new InvalidDataException("The packaged metadata inventory lost the file's version or product name, or upgraded a filename hint to launch authority.");
                 cases.Add(new(stage,true));
                 stage="Selected-file publisher boundary";
                 await using var verifier=new WindowsClientExecutableTrust();
