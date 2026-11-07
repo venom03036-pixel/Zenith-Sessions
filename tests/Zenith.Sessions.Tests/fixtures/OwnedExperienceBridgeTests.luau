@@ -20,6 +20,18 @@ local function check(name, work)
     print("PASS " .. name)
 end
 
+-- A server warning names the step and the reason only, never a user, universe, place, job, operation or claim ID.
+local function assertWithoutIds(warning, extra)
+    local ids = { tostring(user), tostring(universe), tostring(sourcePlace), tostring(destinationPlace),
+        sourceJob, destinationJob, operation, otherOperation, "87654321-" }
+    for _, id in ipairs(extra or {}) do
+        table.insert(ids, id)
+    end
+    for _, id in ipairs(ids) do
+        assert(not string.find(warning, id, 1, true), "the warning exposes an ID (" .. id .. "): " .. warning)
+    end
+end
+
 -- A model of HttpService:JSONDecode for the flat objects the bridge publishes: strings without escapes,
 -- integers, true, false and null. Roblox drops null members, so they decode to nil. Anything else raises
 -- an error, as Roblox does for malformed JSON. It is stricter than Roblox, never looser.
@@ -129,8 +141,14 @@ local function fixture()
         function player:GetJoinData()
             return self.join
         end
+        -- Extra players for the capacity case; the runner allowlists 8000000011 to 8000000014 as well.
+        local others = {}
         function players:GetPlayerByUserId(id)
-            return id == user and player.Parent == players and player or nil
+            local found = id == user and player or others[id]
+            return found ~= nil and found.Parent == players and found or nil
+        end
+        function result.addPlayer(id)
+            others[id] = { UserId = id, Parent = players, join = {} }
         end
         players.PlayerAdded = { Connect = function(_, handler) result.arrive = handler end }
         result.player = player
@@ -400,11 +418,79 @@ check("a failed deferred terminal receipt is reported and frees the owner", func
     for _, warning in ipairs(state.warnings) do
         assert(string.find(warning, "storage unavailable", 1, true), "the warning does not carry the Roblox error: " .. warning)
     end
+    -- Each warning names its own step, so the creator can tell the move from the deferred receipt behind it.
+    assert(string.find(state.warnings[1], "bridge move step stopped", 1, true),
+        "the first warning does not name the move step: " .. state.warnings[1])
+    assert(string.find(state.warnings[2], "bridge teleport failure receipt step stopped", 1, true),
+        "the second warning does not name the deferred teleport failure receipt: " .. state.warnings[2])
     state.failWrite = false
     state.onTeleport = nil
     state.now = state.now + 46
     state:send({ operationId = otherOperation }, true)
     assert(state.receipts[recordKey].stage == "atSource" and state.receipts[recordKey].command.operationId == otherOperation)
+end)
+
+-- A command the script ignores because the player or the server is busy is named in the server log, so a failed
+-- live trial can be told apart from a command that never arrived. The app still shows it as pending, then expired.
+check("a command for a player with one still running is reported once without IDs", function()
+    local state = fixture()
+    state.onTeleport = function()
+        state:send({ operationId = otherOperation })
+    end
+    state:send()
+    assert(state.teleports == 1 and state.receipts[recordKey].command.operationId == operation
+        and state.receipts[recordKey].stage == "teleportInitiated")
+    assert(#state.warnings == 1,
+        "a command ignored while the player was busy wrote " .. #state.warnings .. " server warnings instead of 1")
+    assert(string.find(state.warnings[1], "ignored this move because a command for this player is still running", 1, true),
+        "the warning does not say the player was busy: " .. tostring(state.warnings[1]))
+    assertWithoutIds(state.warnings[1])
+end)
+
+check("a second waiting result for a player is reported once without IDs", function()
+    local state = fixture()
+    state.onTeleport = function(place, targets, options)
+        -- Both failure callbacks arrive while the move runs. The first waits behind it; there is room for one only.
+        state.source.fail(targets[1], nil, nil, place, options)
+        state.source.fail(targets[1], nil, nil, place, options)
+    end
+    state:send()
+    assert(state.teleports == 1 and state.receipts[recordKey].stage == "rejected")
+    assert(#state.warnings == 1,
+        "a second waiting result wrote " .. #state.warnings .. " server warnings instead of 1")
+    assert(string.find(state.warnings[1],
+        "ignored this teleport failure receipt because another result for this player is already waiting", 1, true),
+        "the warning does not say a result was already waiting: " .. tostring(state.warnings[1]))
+    assertWithoutIds(state.warnings[1])
+end)
+
+check("a command over the server's limit of four is reported once without IDs", function()
+    local state = fixture()
+    -- Four more allowlisted players. Each move sends the next one from inside its teleport, so four run at once.
+    local crowd = { 8000000011, 8000000012, 8000000013, 8000000014 }
+    for _, id in ipairs(crowd) do
+        state.source.addPlayer(id)
+    end
+    local nextIndex = 1
+    state.onTeleport = function()
+        local id = crowd[nextIndex]
+        nextIndex = nextIndex + 1
+        if id then
+            state:send({ userId = id })
+        end
+    end
+    state:send()
+    assert(state.teleports == 4 and state.receipts["u8000000013"].stage == "teleportInitiated"
+        and state.receipts["u8000000014"] == nil, "the fifth command was not the one left out")
+    assert(#state.warnings == 1,
+        "a command over the server limit wrote " .. #state.warnings .. " server warnings instead of 1")
+    assert(string.find(state.warnings[1], "ignored this move because this server is already running 4 bridge commands", 1, true),
+        "the warning does not say the server was full: " .. tostring(state.warnings[1]))
+    assertWithoutIds(state.warnings[1], { "8000000011", "8000000012", "8000000013", "8000000014" })
+    -- The ignored command took no slot, so the same command runs once the others have finished.
+    state.onTeleport = nil
+    state:send({ userId = crowd[4] })
+    assert(state.teleports == 5 and state.receipts["u8000000014"].stage == "teleportInitiated" and #state.warnings == 1)
 end)
 
 check("a failed subscription is retried with capped backoff and later commands are received", function()

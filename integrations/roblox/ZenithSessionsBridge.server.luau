@@ -82,34 +82,50 @@ local function updateStage(userId, commandId, claimId, stage, accept)
     end)
 end
 
+-- Every warning names a fixed step ("move", "status check", "arrival receipt" or "teleport failure receipt") and
+-- the reason. The script adds no user, place, job, operation or claim ID and no command contents; a failed step
+-- adds only Roblox's own error text.
+local unconfirmed = " The app shows this command as unconfirmed until it expires."
+
 -- A throttled or failed Roblox call leaves its outcome unknown. Never replay a move here, but write the
 -- Roblox error to the server log so the creator can tell a throttle from a teleport failure or a script bug.
--- Only the error text is written: no operation, claim or job IDs and no command contents.
-local function attempt(work)
+local function attempt(step, work)
     local completed, failure = pcall(work)
     if not completed then
-        warn(string.format("Zenith Sessions bridge step stopped and was not retried (%s). "
-            .. "The app shows this command as unconfirmed until it expires.", tostring(failure)))
+        warn(string.format("Zenith Sessions bridge %s step stopped and was not retried (%s).", step, tostring(failure))
+            .. unconfirmed)
     end
 end
 
-local function bounded(userId, work, terminal)
+-- A busy player or a full server leaves a request without a receipt. Say so in the server log, so a failed
+-- trial can be told apart from a command that never arrived.
+local function ignored(step, reason)
+    warn(string.format("Zenith Sessions bridge ignored this %s because %s.", step, reason) .. unconfirmed)
+end
+
+local function bounded(userId, step, work, terminal)
     local running = busyUsers[userId]
     if running then
-        if terminal and not running.next then
+        if not terminal then
+            ignored(step, "a command for this player is still running")
+        elseif running.next then
+            ignored(step, "another result for this player is already waiting")
+        else
             running.next = work
+            running.nextStep = step
         end
         return
     end
     if active >= maximumActive then
+        ignored(step, string.format("this server is already running %d bridge commands", maximumActive))
         return
     end
     local owner = {}
     busyUsers[userId] = owner
     active = active + 1
-    attempt(work)
+    attempt(step, work)
     if owner.next then
-        attempt(owner.next)
+        attempt(owner.nextStep, owner.next)
     end
     active = active - 1
     busyUsers[userId] = nil
@@ -142,7 +158,7 @@ local function onMessage(message)
         expiresUtc = command.expiresUtc,
     }
 
-    bounded(command.userId, function()
+    bounded(command.userId, command.destinationPlaceId and "move" or "status check", function()
         local claimId = string.lower(HttpService:GenerateGUID(false))
         local stage = command.destinationPlaceId and "received" or "atSource"
         local accepted = store:UpdateAsync(key(command.userId), function(previous)
@@ -188,7 +204,7 @@ local function onArrival(player)
         or type(data) ~= "table" or not isGuid(data.zenithOperationId) or not isGuid(data.zenithClaimId) then
         return
     end
-    bounded(player.UserId, function()
+    bounded(player.UserId, "arrival receipt", function()
         updateStage(player.UserId, data.zenithOperationId, data.zenithClaimId, "arrived", function(previous)
             local command = previous.command
             return player.Parent == Players and (previous.stage == "received" or previous.stage == "teleportInitiated")
@@ -206,7 +222,7 @@ local function onTeleportFailed(player, _, _, placeId, options)
     if type(data) ~= "table" or not isGuid(data.zenithOperationId) or not isGuid(data.zenithClaimId) then
         return
     end
-    bounded(player.UserId, function()
+    bounded(player.UserId, "teleport failure receipt", function()
         updateStage(player.UserId, data.zenithOperationId, data.zenithClaimId, "rejected", function(previous)
             local command = previous.command
             return player.Parent == Players and (previous.stage == "received" or previous.stage == "teleportInitiated")
