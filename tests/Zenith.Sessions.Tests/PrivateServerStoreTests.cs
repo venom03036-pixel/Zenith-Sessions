@@ -129,6 +129,24 @@ public sealed class PrivateServerStoreTests : IDisposable
         Assert.Equal("Kept", Assert.Single(await store.ReadAsync(default)).Name);
     }
 
+    [Fact]
+    public void StoredRecordTextNeverContainsTheCodeOrName()
+    {
+        // The in-memory record holds the clear link code (anyone holding it can join); its text form must be redacted
+        // like SavedPrivateServer's, so a future diagnostic or interpolated message cannot write it to a log or export.
+        const System.Reflection.BindingFlags NonPublic = System.Reflection.BindingFlags.NonPublic;
+        var storedType = typeof(PrivateServerStore).GetNestedType("StoredServer", NonPublic)!;
+        object stored = Activator.CreateInstance(storedType, Guid.NewGuid(), "Weekend VIP", 5L, 6L, (long?)7L, LinkCode, 1L, "Obby Game")!;
+        var items = Array.CreateInstance(storedType, 1); items.SetValue(stored, 0);
+        object document = Activator.CreateInstance(typeof(PrivateServerStore).GetNestedType("Document", NonPublic)!, 2, 1L, items)!;
+        foreach (string text in new[] { stored.ToString()!, document.ToString()! })
+        {
+            Assert.DoesNotContain(LinkCode, text, StringComparison.Ordinal); Assert.DoesNotContain("9876", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("Weekend", text, StringComparison.Ordinal);
+        }
+        Assert.Contains("Code = [protected]", stored.ToString(), StringComparison.Ordinal);
+    }
+
     [Theory]
     [InlineData("")]
     [InlineData("   ")]

@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -24,7 +25,13 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
     private int _disposed;
     public string Path { get; }
     private sealed record Document(int Version, long Revision, StoredServer[] Items);
-    private sealed record StoredServer(Guid Id, string Name, long PlaceId, long UniverseId, long? OwnerUserId, string Code, long Revision, string? GameName);
+    /// <summary>Holds the clear link code in memory between the protected holder and the protected file. Its text form is
+    /// redacted like <see cref="SavedPrivateServer"/>'s so no diagnostic or message can print the code or the user's name.</summary>
+    private sealed record StoredServer(Guid Id, string Name, long PlaceId, long UniverseId, long? OwnerUserId, string Code, long Revision, string? GameName)
+    {
+        public override string ToString() => "Stored private server { Place = " + PlaceId.ToString(CultureInfo.InvariantCulture)
+            + ", Revision = " + Revision.ToString(CultureInfo.InvariantCulture) + ", Name = [omitted], Code = [protected] }";
+    }
 
     public PrivateServerStore(string root)
     {
