@@ -18,7 +18,7 @@ public sealed partial class ShellViewModel
     private void InitializeHandoffProbe(IRobloxHandoffProbe? probe)
     {
         _handoffProbe=probe??new OwnedRobloxHandoffProbe(DataRoot,_dispatcher);
-        InspectNativeHandoff=new(_=>InspectNativeHandoffAsync(),Fail);
+        InspectNativeHandoff=new(_=>InspectNativeHandoffAsync(),error=>Fail(error,ManagerSubsystem.Launch));
         PropertyChanged+=HandoffOwnerChanged;ServerBrowser.PropertyChanged+=HandoffDestinationChanged;
     }
     private void HandoffOwnerChanged(object? sender,PropertyChangedEventArgs args)
@@ -42,7 +42,8 @@ public sealed partial class ShellViewModel
             if(!_lifetime.IsCancellationRequested)await LoadAccountsAsync(_lifetime.Token);
             stop.Token.ThrowIfCancellationRequested();if(IsLocked||_shuttingDown)return;
             HandoffInspectionStatus=DescribeHandoffResult(result,place);Notice=HandoffInspectionStatus;
-            _diagnostics.Record(DiagnosticKindFor(result.Outcome));
+            var kind=DiagnosticKindFor(result.Outcome);
+            if(kind==ManagerEventKind.OperationFailed) _diagnostics.RecordFailure(FailedSubsystemFor(result.Outcome));else _diagnostics.Record(kind);
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested)
         {
@@ -67,6 +68,9 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.Cancelled or RobloxHandoffProbeOutcome.Busy or RobloxHandoffProbeOutcome.TimedOut=>ManagerEventKind.HandoffNotCompleted,
         _=>ManagerEventKind.OperationFailed
     };
+    // A rejected or changed sign-in is a sign-in failure; every other failed outcome is in the native handoff itself.
+    private static ManagerSubsystem FailedSubsystemFor(RobloxHandoffProbeOutcome outcome)=>outcome is RobloxHandoffProbeOutcome.SignInRequired
+        or RobloxHandoffProbeOutcome.IdentityMismatch or RobloxHandoffProbeOutcome.AuthorizationChanged?ManagerSubsystem.SignIn:ManagerSubsystem.Launch;
     public static string DescribeHandoffResult(RobloxHandoffProbeResult result,long place)=>result.Outcome switch
     {
         RobloxHandoffProbeOutcome.CapturedAndPrevented when result.Shape is { } shape=>$"Place {place}: external handoff captured and cancelled. {shape.FieldCount} fields; known labels: {shape.KnownFields}; {shape.UnknownFieldCount} unknown; {shape.DuplicateFieldCount} duplicates. Page gesture reported: {(result.UserInitiated is true?"yes":result.UserInitiated is false?"no":"unknown")}. No native client, account selection or arrival was verified.",

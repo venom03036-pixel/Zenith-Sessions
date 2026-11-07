@@ -16,8 +16,30 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
     public long Sequence=>Event.Sequence;
     public string Time=>Event.Utc.ToLocalTime().ToString("HH:mm:ss.fff",CultureInfo.InvariantCulture);
     public string Level=>Event.Level.ToString();
+    public string Subsystem=>SubsystemLabel(Event.Subsystem);
     public string Description=>Event.Summary;
     public string ErrorType=>Event.ErrorType??"—";
+    // Fixed application-owned labels for the closed subsystem set; the report keeps the enum name.
+    public static string SubsystemLabel(ManagerSubsystem? subsystem)=>subsystem switch
+    {
+        null=>"—",
+        ManagerSubsystem.Library=>"Account library",
+        ManagerSubsystem.Vault=>"Credential vault",
+        ManagerSubsystem.Queue=>"Launch queue",
+        ManagerSubsystem.SignIn=>"Sign-in",
+        ManagerSubsystem.Directory=>"Games and servers",
+        ManagerSubsystem.Telemetry=>"Client monitoring",
+        ManagerSubsystem.ClientWindows=>"Client windows",
+        ManagerSubsystem.Previews=>"Client previews",
+        ManagerSubsystem.MacroHost=>"Macro host",
+        ManagerSubsystem.Settings=>"Settings",
+        ManagerSubsystem.Diagnostics=>"Diagnostics",
+        ManagerSubsystem.Launch=>"Native launch",
+        ManagerSubsystem.Installation=>"Roblox installation",
+        ManagerSubsystem.ClientPriority=>"Client priority",
+        ManagerSubsystem.Lifecycle=>"Startup and shutdown",
+        _=>"Unrecognized subsystem"
+    };
 }
 
 public sealed partial class ShellViewModel
@@ -68,9 +90,9 @@ public sealed partial class ShellViewModel
                 if(!Directory.Exists(folder)) throw new IOException("The diagnostics folder is unavailable.");
                 Process.Start(new ProcessStartInfo {FileName=folder,UseShellExecute=true});
             }
-            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {Fail(ex);}
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception) {Fail(ex,ManagerSubsystem.Diagnostics);}
         });
-        ExportDiagnostics=new(p=>p is string path?ExportDiagnosticsAsync(path):Task.CompletedTask,Fail);
+        ExportDiagnostics=new(p=>p is string path?ExportDiagnosticsAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Diagnostics));
     }
     private async Task ExportDiagnosticsAsync(string path)
     {
@@ -87,7 +109,7 @@ public sealed partial class ShellViewModel
         catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
         {
             // A late disk/path failure stays observable as a typed event without replacing the stop or lock message.
-            _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,error.GetType());
         }
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
@@ -124,6 +146,7 @@ public sealed partial class ShellViewModel
             (e.Level switch {DiagnosticLevel.Error=>ShowErrors,DiagnosticLevel.Warning=>ShowWarnings,_=>ShowInformation}) &&
             (DiagnosticFilter.Length==0 || e.Summary.Contains(DiagnosticFilter,StringComparison.OrdinalIgnoreCase) ||
              e.Kind.ToString().Contains(DiagnosticFilter,StringComparison.OrdinalIgnoreCase) ||
+             (e.Subsystem is not null && DiagnosticRow.SubsystemLabel(e.Subsystem).Contains(DiagnosticFilter,StringComparison.OrdinalIgnoreCase)) ||
              (e.ErrorType?.Contains(DiagnosticFilter,StringComparison.OrdinalIgnoreCase)??false))).ToArray();
         var keep=visible.Select(e=>e.Sequence).ToHashSet();
         for(int i=DiagnosticRows.Count-1;i>=0;i--) if(!keep.Contains(DiagnosticRows[i].Sequence)) DiagnosticRows.RemoveAt(i);
@@ -142,7 +165,7 @@ public sealed partial class ShellViewModel
     {
         if(IsLocked || _shuttingDown) throw new InvalidOperationException("Unlock the dashboard before copying diagnostics.");
         RefreshDiagnosticsView(true);
-        return string.Join(Environment.NewLine,DiagnosticRows.Select(r=>$"{r.Time}  {r.Level}  {r.Description}  {r.ErrorType}"));
+        return string.Join(Environment.NewLine,DiagnosticRows.Select(r=>$"{r.Time}  {r.Level}  {r.Subsystem}  {r.Description}  {r.ErrorType}"));
     }
     public string BuildDiagnosticReport()
     {
@@ -165,7 +188,7 @@ public sealed partial class ShellViewModel
             SessionTotals=new {snapshot.TotalEvents,snapshot.InfoCount,snapshot.WarningCount,snapshot.ErrorCount},
             snapshot.DroppedEvents,PersistenceAvailable=snapshot.Failure is null,PausedView=DiagnosticsPaused,
             Scope="Filtered in-memory view, newest 512 events; no prior-session replay or raw log files.",
-            Events=DiagnosticRows.Select(r=>new {r.Event.Sequence,r.Event.Utc,r.Event.Kind,r.Event.Level,r.Event.ErrorType,r.Event.Count}).ToArray()
+            Events=DiagnosticRows.Select(r=>new {r.Event.Sequence,r.Event.Utc,r.Event.Kind,r.Event.Level,r.Event.Subsystem,r.Event.ErrorType,r.Event.Count}).ToArray()
         };
         return JsonSerializer.Serialize(report,new JsonSerializerOptions {WriteIndented=true,Converters={new JsonStringEnumConverter()}});
     }

@@ -19,7 +19,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
         vm.Navigate.Execute("Diagnostics");vm.ClearDiagnostics.Execute(null);
         const string secret="PRIVATE-FIXTURE-TOKEN-and-https://example.invalid/secret";
-        await vm.SaveAccountAsync(AccountProfile.Create(secret));vm.Fail(new IOException(secret));
+        await vm.SaveAccountAsync(AccountProfile.Create(secret));vm.Fail(new IOException(secret),ManagerSubsystem.Library);
         vm.RefreshDiagnostics.Execute(null);Assert.NotEmpty(vm.DiagnosticRows);
         Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Error");Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Info");
         vm.ShowInformation=false;vm.ShowWarnings=false;Assert.All(vm.DiagnosticRows,r=>Assert.Equal("Error",r.Level));
@@ -158,6 +158,42 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.False(Directory.Exists(gone));
     });
     [Fact]
+    public Task FailureRowsCopyAndReportNameWhichSubsystemFailed()=>OnUi(async ()=>
+    {
+        // Two real failures from different subsystems: a sampler fault and a read-only chosen report file.
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new FaultingMonitor());await vm.InitializeAsync();
+        var until=DateTime.UtcNow.AddSeconds(3);
+        while(!vm.Events.Any(e=>e.Contains("Operation failed (InvalidOperationException)",StringComparison.Ordinal)))
+        {if(DateTime.UtcNow>until) throw new TimeoutException("The monitor fault was not reported.");await Task.Delay(20);}
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        try {vm.ExportDiagnostics.Execute(report);await vm.ExportDiagnostics.Execution;}
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        vm.Navigate.Execute("Diagnostics");vm.RefreshDiagnostics.Execute(null);
+        using(var parsed=JsonDocument.Parse(vm.BuildDiagnosticReport()))
+        {
+            var events=parsed.RootElement.GetProperty("Events").EnumerateArray().ToArray();
+            var failures=events.Where(e=>e.GetProperty("Level").GetString()=="Error").ToArray();Assert.True(failures.Length>=2);
+            Assert.All(failures,e=>Assert.True(e.TryGetProperty("Subsystem",out var value) && value.ValueKind==JsonValueKind.String,
+                "A failure event in the report does not say which subsystem failed."));
+            string[] subsystems=failures.Select(e=>e.GetProperty("Subsystem").GetString()!).ToArray();
+            Assert.Contains("Telemetry",subsystems);Assert.Contains("Diagnostics",subsystems);
+            // Only names from the closed enum appear, never free text.
+            Assert.All(subsystems,name=>Assert.True(Enum.TryParse<ManagerSubsystem>(name,ignoreCase:false,out var parsed) && Enum.IsDefined(parsed)
+                && parsed.ToString()==name,$"Unexpected subsystem value '{name}'."));
+            // Routine events are not failures, so they name no subsystem.
+            Assert.All(events.Where(e=>e.GetProperty("Level").GetString()=="Info"),e=>Assert.Equal(JsonValueKind.Null,e.GetProperty("Subsystem").ValueKind));
+        }
+        // Copy visible and the text filter use the same plain labels as the Subsystem column.
+        string visible=vm.BuildVisibleDiagnosticText();
+        Assert.Contains("Client monitoring",visible);Assert.Contains("Diagnostics",visible);
+        Assert.Contains(vm.DiagnosticRows,r=>r.Event.Subsystem==ManagerSubsystem.Telemetry && r.Subsystem=="Client monitoring");
+        Assert.Contains(vm.DiagnosticRows,r=>r.Event.Subsystem==ManagerSubsystem.Diagnostics && r.Subsystem=="Diagnostics");
+        Assert.All(vm.DiagnosticRows.Where(r=>r.Level=="Info"),r=>Assert.Equal("—",r.Subsystem));
+        vm.DiagnosticFilter="client monitoring";
+        Assert.NotEmpty(vm.DiagnosticRows);Assert.All(vm.DiagnosticRows,r=>Assert.Equal(ManagerSubsystem.Telemetry,r.Event.Subsystem));
+    });
+    [Fact]
     public Task StartupFailureDoesNotLeaveDiagnosticsStartingOrClaimALiveView()=>OnUi(async ()=>
     {
         Directory.CreateDirectory(Data);await File.WriteAllTextAsync(Path.Combine(Data,"settings.json"),"damaged settings");
@@ -168,7 +204,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
         long newest=vm.DiagnosticRows.Select(r=>r.Sequence).DefaultIfEmpty().Max();
         // No monitor loop pushes this view, so a later failure must show without pressing Refresh.
-        vm.Fail(new IOException("x"));
+        vm.Fail(new IOException("x"),ManagerSubsystem.Library);
         Assert.Contains(vm.DiagnosticRows,r=>r.Sequence>newest && r.Level=="Error");
     });
     [Fact]

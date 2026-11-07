@@ -43,8 +43,8 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             bool reloaded = await ReloadAfterAccountSetupAsync();
-            if (reloaded && OwnsFeedback() && !stop.IsCancellationRequested) Fail(error);
-            else _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            if (reloaded && OwnsFeedback() && !stop.IsCancellationRequested) Fail(error, ManagerSubsystem.SignIn);
+            else _diagnostics.RecordFailure(ManagerSubsystem.SignIn, error.GetType());
         }
         finally
         {
@@ -62,7 +62,7 @@ public sealed partial class ShellViewModel
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { return false; }
         catch (Exception error)
         {
-            _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Library, error.GetType());
             if (!_preserveStopNotice && !IsLocked && !_shuttingDown)
                 Notice = "The account list could not refresh. Saved files were preserved. Use Refresh or reopen Zenith to review them.";
             return false;

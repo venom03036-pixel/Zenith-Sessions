@@ -108,7 +108,7 @@ public sealed partial class ShellViewModel
     private void RecordNativeDiagnosticFailure(Guid operationId,Type error)
     {
         if(_nativeDiagnosticFailure==(operationId,error))return;
-        _nativeDiagnosticFailure=(operationId,error);_diagnostics.Record(ManagerEventKind.OperationFailed,error);
+        _nativeDiagnosticFailure=(operationId,error);_diagnostics.RecordFailure(ManagerSubsystem.Launch,error);
     }
     private void ClearSelectedNativeDiagnostics()
     {
@@ -126,7 +126,7 @@ public sealed partial class ShellViewModel
             if(matches.Length!=1)return;SelectedSession=matches[0];Tab="Sessions";
             Notice="Selected the exact observed process. Its account and arrival remain unverified.";
         });
-        ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,Fail);
+        ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Launch));
     }
     private void RefreshLaunchEvidence()
     {
@@ -189,7 +189,7 @@ public sealed partial class ShellViewModel
         long epoch=Interlocked.Read(ref _nativeTrialEpoch);string report;
         try{report=BuildNativeTrialEvidenceReport();}
         catch(Exception error)when(epoch!=Interlocked.Read(ref _nativeTrialEpoch)||IsLocked||_shuttingDown)
-        {_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());return;}
+        {_diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());return;}
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_launchEvidenceExportStop=stop;
         try
         {
@@ -206,7 +206,7 @@ public sealed partial class ShellViewModel
         {
             // A late disk/path failure remains observable without replacing a newer stop/lock
             // message. The actual write task has completed; no worker or temp file is abandoned.
-            _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());
         }
         finally{if(ReferenceEquals(_launchEvidenceExportStop,stop))_launchEvidenceExportStop=null;}
     }

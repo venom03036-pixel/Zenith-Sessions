@@ -100,7 +100,7 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             if (generation == _performanceTransferGeneration && !IsLocked && !_shuttingDown) ReportPerformanceTransferFailure(error);
-            else _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+            else _diagnostics.RecordFailure(ManagerSubsystem.Settings, error.GetType());
         }
         finally
         {
@@ -112,7 +112,7 @@ public sealed partial class ShellViewModel
     private void ReportPerformanceTransferFailure(Exception error)
     {
         PerformanceTransferStatus = "The performance transfer failed. Use a supported Zenith performance file or code and check the selected folder. Existing settings and the prior review were preserved.";
-        _diagnostics.Record(ManagerEventKind.OperationFailed, error.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Settings, error.GetType());
     }
     private void NotifyPerformanceTransfer()
     { Raise(nameof(CanTransferPerformance)); Raise(nameof(HasPerformanceReview)); Raise(nameof(PerformanceReviewSummary)); }

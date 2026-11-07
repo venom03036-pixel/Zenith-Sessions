@@ -304,6 +304,32 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task FailureRecordsNameAClosedSubsystemInTheJournalWhileDiskKeepsFourProperties()
+    {
+        await using var diagnostics=new ManagerDiagnostics(Root);
+        diagnostics.RecordFailure(ManagerSubsystem.Vault,typeof(IOException));
+        diagnostics.RecordFailure(ManagerSubsystem.Queue,typeof(InvalidOperationException));
+        diagnostics.RecordFailure(ManagerSubsystem.SignIn);
+        diagnostics.Record(ManagerEventKind.SettingsSaved);
+        // A value outside the closed set is a programming error and records nothing.
+        Assert.Throws<ArgumentOutOfRangeException>(()=>diagnostics.RecordFailure((ManagerSubsystem)999,typeof(IOException)));
+        await diagnostics.DisposeAsync();
+        var snapshot=diagnostics.GetSnapshot();
+        Assert.Equal(new ManagerSubsystem?[]{ManagerSubsystem.Vault,ManagerSubsystem.Queue,ManagerSubsystem.SignIn,null},snapshot.Events.Select(entry=>entry.Subsystem).ToArray());
+        Assert.Equal(new[]{ManagerEventKind.OperationFailed,ManagerEventKind.OperationFailed,ManagerEventKind.OperationFailed,ManagerEventKind.SettingsSaved},snapshot.Events.Select(entry=>entry.Kind).ToArray());
+        Assert.Equal(new string?[]{"IOException","InvalidOperationException",null,null},snapshot.Events.Select(entry=>entry.ErrorType).ToArray());
+        Assert.Equal(3,snapshot.ErrorCount);Assert.Equal(1,snapshot.InfoCount);Assert.Equal(4,snapshot.TotalEvents);
+        AssertCoherent(snapshot);
+        // The subsystem is a journal field like Sequence: the rotating disk log keeps its established four properties.
+        string[] lines=await File.ReadAllLinesAsync(Path.Combine(Root,"diagnostics","manager.jsonl"));Assert.Equal(4,lines.Length);
+        foreach(string line in lines)
+        {
+            using var json=JsonDocument.Parse(line);
+            Assert.Equal(new[]{"Utc","Kind","ErrorType","Count"},json.RootElement.EnumerateObject().Select(property=>property.Name).ToArray());
+        }
+    }
+
+    [Fact]
     public async Task NewInstanceNeverReplaysOldDiskHistoryIntoLiveCounters()
     {
         await using(var first=new ManagerDiagnostics(Root))

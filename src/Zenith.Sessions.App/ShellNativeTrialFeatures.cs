@@ -64,7 +64,7 @@ public sealed partial class ShellViewModel
 
     private void InitializeNativeTrialFeatures()
     {
-        StartNativeTrial=new(StartNativeTrialAsync,Fail);
+        StartNativeTrial=new(StartNativeTrialAsync,error=>Fail(error,ManagerSubsystem.Launch));
         CancelNativeTrial=new(_=>{FenceNativeTrial("Trial stopped. Review any process-start receipt before retrying; existing Roblox clients remain open.");_launchQueue.SignalPanic();});
         PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;
         InitializeLaunchEvidenceFeatures();
@@ -126,7 +126,7 @@ public sealed partial class ShellViewModel
     {
         try{await LoadAccountsAsync(_lifetime.Token);}
         catch(OperationCanceledException)when(_lifetime.IsCancellationRequested){}
-        catch(Exception error){_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());NativeTrialStatus="Refresh the account list to see the latest saved sign-in state. Existing files were preserved.";}
+        catch(Exception error){_diagnostics.RecordFailure(ManagerSubsystem.Library,error.GetType());NativeTrialStatus="Refresh the account list to see the latest saved sign-in state. Existing files were preserved.";}
     }
     private bool IsNativeTrialReviewCurrent(NativeTrialReview review)=>CanRunNativeTrial
         &&review.Epoch==Interlocked.Read(ref _nativeTrialEpoch)&&review.Version==Interlocked.Read(ref _nativeReviewVersion)
@@ -191,7 +191,7 @@ public sealed partial class ShellViewModel
     }
     private void ReportNativeTrialCleanupFailure(Exception error)
     {
-        _diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());
+        _diagnostics.RecordFailure(ManagerSubsystem.Launch,error.GetType());
         NativeTrialStatus=Notice="Native trial cleanup could not be confirmed. Existing data was preserved; review cleanup before another launch.";
     }
 }

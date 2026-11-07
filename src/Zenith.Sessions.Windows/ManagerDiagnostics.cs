@@ -8,6 +8,13 @@ public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImpo
     // Appended so earlier numeric values keep their meaning; the disk log and export store names.
     AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked }
 
+/// <summary>
+/// The closed set of manager areas a failure can be attributed to, so a record says which subsystem failed
+/// without any free text. Append new members only; the live journal and the report carry the name.
+/// </summary>
+public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
+    Launch,Installation,ClientPriority,Lifecycle }
+
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable
 {
@@ -44,11 +51,21 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
     public void Record(ManagerEventKind kind,Type? errorType=null)
     {
         if(!Enum.IsDefined(kind)) throw new ArgumentOutOfRangeException(nameof(kind));
+        Append(kind,errorType,null);
+    }
+    /// <summary>Records an <see cref="ManagerEventKind.OperationFailed"/> event that names the subsystem that failed.</summary>
+    public void RecordFailure(ManagerSubsystem subsystem,Type? errorType=null)
+    {
+        if(!Enum.IsDefined(subsystem)) throw new ArgumentOutOfRangeException(nameof(subsystem));
+        Append(ManagerEventKind.OperationFailed,errorType,subsystem);
+    }
+    private void Append(ManagerEventKind kind,Type? errorType,ManagerSubsystem? subsystem)
+    {
         string? safeError=SafeErrorType(errorType);
         lock(_gate)
         {
             if(_disposed || _sequence==long.MaxValue) return;
-            var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError);
+            var entry=new ManagerDiagnosticEvent(++_sequence,DateTimeOffset.UtcNow,kind,safeError,Subsystem:subsystem);
             _journal[_nextJournal]=entry;_nextJournal=(_nextJournal+1)%JournalCapacity;
             if(_journalCount<JournalCapacity) _journalCount++;
             switch(entry.Level)
@@ -148,7 +165,7 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
     }
     private async Task WriteEntryAsync(Entry entry,CancellationToken ct)
     {
-        // Explicitly preserve the established four-property disk format; journal UI fields stay in memory.
+        // Explicitly preserve the established four-property disk format; journal UI fields (Sequence, Subsystem) stay in memory.
         byte[] bytes=JsonSerializer.SerializeToUtf8Bytes(entry);
         // Recreated per entry so a folder deleted while the app runs (e.g. after "Open logs") is restored; no-op when present.
         Directory.CreateDirectory(_folder);

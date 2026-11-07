@@ -2,8 +2,12 @@ namespace Zenith.Sessions.Windows;
 
 public enum DiagnosticLevel { Info, Warning, Error }
 
-/// <summary>Typed observations only. Summary text is application-owned and never includes payloads.</summary>
-public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, ManagerEventKind Kind, string? ErrorType, long Count = 0)
+/// <summary>
+/// Typed observations only. Summary text is application-owned and never includes payloads.
+/// Subsystem is set only on failures and is always a <see cref="ManagerSubsystem"/> member, never free text.
+/// </summary>
+public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, ManagerEventKind Kind, string? ErrorType, long Count = 0,
+    ManagerSubsystem? Subsystem = null)
 {
     public DiagnosticLevel Level => Kind switch
     {
