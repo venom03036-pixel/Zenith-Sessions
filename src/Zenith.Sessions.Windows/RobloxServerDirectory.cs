@@ -29,7 +29,10 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
         RequireAnonymousClient();
     }
 
-    public static HttpClient CreatePublicHttpClient() => new(new SocketsHttpHandler
+    public static HttpClient CreatePublicHttpClient() => new(CreatePublicHandler())
+        { Timeout = Timeout.InfiniteTimeSpan, MaxResponseContentBufferSize = MaximumResponseBytes };
+
+    internal static SocketsHttpHandler CreatePublicHandler() => new()
     {
         AllowAutoRedirect = false,
         UseCookies = false,
@@ -38,7 +41,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
         AutomaticDecompression = DecompressionMethods.None,
         ConnectTimeout = TimeSpan.FromSeconds(10),
         MaxResponseHeadersLength = 16
-    }) { Timeout = Timeout.InfiniteTimeSpan, MaxResponseContentBufferSize = MaximumResponseBytes };
+    };
 
     public async Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query, CancellationToken ct)
     {

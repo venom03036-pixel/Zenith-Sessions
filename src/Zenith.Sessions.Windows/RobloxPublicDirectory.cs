@@ -46,18 +46,21 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         _maximumEncodedMemoryBytes = maximumEncodedMemoryBytes;
     }
 
-    public static HttpClient CreateAnonymousHttpClient() => new(new SocketsHttpHandler
+    public static HttpClient CreateAnonymousHttpClient() => new(CreateAnonymousHandler()) { Timeout = TimeSpan.FromSeconds(15) };
+
+    // Uses the Windows system proxy, like server browsing, sign-in checks and share links, so a
+    // proxy-only network reaches every Roblox service the same way. No proxy credentials are set.
+    internal static SocketsHttpHandler CreateAnonymousHandler() => new()
     {
         AllowAutoRedirect = false,
         UseCookies = false,
         Credentials = null,
         PreAuthenticate = false,
-        UseProxy = false,
         MaxConnectionsPerServer = MaximumConcurrentRequests,
         MaxResponseHeadersLength = 32,
         ConnectTimeout = TimeSpan.FromSeconds(10),
         PooledConnectionLifetime = TimeSpan.FromMinutes(5)
-    }) { Timeout = TimeSpan.FromSeconds(15) };
+    };
 
     public long CachedEncodedBytes { get { lock (_gate) return _cachedBytes; } }
     public long EncodedMemoryBudgetBytes => _maximumEncodedMemoryBytes;
