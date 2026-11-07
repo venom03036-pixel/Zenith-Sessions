@@ -144,6 +144,21 @@ public sealed class RobloxShareLinkClientTests
         }
     }
 
+    // A repeated key makes the response ambiguous (which linkCode or status is meant?), so it is Unavailable, never
+    // the last value. The real endpoint is not known to send repeated keys.
+    [Theory]
+    [InlineData(RobloxShareLinkType.Server, "{\"privateServerInviteData\":{\"status\":\"Valid\",\"placeId\":1,\"universeId\":2,\"linkCode\":\"12345678901234567890\",\"linkCode\":\"" + LinkCode + "\"}}")]
+    [InlineData(RobloxShareLinkType.Server, "{\"privateServerInviteData\":{\"status\":\"Invalid\",\"status\":\"Valid\",\"placeId\":1,\"universeId\":2,\"linkCode\":\"" + LinkCode + "\"}}")]
+    [InlineData(RobloxShareLinkType.ExperienceInvite, "{\"experienceInviteData\":{\"status\":\"Valid\",\"placeId\":1818,\"instanceId\":\"" + Job + "\",\"instanceId\":\"" + Job + "\"}}")]
+    [InlineData(RobloxShareLinkType.DeepLinkV2, "{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":1,\"targetId\":1818}")]
+    public async Task DuplicateFieldsAreUnavailable(RobloxShareLinkType type, string json)
+    {
+        using var handler = new Handler((_, _) => Task.FromResult(Json(json)));
+        using var resolution = await Resolve(handler, type);
+        Assert.Equal(RobloxShareLinkOutcome.Unavailable, resolution.Outcome);
+        Assert.Null(resolution.PrivateServerCode); Assert.Null(resolution.PlaceId); Assert.Null(resolution.JobId); Assert.Equal(1, handler.Calls);
+    }
+
     [Fact]
     public async Task ServerShapeIsOnlyAcceptedForServerLinksAndOtherTypesNeverRequest()
     {

@@ -11,7 +11,7 @@ namespace Zenith.Sessions.Windows;
 /// One explicit signed-in resolve request for a roblox.com/share link: exact endpoint (sharelinks/v1/resolve-link, or
 /// deeplinks/v2/resolve for a v2 link), no redirects, no cookie jar,
 /// one CSRF handshake retry and a 64 KiB body cap. The response shape is observed web-client behaviour, not a
-/// documented contract; anything unexpected is Unavailable, never a guess. The request body and the response buffer
+/// documented contract; anything unexpected (including a repeated key) is Unavailable, never a guess. The request body and the response buffer
 /// carry codes, so both are zeroed after use. A rotated session cookie in the response is ignored, never saved.
 /// </summary>
 public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
@@ -96,7 +96,8 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
             int read;
             while ((read = await input.ReadAsync(buffer.AsMemory(length), ct).ConfigureAwait(false)) > 0)
             { length += read; if (length > MaximumBodyBytes) return new(RobloxShareLinkOutcome.Unavailable); }
-            using var document = JsonDocument.Parse(buffer.AsMemory(0, length), new JsonDocumentOptions { MaxDepth = 8 });
+            // A repeated key (two linkCode or status fields) is ambiguous: the parser rejects it and the catch below maps it to Unavailable.
+            using var document = JsonDocument.Parse(buffer.AsMemory(0, length), new JsonDocumentOptions { MaxDepth = 8, AllowDuplicateProperties = false });
             return Interpret(document.RootElement, type);
         }
         catch (JsonException) { return new(RobloxShareLinkOutcome.Unavailable); }
