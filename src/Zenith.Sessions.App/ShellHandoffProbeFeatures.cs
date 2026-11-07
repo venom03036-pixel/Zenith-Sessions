@@ -42,7 +42,7 @@ public sealed partial class ShellViewModel
             if(!_lifetime.IsCancellationRequested)await LoadAccountsAsync(_lifetime.Token);
             stop.Token.ThrowIfCancellationRequested();if(IsLocked||_shuttingDown)return;
             HandoffInspectionStatus=DescribeHandoffResult(result,place);Notice=HandoffInspectionStatus;
-            _diagnostics.Record(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented?ManagerEventKind.AuthorizationLinked:ManagerEventKind.OperationFailed);
+            _diagnostics.Record(result.Outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented?ManagerEventKind.HandoffInspected:ManagerEventKind.OperationFailed);
         }
         catch(OperationCanceledException)when(stop.IsCancellationRequested)
         {

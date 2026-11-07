@@ -791,7 +791,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(IsLocked || _shuttingDown) return;
             Notice=$"Saved sign-in verified for @{identity.Username}. Native client launch and arrival remain separately unverified.";
             AddEvent("Roblox sign-in identity verified; selected account session stored with Windows protection.");
-            _diagnostics.Record(ManagerEventKind.AuthorizationLinked);
+            _diagnostics.Record(refresh?ManagerEventKind.AuthorizationChecked:ManagerEventKind.AuthorizationLinked);
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested)
         { if(!_lifetime.IsCancellationRequested) { await LoadAccountsAsync(_lifetime.Token); if(!_preserveStopNotice) Notice="Account sign-in cancelled. Existing profiles were preserved."; } }

@@ -4,7 +4,9 @@ using System.Threading.Channels;
 namespace Zenith.Sessions.Windows;
 
 public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImported,MetadataExported,SettingsSaved,AuthorizationLinked,
-    AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents }
+    AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents,
+    // Appended so earlier numeric values keep their meaning; the disk log and export store names.
+    AuthorizationChecked,HandoffInspected }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable

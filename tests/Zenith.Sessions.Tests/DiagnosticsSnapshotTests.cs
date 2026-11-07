@@ -93,6 +93,7 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         Assert.All(snapshot.Events,entry=>
         {
             Assert.False(string.IsNullOrWhiteSpace(entry.Summary));
+            Assert.NotEqual("Unrecognized diagnostic event.",entry.Summary);
             Assert.InRange(entry.Summary.Length,1,100);
             Assert.Equal(entry.Summary,(entry with {ErrorType="synthetic-do-not-display",Count=long.MaxValue}).Summary);
             Assert.Equal(entry.Kind==ManagerEventKind.OperationFailed?DiagnosticLevel.Error:

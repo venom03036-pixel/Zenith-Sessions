@@ -3,6 +3,7 @@ using System.IO;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 using Xunit;
 
 namespace Zenith.Sessions.Tests;
@@ -58,6 +59,37 @@ public sealed partial class ClientWindowIntegrationTests
             finally{probe.Finish.TrySetResult(new(new(RobloxHandoffProbeOutcome.Cancelled)));}
         }
         Assert.True(probe.Disposed);
+    });
+    [Fact]
+    public Task InspectionAndCheckRecordTheirOwnDiagnosticKinds()=>OnUi(async()=>
+    {
+        // A support reader must be able to tell a new sign-in, a saved-sign-in check and a cancelled
+        // handoff inspection apart on the Diagnostics page, in copied text, the report and manager.jsonl.
+        var probe=new HandoffBrowser();
+        await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe);
+        await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];
+        shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
+        shell.RefreshDiagnostics.Execute(null);
+        int linked=shell.DiagnosticRows.Count(row=>row.Event.Kind==ManagerEventKind.AuthorizationLinked);
+        Assert.Equal(1,linked);Assert.Equal(ManagerEventKind.AuthorizationLinked,shell.DiagnosticRows[^1].Event.Kind);
+
+        shell.ServerBrowser.UsePreferredPlace(6564161046);
+        shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        probe.Complete(pinned);await shell.InspectNativeHandoff.Execution;
+        Assert.Contains("captured and cancelled",shell.HandoffInspectionStatus);
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.Equal(linked,shell.DiagnosticRows.Count(row=>row.Event.Kind==ManagerEventKind.AuthorizationLinked));
+        Assert.Equal(ManagerEventKind.HandoffInspected,shell.DiagnosticRows[^1].Event.Kind);
+        Assert.Equal("Native handoff inspected and cancelled; no client started.",shell.DiagnosticRows[^1].Description);
+
+        shell.RefreshAuthorization.Execute(null);await shell.RefreshAuthorization.Execution;
+        Assert.Contains("Saved sign-in verified",shell.Notice);
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.Equal(linked,shell.DiagnosticRows.Count(row=>row.Event.Kind==ManagerEventKind.AuthorizationLinked));
+        Assert.Equal(ManagerEventKind.AuthorizationChecked,shell.DiagnosticRows[^1].Event.Kind);
+        Assert.Equal("Saved sign-in re-verified and saved again.",shell.DiagnosticRows[^1].Description);
+        Assert.Contains("Native handoff inspected and cancelled",shell.BuildVisibleDiagnosticText());
+        Assert.Contains("\"AuthorizationChecked\"",shell.BuildDiagnosticReport());
     });
     [Fact]
     public Task LockFencesLateBrowserInspectionAndKeepsItsStopMessage()=>OnUi(async()=>
