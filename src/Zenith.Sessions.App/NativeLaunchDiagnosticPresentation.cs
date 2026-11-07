@@ -104,10 +104,17 @@ public sealed record NativeLaunchDiagnosticPresentation
         try {snapshot=snapshot.Validated();}catch(ArgumentException){return Unavailable(operationId);}
         return new(operationId,snapshot);
     }
-    internal static NativeLaunchDiagnosticPresentation? ReadCurrent(INativeLaunchDiagnosticSource? source,Guid operationId,Func<bool> current)
+    /// <summary>
+    /// Reads one transient snapshot. A source exception or an invalid snapshot still shows the fixed
+    /// unavailable text, but its exception type is reported through <paramref name="failed"/> so a provider
+    /// bug is not mistaken for eviction. The message and inner error never cross this boundary. The failure
+    /// is reported even when the view is no longer current; only the stale view is withheld.
+    /// </summary>
+    internal static NativeLaunchDiagnosticPresentation? ReadCurrent(INativeLaunchDiagnosticSource? source,Guid operationId,Func<bool> current,Action<Type>? failed=null)
     {
-        if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot=null;
-        try{snapshot=source?.GetDiagnostic(operationId);}catch(Exception){/* Only fixed unavailable feedback crosses this optional boundary. */}
+        if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot;
+        try{snapshot=source?.GetDiagnostic(operationId)?.Validated();}
+        catch(Exception error){snapshot=null;failed?.Invoke(error.GetType());}
         var value=Project(operationId,snapshot);return current()?value:null;
     }
     private static string At(DateTimeOffset at)=>at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'",CultureInfo.InvariantCulture);

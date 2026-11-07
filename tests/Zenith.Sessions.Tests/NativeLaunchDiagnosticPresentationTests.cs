@@ -4,6 +4,7 @@ using System.Windows.Threading;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
@@ -76,6 +77,31 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,Guid.NewGuid(),()=>true)!;
         Assert.False(view.Available);Assert.DoesNotContain("synthetic",view.ToString(),StringComparison.OrdinalIgnoreCase);Assert.Null(view.Snapshot);
     }
+    [Theory]
+    [InlineData("throw")]
+    [InlineData("invalid")]
+    [InlineData("throw-then-stale")]
+    public void OptionalSourceFailureIsReportedByTypeOnlyAndStillShowsFixedUnavailable(string failure)
+    {
+        var id=Guid.NewGuid();var types=new List<Type>();int checks=0;
+        var source=new Source{Read=read=>failure=="invalid"?Snapshot(read) with {Stage=(NativeLaunchDiagnosticStage)999}
+            :throw new InvalidOperationException("synthetic-secret-uri",new Exception("synthetic-cookie"))};
+        var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,id,()=>failure!="throw-then-stale"||checks++==0,failed:types.Add);
+        Assert.Equal(new[]{failure=="invalid"?typeof(ArgumentException):typeof(InvalidOperationException)},types);
+        if(failure=="throw-then-stale"){Assert.Null(view);return;}
+        Assert.NotNull(view);Assert.False(view.Available);Assert.Null(view.Snapshot);Assert.Equal(id,view.OperationId);
+        Assert.Equal(NativeLaunchDiagnosticPresentation.Unavailable(id).Summary,view.Summary);
+        Assert.DoesNotContain("synthetic",view.ToString(),StringComparison.OrdinalIgnoreCase);
+    }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ValidOrEvictedReadsReportNoFailure(bool evicted)
+    {
+        var id=Guid.NewGuid();var types=new List<Type>();var source=new Source();if(evicted)source.Read=_=>null;
+        var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,id,()=>true,failed:types.Add)!;
+        Assert.Empty(types);Assert.Equal(!evicted,view.Available);
+    }
     internal sealed class Source:INativeLaunchDiagnosticSource
     {
         public Func<Guid,NativeLaunchDiagnosticSnapshot?> Read=Snapshot;
@@ -103,6 +129,26 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(NativeLaunchDiagnosticPresentationTests.Recorded,shell.SelectedNativeDiagnostics.Snapshot!.UpdatedUtc);
         var first=shell.SelectedNativeDiagnostics;shell.RefreshSelectedNativeDiagnostics(source);Assert.Equal(first,shell.SelectedNativeDiagnostics);
         Assert.Equal(32,shell.LaunchEvidenceRows.Count);Assert.Empty(shell.Launches);Assert.False(shell.SelectedNativeDiagnostics.ArrivalVerified);
+    });
+    [Fact]
+    public Task ThrowingNativeDiagnosticSourceRecordsOneSecretFreeOperationFailedAcrossRepeatedRefreshes()=>OnUi(async()=>
+    {
+        await using var shell=DiagnosticShell();PublishDiagnosticQueue(shell,DiagnosticOperation());
+        var diagnostics=(ManagerDiagnostics)typeof(ShellViewModel).GetField("_diagnostics",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        long before=diagnostics.GetSnapshot().LatestSequence;bool fail=true;
+        var source=new NativeLaunchDiagnosticPresentationTests.Source{Read=id=>fail
+            ?throw new InvalidOperationException("synthetic-secret-uri",new Exception("synthetic-cookie")):NativeLaunchDiagnosticPresentationTests.Snapshot(id)};
+        ManagerDiagnosticEvent[] Failures()=>diagnostics.GetSnapshot().Events.Where(e=>e.Sequence>before&&e.Kind==ManagerEventKind.OperationFailed).ToArray();
+        for(int tick=0;tick<3;tick++)shell.RefreshSelectedNativeDiagnostics(source);
+        var failure=Assert.Single(Failures());Assert.Equal("InvalidOperationException",failure.ErrorType);
+        Assert.False(shell.SelectedNativeDiagnostics.Available);Assert.Contains("unavailable",shell.SelectedNativeDiagnostics.Summary);
+        fail=false;shell.RefreshSelectedNativeDiagnostics(source);Assert.True(shell.SelectedNativeDiagnostics.Available);Assert.Single(Failures());
+        fail=true;shell.RefreshSelectedNativeDiagnostics(source);shell.RefreshSelectedNativeDiagnostics(source);Assert.Equal(2,Failures().Length);
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.Equal(2,shell.DiagnosticRows.Count(row=>row.Event.Kind==ManagerEventKind.OperationFailed&&row.ErrorType=="InvalidOperationException"));
+        foreach(var row in shell.DiagnosticRows)
+        {Assert.DoesNotContain("synthetic",row.Description,StringComparison.OrdinalIgnoreCase);Assert.DoesNotContain("synthetic",row.ErrorType,StringComparison.OrdinalIgnoreCase);}
+        Assert.DoesNotContain("synthetic",shell.BuildVisibleDiagnosticText(),StringComparison.OrdinalIgnoreCase);Assert.Empty(shell.Launches);
     });
     [Theory]
     [InlineData("selection")]

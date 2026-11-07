@@ -68,6 +68,7 @@ public sealed partial class ShellViewModel
     private string _launchPacingStatus="No startup pacing delay.";
     private long _launchEvidenceSelectionEpoch;
     private NativeLaunchDiagnosticPresentation _selectedNativeDiagnostics=NativeLaunchDiagnosticPresentation.Unavailable();
+    private (Guid Id,Type Error)? _nativeDiagnosticFailure;
     public NativeLaunchDiagnosticPresentation SelectedNativeDiagnostics=>_selectedNativeDiagnostics;
     public ObservableCollection<LaunchEvidenceRow> LaunchEvidenceRows {get;}=[];
     public LaunchEvidenceRow? SelectedLaunchEvidence
@@ -94,13 +95,24 @@ public sealed partial class ShellViewModel
     {
         var selected=SelectedLaunchEvidence;long selectionEpoch=_launchEvidenceSelectionEpoch,nativeEpoch=Interlocked.Read(ref _nativeTrialEpoch);
         if(IsLocked||_shuttingDown||selected is null||!LaunchEvidenceRows.Contains(selected)) {ClearSelectedNativeDiagnostics();return;}
+        bool readFailed=false;
         var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,selected.Id,()=>!IsLocked&&!_shuttingDown
             &&selectionEpoch==_launchEvidenceSelectionEpoch&&nativeEpoch==Interlocked.Read(ref _nativeTrialEpoch)
-            &&ReferenceEquals(selected,SelectedLaunchEvidence)&&LaunchEvidenceRows.Contains(selected));
+            &&ReferenceEquals(selected,SelectedLaunchEvidence)&&LaunchEvidenceRows.Contains(selected),
+            failed:error=>{readFailed=true;RecordNativeDiagnosticFailure(selected.Id,error);});
+        if(view is not null&&!readFailed)_nativeDiagnosticFailure=null;
         if(view is not null&&_selectedNativeDiagnostics!=view){_selectedNativeDiagnostics=view;Raise(nameof(SelectedNativeDiagnostics));}
+    }
+    // This read runs on every telemetry sample, so a failing source records one typed row per
+    // (operation, error type) until a read succeeds or the selection is cleared, not one per tick.
+    private void RecordNativeDiagnosticFailure(Guid operationId,Type error)
+    {
+        if(_nativeDiagnosticFailure==(operationId,error))return;
+        _nativeDiagnosticFailure=(operationId,error);_diagnostics.Record(ManagerEventKind.OperationFailed,error);
     }
     private void ClearSelectedNativeDiagnostics()
     {
+        _nativeDiagnosticFailure=null;
         var view=NativeLaunchDiagnosticPresentation.Unavailable(IsLocked||_shuttingDown?null:SelectedLaunchEvidence?.Id);
         if(_selectedNativeDiagnostics==view)return;_selectedNativeDiagnostics=view;Raise(nameof(SelectedNativeDiagnostics));
     }
