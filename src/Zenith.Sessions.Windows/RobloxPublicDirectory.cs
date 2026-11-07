@@ -15,7 +15,8 @@ namespace Zenith.Sessions.Windows;
 /// The configurable budget covers retained encoded bytes; decoded/caller references and bounded
 /// in-flight buffers have separate owners. It is not a process resident-memory guarantee.
 /// </summary>
-public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPublicRobloxGameDirectory, IPublicRobloxGameGallery
+public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPublicRobloxGameDirectory, IPublicRobloxGameGallery,
+    IPublicRobloxAvatarBatchDirectory
 {
     public const int MaximumConcurrentRequests = 2;
     public const int MaximumJsonBytes = 64 * 1024;
@@ -110,6 +111,61 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
             if (!TryValidateAvatarUri(ReadText(item, "imageUrl", 2048), out Uri? imageUri)) throw new InvalidPublicResponseException();
             return Success(new PublicRobloxAvatar(userId, imageUri!, 150, 150, _clock.GetUtcNow()), "Public avatar information.");
         }, ct);
+    }
+
+    public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>> GetAvatarsAsync(IReadOnlyList<long> userIds, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        const string invalid = "Request between one and fifty distinct positive 64-bit Roblox user IDs.";
+        if (userIds is null || userIds.Count is 0 or > PublicRobloxAvatarBatchLimits.MaximumBatch)
+            return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxAvatarBatchItem>>(invalid));
+        var requested = new long[userIds.Count]; var distinct = new HashSet<long>();
+        for (int index = 0; index < requested.Length; index++)
+        {
+            long id = userIds[index];
+            if (id <= 0 || !distinct.Add(id)) return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxAvatarBatchItem>>(invalid));
+            requested[index] = id;
+        }
+        // The same official headshot endpoint as GetAvatarAsync, asked once for the whole batch.
+        var uri = new Uri("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds="
+            + string.Join(",", requested.Select(id => id.ToString(CultureInfo.InvariantCulture)))
+            + "&size=150x150&format=Png&isCircular=false");
+        return ReadJsonAsync(uri, root => ParseAvatarBatch(root, requested), ct);
+    }
+
+    private PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>> ParseAvatarBatch(JsonElement root, long[] requested)
+    {
+        JsonElement data = ReadField(root, "data");
+        if (data.ValueKind != JsonValueKind.Array || data.GetArrayLength() > requested.Length) throw new InvalidPublicResponseException();
+        // Roblox does not promise reply order, so replies are matched by targetId; an unasked or repeated user is invalid.
+        var expected = new HashSet<long>(requested); var found = new Dictionary<long, PublicRobloxAvatarBatchItem>();
+        DateTimeOffset now = _clock.GetUtcNow();
+        foreach (var item in data.EnumerateArray())
+        {
+            long userId = ReadId(item, "targetId");
+            if (!expected.Contains(userId) || found.ContainsKey(userId)) throw new InvalidPublicResponseException();
+            var state = ReadText(item, "state", 32) switch
+            {
+                "Completed" => PublicRobloxThumbnailState.Ready,
+                "Pending" or "InReview" => PublicRobloxThumbnailState.Pending,
+                "Blocked" => PublicRobloxThumbnailState.Blocked,
+                _ => PublicRobloxThumbnailState.Unavailable
+            };
+            PublicRobloxAvatar? avatar = null;
+            if (state == PublicRobloxThumbnailState.Ready)
+            {
+                if (!TryValidateAvatarUri(ReadText(item, "imageUrl", 2048), out Uri? imageUri)) throw new InvalidPublicResponseException();
+                avatar = new PublicRobloxAvatar(userId, imageUri!, 150, 150, now);
+            }
+            found.Add(userId, new(userId, state, avatar));
+        }
+        // A user the reply left out is unavailable, not an invalid reply: the rest of the batch stays usable.
+        var result = new PublicRobloxAvatarBatchItem[requested.Length];
+        for (int index = 0; index < result.Length; index++)
+            result[index] = found.TryGetValue(requested[index], out var item) ? item
+                : new(requested[index], PublicRobloxThumbnailState.Unavailable, null);
+        return Success<IReadOnlyList<PublicRobloxAvatarBatchItem>>(Array.AsReadOnly(result),
+            "Public avatar information. This does not verify sign-in or identify a running client.");
     }
 
     public async Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)

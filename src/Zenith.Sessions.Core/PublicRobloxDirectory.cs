@@ -27,6 +27,32 @@ public interface IPublicRobloxDirectory
     void ClearMemoryCache();
 }
 
+public static class PublicRobloxAvatarBatchLimits
+{
+    /// <summary>
+    /// Users per headshot request. Roblox accepts more, but one reply item is about 200 bytes, so 50 keeps a
+    /// full reply (about 10 KiB) far inside the directory's 64 KiB JSON cap.
+    /// </summary>
+    public const int MaximumBatch = 50;
+}
+
+/// <summary>
+/// One user's public headshot from a batch. Only Ready carries an avatar descriptor; download it with
+/// <see cref="IPublicRobloxDirectory.FetchAvatarAsync"/>. A user Roblox left out of the reply is Unavailable.
+/// </summary>
+public sealed record PublicRobloxAvatarBatchItem(long UserId, PublicRobloxThumbnailState State, PublicRobloxAvatar? Avatar);
+
+/// <summary>
+/// Separate optional capability so existing directory fakes and providers stay unchanged. One explicit
+/// caller-owned request per batch of 1–50 distinct users, sharing the directory's request slots, rate-limit
+/// pause and response bounds. Implementations create no polling, retries or extra cache.
+/// </summary>
+public interface IPublicRobloxAvatarBatchDirectory
+{
+    Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>> GetAvatarsAsync(
+        IReadOnlyList<long> userIds, CancellationToken ct);
+}
+
 public static class PublicRobloxUserId
 {
     // No signs, grouping separators, overflow, whitespace, or culture-dependent parsing.
