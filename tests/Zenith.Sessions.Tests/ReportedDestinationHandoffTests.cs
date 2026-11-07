@@ -13,31 +13,32 @@ public sealed partial class ClientWindowIntegrationTests
     private const string ReportedJob = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     private const BindingFlags ReportedPrivate = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    [Fact]
-    public Task ReviewingCurrentReportedServerPinsOnlyTheJoinGameDraft() => OnUi(async () =>
+    // The shipped route from a reported row (Join same game / Join same server, panel and row menu) replaces the
+    // unresolved Find-box draft and the requested destination, and changes nothing else: account, queue, launches.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task JoinSameFromAReportedRowChangesOnlyTheJoinGameRequest(bool sameServer) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         await shell.SaveAccountAsync(AccountProfile.Create("Synthetic chosen profile"));
         shell.SelectedAccount = Assert.Single(shell.Accounts);
         var account = shell.SelectedAccount;
         shell.ServerBrowser.UsePreferredPlace(42);
-        var destination = shell.ServerBrowser.Destination;
         shell.ServerBrowser.LinkInput = "previous unresolved draft";
         shell.Navigate.Execute("Sessions");
         var serial = await HoldReportedSamplerAsync(shell);
         try
         {
             var fixture = PublishReportedSession(shell);
-            string? copied = shell.BuildReportedDestinationLink(fixture.Row);
-            Assert.NotNull(copied);
-            Assert.True(shell.ReviewReportedDestination(fixture.Row));
+            Assert.NotNull(shell.BuildReportedDestinationLink(fixture.Row, sameServer));
+            Assert.True(shell.JoinSameAsReported(fixture.Row, sameServer));
             Assert.True(shell.IsJoinGame);
-            Assert.Equal(copied, shell.ServerBrowser.LinkInput);
-            var parsed = RobloxDestinationParser.Parse(shell.ServerBrowser.LinkInput);
-            Assert.Equal(ReportedPlace, parsed.RequestedDestination!.PlaceId);
-            Assert.Equal(ReportedJob, parsed.RequestedDestination.JobId);
-            Assert.Equal(RobloxServerKind.Unknown, parsed.RequestedDestination.ServerKind);
-            Assert.Same(destination, shell.ServerBrowser.Destination);
+            Assert.True(shell.IsJoinReadyStep);
+            Assert.Equal("", shell.ServerBrowser.LinkInput);
+            Assert.Equal(ReportedPlace, shell.ServerBrowser.Destination!.PlaceId);
+            Assert.Equal(sameServer ? ReportedJob : null, shell.ServerBrowser.Destination.JobId);
+            Assert.Equal(RobloxServerKind.Unknown, shell.ServerBrowser.Destination.ServerKind);
             Assert.Same(account, shell.SelectedAccount);
             Assert.Empty(shell.Launches);
             Assert.True(fixture.Row.Log.HasReportedDestination);
@@ -76,7 +77,8 @@ public sealed partial class ClientWindowIntegrationTests
 
             Assert.True(fixture.Row.Log.HasReportedDestination);
             Assert.Null(shell.BuildReportedDestinationLink(fixture.Row));
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: true));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: false));
             Assert.True(shell.IsSessions);
             Assert.Equal("preserved text draft", shell.ServerBrowser.LinkInput);
             Assert.Same(destination, shell.ServerBrowser.Destination);
@@ -88,7 +90,7 @@ public sealed partial class ClientWindowIntegrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public Task StartupOrLockRejectsReportedReviewWithoutAnotherMutation(bool locked) => OnUi(async () =>
+    public Task StartupOrLockRejectsJoinSameWithoutAnotherMutation(bool locked) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         var serial = await HoldReportedSamplerAsync(shell);
@@ -103,7 +105,8 @@ public sealed partial class ClientWindowIntegrationTests
             string tab = shell.Tab;
 
             Assert.Null(shell.BuildReportedDestinationLink(fixture.Row));
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: true));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: false));
             Assert.Equal(draft, shell.ServerBrowser.LinkInput);
             Assert.Equal(tab, shell.Tab);
             Assert.Empty(shell.Launches);
@@ -111,8 +114,14 @@ public sealed partial class ClientWindowIntegrationTests
         finally { serial.Release(); }
     });
 
-    [Fact]
-    public Task PanicDuringDraftNotificationPreventsTheLaterNavigation() => OnUi(async () =>
+    // Panic wins at both mutation points of Join same: while the reported link is written into the Find box, and while
+    // ResolveInput publishes it as the requested destination. Neither may go on to open Join a game's Ready step.
+    [Theory]
+    [InlineData(nameof(ServerBrowserViewModel.LinkInput), false)]
+    [InlineData(nameof(ServerBrowserViewModel.LinkInput), true)]
+    [InlineData(nameof(ServerBrowserViewModel.Destination), false)]
+    [InlineData(nameof(ServerBrowserViewModel.Destination), true)]
+    public Task PanicDuringJoinSameNotificationPreventsTheLaterNavigation(string notified, bool sameServer) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         shell.ServerBrowser.UsePreferredPlace(42);
@@ -124,14 +133,16 @@ public sealed partial class ClientWindowIntegrationTests
             bool stopped = false;
             shell.ServerBrowser.PropertyChanged += (_, args) =>
             {
-                if (stopped || args.PropertyName != nameof(ServerBrowserViewModel.LinkInput)) return;
+                if (stopped || args.PropertyName != notified) return;
                 stopped = true;
                 shell.Panic.Execute(null);
             };
 
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer));
             Assert.True(stopped);
             Assert.True(shell.IsSessions);
+            Assert.False(shell.IsJoinGame);
+            Assert.False(shell.IsJoinReadyStep);
             Assert.Contains("Panic", shell.Notice, StringComparison.OrdinalIgnoreCase);
             Assert.Empty(shell.Launches);
         }
@@ -215,12 +226,177 @@ public sealed partial class ClientWindowIntegrationTests
         finally { serial.Release(); }
     });
 
+    [Theory]
+    [InlineData("complete fresh inventory", true)]
+    [InlineData("partial inventory", false)]
+    [InlineData("failed scan keeps last-known rows", false)]
+    [InlineData("stale inventory", false)]
+    public Task PresentedRowOffersReportedActionsOnlyWhileTheClickTimeEvidenceHolds(string kind, bool offered) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.Navigate.Execute("Sessions");
+        var serial = await HoldReportedSamplerAsync(shell);
+        var (process, logs, desktop) = ReportedInputs(DateTimeOffset.UtcNow);
+        if (kind == "partial inventory") desktop = desktop with { ProcessInventoryComplete = false };
+        else if (kind == "failed scan keeps last-known rows") desktop = desktop with { ProcessInventoryComplete = false,
+            Problem = "Windows process inventory is temporarily unavailable. Missing clients were not confirmed absent." };
+        else if (kind == "stale inventory")
+        {
+            var scanned = desktop.ProcessObservedUtc!.Value.AddSeconds(-4);
+            desktop = desktop with { ProcessObservedUtc = scanned, Sessions = [process with { ObservedUtc = scanned }] };
+        }
+        monitor.Inventory = desktop;
+        // A stopped correlator ignores offers, so every presentation reads exactly this synthetic log snapshot.
+        var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
+        await correlator.DisposeAsync();
+        ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
+        ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);
+        serial.Release();
+
+        shell.Refresh.Execute(null); await shell.Refresh.Execution; // The real sample and row presentation path.
+
+        var row = Assert.Single(shell.Sessions);
+        Assert.True(row.Log.HasReportedDestination); // The log still reports a place and server for this row.
+        Assert.Equal(offered, shell.BuildReportedDestinationLink(row) is not null); // The click-time authority.
+        var sessions = ReportedPage(ReportedMainWindow(), "SessionsPage");
+        var actions = sessions.Descendants(ReportedUi + "Button").Where(button => ReportedActions.Contains((string?)button.Attribute("Content")))
+            .Concat(sessions.Descendants(ReportedUi + "MenuItem").Where(item => ReportedActions.Contains((string?)item.Attribute("Header")))).ToList();
+        Assert.Equal(6, actions.Count); // Panel buttons and row-menu items for all three reported actions.
+        foreach (var action in actions)
+            Assert.Equal(offered, (bool)ReportedBinding(row, (string?)action.Attribute("IsEnabled")));
+    });
+
+    // With a saved, linked and selected account. Every account reload publishes a new row for the same profile and selects
+    // it again: the reload after Panic or Lock cancels a sign-in or a handoff inspection (for Lock, while still locked), the
+    // global Refresh, and the reload a native trial leaves for the next presentation. None of them is a user action, so none
+    // restarts the public lookups Panic or Lock stopped: no recently played name and no Roblox favorites page.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task PanicOrLockOnJoinGameKeepsRecentlyPlayedStoppedUntilThePageIsOpenedAgain(bool locked) => OnUi(async () =>
+    {
+        using (var profiles = new AccountRepository(_root))
+        {
+            await profiles.InitializeAsync(default);
+            var profile = await profiles.SaveAsync(AccountProfile.Create("Synthetic linked profile"), default);
+            using var vault = new ProtectedCredentialVault(_root);
+            await vault.SaveAsync(new(profile.Id, RobloxOAuthIdentity.Provider, 123, 1, "", "synthetic-refresh", DateTimeOffset.UtcNow.AddMinutes(10),
+                "synthetic_player", Issuer: RobloxOAuthIdentity.Issuer, Subject: "123"), default);
+        }
+        var monitor = new Monitor();
+        var games = new RecentlyPlayedGames();
+        var (_, logs, desktop) = ReportedInputs(DateTimeOffset.UtcNow);
+        monitor.Inventory = desktop;
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
+            publicDirectory: games, serverDirectory: new SearchServers(), gameDirectory: games);
+        await shell.InitializeAsync();
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        Assert.Equal(123, shell.SelectedAccount.KnownUserId);
+        var serial = await HoldReportedSamplerAsync(shell);
+        // A stopped correlator ignores offers, so every sample, including the 1 Hz loop, presents this synthetic log snapshot.
+        var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
+        await correlator.DisposeAsync();
+        ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
+        ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);
+        serial.Release();
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.Sessions).Log.ReportedPlaceId);
+
+        shell.Navigate.Execute("JoinGame"); await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
+        Assert.Equal(1, games.Lookups(ReportedPlace));
+        Assert.Equal(1, games.FavoriteRequests); Assert.Single(shell.RobloxFavorites.Chips);
+        var selected = shell.SelectedAccount!;
+        // The account reload Panic or Lock leaves behind when it cancels a sign-in or a handoff inspection.
+        var lifetime = (CancellationTokenSource)ReportedField(shell, "_lifetime").GetValue(shell)!;
+        Task ReloadAccountsAsync() => (Task)typeof(ShellViewModel).GetMethod("LoadAccountsAsync", ReportedPrivate)!.Invoke(shell, [lifetime.Token, null, null])!;
+
+        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); await ReloadAccountsAsync(); shell.Unlock.Execute(null); }
+        else { shell.Panic.Execute(null); await ReloadAccountsAsync(); }
+        Assert.NotSame(selected, shell.SelectedAccount); // The reload selected a new row for the same profile.
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
+        Assert.Empty(shell.RecentlyPlayed.Chips); Assert.Empty(shell.RobloxFavorites.Chips);
+        string stopped = shell.RobloxFavorites.Status;
+        // The global Refresh on the same page: an account reload, then the real sample and presentation path the 1 Hz loop runs.
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
+        // The reload a native trial queues: it starts from the next desktop presentation itself.
+        ReportedField(shell, "_nativeMetadataPending").SetValue(shell, 1);
+        shell.Refresh.Execute(null); await shell.Refresh.Execution;
+        await (Task)ReportedField(shell, "_nativeMetadataRefresh").GetValue(shell)!;
+        await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
+        Assert.True(shell.IsJoinGame);
+        Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);
+        Assert.Empty(shell.RecentlyPlayed.Chips);
+        Assert.Equal(1, games.Lookups(ReportedPlace)); // No second lookup without a user action.
+        Assert.Equal(1, games.FavoriteRequests); Assert.Empty(shell.RobloxFavorites.Chips);
+        Assert.Equal(stopped, shell.RobloxFavorites.Status);
+
+        shell.Navigate.Execute("Sessions"); shell.Navigate.Execute("JoinGame");
+        await shell.RecentlyPlayed.ActiveOperation; await shell.RobloxFavorites.ActiveOperation;
+        Assert.Equal(ReportedPlace, Assert.Single(shell.RecentlyPlayed.Chips).PlaceId);
+        Assert.Equal(2, games.Lookups(ReportedPlace)); // Opening the page again is the explicit action that resumes it.
+        Assert.Equal(2, games.FavoriteRequests); Assert.Single(shell.RobloxFavorites.Chips);
+    });
+
+    /// <summary>Counts public place lookups per place and favorites pages; every other public request is unexpected here.</summary>
+    private sealed class RecentlyPlayedGames : IPublicRobloxDirectory, IPublicRobloxGameDirectory, IPublicRobloxFavoriteGamesDirectory
+    {
+        private readonly Dictionary<long, int> _lookups = [];
+        public int Lookups(long placeId) => _lookups.GetValueOrDefault(placeId);
+        public int FavoriteRequests { get; private set; }
+        public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxFavoriteGame>>> GetFavoriteGamesAsync(long userId, CancellationToken ct)
+        {
+            if (userId != 123) throw new InvalidOperationException("Unexpected synthetic favorites owner");
+            FavoriteRequests++;
+            return Task.FromResult(SearchTest.Ok<IReadOnlyList<PublicRobloxFavoriteGame>>([new PublicRobloxFavoriteGame(201, ReportedPlace, "Synthetic favorite")]));
+        }
+        public Task<PublicDirectoryResult<PublicRobloxGame>> LookupGameAsync(long requestedPlaceId, CancellationToken ct)
+        {
+            _lookups[requestedPlaceId] = Lookups(requestedPlaceId) + 1;
+            return Task.FromResult(SearchTest.Ok(new PublicRobloxGame(requestedPlaceId, 201, requestedPlaceId, "Synthetic recently played",
+                7, "Creator", PublicRobloxCreatorKind.User, 17, 20, DateTimeOffset.UtcNow)));
+        }
+        public Task<PublicDirectoryResult<PublicRobloxGameIcon>> GetGameIconAsync(long universeId, CancellationToken ct)
+            => Task.FromResult(new PublicDirectoryResult<PublicRobloxGameIcon>(PublicDirectoryState.Unknown, null, "Synthetic optional image unavailable"));
+        public Task<PublicDirectoryResult<EncodedPublicGameIcon>> FetchGameIconAsync(PublicRobloxGameIcon icon, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic icon download");
+        public Task<PublicDirectoryResult<PublicRobloxUser>> LookupUserAsync(long userId, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic identity request");
+        public Task<PublicDirectoryResult<PublicRobloxAvatar>> GetAvatarAsync(long userId, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic avatar request");
+        public Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)
+            => throw new InvalidOperationException("Unexpected synthetic avatar download");
+        public void ClearMemoryCache() { }
+    }
+
+    private static readonly string[] ReportedActions = ["Join same game", "Join same server", "Copy reported server link"];
+    private static readonly System.Xml.Linq.XNamespace ReportedUi = "http://schemas.microsoft.com/winfx/2006/xaml/presentation",
+        ReportedXaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static System.Xml.Linq.XDocument ReportedMainWindow()
+    {
+        using var stream = typeof(ClientWindowIntegrationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        return System.Xml.Linq.XDocument.Load(stream);
+    }
+    private static System.Xml.Linq.XElement ReportedPage(System.Xml.Linq.XDocument source, string name)
+        => source.Descendants().Single(element => (string?)element.Attribute(ReportedXaml + "Name") == name);
+    /// <summary>Follows a plain "{Binding A.B}" path from the row, as the row template and selected-client panel do.</summary>
+    private static object ReportedBinding(object source, string? binding)
+    {
+        Assert.NotNull(binding);
+        Assert.StartsWith("{Binding ", binding, StringComparison.Ordinal); Assert.EndsWith("}", binding, StringComparison.Ordinal);
+        object value = source;
+        foreach (string member in binding["{Binding ".Length..^1].Split('.'))
+            value = value.GetType().GetProperty(member)?.GetValue(value) ?? throw new InvalidOperationException("Unexpected binding path.");
+        return value;
+    }
+
     private sealed record ReportedFixture(SessionRow Row, DesktopSnapshot Desktop,
         SessionLogDiscoverySnapshot Logs, WindowsSessionLogCorrelator Correlator);
 
-    private static ReportedFixture PublishReportedSession(ShellViewModel shell)
+    private static (SessionObservation Process, SessionLogDiscoverySnapshot Logs, DesktopSnapshot Desktop) ReportedInputs(DateTimeOffset now)
     {
-        var now = DateTimeOffset.UtcNow;
         var process = new SessionObservation(470001, now.AddSeconds(-30).UtcTicks, "Synthetic client", 0,
             "Synthetic windowless client", false, false, 10, 10, null, now);
         var key = new SessionProcessKey(null, process.ProcessId, process.ProcessStartUtcTicks);
@@ -237,6 +413,14 @@ public sealed partial class ClientWindowIntegrationTests
         var desktop = new DesktopSnapshot(new(now, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB,
             64 * CapacityPolicy.GiB, 10 * CapacityPolicy.GiB, 10), [process],
             ProcessObservedUtc: now, ProcessRevision: 1, ProcessInventoryComplete: true);
+        return (process, logs, desktop);
+    }
+
+    private static ReportedFixture PublishReportedSession(ShellViewModel shell)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (process, logs, desktop) = ReportedInputs(now);
+        var key = new SessionProcessKey(null, process.ProcessId, process.ProcessStartUtcTicks);
         var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
         ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
         ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);

@@ -54,11 +54,9 @@ public sealed partial class AccountRow(AccountProfile profile) : Observable
         if(_identity is "Linked" or "Saved link" && _expiresUtc is { } expiry && now>=expiry) { _identity="Expired"; Raise(nameof(Identity)); changed=true; }
         if(changed) { Raise(nameof(PowerLabel));Raise(nameof(PowerExplanation)); }
     }
-    public string Destination => Profile.PreferredPlaceId switch
-    {
-        6564161046 => "Coloseum sword-fight", 110829983956014 => "Anime Card Clash", 2512643572 => "Bubble Gum Simulator",
-        85896571713843 => "Bubble Gum Simulator INFINITY", null => "No game selected", _ => $"Place {Profile.PreferredPlaceId}"
-    };
+    /// <summary>The preferred game: the public directory's name when one was found for this place (selected row only), else the place ID.</summary>
+    public string Destination => Profile.PreferredPlaceId is not { } place ? "No game selected"
+        : _preferredGame is { } game && game.PlaceId==place ? $"{game.Name} · Place {place}" : $"Place {place}";
     private bool _checked;
     public bool IsChecked { get => _checked; set => Set(ref _checked, value); }
 }
@@ -226,7 +224,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public IReadOnlyList<AccountOrder> Orders { get; } = Enum.GetValues<AccountOrder>();
     public IReadOnlyList<AccountSortChoice> SortChoices { get; } = [new("Name",AccountOrder.Name),new("Priority",AccountOrder.Priority),new("Recently updated",AccountOrder.RecentlyUpdated),new("Favorites first",AccountOrder.FavoritesFirst)];
     public AccountSortChoice SortChoice { get=>SortChoices.First(c=>c.Value==Order); set { if(value is not null) Order=value.Value; } }
-    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources();if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
+    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources(opened:IsJoinGame);if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
     public bool IsOverview => Tab == "Overview"; public bool IsAccounts => Tab == "Accounts"; public bool IsSessions => Tab == "Sessions";
     public bool IsAutomation => Tab == "Automation"; public bool IsSettings => Tab == "Settings"; public bool IsGuide => Tab == "Guide";
     public bool IsJoinGame=>Tab=="JoinGame";
@@ -243,7 +241,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string Search { get => _search; set { if (Set(ref _search, value)) ScheduleQuery(); } }
     public GroupFilter Group { get => _group; set { if(_updatingGroups && value is null) return;if (Set(ref _group, value ?? GroupFilter.All) && !_updatingGroups) ScheduleQuery(); } }
     public AccountOrder Order { get => _order; set { if (Set(ref _order, value)) { Raise(nameof(SortChoice)); ScheduleQuery(); } } }
-    public AccountRow? SelectedAccount { get => _selected; set { if (Set(ref _selected, value)) { Raise(nameof(HasSelection)); RefreshDestinationCapacity(); RefreshJoinGameSources(); } } }
+    public AccountRow? SelectedAccount { get => _selected; set { if (Set(ref _selected, value)) { Raise(nameof(HasSelection)); RefreshDestinationCapacity(); RefreshJoinGameSources(); RefreshPreferredGameName(); } } }
     public bool HasSelection => SelectedAccount is not null;
     public bool CanNext => (_page + 1L) * 100 < _filteredTotal;
     public bool CanPrevious => _page > 0;
@@ -886,12 +884,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
         // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
         bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
-        _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
+        // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
+        var logs = _logCorrelator?.Snapshot;
+        _logProjection.Update(snapshot.Sessions, logs, now);
         // One registry snapshot per tick feeds both readers.
         var evidence=_logProjection.EvidenceSnapshot(now);
         RefreshLaunchEvidenceWith(evidence);
         RecentClients.Observe(snapshot,evidence,now);
-        var logViews = _logProjection.Snapshot(now);
+        // Rows retained from a failed, partial or stale scan keep their log text but not Join same / Copy.
+        var logViews = _logProjection.Snapshot(now, snapshot, logs);
         foreach (var row in Sessions)
             row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
                 ? log : SessionLogView.Unknown);

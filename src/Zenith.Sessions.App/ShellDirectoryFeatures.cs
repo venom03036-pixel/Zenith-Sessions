@@ -39,6 +39,14 @@ public sealed partial class AccountRow
     }
     public void ClearPublicPresentation()
     {_publicData=null;Raise(nameof(Avatar));Raise(nameof(HasAvatar));Raise(nameof(PublicDisplayName));Raise(nameof(PublicProfileEvidence));}
+    private (long PlaceId,string Name)? _preferredGame;
+    /// <summary>Show the public name found for this row's preferred place. A name for any other place is ignored.</summary>
+    public void SetPreferredGameName(long placeId,string name)
+    {
+        if(placeId!=Profile.PreferredPlaceId || string.IsNullOrWhiteSpace(name)) return;
+        _preferredGame=(placeId,name);Raise(nameof(Destination));
+    }
+    public void ClearPreferredGameName() {if(_preferredGame is null) return;_preferredGame=null;Raise(nameof(Destination));}
     public void SetLaunchStatus(LaunchOperation? operation)
     {
         _launchState=operation?.State;_launchProblem=operation?.Problem??LaunchProblem.None;
@@ -53,7 +61,23 @@ public sealed partial class ShellViewModel
     private PublicAccountPageLoader _publicImageLoader=null!;
     private readonly bool _enableAutomaticPublicImages;
     private bool _publicImagesAllowed,_publicImagesSuspended,_publicImageContextVisible;
+    /// <summary>
+    /// Set by Panic and Lock: Join a game's public lookups (Roblox favorites, recently played names) and the saved-server list
+    /// stay stopped. Cleared only when Join a game is opened again or another profile is chosen there, never by a reload.
+    /// </summary>
+    private bool _joinGameSourcesSuspended;
+    /// <summary>The last profile selected, on any page or while locked; a reload that selects it again is not a new choice.</summary>
+    private Guid? _joinGameProfile;
     public Task PublicImageOperation=>_publicImageLoader.ActiveOperation;
+    /// <summary>A page holds 100 rows; past this many places the remembered names are dropped and asked again when selected.</summary>
+    private const int MaximumPreferredGameNames=100;
+    private IPublicRobloxGameDirectory? _preferredGameDirectory;
+    private readonly Dictionary<long,string> _preferredGameNames=new();
+    private readonly List<Task> _preferredGameRuns=[];
+    private CancellationTokenSource? _preferredGameStop;
+    private long _preferredGamePlace;
+    /// <summary>Every tracked preferred-game name lookup; completes once all started lookups have finished or been fenced out.</summary>
+    public Task PreferredGameNameOperation {get {_preferredGameRuns.RemoveAll(run=>run.IsCompleted);return _preferredGameRuns.Count==0?Task.CompletedTask:Task.WhenAll(_preferredGameRuns);}}
     private CancellationTokenSource? _publicRefreshStop;
     private long _directoryGeneration;
     private bool _favoritesReloadRequested, _favoritesReloadRunning;
@@ -64,7 +88,7 @@ public sealed partial class ShellViewModel
     public RobloxFavoriteGamesViewModel RobloxFavorites {get;private set;}=null!;
     public RecentlyPlayedViewModel RecentlyPlayed {get;private set;}=null!;
     public ShareLinkViewModel ShareLink {get;private set;}=null!;
-    private bool _destinationSearchContextAllowed;
+    private bool _destinationSearchContextAllowed,_destinationSearchSuspended;
     public AsyncCommand RefreshPublicAccount {get;private set;}=null!;
     public AsyncCommand QueueTargetedAccounts {get;private set;}=null!;
     public AsyncCommand AccountPower {get;private set;}=null!;
@@ -76,6 +100,7 @@ public sealed partial class ShellViewModel
         if(serverDirectory is null) {_serverHttp=RobloxServerDirectory.CreatePublicHttpClient();serverDirectory=new RobloxServerDirectory(_serverHttp);}
         if(publicDirectory is null) {_publicHttp=RobloxPublicDirectory.CreateAnonymousHttpClient();publicDirectory=new RobloxPublicDirectory(_publicHttp,maximumEncodedMemoryBytes:32L*1024*1024);}
         ServerBrowser=new(serverDirectory,CanUseDirectories);_publicPresentation=new(publicDirectory);
+        _preferredGameDirectory=gameDirectory??publicDirectory as IPublicRobloxGameDirectory;
         GameDetails=new(gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,
             error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         // A universe-only share link opens the universe's root place, read anonymously after the signed-in resolve.
@@ -90,7 +115,6 @@ public sealed partial class ShellViewModel
             ServerBrowser,CanUseDirectories,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         RecentlyPlayed=new(publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory,
             gameDirectory??publicDirectory as IPublicRobloxGameDirectory,ServerBrowser,CanUseDirectories,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
-        RecentClients.Rows.CollectionChanged+=(_,_)=>{if(!_shuttingDown && IsJoinGame) RefreshRecentlyPlayed();};
         _publicImageLoader=new(_publicPresentation,CanUseDirectories,PublishPublicImageAsync,
             error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()));
         RefreshPublicAccount=new(async parameter=>
@@ -172,15 +196,35 @@ public sealed partial class ShellViewModel
     private bool CanAutomaticallyLoadPublicImages()=>_enableAutomaticPublicImages && !IsSample && !_publicImagesSuspended && IsAccounts
         && _clientPreviewWindowVisible && CanUseDirectories();
     private bool CanUseDestinationSearch()=>CanUseDirectories() && IsJoinGame && _clientPreviewWindowVisible;
-    /// <summary>Join a game opened or the selected account changed: bind Roblox favorites to that account, load once per visit and rebuild recently played; leaving cancels both.</summary>
-    private void RefreshJoinGameSources()
+    /// <summary>
+    /// Join a game opened (<paramref name="opened"/>, from the Tab setter) or the selected account changed: bind Roblox
+    /// favorites to that account, load once per visit and rebuild recently played; a share-link check made with another
+    /// account's session stops. Leaving cancels them all. Only the page opening or another profile chosen there is a user
+    /// action that restarts them after Panic or Lock. An account reload (the global Refresh, the reload after a cancelled
+    /// sign-in or handoff inspection, the one a native trial queues for the next presentation) selects a new row for the same
+    /// profile, after the list's momentary empty selection while it is rebuilt: that restarts nothing.
+    /// </summary>
+    private void RefreshJoinGameSources(bool opened=false)
     {
         if(RobloxFavorites is null) return;
         var row=SelectedAccount;
-        RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
-        if(IsJoinGame && CanUseDirectories()) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
-        else RobloxFavorites.Cancel();
-        if(IsJoinGame && CanUseDirectories()) _=ShareLink.LoadSavedAsync(); else ShareLink.Cancel();
+        bool chosen=opened || row is not null && row.Profile.Id!=_joinGameProfile;
+        if(row is not null) _joinGameProfile=row.Profile.Id; // Also while locked, so a reload after Unlock is not a new choice.
+        if(!IsJoinGame || !CanUseDirectories())
+        {
+            RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
+            RobloxFavorites.Cancel();ShareLink.Cancel();RefreshRecentlyPlayed();return;
+        }
+        if(row is null && !opened) return; // The account list's empty selection while it reloads; the same profile follows.
+        if(chosen) {_joinGameSourcesSuspended=false;RecentlyPlayed?.ForgetLocalRefusals();}
+        // The same profile re-selected keeps its favorites page; a changed sign-in for it drops the old page.
+        bool rebound=RobloxFavorites.SetAccount(row?.Profile.Id,row?.KnownUserId,row?.AuthorizationGeneration,row?.Label);
+        ShareLink.SelectedAccountChanged();
+        if(!_joinGameSourcesSuspended)
+        {
+            if(chosen || rebound) _=RobloxFavorites.LoadAsync(); // Owned and tracked by the view model (ActiveOperation); joined on dispose.
+            if(chosen) _=ShareLink.LoadSavedAsync();
+        }
         RefreshRecentlyPlayed();
     }
     /// <summary>
@@ -202,11 +246,15 @@ public sealed partial class ShellViewModel
         ShowJoinStep.Execute("2");ShowServerTab.Execute("Private");
         return ShareLink.CheckAsync(link);
     }
-    /// <summary>A new client or history observation while Join a game is open: rebuild the recently played chips from what the logs reported.</summary>
+    /// <summary>
+    /// Join a game opened, or one desktop presentation while it is open: rebuild the recently played chips from what the logs
+    /// reported, once, after the history rows and the client log views are both current. History row changes do not call
+    /// this one by one. After Panic or Lock the chips stay stopped; a desktop sample is not a user action.
+    /// </summary>
     private void RefreshRecentlyPlayed()
     {
         if(RecentlyPlayed is null) return;
-        if(IsJoinGame && CanUseDirectories()) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
+        if(IsJoinGame && CanUseDirectories() && !_joinGameSourcesSuspended) _=RecentlyPlayed.UpdateAsync(BuildRecentlyPlayedSources()); // Owned and tracked by the view model; joined on dispose.
         else RecentlyPlayed.Cancel();
     }
     private List<RecentlyPlayedSource> BuildRecentlyPlayedSources()
@@ -221,8 +269,14 @@ public sealed partial class ShellViewModel
     private void RefreshPublicImageActivity()
     {
         GameDetails?.Gallery.SetVisible(_clientPreviewWindowVisible && IsJoinGame && !IsLocked && !_shuttingDown);
-        bool searchAllowed=CanUseDestinationSearch();
-        if(_destinationSearchContextAllowed && !searchAllowed) DestinationSearch?.CancelWork(clearInput:false);
+        // Leaving Join a game, Lock and shutdown clear the search page. Hiding the window (minimize, close to the tray) while
+        // the page stays open only suspends it: running work still stops, a finished page and its pictures stay.
+        bool pageOpen=CanUseDirectories() && IsJoinGame,searchAllowed=CanUseDestinationSearch();
+        bool owned=_destinationSearchContextAllowed || _destinationSearchSuspended;
+        if(owned && !pageOpen) DestinationSearch?.CancelWork(clearInput:false);
+        else if(_destinationSearchContextAllowed && !searchAllowed) DestinationSearch?.Suspend();
+        else if(_destinationSearchSuspended && searchAllowed) DestinationSearch?.Resume();
+        _destinationSearchSuspended=owned && pageOpen && !searchAllowed;
         _destinationSearchContextAllowed=searchAllowed;DestinationSearch?.RefreshAvailability();
         if(_publicImageLoader is null) return;
         bool visible=IsAccounts && _clientPreviewWindowVisible && !IsLocked && !_shuttingDown;
@@ -231,7 +285,51 @@ public sealed partial class ShellViewModel
         bool allowed=CanAutomaticallyLoadPublicImages();
         if(allowed==_publicImagesAllowed) return;
         _publicImagesAllowed=allowed;
-        if(allowed) QueueCurrentPublicImages(); else _publicImageLoader.CancelWork();
+        if(allowed) {QueueCurrentPublicImages();RefreshPreferredGameName();} else {_publicImageLoader.CancelWork();StopPreferredGameLookup();}
+    }
+    /// <summary>
+    /// Name the selected account's preferred game through the public game directory, as Join a game does. Only the selected
+    /// row asks, one place at a time, under the automatic headshot rule: runtime composition, Accounts page and window
+    /// visible, not after Panic or Lock. Found names stay in memory until Lock or Panic; a failure keeps "Place {id}".
+    /// </summary>
+    private void RefreshPreferredGameName()
+    {
+        if(_preferredGameDirectory is null) return;
+        var row=SelectedAccount;long place=row?.Profile.PreferredPlaceId??0;string? name=null;
+        bool known=place>0 && _preferredGameNames.TryGetValue(place,out name);
+        if(known) row!.SetPreferredGameName(place,name!);
+        bool ask=place>0 && !known && CanAutomaticallyLoadPublicImages();
+        if(ask && _preferredGameStop is not null && _preferredGamePlace==place) return; // The running lookup already covers this place.
+        StopPreferredGameLookup();
+        if(!ask) return;
+        var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _preferredGameStop=stop;_preferredGamePlace=place;
+        _preferredGameRuns.RemoveAll(run=>run.IsCompleted);
+        _preferredGameRuns.Add(LookupPreferredGameAsync(_preferredGameDirectory,place,_directoryGeneration,stop));
+    }
+    private void StopPreferredGameLookup()
+    {
+        var stop=_preferredGameStop;_preferredGameStop=null;_preferredGamePlace=0;
+        stop?.Cancel(); // The lookup disposes its own token source when it ends.
+    }
+    private async Task LookupPreferredGameAsync(IPublicRobloxGameDirectory games,long place,long epoch,CancellationTokenSource stop)
+    {
+        try
+        {
+            var result=await games.LookupGameAsync(place,stop.Token);
+            if(stop.IsCancellationRequested || epoch!=_directoryGeneration || !CanUseDirectories()
+                || result.State!=PublicDirectoryState.Success || result.Value is not { } game || game.RequestedPlaceId!=place || string.IsNullOrWhiteSpace(game.Name)) return;
+            if(_preferredGameNames.Count>=MaximumPreferredGameNames) _preferredGameNames.Clear();
+            _preferredGameNames[place]=game.Name;
+            if(SelectedAccount is { } row && Accounts.Contains(row) && row.Profile.PreferredPlaceId==place) row.SetPreferredGameName(place,game.Name);
+        }
+        catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        catch(Exception error) {_diagnostics.Record(ManagerEventKind.OperationFailed,error.GetType());} // The name is decoration; "Place {id}" stands without it.
+        finally
+        {
+            if(ReferenceEquals(_preferredGameStop,stop)) {_preferredGameStop=null;_preferredGamePlace=0;}
+            stop.Dispose();
+        }
     }
     private void QueueCurrentPublicImages()
     {
@@ -327,9 +425,10 @@ public sealed partial class ShellViewModel
         RecipientBundles.CancelWork(clear);
         GameDetails.CancelWork(clear:true,clearCache:true);
         _publicPresentation.Clear();foreach(var row in Accounts) row.ClearPublicPresentation();
+        StopPreferredGameLookup();_preferredGameNames.Clear();foreach(var row in Accounts) row.ClearPreferredGameName();
         DestinationSearch.CancelWork(clearInput:true);
         RobloxFavorites.Cancel();
-        RecentlyPlayed.Cancel();
+        _joinGameSourcesSuspended=true;RecentlyPlayed.Cancel();
         ShareLink.Cancel();
         _shareLinkClient.ForgetAllTokens(); // Lock and Panic: the next share-link resolve starts with a fresh handshake.
     }
@@ -337,7 +436,7 @@ public sealed partial class ShellViewModel
     {
         DisposeDestinationCapacity();
         CancelDirectoryFeatures(true);
-        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,AccountPower.Execution);
+        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,AccountPower.Execution,PreferredGameNameOperation);
         await _publicImageLoader.DisposeAsync();
         await DestinationSearch.DisposeAsync();
         await RobloxFavorites.DisposeAsync();

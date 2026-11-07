@@ -360,7 +360,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         // InvalidDataException is a type ShellViewModel.Fail would show verbatim, so forwarding it there would put the code in Notice.
         public Task<IReadOnlyList<SavedPrivateServer>> ReadAsync(CancellationToken ct)
         {Reads++;return Task.FromException<IReadOnlyList<SavedPrivateServer>>(new InvalidDataException("synthetic damaged list near code "+code));}
-        public Task<SavedPrivateServer> AddAsync(string name,long placeId,long universeId,long? ownerUserId,ProtectedPrivateServerCode protectedCode,CancellationToken ct)
+        public Task<SavedPrivateServer> AddAsync(string name,long placeId,long universeId,long? ownerUserId,string? gameName,ProtectedPrivateServerCode protectedCode,CancellationToken ct)
         {
             Adds++;var saved=new SavedPrivateServer(Guid.NewGuid(),SavedPrivateServer.NormalizeName(name),placeId,universeId,ownerUserId,protectedCode.Last4,1).Validated();
             _items.Add(saved);return Task.FromResult(saved);

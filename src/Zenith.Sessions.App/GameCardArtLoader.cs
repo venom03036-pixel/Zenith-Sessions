@@ -6,7 +6,9 @@ namespace Zenith.Sessions.App;
 /// <summary>
 /// UI-context owner of card pictures for one search page: one batch descriptor request per visible set, then one
 /// download and one decode at a time. The directory is borrowed. Publication is fenced by run identity, so a late
-/// provider result never reaches a cleared or replaced grid. No retries, timers or polling.
+/// provider result never reaches a cleared or replaced grid. No retries, timers or polling. A refusal made on this PC
+/// (both shared request slots busy, a timeout) is not a Roblox cooldown: the run ends and its cards stay askable, so
+/// the next sort, page or Show more asks again; a Roblox pause or an unavailable picture keeps the placeholder.
 /// </summary>
 public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,Action<Exception> failed):IAsyncDisposable
 {
@@ -14,9 +16,11 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
     private Run? _current;
     private bool _disposed;
 
-    /// <summary>Every tracked picture task; completes once all started runs have finished or been fenced out.</summary>
-    public Task Active
-    {get {_runs.RemoveAll(run=>run.Task.IsCompleted);return _runs.Count==0?Task.CompletedTask:Task.WhenAll(_runs.Select(run=>run.Task));}}
+    /// <summary>
+    /// Every tracked picture task; completes once all started runs have finished or been fenced out. Only unfinished
+    /// runs are tracked: each run removes itself when it finishes, so finished rows and pictures are never retained here.
+    /// </summary>
+    public Task Active=>_runs.Count==0?Task.CompletedTask:Task.WhenAll(_runs.Select(run=>run.Task));
 
     /// <summary>
     /// Queue pictures for rows that have none. Rows join the run of this generation; another generation replaces
@@ -56,7 +60,13 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
                 var descriptors=await directory!.GetGameThumbnailsAsync(universes,run.Token);
                 if(!Current(run)) return;
                 if(descriptors.State!=PublicDirectoryState.Success || descriptors.Value is null)
-                {foreach(var row in batch) row.ArtAttempted=true;continue;} // Deferred or unavailable: placeholders, no retry.
+                {
+                    // Turned down on this PC (busy slots, timeout): end the run so no refusals pile up; the cards stay
+                    // askable for the next sort, page or Show more. A Roblox pause or unavailable: placeholders, no retry.
+                    if(PublicDirectoryDeferral.IsLocal(descriptors)) return;
+                    foreach(var row in batch) row.ArtAttempted=true;
+                    continue;
+                }
                 var byUniverse=new Dictionary<long,PublicRobloxGameThumbnail>();
                 foreach(var thumbnail in descriptors.Value) byUniverse.TryAdd(thumbnail.UniverseId,thumbnail);
                 foreach(var row in batch)
@@ -66,14 +76,15 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
                     {row.ArtAttempted=true;continue;}
                     var encoded=await directory.FetchGameThumbnailAsync(thumbnail,run.Token);
                     if(!Current(run)) return;
-                    row.ArtAttempted=true;
-                    if(encoded.State!=PublicDirectoryState.Success || encoded.Value is not { } bytes) continue;
+                    if(PublicDirectoryDeferral.IsLocal(encoded)) return; // As above: this card and the rest stay askable.
+                    if(encoded.State!=PublicDirectoryState.Success || encoded.Value is not { } bytes) {row.ArtAttempted=true;continue;}
+                    // Marked attempted only with a kept outcome: a run fenced while decoding never showed this card, so it stays askable.
                     ImageSource? pixels;
                     try {pixels=await Task.Run(()=>PublicAccountPresentation.DecodeCardPng(bytes.Bytes,bytes.MediaType,run.Token),CancellationToken.None);}
                     catch(OperationCanceledException) {return;}
-                    catch(Exception error) {if(!Current(run)) return;Report(error);continue;}
+                    catch(Exception error) {if(!Current(run)) return;row.ArtAttempted=true;Report(error);continue;}
                     if(!Current(run)) return;
-                    row.Art=pixels;
+                    row.ArtAttempted=true;row.Art=pixels;
                 }
             }
         }
@@ -83,6 +94,7 @@ public sealed class GameCardArtLoader(IPublicRobloxGameArtDirectory? directory,A
         {
             run.Finished=true;
             if(ReferenceEquals(_current,run)) _current=null;
+            _runs.Remove(run); // UI context, like every other access; the run's rows and pictures belong to the page now.
             run.Stop.Dispose();
         }
     }

@@ -136,9 +136,9 @@ public sealed class JoinWorkspacePresentationTests
     {
         var sessions=Page(Source(),"SessionsPage");var buttons=sessions.Descendants(Ui+"Button").ToList();
         var game=buttons.Single(button=>(string?)button.Attribute("Content")=="Join same game");
-        Assert.Equal("JoinSameGameClick",(string?)game.Attribute("Click"));Assert.Equal("{Binding Log.HasReportedDestination}",(string?)game.Attribute("IsEnabled"));
+        Assert.Equal("JoinSameGameClick",(string?)game.Attribute("Click"));Assert.Equal("{Binding Log.CanUseReportedDestination}",(string?)game.Attribute("IsEnabled"));
         var server=buttons.Single(button=>(string?)button.Attribute("Content")=="Join same server");
-        Assert.Equal("ReviewReportedServerClick",(string?)server.Attribute("Click"));Assert.Equal("{Binding Log.HasReportedDestination}",(string?)server.Attribute("IsEnabled"));
+        Assert.Equal("ReviewReportedServerClick",(string?)server.Attribute("Click"));Assert.Equal("{Binding Log.CanUseReportedDestination}",(string?)server.Attribute("IsEnabled"));
         Assert.Contains("public servers only",(string?)server.Attribute("ToolTip"),StringComparison.Ordinal);
         Assert.Contains(buttons,button=>(string?)button.Attribute("Content")=="Copy reported server link" && (string?)button.Attribute("Click")=="CopyReportedServerLink");
         Assert.DoesNotContain(buttons,button=>(string?)button.Attribute("Content")=="Review reported server");
@@ -162,6 +162,17 @@ public sealed class JoinWorkspacePresentationTests
         Assert.Contains(tab.Descendants(Ui+"TextBlock"),block=>(string?)block.Attribute("Text")=="Anyone with this link can join, so treat it like a password.");
         Assert.Contains(tab.Descendants(Ui+"TextBlock"),block=>(string?)block.Attribute("Text")=="{Binding JoinNote}");
         Assert.DoesNotContain(tab.Descendants(Ui+"TextBlock"),block=>((string?)block.Attribute("Text"))?.Contains("isn’t connected yet",StringComparison.Ordinal)==true);
+    }
+
+    [Fact]
+    public void SavedPrivateServersListTheGameByNameNotByPlaceId()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var list=join.Descendants(Ui+"ListView").Single(element=>(string?)element.Attribute("ItemsSource")=="{Binding Saved}");
+        var columns=list.Descendants(Ui+"GridViewColumn").ToList();
+        Assert.Equal(new[]{"Name","Game","Code"},columns.Select(column=>(string?)column.Attribute("Header")).ToArray());
+        Assert.Equal("{Binding GameLabel}",(string?)columns[1].Attribute("DisplayMemberBinding"));
+        Assert.DoesNotContain(columns,column=>((string?)column.Attribute("DisplayMemberBinding"))?.Contains("PlaceId",StringComparison.Ordinal)==true);
     }
 
     [Theory]

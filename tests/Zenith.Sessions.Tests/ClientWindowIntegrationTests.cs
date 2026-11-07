@@ -268,7 +268,9 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private static SessionObservation Observation(int pid) => new(pid, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks,
             "Synthetic", pid, "", false, true, 1, 1, null, DateTimeOffset.UtcNow);
-        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) => Task.FromResult(new DesktopSnapshot(
+        /// <summary>Optional exact inventory (completeness, scan time, problem) for presentation tests.</summary>
+        public DesktopSnapshot? Inventory;
+        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) => Task.FromResult(Inventory ?? new DesktopSnapshot(
             new(DateTimeOffset.UtcNow, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 10), Processes));
         public Task<bool> FocusAsync(SessionObservation session, CancellationToken ct) => Task.FromResult(false);
         public Task<bool> RequestCloseAsync(SessionObservation session, CancellationToken ct) => Task.FromResult(false);

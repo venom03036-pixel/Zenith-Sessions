@@ -78,6 +78,20 @@ public sealed class DestinationSearchPresentationTests
     });
 
     [Fact]
+    public Task SponsoredCardsSaySoAndOthersStayUnmarked()=>SearchTest.OnUi(async()=>
+    {
+        await using var model=new SearchTest(art:false);
+        model.Directory.SearchResponse=q=>SearchTest.Ok(new PublicRobloxGameSearchPage(q,
+            [new(1,11,"Promoted",Sponsored:true),new(2,12,"Organic",Sponsored:false),new(3,13,"Unknown")],null,model.Clock.Utc));
+        using var fixture=new Fixture(model,"graphite-mint");model.Browser.LinkInput="Fisch";await model.Search.SearchOrUseAsync();Layout(fixture.View,1088,620);
+        var cards=Visual(Grid(fixture.View)).OfType<Button>().ToArray();Assert.Equal(3,cards.Length);
+        Assert.Contains("Sponsored",Text(cards[0]));Assert.StartsWith("Promoted. Sponsored.",AutomationProperties.GetName(cards[0]),StringComparison.Ordinal);
+        foreach(var card in cards[1..])
+        {Assert.DoesNotContain("Sponsored",Text(card));Assert.DoesNotContain("Sponsored",AutomationProperties.GetName(card),StringComparison.Ordinal);}
+        static string[] Text(Button card)=>Visual(card).OfType<TextBlock>().Where(block=>block.Visibility==Visibility.Visible).Select(block=>block.Text).ToArray();
+    });
+
+    [Fact]
     public Task NarrowPanelsUseOneColumn()=>SearchTest.OnUi(async()=>
     {
         await using var model=new SearchTest(art:false);using var fixture=new Fixture(model,"graphite-mint");

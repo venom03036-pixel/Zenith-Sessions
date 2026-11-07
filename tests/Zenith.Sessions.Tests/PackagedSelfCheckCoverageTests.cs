@@ -33,7 +33,7 @@ public sealed class PackagedSelfCheckCoverageTests : IDisposable
         string fixture = Path.Combine(_root, "private-server-fixture");
         using (var earlier = new PrivateServerStore(fixture))
         using (var code = new ProtectedPrivateServerCode("SyntheticCode0123"))
-            await earlier.AddAsync(PackagedPrivateServerCheck.FixtureName, PackagedPrivateServerCheck.FixturePlaceId, 1, null, code, default);
+            await earlier.AddAsync(PackagedPrivateServerCheck.FixtureName, PackagedPrivateServerCheck.FixturePlaceId, 1, null, null, code, default);
 
         await PackagedPrivateServerCheck.VerifyAsync(_root, default);
         await PackagedPrivateServerCheck.VerifyAsync(_root, default); // The fixture root is reused across runs.
@@ -50,7 +50,7 @@ public sealed class PackagedSelfCheckCoverageTests : IDisposable
         SavedPrivateServer other;
         using (var store = new PrivateServerStore(fixture))
         using (var code = new ProtectedPrivateServerCode("OtherServerCode4567"))
-            other = await store.AddAsync("Owner's weekend server", 5, 6, null, code, default);
+            other = await store.AddAsync("Owner's weekend server", 5, 6, null, null, code, default);
 
         await Assert.ThrowsAsync<InvalidDataException>(() => PackagedPrivateServerCheck.VerifyAsync(_root, default));
 

@@ -71,6 +71,9 @@ These are observed first-party behaviour, not promised stable schemas. Fixtures 
   fetched **one at a time** and decoded with the existing `PublicAccountPresentation.DecodeGalleryPng` limits. A new
   search, page, sort change, Lock, Panic, leaving Join a game or disposal cancels it, bumps the generation and
   clears decoded images. Results from an older generation are discarded. No retries, timers or polling.
+  Hiding the window (minimize, close to the tray) while Join a game stays open is not a clear: a running search or use
+  still stops, but a finished page keeps its cards, sort, Show more and pictures; picture downloads stop while hidden
+  and, when the window is shown again, only the shown cards still without a picture are asked for. No search is sent.
 - **Clicking a card uses it**: it sets the requested destination to that result's root place and loads the docked
   game panel, exactly as Use selected experience does today. It never launches or queues. The Use selected experience
   button is removed; keyboard Enter on a focused card does the same.
@@ -120,8 +123,17 @@ name, creator line, playing + rating, accent border and check when it is the cur
   `LookupGameAsync(placeId)` for an entry without one. Unnamed entries show "Place {id}".
 - Chips are labelled **Recently played** with the tooltip "From your Roblox clients' logs on this PC. Not verified."
   Clicking one sets the requested destination (place only, never the old server).
-- Rebuilt when Join a game opens and whenever the shell publishes a new session/history snapshot while the page is
-  open; names are fetched only for places not already named this visit. No polling or timer is added.
+- Rebuilt when Join a game opens and once each time the shell publishes a new session/history snapshot while the page
+  is open, after the history rows and log views are both updated (never once per history row); names are fetched only
+  for places not already named this visit. No polling or timer is added.
+- A lookup turned down on this PC (both shared request slots busy, or the 15 s request timeout) is not a Roblox
+  cooldown, but the per-presentation rebuild never asks it again: the run ends and its unnamed places wait until Join a
+  game is opened again or another account is chosen there. A place newly seen in the logs is still asked.
+- Panic and Lock clear the chips and keep Recently played and Roblox favorites stopped, even after Unlock, until Join a
+  game is opened again or another account is chosen there; that also reloads saved private servers. An account reload
+  (the global Refresh, the reload after a cancelled sign-in or handoff inspection, the one a native trial queues) selects
+  a new row for the same account and restarts nothing; neither does a desktop sample. The favorites row then reads
+  "Stopped. Choose Refresh to load favorites again."
 
 ### 3.2 Join same game / Join same server
 

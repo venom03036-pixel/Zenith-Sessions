@@ -1,6 +1,8 @@
+using System.Net.Http;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
@@ -82,6 +84,17 @@ public sealed class RobloxFavoriteGamesViewModelTests
     });
 
     [Fact]
+    public Task CancelWhileEligibleSaysStoppedNotLoadsWhenPageOpens()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var directory=new FavoritesDirectory(3);await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
+        vm.SetAccount(ProfileA,156,3,"A");await vm.LoadAsync();Assert.Equal(3,vm.Chips.Count);
+        vm.Cancel(); // Panic or Lock while Join a game stays open: nothing reloads by itself.
+        Assert.Empty(vm.Chips);Assert.Equal("Stopped. Choose Refresh to load favorites again.",vm.Status);
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;Assert.Equal(2,directory.Requests);Assert.Equal(3,vm.Chips.Count); // Refresh does what the status says.
+        vm.SetAccount(ProfileB,157,1,"B");Assert.Equal("Roblox favorites load when Join a game opens.",vm.Status); // An account change keeps its own wording.
+    });
+
+    [Fact]
     public Task UnavailableOrRestrictedShowsAStatusWithoutAutomaticRetry()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Response=new(PublicDirectoryState.Unknown,null,"synthetic-provider-text")};
@@ -92,6 +105,48 @@ public sealed class RobloxFavoriteGamesViewModelTests
         directory.Response=new(PublicDirectoryState.Deferred,null,"raw",TimeSpan.FromMinutes(1));vm.Refresh.Execute(null);await vm.Refresh.Execution;
         Assert.Equal("Favorites deferred · wait for the Roblox cooldown",vm.Status);Assert.Empty(vm.Chips);
     });
+
+    // A Deferred without RetryAfter is the shared two-slot gate (or a timeout) turning the request down locally; Roblox
+    // asked for no pause, so the status must not send the user off to wait for a cooldown that does not exist.
+    [Fact]
+    public Task LocalBusyDeferralIsNotReportedAsARobloxCooldown()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Response=new(PublicDirectoryState.Deferred,null,"synthetic busy")};
+        await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
+        vm.SetAccount(ProfileA,156,3,"A");await vm.LoadAsync();
+        Assert.DoesNotContain("cooldown",vm.Status);Assert.Equal(LocalDeferralStatus,vm.Status);Assert.Empty(vm.Chips);
+        Assert.Equal(1,directory.Requests); // Nothing asks again by itself.
+        directory.Response=null;await vm.LoadAsync(); // The page was not loaded, so the next page open or selection asks again.
+        Assert.Equal(2,directory.Requests);Assert.Equal(3,vm.Chips.Count);
+    });
+
+    [Fact]
+    public Task TheRealTwoSlotGateTurnedDownIsReportedAsBusyNotACooldown()=>SearchTest.OnUi(async()=>
+    {
+        var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var handler=new HeldHandler(release.Task);using var http=new HttpClient(handler);
+        var directory=new RobloxPublicDirectory(http);
+        using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(10));
+        Task[] others=[directory.LookupUserAsync(1,deadline.Token),directory.LookupUserAsync(2,deadline.Token)]; // Two other lookups hold both slots.
+        try
+        {
+            await using var f=new SearchTest();await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
+            vm.SetAccount(ProfileA,156,3,"A");await vm.LoadAsync();
+            Assert.Equal(2,handler.Calls); // Turned down locally: nothing reached the network.
+            Assert.Equal(LocalDeferralStatus,vm.Status);
+        }
+        finally {release.TrySetResult();await Task.WhenAll(others).WaitAsync(TimeSpan.FromSeconds(10));}
+    });
+
+    private const string LocalDeferralStatus="Favorites not loaded · Roblox lookups were busy or slow. Choose Refresh to try again.";
+
+    private sealed class HeldHandler(Task release):HttpMessageHandler
+    {
+        private int _calls;
+        public int Calls=>Volatile.Read(ref _calls);
+        protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
+        {Interlocked.Increment(ref _calls);await release.WaitAsync(ct);return new HttpResponseMessage(System.Net.HttpStatusCode.NotFound){RequestMessage=request};}
+    }
 
     [Fact]
     public Task MissingDirectoryIsASilentPlaceholderAndDisposalJoinsAHeldRequest()=>SearchTest.OnUi(async()=>

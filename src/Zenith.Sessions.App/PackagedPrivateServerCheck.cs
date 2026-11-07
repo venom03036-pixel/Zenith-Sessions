@@ -11,6 +11,7 @@ namespace Zenith.Sessions.App;
 internal static class PackagedPrivateServerCheck
 {
     internal const string FixtureName = "Synthetic private server";
+    internal const string FixtureGameName = "Synthetic game";
     internal const long FixturePlaceId = 6564161046;
     private const long FixtureUniverseId = 1;
     private const string FixtureCode = "SyntheticCode0123";
@@ -26,9 +27,9 @@ internal static class PackagedPrivateServerCheck
 
         SavedPrivateServer saved;
         using (var code = new ProtectedPrivateServerCode(FixtureCode))
-            saved = await servers.AddAsync(FixtureName, FixturePlaceId, FixtureUniverseId, null, code, ct);
+            saved = await servers.AddAsync(FixtureName, FixturePlaceId, FixtureUniverseId, null, FixtureGameName, code, ct);
         var listed = await servers.ReadAsync(ct);
-        if (listed.Count != 1 || listed[0] != saved || saved.Last4 != FixtureCode[^4..])
+        if (listed.Count != 1 || listed[0] != saved || saved.Last4 != FixtureCode[^4..] || saved.GameName != FixtureGameName)
             throw new InvalidDataException("Saved private-server details did not round trip.");
         using (var revealed = await servers.ReadCodeAsync(saved.Id, ct))
         {

@@ -21,7 +21,11 @@ public sealed class RecentlyPlayedChip(long placeId):Observable
 /// UI-context owner of the recently played chips: places observed in client logs, newest first, at most six. Names come
 /// from one batch request for universes the logs named plus single lookups for the rest, remembered for the visit so no
 /// place is asked twice. Directories and browser are borrowed; a newer update fences the previous naming run. No retries,
-/// timers or polling; the shell calls <see cref="UpdateAsync"/> when it already has a new observation.
+/// timers or polling; the shell calls <see cref="UpdateAsync"/> on every desktop presentation while the page is open. A
+/// refusal made on this PC (both shared request slots busy, a 15 s timeout) is not a Roblox cooldown, but it is not asked
+/// again by those updates either: the run ends and its unnamed places wait for an explicit trigger, the page opened again
+/// (<see cref="Cancel"/>) or another account chosen there (<see cref="ForgetLocalRefusals"/>). A newly observed place is
+/// still asked. A Roblox pause or an unnamed place is not asked again this visit.
 /// </summary>
 public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
 {
@@ -34,6 +38,8 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
     private readonly CancellationTokenSource _lifetime=new();
     private readonly Dictionary<long,string> _names=new();
     private readonly HashSet<long> _attempted=new();
+    /// <summary>Places a run left unnamed after a refusal made on this PC; not asked by updates until an explicit trigger.</summary>
+    private readonly HashSet<long> _refused=new();
     private readonly List<Task> _runs=[];
     private CancellationTokenSource? _stop;
     private Task _current=Task.CompletedTask;
@@ -69,8 +75,8 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
         _runs.RemoveAll(run=>run.IsCompleted);
         if(Chips.Count==ordered.Length && Chips.Select(chip=>chip.PlaceId).SequenceEqual(ordered.Select(source=>source.PlaceId)))
         {
-            // Same games: keep the chips and the naming already in flight for them. Desktop samples repeat the same
-            // observations every few seconds; restarting here would cancel and re-send the lookup on every sample.
+            // Same games: keep the chips and the naming already in flight for them. Desktop presentations repeat the same
+            // observations about every 0.5-1 s; restarting here would cancel and re-send the lookup on every presentation.
             if(_stop is not null) return _current;
             for(int index=0;index<ordered.Length;index++) entries.Add((Chips[index],ordered[index]));
         }
@@ -85,7 +91,7 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
             }
             Raise(nameof(HasChips));
         }
-        var pending=entries.Where(entry=>!entry.Chip.HasName && !_attempted.Contains(entry.Chip.PlaceId)).ToArray();
+        var pending=entries.Where(entry=>!entry.Chip.HasName && !_attempted.Contains(entry.Chip.PlaceId) && !_refused.Contains(entry.Chip.PlaceId)).ToArray();
         if(pending.Length==0) return Task.CompletedTask;
         CancelRun();
         var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token,ct);
@@ -103,6 +109,7 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
                 long[] universes=batched.Select(entry=>entry.Source.UniverseId!.Value).Distinct().Take(PublicRobloxGameBatchLimits.MaximumUniverses).ToArray();
                 var result=await _batch!.LookupGamesAsync(universes,stop.Token);
                 if(!Current(generation,stop)) return;
+                if(PublicDirectoryDeferral.IsLocal(result)) {Refuse(pending);return;} // Turned down on this PC: end the run.
                 var names=new Dictionary<long,string>();
                 if(result.State==PublicDirectoryState.Success && result.Value is { } games) foreach(var game in games) names[game.UniverseId]=game.Name;
                 foreach(var entry in batched)
@@ -117,6 +124,7 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
                 if(_single is null) {_attempted.Add(entry.Chip.PlaceId);continue;} // No lookup capability: the place ID stays.
                 var result=await _single.LookupGameAsync(entry.Chip.PlaceId,stop.Token);
                 if(!Current(generation,stop)) return;
+                if(PublicDirectoryDeferral.IsLocal(result)) {Refuse(pending);return;}
                 _attempted.Add(entry.Chip.PlaceId);
                 if(result.State==PublicDirectoryState.Success && result.Value is { } game) {_names[entry.Chip.PlaceId]=game.Name;entry.Chip.SetName(game.Name);}
             }
@@ -125,6 +133,9 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
         catch(Exception error) {Report(error);}
         finally {if(ReferenceEquals(_stop,stop)) _stop=null;stop.Dispose();}
     }
+    /// <summary>Every place this run had not finished waits for an explicit trigger, so presentation updates cannot re-ask a slow Roblox.</summary>
+    private void Refuse((RecentlyPlayedChip Chip,RecentlyPlayedSource Source)[] pending)
+    {foreach(var entry in pending) if(!_attempted.Contains(entry.Chip.PlaceId)) _refused.Add(entry.Chip.PlaceId);}
     private bool Current(long generation,CancellationTokenSource stop)=>Allowed && generation==Interlocked.Read(ref _generation) && !stop.IsCancellationRequested;
 
     private void UseChip(object? parameter)
@@ -133,10 +144,15 @@ public sealed class RecentlyPlayedViewModel:Observable,IAsyncDisposable
         _browser.UsePreferredPlace(chip.PlaceId); // The game only: an old server from a log is never requested.
     }
 
+    /// <summary>
+    /// Join a game opened or another account was chosen there: places turned down on this PC may be asked once more by the
+    /// next update. Called only on those explicit triggers, never per presentation. Roblox pauses and unnamed places stay attempted.
+    /// </summary>
+    public void ForgetLocalRefusals()=>_refused.Clear();
     /// <summary>Leaving the page, Lock or Panic: cancel naming, clear the chips and forget this visit's names.</summary>
     public void Cancel()
     {
-        CancelRun();_names.Clear();_attempted.Clear();
+        CancelRun();_names.Clear();_attempted.Clear();_refused.Clear();
         if(Chips.Count!=0) {Chips.Clear();Raise(nameof(HasChips));}
     }
     private void CancelRun()

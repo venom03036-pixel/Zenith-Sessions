@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
@@ -14,13 +15,23 @@ namespace Zenith.Sessions.Windows;
 public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
 {
     public const int MaximumFileBytes = 256 * 1024;
+    /// <summary>Version 2 adds each server's GameName (string or null). Version 1 files are read as unnamed and rewritten as version 2 on the next save or removal.</summary>
+    private const int CurrentVersion = 2;
     private static readonly byte[] Entropy = Encoding.UTF8.GetBytes("Zenith.Sessions.PrivateServers.v1");
+    private static readonly string[] Version1Properties = ["Id", "Name", "PlaceId", "UniverseId", "OwnerUserId", "Code", "Revision"];
+    private static readonly string[] Version2Properties = [.. Version1Properties, "GameName"];
     private readonly SemaphoreSlim _writer = new(1, 1);
     private readonly string _root;
     private int _disposed;
     public string Path { get; }
     private sealed record Document(int Version, long Revision, StoredServer[] Items);
-    private sealed record StoredServer(Guid Id, string Name, long PlaceId, long UniverseId, long? OwnerUserId, string Code, long Revision);
+    /// <summary>Holds the clear link code in memory between the protected holder and the protected file. Its text form is
+    /// redacted like <see cref="SavedPrivateServer"/>'s so no diagnostic or message can print the code or the user's name.</summary>
+    private sealed record StoredServer(Guid Id, string Name, long PlaceId, long UniverseId, long? OwnerUserId, string Code, long Revision, string? GameName)
+    {
+        public override string ToString() => "Stored private server { Place = " + PlaceId.ToString(CultureInfo.InvariantCulture)
+            + ", Revision = " + Revision.ToString(CultureInfo.InvariantCulture) + ", Name = [omitted], Code = [protected] }";
+    }
 
     public PrivateServerStore(string root)
     {
@@ -34,25 +45,29 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         return (IReadOnlyList<SavedPrivateServer>)Array.AsReadOnly(document.Items.Select(ToSaved).ToArray());
     }, ct);
 
-    public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, ProtectedPrivateServerCode code, CancellationToken ct)
+    public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, string? gameName, ProtectedPrivateServerCode code, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(code);
-        var draft = new SavedPrivateServer(Guid.NewGuid(), SavedPrivateServer.NormalizeName(name), placeId, universeId, ownerUserId, code.Last4, 0).Validated();
+        var draft = new SavedPrivateServer(Guid.NewGuid(), SavedPrivateServer.NormalizeName(name), placeId, universeId, ownerUserId, code.Last4, 0, gameName).Validated();
         return SerializedAsync(async token =>
         {
             var document = await LoadAsync(token).ConfigureAwait(false);
-            if (document.Items.Length >= SavedPrivateServer.MaximumCount) throw new PrivateServerCapacityException();
-            if (document.Revision == long.MaxValue) throw Damaged("Private server revisions cannot advance. Existing files were preserved.");
             // The clear code is a transient string between the protected holder and the protected file, like a cookie header.
             string value = ""; code.Reveal(span => value = new string(span));
             // A holder cleared while it was being copied would leave a torn code; persisting it would make the whole
             // file unreadable (it is never overwritten once damaged). Refuse it before anything is written.
             if (!IsStorableCode(value, draft.Last4))
                 throw new InvalidOperationException("The private server code was cleared while it was being saved. Nothing was written.");
+            // The link code is the private server's identity: one saved row per code, checked under the writer and file lock
+            // so two windows cannot both add it. Files written before this rule may hold copies; they still read, and the first is named.
+            if (Array.Find(document.Items, item => string.Equals(item.Code, value, StringComparison.Ordinal)) is { } existing)
+                throw new PrivateServerDuplicateException(ToSaved(existing));
+            if (document.Items.Length >= SavedPrivateServer.MaximumCount) throw new PrivateServerCapacityException();
+            if (document.Revision == long.MaxValue) throw Damaged("Private server revisions cannot advance. Existing files were preserved.");
             var saved = draft with { Revision = 1 };
             var items = new StoredServer[document.Items.Length + 1]; document.Items.CopyTo(items, 0);
-            items[^1] = new(saved.Id, saved.Name, saved.PlaceId, saved.UniverseId, saved.OwnerUserId, value, saved.Revision);
-            await WriteAsync(new(1, document.Revision + 1, items), token).ConfigureAwait(false);
+            items[^1] = new(saved.Id, saved.Name, saved.PlaceId, saved.UniverseId, saved.OwnerUserId, value, saved.Revision, saved.GameName);
+            await WriteAsync(new(CurrentVersion, document.Revision + 1, items), token).ConfigureAwait(false);
             return saved;
         }, ct);
     }
@@ -68,7 +83,7 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
             if (document.Revision == long.MaxValue) throw Damaged("Private server revisions cannot advance. Existing files were preserved.");
             var items = new StoredServer[document.Items.Length - 1];
             Array.Copy(document.Items, 0, items, 0, index); Array.Copy(document.Items, index + 1, items, index, items.Length - index);
-            await WriteAsync(new(1, document.Revision + 1, items), token).ConfigureAwait(false);
+            await WriteAsync(new(CurrentVersion, document.Revision + 1, items), token).ConfigureAwait(false);
             return true;
         }, ct).ConfigureAwait(false);
     }
@@ -131,24 +146,28 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         {
             using var json = JsonDocument.Parse(clear, new JsonDocumentOptions { MaxDepth = 8 }); var root = json.RootElement;
             RequireProperties(root, ["Version", "Revision", "Items"]);
-            if (root.GetProperty("Version").GetInt32() != 1)
+            int version = root.GetProperty("Version").GetInt32();
+            if (version is not (1 or CurrentVersion))
                 throw new PrivateServerStorageException(PrivateServerStorageProblem.UnsupportedVersion, "The saved private servers file has an unsupported version. Existing files were preserved.");
             long revision = root.GetProperty("Revision").GetInt64(); var data = root.GetProperty("Items");
             if (revision < 1 || data.ValueKind != JsonValueKind.Array || data.GetArrayLength() > SavedPrivateServer.MaximumCount) throw new InvalidDataException();
             var items = new StoredServer[data.GetArrayLength()]; var ids = new HashSet<Guid>(); int index = 0;
             foreach (var entry in data.EnumerateArray())
             {
-                ct.ThrowIfCancellationRequested(); RequireProperties(entry, ["Id", "Name", "PlaceId", "UniverseId", "OwnerUserId", "Code", "Revision"]);
+                ct.ThrowIfCancellationRequested(); RequireProperties(entry, version == 1 ? Version1Properties : Version2Properties);
                 long? owner = entry.GetProperty("OwnerUserId").ValueKind == JsonValueKind.Null ? null : entry.GetProperty("OwnerUserId").GetInt64();
+                // Version 1 servers were saved before game names were kept; the list shows their place instead.
+                string? gameName = version == 1 || entry.GetProperty("GameName").ValueKind == JsonValueKind.Null ? null
+                    : entry.GetProperty("GameName").GetString() ?? throw new InvalidDataException();
                 string code = entry.GetProperty("Code").GetString() ?? throw new InvalidDataException();
-                using var holder = new ProtectedPrivateServerCode(code); // Validates the code's shape without keeping it.
+                using var holder = new ProtectedPrivateServerCode(code); // Validates the code's shape without keeping it (the same rule AddAsync writes with).
                 var stored = new StoredServer(entry.GetProperty("Id").GetGuid(), entry.GetProperty("Name").GetString() ?? "", entry.GetProperty("PlaceId").GetInt64(),
-                    entry.GetProperty("UniverseId").GetInt64(), owner, code, entry.GetProperty("Revision").GetInt64());
+                    entry.GetProperty("UniverseId").GetInt64(), owner, code, entry.GetProperty("Revision").GetInt64(), gameName);
                 ToSaved(stored).Validated();
                 if (stored.Revision < 1 || stored.Revision > revision || !ids.Add(stored.Id)) throw new InvalidDataException();
                 items[index++] = stored;
             }
-            return new(1, revision, items);
+            return new(version, revision, items);
         }
         catch (Exception ex) when (ex is JsonException or InvalidDataException or FormatException or InvalidOperationException or ArgumentException or OverflowException or KeyNotFoundException)
         { throw Damaged("Saved private servers contain an invalid or unreadable record. Existing files were preserved."); }
@@ -190,13 +209,19 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         else File.Move(temporary, Path);
     }
 
+    /// <summary>A code is storable when the holder's own shape rule accepts it (the rule <see cref="Parse"/> reads it back
+    /// with, so the store can never write a code its next read rejects) and its last four are the ones the row shows. The
+    /// shape refusal is caught here so it reads as a torn code, not as a bad server name.</summary>
     private static bool IsStorableCode(string value, string last4)
     {
-        if (value.Length is < 4 or > 128 || !value.EndsWith(last4, StringComparison.Ordinal)) return false;
-        foreach (char c in value) if (!char.IsAsciiLetterOrDigit(c)) return false;
-        return true;
+        try
+        {
+            using var check = new ProtectedPrivateServerCode(value);
+            return string.Equals(check.Last4, last4, StringComparison.Ordinal);
+        }
+        catch (ArgumentException) { return false; }
     }
-    private static SavedPrivateServer ToSaved(StoredServer item) => new(item.Id, item.Name, item.PlaceId, item.UniverseId, item.OwnerUserId, item.Code[^4..], item.Revision);
+    private static SavedPrivateServer ToSaved(StoredServer item) => new(item.Id, item.Name, item.PlaceId, item.UniverseId, item.OwnerUserId, item.Code[^4..], item.Revision, item.GameName);
     private static PrivateServerStorageException Damaged(string message) => new(PrivateServerStorageProblem.Damaged, message);
     /// <summary>Dispose after the caller has awaited all operations; this store owns no persistent worker.</summary>
     public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) _writer.Dispose(); }

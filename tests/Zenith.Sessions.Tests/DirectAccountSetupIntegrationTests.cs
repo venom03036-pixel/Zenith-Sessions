@@ -337,8 +337,8 @@ public sealed partial class ClientWindowIntegrationTests
             if (!FailNextRead) return Inner.ReadAsync(ct);
             FailNextRead = false; FailedReads++; return Task.FromException<IReadOnlyList<SavedPrivateServer>>(new IOException("synthetic lock on code " + code));
         }
-        public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, ProtectedPrivateServerCode protectedCode, CancellationToken ct)
-            => Inner.AddAsync(name, placeId, universeId, ownerUserId, protectedCode, ct);
+        public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, string? gameName, ProtectedPrivateServerCode protectedCode, CancellationToken ct)
+            => Inner.AddAsync(name, placeId, universeId, ownerUserId, gameName, protectedCode, ct);
         public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => Inner.DeleteAsync(id, revision, ct);
         public Task<ProtectedPrivateServerCode> ReadCodeAsync(Guid id, CancellationToken ct) => Inner.ReadCodeAsync(id, ct);
         public void Dispose() => Inner.Dispose();

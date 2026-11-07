@@ -13,8 +13,9 @@ public sealed class RobloxFavoriteChip(PublicRobloxFavoriteGame game)
 
 /// <summary>
 /// UI-context owner of the selected account's public Roblox favorites: one page per visit, loaded once when Join a
-/// game opens or the account changes, asked again only on an explicit refresh. Directory and browser are borrowed;
-/// a page for a previous account or visit is fenced out. No sign-in, retries, timers or cache.
+/// game opens or the account changes, asked again only on an explicit refresh (or, after a local refusal that is not a
+/// Roblox cooldown, on the next open or selection). Directory and browser are borrowed; a page for a previous account
+/// or visit is fenced out. No sign-in, retries, timers or cache.
 /// </summary>
 public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
 {
@@ -55,14 +56,18 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
         Refresh=new(_=>RefreshAsync(),ReportFailure);Use=new(UseChip);ShowAll=new(_=>ToggleShowAll());
     }
 
-    /// <summary>Bind to the account selected in Accounts. Another account cancels and clears; the same one keeps its page.</summary>
-    public void SetAccount(Guid? profileId,long? userId,long? authorizationGeneration,string? accountName)
+    /// <summary>
+    /// Bind to the account selected in Accounts. Another account (or a changed sign-in) cancels and clears and returns true;
+    /// the same one keeps its page and returns false.
+    /// </summary>
+    public bool SetAccount(Guid? profileId,long? userId,long? authorizationGeneration,string? accountName)
     {
         AccountKey? key=profileId is { } id?new(id,userId is >0?userId:null,authorizationGeneration is >0?authorizationGeneration:null):null;
         string name=accountName??"";
-        if(key==_account && string.Equals(name,_accountName,StringComparison.Ordinal)) return;
+        if(key==_account && string.Equals(name,_accountName,StringComparison.Ordinal)) return false;
         _account=key;_accountName=name;
         Invalidate();Raise(nameof(HeaderLabel));
+        return true;
     }
 
     /// <summary>
@@ -105,6 +110,12 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
                 _status=_all.Count==0?"No public favorites on this profile."
                     :_all.Count.ToString(CultureInfo.InvariantCulture)+" public favorites on Roblox · newest first";
             }
+            else if(PublicDirectoryDeferral.IsLocal(result))
+            {
+                // Turned down on this PC (shared request slots busy, or a timeout), not a Roblox cooldown: this visit's
+                // page was not loaded, so the next page open, selection or Refresh asks again. Nothing retries by itself.
+                _loaded=null;_status="Favorites not loaded · Roblox lookups were busy or slow. Choose Refresh to try again.";
+            }
             else _status=result.State==PublicDirectoryState.Deferred?"Favorites deferred · wait for the Roblox cooldown":"Favorites unavailable";
             Raise(nameof(Status));
         }
@@ -132,16 +143,20 @@ public sealed class RobloxFavoriteGamesViewModel:Observable,IAsyncDisposable
     }
     private void ClearChips() {_all.Clear();_showAll=false;PublishChips();}
 
-    /// <summary>Leaving the page, Lock, Panic or an account change: cancel, clear and forget this visit's page.</summary>
-    public void Cancel()=>Invalidate();
-    private void Invalidate()
+    /// <summary>
+    /// Leaving the page, Lock or Panic: cancel, clear and forget this visit's page. The page may still be open (Panic,
+    /// Unlock), so the status names Refresh; opening the page again replaces it.
+    /// </summary>
+    public void Cancel()=>Invalidate(stopped:true);
+    private void Invalidate(bool stopped=false)
     {
         Interlocked.Increment(ref _generation);try {_stop?.Cancel();} catch(ObjectDisposedException) { }
         if(_stop is not null) {_stop=null;_busy=false;Raise(nameof(IsBusy));} // The cancelled run is fenced; it disposes its own source.
         _loaded=null;ClearChips();
         _status=_account is not { } account?"Select an account to show its Roblox favorites."
             :account.UserId is null || account.Generation is null?"Sign in to show this account's Roblox favorites"
-            :_directory is null?"Roblox favorites are unavailable in this build.":"Roblox favorites load when Join a game opens.";
+            :_directory is null?"Roblox favorites are unavailable in this build."
+            :stopped?"Stopped. Choose Refresh to load favorites again.":"Roblox favorites load when Join a game opens.";
         Raise(nameof(Status));
     }
     private void SetStatus(string status) {_status=status;Raise(nameof(Status));}
