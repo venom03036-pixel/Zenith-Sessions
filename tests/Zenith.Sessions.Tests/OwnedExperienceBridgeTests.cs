@@ -60,6 +60,42 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Equal(1, writes);
     }
 
+    // The Luau server fixture feeds these exact texts through the shipped script's size cap and JSON decode
+    // path, so a change to the published payload must change both suites together.
+    [Fact]
+    public async Task PublishedCommandJsonMatchesTheLuauFixtureGoldens()
+    {
+        string fixture;
+        using (var stream = typeof(OwnedExperienceBridgeTests).Assembly.GetManifestResourceStream("OwnedExperienceBridgeTests.luau"))
+        {
+            Assert.True(stream is not null, "The Luau server fixture is not embedded in the test assembly.");
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            fixture = await reader.ReadToEndAsync();
+        }
+        static string Golden(string fixture, string name)
+        {
+            var match = System.Text.RegularExpressions.Regex.Match(fixture, $@"local {name} = \[\[(.*?)\]\]",
+                System.Text.RegularExpressions.RegexOptions.Singleline);
+            Assert.True(match.Success, $"The Luau server fixture has no {name} payload.");
+            return match.Groups[1].Value;
+        }
+
+        var operation = Guid.Parse("34567890-3456-3456-3456-34567890abcd");
+        var move = new OwnedExperienceCommand(operation, Universe, User, Source, Destination, Start);
+        var status = new OwnedExperienceCommand(operation, Universe, User, Source, null, Start);
+        Assert.Equal(Golden(fixture, "goldenMove"), await PublishedMessage(move, Start));
+        Assert.Equal(Golden(fixture, "goldenStatus"), await PublishedMessage(status, Start));
+
+        // The script ignores any message over 1024 bytes. The widest command it can accept must fit.
+        const long widest = 9_007_199_254_740_991;
+        var latest = DateTimeOffset.MaxValue - OwnedExperienceCommand.Lifetime;
+        var largest = new OwnedExperienceCommand(Guid.Parse("ffffffff-ffff-ffff-ffff-ffffffffffff"), widest, widest,
+            new(widest, Guid.Parse("ffffffff-ffff-ffff-ffff-fffffffffffe")), new(widest, Guid.Parse("ffffffff-ffff-ffff-ffff-fffffffffffd")), latest);
+        var widestMessage = await PublishedMessage(largest, latest);
+        Assert.True(Encoding.UTF8.GetByteCount(widestMessage) <= 1024,
+            $"The widest command is {Encoding.UTF8.GetByteCount(widestMessage)} bytes, over the script's 1024-byte limit.");
+    }
+
     [Theory]
     [InlineData("atSource", false, OwnedExperienceStage.AtSource)]
     [InlineData("received", true, OwnedExperienceStage.Received)]
@@ -240,6 +276,21 @@ public sealed class OwnedExperienceBridgeTests
 
     private static OwnedExperienceCommand Command(bool join = true)
         => new(Guid.NewGuid(), Universe, User, Source, join ? Destination : null, Start);
+
+    private static async Task<string> PublishedMessage(OwnedExperienceCommand command, DateTimeOffset now)
+    {
+        string? message = null;
+        using var bridge = new RobloxOwnedExperienceBridge(command.UniverseId, _ => ValueTask.FromResult<string?>("fixture-read"),
+            _ => ValueTask.FromResult<string?>("fixture-publish"), new Handler(async (request, ct) =>
+            {
+                using var body = JsonDocument.Parse(await request.Content!.ReadAsStringAsync(ct));
+                message = body.RootElement.GetProperty("message").GetString();
+                return new(HttpStatusCode.OK);
+            }), new Clock { Now = now });
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+        Assert.NotNull(message);
+        return message;
+    }
 
     private static JsonObject CommandFields(OwnedExperienceCommand command) => new()
     {

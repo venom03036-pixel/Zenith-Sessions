@@ -7,12 +7,113 @@ local destinationJob = "23456789-2345-2345-2345-23456789abcd"
 local operation = "34567890-3456-3456-3456-34567890abcd"
 local otherOperation = "45678901-4567-4567-4567-45678901abcd"
 local recordKey = "u8000000002"
+-- The exact text RobloxOwnedExperienceBridge publishes for this command, issued at 2026-11-07T10:00Z.
+-- OwnedExperienceBridgeTests.cs reads both lines from this file, so the two suites pin one payload.
+local goldenIssued = 1794045600
+local goldenMove = [[{"version":1,"operationId":"34567890-3456-3456-3456-34567890abcd","universeId":8000000001,"userId":8000000002,"sourcePlaceId":9000000001,"sourceJobId":"12345678-1234-1234-1234-123456789abc","destinationPlaceId":9000000002,"destinationJobId":"23456789-2345-2345-2345-23456789abcd","issuedUtc":1794045600,"expiresUtc":1794045645}]]
+local goldenStatus = [[{"version":1,"operationId":"34567890-3456-3456-3456-34567890abcd","universeId":8000000001,"userId":8000000002,"sourcePlaceId":9000000001,"sourceJobId":"12345678-1234-1234-1234-123456789abc","destinationPlaceId":null,"destinationJobId":null,"issuedUtc":1794045600,"expiresUtc":1794045645}]]
 local passed = 0
 
 local function check(name, work)
     work()
     passed = passed + 1
     print("PASS " .. name)
+end
+
+-- A model of HttpService:JSONDecode for the flat objects the bridge publishes: strings without escapes,
+-- integers, true, false and null. Roblox drops null members, so they decode to nil. Anything else raises
+-- an error, as Roblox does for malformed JSON. It is stricter than Roblox, never looser.
+local function decodeFlatObject(text)
+    local position = 1
+    local function skip()
+        position = string.find(text, "[^ \t\r\n]", position) or #text + 1
+    end
+    local function take(token)
+        skip()
+        assert(string.sub(text, position, position + #token - 1) == token, "malformed JSON")
+        position = position + #token
+    end
+    local function readString()
+        take('"')
+        local finish = string.find(text, '"', position, true)
+        assert(finish ~= nil, "unterminated JSON string")
+        local value = string.sub(text, position, finish - 1)
+        assert(not string.find(value, "[\\%c]"), "unsupported JSON string")
+        position = finish + 1
+        return value
+    end
+    local result = {}
+    take("{")
+    skip()
+    if string.sub(text, position, position) == "}" then
+        position = position + 1
+    else
+        repeat
+            local name = readString()
+            take(":")
+            skip()
+            local value
+            local digits = string.match(text, "^-?%d+", position)
+            if string.sub(text, position, position) == '"' then
+                value = readString()
+            elseif digits then
+                position = position + #digits
+                assert(not string.match(text, "^[%.eE]", position), "only integers are expected")
+                value = tonumber(digits)
+            else
+                local word = string.match(text, "^%a+", position) or ""
+                position = position + #word
+                if word == "true" or word == "false" then
+                    value = word == "true"
+                else
+                    assert(word == "null", "unsupported JSON value")
+                end
+            end
+            result[name] = value
+            skip()
+            local separator = string.sub(text, position, position)
+            position = position + 1
+            assert(separator == "," or separator == "}", "malformed JSON")
+        until separator == "}"
+    end
+    skip()
+    assert(position > #text, "trailing JSON text")
+    return result
+end
+
+-- Writes a command as JSON text in RobloxOwnedExperienceBridge.WriteCommand's field order, with a nil
+-- field written as null and any extra fixture fields after it.
+local commandFields = { "version", "operationId", "universeId", "userId", "sourcePlaceId", "sourceJobId",
+    "destinationPlaceId", "destinationJobId", "issuedUtc", "expiresUtc" }
+local function encodeCommand(command)
+    local function encode(value)
+        if value == nil then
+            return "null"
+        elseif type(value) == "number" then
+            assert(value % 1 == 0, "the fixture writes only integers")
+            return string.format("%.0f", value)
+        elseif type(value) == "boolean" then
+            return tostring(value)
+        end
+        assert(type(value) == "string" and not string.find(value, '["\\%c]'), "unsupported fixture value")
+        return '"' .. value .. '"'
+    end
+    local names = table.clone(commandFields)
+    local extras = {}
+    for name in pairs(command) do
+        if not table.find(commandFields, name) then
+            table.insert(extras, name)
+        end
+    end
+    table.sort(extras)
+    for _, name in ipairs(extras) do
+        table.insert(names, name)
+    end
+    local parts = {}
+    for _, name in ipairs(names) do
+        table.insert(parts, '"' .. name .. '":' .. encode(command[name]))
+    end
+    return "{" .. table.concat(parts, ",") .. "}"
 end
 
 local function fixture()
@@ -51,7 +152,7 @@ local function fixture()
                 return store
             end },
             HttpService = {
-                JSONDecode = function(_, _) return state.command end,
+                JSONDecode = function(_, text) return decodeFlatObject(text) end,
                 GenerateGUID = function(_, _)
                     state.claims = state.claims + 1
                     return string.format("87654321-8765-8765-8765-%012d", state.claims)
@@ -97,8 +198,12 @@ local function fixture()
     state.source = makeServer(sourcePlace, sourceJob)
     state.destination = makeServer(destinationPlace, destinationJob)
     state.makeServer = makeServer
+    -- Every command reaches the script as JSON text, through its size cap and JSONDecode.
+    function state:publish(text)
+        self.source.message({ Data = text })
+    end
     function state:send(changes, status)
-        self.command = {
+        local command = {
             version = 1, operationId = operation, universeId = universe, userId = user,
             sourcePlaceId = sourcePlace, sourceJobId = sourceJob,
             destinationPlaceId = not status and destinationPlace or nil,
@@ -106,9 +211,9 @@ local function fixture()
             issuedUtc = self.now, expiresUtc = self.now + 45,
         }
         for key, value in pairs(changes or {}) do
-            self.command[key] = value
+            command[key] = value
         end
-        self.source.message({ Data = "fixture command" })
+        self:publish(encodeCommand(command))
     end
     function state:arrive(data, fromPlace, fromUniverse)
         local player = self.destination.player
@@ -272,6 +377,34 @@ check("a failed subscription is retried with capped backoff and later commands a
     state.source = server
     state:send(nil, true)
     assert(state.receipts[recordKey].stage == "atSource" and state.receipts[recordKey].observedJobId == sourceJob)
+end)
+
+check("the C# move and status payloads are decoded and accepted", function()
+    local state = fixture()
+    state.now = goldenIssued
+    state:publish(goldenMove)
+    local record = state.receipts[recordKey]
+    assert(record ~= nil and record.stage == "teleportInitiated" and state.teleports == 1,
+        "the script did not accept the C# move payload")
+    assert(record.command.operationId == operation and record.command.destinationJobId == destinationJob
+        and record.command.issuedUtc == goldenIssued and record.command.expiresUtc == goldenIssued + 45)
+    local status = fixture()
+    status.now = goldenIssued
+    status:publish(goldenStatus)
+    record = status.receipts[recordKey]
+    assert(record ~= nil and record.stage == "atSource", "the script did not accept the C# status payload")
+    assert(record.command.destinationPlaceId == nil and record.command.destinationJobId == nil and status.teleports == 0)
+end)
+
+check("payloads over 1024 bytes are ignored", function()
+    local state = fixture()
+    state.now = goldenIssued
+    state:publish(goldenMove .. string.rep(" ", 1025 - #goldenMove))
+    assert(state.updates == 0 and state.teleports == 0, "the script processed a 1025-byte payload")
+    -- The same command padded to exactly 1024 bytes is still accepted, so the size cap is what stopped it.
+    state:publish(goldenMove .. string.rep(" ", 1024 - #goldenMove))
+    assert(state.teleports == 1 and state.receipts[recordKey].stage == "teleportInitiated",
+        "the script did not accept a 1024-byte payload")
 end)
 
 print(string.format("Passed %d owned-experience server checks.", passed))
