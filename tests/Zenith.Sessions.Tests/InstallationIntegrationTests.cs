@@ -147,6 +147,24 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("Panic stop", vm.Notice); Assert.Contains("stopped", vm.InstallationStatus);
     });
 
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task PanicOrLockAfterAFinishedCheckClearsTheListWithoutReportingAStoppedCheck(bool lockDashboard) => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync(); string initial = vm.InstallationStatus;
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.False(vm.IsInstallationDiscoveryBusy); Assert.Equal(2, vm.InstallationCandidates.Count);
+        vm.SelectedInstallation = vm.InstallationCandidates[0];
+        if (lockDashboard) { vm.LockDashboard(); vm.Unlock.Execute(null); } else vm.Panic.Execute(null);
+        Assert.Empty(vm.InstallationCandidates); Assert.Empty(vm.InstallationIssues); Assert.Null(vm.SelectedInstallation);
+        // Nothing was running, so the panel returns to its unchecked wording instead of claiming a check was stopped.
+        Assert.Equal("Not checked", vm.InstallationObserved); Assert.Equal(initial, vm.InstallationStatus);
+        Assert.Equal(1, discovery.Calls); Assert.Empty(vm.Launches);
+    });
+
     [Fact]
     public Task MalformedInventoryIsNotPresentedAsACompleteOrSuccessfulDiscovery() => OnUi(async () =>
     {

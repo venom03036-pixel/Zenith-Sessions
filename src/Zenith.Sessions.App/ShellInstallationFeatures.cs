@@ -51,7 +51,8 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _installationStop;
     private long _installationGeneration;
     private bool _installationBusy;
-    private string _installationStatus = "Refresh to inspect installed Roblox and compatible bootstrapper hints. No program will be opened or changed.";
+    private const string InstallationNotChecked = "Refresh to inspect installed Roblox and compatible bootstrapper hints. No program will be opened or changed.";
+    private string _installationStatus = InstallationNotChecked;
     private string _installationObserved = "Not checked";
     private InstallationCandidateRow? _selectedInstallation;
     public ObservableCollection<InstallationCandidateRow> InstallationCandidates { get; } = [];
@@ -118,9 +119,11 @@ public sealed partial class ShellViewModel
     private void CancelInstallationWork()
     {
         CancelPublisherVerificationWork();
+        // Only an unfinished check is "stopped"; otherwise the cleared list is simply unchecked again (Panic, Lock).
+        bool checking = _installationStop is not null;
         Interlocked.Increment(ref _installationGeneration); _installationStop?.Cancel();
         InstallationCandidates.Clear(); InstallationIssues.Clear(); SelectedInstallation = null;
         InstallationObserved = "Not checked";
-        InstallationStatus = "Installation check stopped. Refresh explicitly to check again; no program was opened or changed.";
+        InstallationStatus = checking ? "Installation check stopped. Refresh explicitly to check again; no program was opened or changed." : InstallationNotChecked;
     }
 }
