@@ -222,7 +222,15 @@ public partial class App : Application
                 inputOperations: _inputOperations);
             _editorVM = editorVM;
 #if DEVELOPER_MODE
-            try { _macroCatalogServer = new(editorVM.CompanionCatalog); }
+            try
+            {
+                _macroCatalogServer = new(editorVM.CompanionCatalog);
+                // A stopped endpoint must not be silent: the companion would only say "not connected" with no recorded reason.
+                _ = _macroCatalogServer.Completion.ContinueWith(static stopped => System.Diagnostics.Trace.TraceWarning(
+                        "The optional Personal macro metadata endpoint stopped ({0}). Restart Personal to reconnect the companion; editing and saved macros remain available.",
+                        stopped.Exception?.GetBaseException().GetType().Name),
+                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            }
             catch (Exception)
             {
                 System.Diagnostics.Trace.TraceWarning("The optional Personal macro metadata endpoint could not start. Editing and saved macros remain available.");

@@ -326,6 +326,39 @@ public sealed class MacroHostPipeTests
     }
 
     [Fact]
+    public async Task ClientThatClosesBeforeFirstAcceptDoesNotKillTheEndpoint()
+    {
+        string name = Name(); var source = new Source((_, _) => Task.FromResult(Ready())); var firstAccept = Gate();
+        var server = new MacroCatalogPipeServer(source, name, firstAccept.Task);
+        MacroCatalogPage page; bool workerEnded; Exception? shutdown;
+        try
+        {
+            // Connect and close before the first ConnectNamedPipe: that accept then fails with ERROR_NO_DATA.
+            using (var early = RawClient(name)) await early.ConnectAsync(1000);
+            firstAccept.TrySetResult();
+            await using var client = new MacroCatalogPipeClient(name);
+            page = await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5));
+            workerEnded = server.Completion.IsCompleted;
+        }
+        finally
+        {
+            firstAccept.TrySetResult();
+            shutdown = await Record.ExceptionAsync(() => server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        Assert.Equal(MacroCatalogState.Ready, page.State); Assert.Equal(1, source.Calls);
+        Assert.False(workerEnded); Assert.Null(shutdown);
+    }
+
+    [Fact]
+    public async Task StopWhileWaitingForFirstAcceptEndsCleanly()
+    {
+        var firstAccept = Gate();
+        var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), Name(), firstAccept.Task);
+        server.SignalStop(); await server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(server.Completion.IsCompletedSuccessfully);
+    }
+
+    [Fact]
     public async Task StopBeforeFirstAcceptAndRepeatedDisposalAreSafe()
     {
         var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), Name());
