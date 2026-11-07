@@ -645,7 +645,7 @@ For each updated ID record: `review/build identity; code path; test/artifact; ex
 [LaunchValidator]: ../../src/Zenith.Sessions.Core/LaunchAuthorizationValidator.cs
 [ReviewCheckpoint]: ../../scripts/Review-ZenithSessionsRequirements.ps1
 [ReviewRule]: ../../.cursor/rules/zenith-sessions-requirements.mdc
-[ReviewArtifacts]: ../../artifacts/sessions-requirements-review/after.json
+[ReviewArtifacts]: ../../artifacts/sessions-requirements-review/
 [DistRepeat]: ../../artifacts/sessions-distribution-check/distribution-check-repeat.json
 [IdentityProjection]: ../../src/Zenith.Sessions.Windows/AccountIdentityProjection.cs
 [ProjectionTests]: ../../tests/Zenith.Sessions.Tests/AccountIdentityProjectionTests.cs

@@ -32,10 +32,10 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         ledger.Append("- **CYCLE-01 ").Append(EmDash).Append(" synthetic.** Review before work.\n");
         await File.WriteAllTextAsync(Path.Combine(repository,"docs","zenith-sessions","REQUIREMENTS-LEDGER.md"),ledger.ToString(),utf8);
 
-        var run=await RunWindowsPowerShell(repository,new Dictionary<string,string>{["USERPROFILE"]=Path.Combine(_root,"profile")},"-File",script,"-Phase","Before","-RequirementIds","CYCLE-01");
+        var run=await RunWindowsPowerShell(repository,new Dictionary<string,string>{["USERPROFILE"]=Path.Combine(_root,"profile")},"-File",script,"-Phase","Before","-RequirementIds","CYCLE-01","-Checkpoint","0.99");
 
         Assert.True(run.ExitCode==0,$"Exit {run.ExitCode}. Output: {run.Output} Errors: {run.Errors}");
-        string record=Path.Combine(repository,"artifacts","sessions-requirements-review","before.json");
+        string record=Path.Combine(repository,"artifacts","sessions-requirements-review","before-0.99.json");
         byte[] bytes=await File.ReadAllBytesAsync(record);
         Assert.False(bytes.AsSpan().StartsWith(new byte[]{0xEF,0xBB,0xBF}),"The review record starts with a UTF-8 byte-order mark; earlier records have none.");
         using var json=JsonDocument.Parse(bytes);
@@ -71,7 +71,7 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         Assert.False(Directory.Exists(Path.Combine(processDirectory,"bridge-output")),"The runner resolved the relative output folder against the process directory instead of the shell location.");
     }
 
-    private static async Task<(int ExitCode,string Output,string Errors)> RunWindowsPowerShell(string workingDirectory,IReadOnlyDictionary<string,string> environment,params string[] arguments)
+    internal static async Task<(int ExitCode,string Output,string Errors)> RunWindowsPowerShell(string workingDirectory,IReadOnlyDictionary<string,string> environment,params string[] arguments)
     {
         var start=new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","powershell.exe"))
         {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,WorkingDirectory=workingDirectory};

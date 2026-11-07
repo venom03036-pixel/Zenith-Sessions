@@ -1,9 +1,25 @@
 param(
     [Parameter(Mandatory)][ValidateSet('Before','After')][string]$Phase,
-    [Parameter(Mandatory)][string[]]$RequirementIds
+    [Parameter(Mandatory)][string[]]$RequirementIds,
+    # Cycle label such as 0.57 or 0.45-initial. Each phase and label gets its own record, so a later cycle never overwrites an earlier one.
+    [Parameter(Mandatory)][ValidatePattern('^[0-9]+\.[0-9]+(-[a-z]+)?$')][string]$Checkpoint,
+    # Test result files (for example .trx) this cycle wrote, relative to the source root. Required for After.
+    [string[]]$TestArtifact=@()
 )
 $ErrorActionPreference='Stop'
 $sourceRoot=[IO.Path]::GetFullPath((Split-Path -Parent $PSScriptRoot))
+$rootPrefix=$sourceRoot.TrimEnd('\')+'\'
+$requestedArtifacts=@($TestArtifact | Where-Object { $_ } | Select-Object -Unique)
+if($Phase -eq 'After' -and $requestedArtifacts.Count -eq 0) {
+    throw 'An After checkpoint must name the test artifacts this cycle wrote. Pass -TestArtifact with each result file, for example artifacts\my-cycle-tests\results.trx.'
+}
+$testArtifacts=@(foreach($artifact in $requestedArtifacts) {
+    $full=[IO.Path]::GetFullPath($(if([IO.Path]::IsPathRooted($artifact)) { $artifact } else { Join-Path $sourceRoot $artifact }))
+    if(-not $full.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { throw "Test artifact $artifact is outside the source tree. Pass a result file inside this repository." }
+    $relative=$full.Substring($rootPrefix.Length).Replace('\','/')
+    if(-not (Test-Path -LiteralPath $full -PathType Leaf)) { throw "Test artifact $relative was not found. Pass a result file this cycle's tests wrote." }
+    [ordered]@{ Path=$relative; LastWriteUtc=(Get-Item -LiteralPath $full).LastWriteTimeUtc.ToString('O'); Sha256=(Get-FileHash -LiteralPath $full -Algorithm SHA256).Hash }
+})
 $ledgerPath=Join-Path $sourceRoot 'docs\zenith-sessions\REQUIREMENTS-LEDGER.md'
 $ledger=Get-Content -LiteralPath $ledgerPath -Raw -Encoding UTF8
 $promptRoot=Join-Path $env:USERPROFILE 'Downloads'
@@ -26,17 +42,16 @@ $selected=@(foreach($id in ($RequirementIds | Select-Object -Unique)) {
 if($selected.Count -eq 0) { throw 'Select concrete requirements before a review cycle.' }
 $directory=Join-Path $sourceRoot 'artifacts\sessions-requirements-review'
 New-Item -ItemType Directory -Path $directory -Force | Out-Null
-$path=Join-Path $directory ($Phase.ToLowerInvariant()+'.json')
+$fileName=$Phase.ToLowerInvariant()+'-'+$Checkpoint+'.json'
+$path=Join-Path $directory $fileName
 $temporary=$path+'.tmp'
-$trx=Join-Path $sourceRoot 'artifacts\sessions-manager-tests\manager-core.trx'
-$testTime=if(Test-Path -LiteralPath $trx) { (Get-Item -LiteralPath $trx).LastWriteTimeUtc.ToString('O') } else { $null }
 $record=[ordered]@{
-    FormatVersion=1; ReviewedUtc=[DateTimeOffset]::UtcNow.ToString('O'); Phase=$Phase
+    FormatVersion=2; Checkpoint=$Checkpoint; ReviewedUtc=[DateTimeOffset]::UtcNow.ToString('O'); Phase=$Phase
     Sources=$sources; LedgerSha256=(Get-FileHash -LiteralPath $ledgerPath -Algorithm SHA256).Hash
-    Scope=$selected; LatestTestArtifactUtc=$testTime
+    Scope=$selected; TestArtifacts=$testArtifacts
     FullProductAcceptance=$false
-    EvidenceRule='This records source/scope review only. It does not execute tests, validate a feature, prove native arrival or close a requirement.'
+    EvidenceRule='This records source/scope review only. It does not execute tests, validate a feature, prove native arrival or close a requirement. TestArtifacts names the result files this cycle cites, with their write time and hash; it does not read their outcome.'
 }
 try { [IO.File]::WriteAllText($temporary,(($record | ConvertTo-Json -Depth 7)+[Environment]::NewLine),(New-Object Text.UTF8Encoding $false)); Move-Item -LiteralPath $temporary -Destination $path -Force }
 finally { if(Test-Path -LiteralPath $temporary) { Remove-Item -LiteralPath $temporary -Force } }
-Write-Output "$Phase review: all three prompt fingerprints match; $($selected.Count) scoped requirements recorded. Feature and release acceptance are unchanged."
+Write-Output "$Phase $Checkpoint review: all three prompt fingerprints match; $($selected.Count) scoped requirements and $($testArtifacts.Count) test artifacts recorded in artifacts/sessions-requirements-review/$fileName. Feature and release acceptance are unchanged."
