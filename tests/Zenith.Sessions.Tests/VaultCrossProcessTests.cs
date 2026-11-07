@@ -114,6 +114,15 @@ public sealed class VaultCrossProcessTests
         Assert.Equal(4L,await reopened.AllocateNextGenerationAsync(ProfileId,0,default));
     }
 
+    [Fact]
+    public async Task WorkerThatExitsBeforeReadinessReportsItsExitCode()
+    {
+        await using var fixture=await Fixture.CreateAsync();
+        var worker=fixture.Start("not-a-scenario",Guid.NewGuid()); // The real worker rejects an unknown scenario with exit code 64.
+        var error=await Assert.ThrowsAsync<InvalidOperationException>(worker.ReadyAsync);
+        Assert.Equal("The owned fixture worker exited before readiness: exit code 64 (0x00000040), bad arguments.",error.Message);
+    }
+
     private sealed record WorkerResult(int Version,string Scenario,string Status,long? CommittedGeneration=null,bool? Fenced=null);
     private sealed class Fixture : IAsyncDisposable
     {
@@ -195,6 +204,9 @@ public sealed class VaultCrossProcessTests
         private TimeSpan Remaining {get{var remaining=TimeSpan.FromSeconds(20)-_age.Elapsed;return remaining>TimeSpan.Zero?remaining:TimeSpan.Zero;}}
         public bool Exited=>process.HasExited;
         public void CaptureIdentity(){_pid=process.Id;_start=process.StartTime.ToUniversalTime().Ticks;}
+        // The worker writes nothing to its console, so its exit code is the only cause it reports (tools\Zenith.Sessions.VaultTestWorker\Program.cs).
+        private static string? ExitMeaning(int code)=>code switch{64=>"bad arguments",65=>"the fixture root was rejected",2=>"cancelled",3=>"failed",
+            _=>"not one of the worker's own codes, so a host or runtime failure"};
         public void Signal(string kind)=>fixture.Signal(control,kind);
         public async Task ReadyAsync()
         {
@@ -203,7 +215,8 @@ public sealed class VaultCrossProcessTests
             while(true)
             {
                 deadline.Token.ThrowIfCancellationRequested();fixture.Validate();
-                if(process.HasExited)throw new InvalidOperationException("The owned fixture worker exited before readiness.");
+                if(process.HasExited)
+                    throw new InvalidOperationException("The owned fixture worker exited before readiness: "+await TestWorkerLocator.DescribeExitAsync(process,false,ExitMeaning)+".");
                 var info=new FileInfo(path);
                 if(info.Exists)
                 {
