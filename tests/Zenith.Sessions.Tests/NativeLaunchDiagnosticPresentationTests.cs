@@ -90,7 +90,9 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         Assert.Equal(new[]{failure=="invalid"?typeof(ArgumentException):typeof(InvalidOperationException)},types);
         if(failure=="throw-then-stale"){Assert.Null(view);return;}
         Assert.NotNull(view);Assert.False(view.Available);Assert.Null(view.Snapshot);Assert.Equal(id,view.OperationId);
-        Assert.Equal(NativeLaunchDiagnosticPresentation.Unavailable(id).Summary,view.Summary);
+        // Z1357: the fixed text is the read-fault wording, not the absent-history wording.
+        Assert.Equal(NativeLaunchDiagnosticPresentation.Faulted(id),view);Assert.True(view.ReadFailed);
+        Assert.NotEqual(NativeLaunchDiagnosticPresentation.Unavailable(id).Summary,view.Summary);
         Assert.DoesNotContain("synthetic",view.ToString(),StringComparison.OrdinalIgnoreCase);
     }
     [Theory]
@@ -101,6 +103,44 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         var id=Guid.NewGuid();var types=new List<Type>();var source=new Source();if(evicted)source.Read=_=>null;
         var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,id,()=>true,failed:types.Add)!;
         Assert.Empty(types);Assert.Equal(!evicted,view.Available);
+    }
+    // Z1357: a read that throws, or returns a snapshot that is invalid or belongs to another
+    // operation, is a provider fault. It must be reported by type and must not be explained to the
+    // user as startup, eviction or never-recorded history.
+    [Theory]
+    [InlineData("throw")]
+    [InlineData("invalid")]
+    [InlineData("foreign")]
+    public void SourceReadFaultIsReportedByTypeAndNotBlamedOnHistory(string failure)
+    {
+        var id=Guid.NewGuid();var types=new List<Type>();
+        var source=new Source{Read=read=>failure switch
+        {
+            "throw"=>throw new InvalidOperationException("synthetic-secret-uri",new Exception("synthetic-cookie")),
+            "invalid"=>Snapshot(read) with {UpdatedUtc=default},
+            _=>Snapshot(Guid.NewGuid())
+        }};
+        var view=NativeLaunchDiagnosticPresentation.ReadCurrent(source,id,()=>true,failed:types.Add)!;
+        Assert.Equal(new[]{failure switch{"throw"=>typeof(InvalidOperationException),"invalid"=>typeof(ArgumentException),_=>typeof(System.IO.InvalidDataException)}},types);
+        Assert.False(view.Available);Assert.Null(view.Snapshot);Assert.Equal(id,view.OperationId);Assert.True(view.ReadFailed);
+        Assert.Contains("unavailable",view.Summary);Assert.Contains("read fault",view.Summary);
+        foreach(string history in new[]{"predate startup","evicted","never recorded"})Assert.DoesNotContain(history,view.Summary);
+        Assert.DoesNotContain("Queue history",view.Times);
+        Assert.DoesNotContain("synthetic",view.ToString(),StringComparison.OrdinalIgnoreCase);
+    }
+    [Theory]
+    [InlineData("foreign")]
+    [InlineData("timestamp")]
+    public void ProjectShowsAPresentButUnusableSnapshotAsAFaultNotAbsentHistory(string invalid)
+    {
+        var id=Guid.NewGuid();var types=new List<Type>();
+        var view=NativeLaunchDiagnosticPresentation.Project(id,invalid=="foreign"?Snapshot(Guid.NewGuid()):Snapshot(id) with {UpdatedUtc=default},types.Add);
+        Assert.False(view.Available);Assert.Equal(id,view.OperationId);Assert.Contains("read fault",view.Summary);Assert.DoesNotContain("evicted",view.Summary);
+        Assert.True(view.ReadFailed);Assert.Equal(new[]{invalid=="foreign"?typeof(System.IO.InvalidDataException):typeof(ArgumentException)},types);
+        var absent=NativeLaunchDiagnosticPresentation.Project(id,null,types.Add);Assert.False(absent.ReadFailed);Assert.Single(types);
+        Assert.NotEqual(absent,view);Assert.Contains("evicted",absent.Summary);
+        Assert.False(NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id),types.Add).ReadFailed);Assert.Single(types);
+        Assert.False(NativeLaunchDiagnosticPresentation.Faulted(Guid.Empty).ReadFailed);
     }
     internal sealed class Source:INativeLaunchDiagnosticSource
     {
@@ -149,6 +189,22 @@ public sealed partial class ClientWindowIntegrationTests
         foreach(var row in shell.DiagnosticRows)
         {Assert.DoesNotContain("synthetic",row.Description,StringComparison.OrdinalIgnoreCase);Assert.DoesNotContain("synthetic",row.ErrorType,StringComparison.OrdinalIgnoreCase);}
         Assert.DoesNotContain("synthetic",shell.BuildVisibleDiagnosticText(),StringComparison.OrdinalIgnoreCase);Assert.Empty(shell.Launches);
+    });
+    [Fact]
+    public Task ForeignNativeDiagnosticSnapshotRecordsOneInvalidDataFailureAndIsNotShownAsHistory()=>OnUi(async()=>
+    {
+        await using var shell=DiagnosticShell();PublishDiagnosticQueue(shell,DiagnosticOperation());
+        var diagnostics=(ManagerDiagnostics)typeof(ShellViewModel).GetField("_diagnostics",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        long before=diagnostics.GetSnapshot().LatestSequence;int raised=0;
+        shell.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(shell.SelectedNativeDiagnostics))raised++;};
+        var source=new NativeLaunchDiagnosticPresentationTests.Source{Read=_=>NativeLaunchDiagnosticPresentationTests.Snapshot(Guid.NewGuid())};
+        ManagerDiagnosticEvent[] Failures()=>diagnostics.GetSnapshot().Events.Where(e=>e.Sequence>before&&e.Kind==ManagerEventKind.OperationFailed).ToArray();
+        for(int tick=0;tick<3;tick++)shell.RefreshSelectedNativeDiagnostics(source);
+        var failure=Assert.Single(Failures());Assert.Equal("InvalidDataException",failure.ErrorType);Assert.Equal(1,raised);
+        var view=shell.SelectedNativeDiagnostics;Assert.False(view.Available);Assert.True(view.ReadFailed);Assert.Contains("read fault",view.Summary);Assert.DoesNotContain("evicted",view.Summary);
+        source.Read=_=>null;shell.RefreshSelectedNativeDiagnostics(source);
+        Assert.Equal(2,raised);Assert.False(shell.SelectedNativeDiagnostics.ReadFailed);Assert.Contains("evicted",shell.SelectedNativeDiagnostics.Summary);
+        Assert.Single(Failures());Assert.Empty(shell.Launches);
     });
     [Theory]
     [InlineData("selection")]

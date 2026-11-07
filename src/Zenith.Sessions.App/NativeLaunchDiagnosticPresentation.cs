@@ -9,9 +9,13 @@ public sealed record NativeLaunchDiagnosticPresentation
 {
     public Guid? OperationId {get;}
     public bool Available=>Snapshot is not null;
+    /// <summary>True when the read threw or returned a snapshot that was invalid or for another operation.
+    /// Only the exception type is reported to the caller; this view never carries its message.</summary>
+    public bool ReadFailed {get;}
     [JsonIgnore] public NativeLaunchDiagnosticSnapshot? Snapshot {get;}
     public string Summary=>Snapshot is not { } value
         ?OperationId is null?"Select a launch request to inspect its native stages."
+            :ReadFailed?"Native-stage details are unavailable because reading them failed or returned invalid data. This is a read fault, not missing history. Diagnostics shows its error type."
             :"Native-stage details are unavailable for this request in this app run. They may predate startup, have been evicted or never recorded."
         :value.Stage switch
         {
@@ -23,6 +27,7 @@ public sealed record NativeLaunchDiagnosticPresentation
             _=>"Native attempt finished. Its fixed outcomes are diagnostic evidence only."
         };
     public string Times=>Snapshot is { } value?$"Started {At(value.StartedUtc)} · updated {At(value.UpdatedUtc)} · revision {value.Revision.ToString(CultureInfo.InvariantCulture)}"
+        :ReadFailed?"No native-stage timestamp could be read."
         :"No native-stage timestamp recorded. Queue history does not restore these transient details.";
     public string StageTimes=>Snapshot is { } value?"Publisher: "+Observed(value.ExecutableObservedUtc)+"\nPreparation: "+Observed(value.PreparationObservedUtc)
         +"\nOfficial page: "+Observed(value.BrowserObservedUtc)+"\nDispatch: "+Observed(value.DispatchObservedUtc)+"\nCleanup: "+Observed(value.CleanupObservedUtc)
@@ -94,28 +99,37 @@ public sealed record NativeLaunchDiagnosticPresentation
     public bool AccountVerified=>false;
     public bool ArrivalVerified=>false;
     public bool InputAuthorized=>false;
-    private NativeLaunchDiagnosticPresentation(Guid? operationId,NativeLaunchDiagnosticSnapshot? snapshot)
-    {OperationId=operationId;Snapshot=snapshot;}
+    private NativeLaunchDiagnosticPresentation(Guid? operationId,NativeLaunchDiagnosticSnapshot? snapshot,bool readFailed=false)
+    {OperationId=operationId;Snapshot=snapshot;ReadFailed=readFailed;}
     public static NativeLaunchDiagnosticPresentation Unavailable(Guid? operationId=null)=>new(operationId,null);
-    public static NativeLaunchDiagnosticPresentation Project(Guid operationId,NativeLaunchDiagnosticSnapshot? snapshot)
+    /// <summary>Fixed read-fault view for one operation. It never carries the snapshot or any exception text.</summary>
+    internal static NativeLaunchDiagnosticPresentation Faulted(Guid operationId)=>operationId==Guid.Empty?Unavailable():new(operationId,null,true);
+    /// <summary>
+    /// A null snapshot is absent history (not yet recorded, from before startup, or evicted). A snapshot that is
+    /// present but belongs to another operation or fails validation is a provider fault: its type is reported
+    /// through <paramref name="failed"/> and the view says so instead of blaming history.
+    /// </summary>
+    public static NativeLaunchDiagnosticPresentation Project(Guid operationId,NativeLaunchDiagnosticSnapshot? snapshot,Action<Type>? failed=null)
     {
         if(operationId==Guid.Empty)return Unavailable();
-        if(snapshot is null||snapshot.OperationId!=operationId)return Unavailable(operationId);
-        try {snapshot=snapshot.Validated();}catch(ArgumentException){return Unavailable(operationId);}
+        if(snapshot is null)return Unavailable(operationId);
+        if(snapshot.OperationId!=operationId){failed?.Invoke(typeof(InvalidDataException));return Faulted(operationId);}
+        try {snapshot=snapshot.Validated();}catch(ArgumentException error){failed?.Invoke(error.GetType());return Faulted(operationId);}
         return new(operationId,snapshot);
     }
     /// <summary>
-    /// Reads one transient snapshot. A source exception or an invalid snapshot still shows the fixed
-    /// unavailable text, but its exception type is reported through <paramref name="failed"/> so a provider
-    /// bug is not mistaken for eviction. The message and inner error never cross this boundary. The failure
-    /// is reported even when the view is no longer current; only the stale view is withheld.
+    /// Reads one transient snapshot. A source exception, an invalid snapshot or a snapshot for another
+    /// operation shows the fixed read-fault text, and its exception type is reported through
+    /// <paramref name="failed"/> so a provider bug is not mistaken for eviction. The message and inner error
+    /// never cross this boundary. The failure is reported even when the view is no longer current; only the
+    /// stale view is withheld.
     /// </summary>
     internal static NativeLaunchDiagnosticPresentation? ReadCurrent(INativeLaunchDiagnosticSource? source,Guid operationId,Func<bool> current,Action<Type>? failed=null)
     {
-        if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot;
+        if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot;bool faulted=false;
         try{snapshot=source?.GetDiagnostic(operationId)?.Validated();}
-        catch(Exception error){snapshot=null;failed?.Invoke(error.GetType());}
-        var value=Project(operationId,snapshot);return current()?value:null;
+        catch(Exception error){snapshot=null;faulted=true;failed?.Invoke(error.GetType());}
+        var value=faulted?Faulted(operationId):Project(operationId,snapshot,failed);return current()?value:null;
     }
     private static string At(DateTimeOffset at)=>at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'",CultureInfo.InvariantCulture);
     private static string Observed(DateTimeOffset? at)=>at is { } value?At(value):"not recorded";
