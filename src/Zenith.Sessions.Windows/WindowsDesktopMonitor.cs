@@ -134,9 +134,18 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
     private SamplingConfiguration _configuration = new(1000);
     private static readonly string[] ClientProcessNames = ["RobloxPlayerBeta", "RobloxPlayer", "Roblox"];
     private readonly Dictionary<string, (TimeSpan Cpu, long At,uint? Faults)> _processTimes = [];
+    private readonly Func<string, Process[]> _findProcesses;
+    private readonly ClientMainWindowIndex _mainWindows;
 
     public WindowsDesktopMonitor(TimeProvider? timeProvider = null, WindowsGpuTelemetryReader? gpuReader = null)
+        : this(timeProvider, gpuReader, Process.GetProcessesByName, NativeTopLevelWindows.Instance) { }
+
+    /// <summary>Test seam. <paramref name="findProcesses"/> returns new Process objects that the monitor owns and disposes.</summary>
+    internal WindowsDesktopMonitor(TimeProvider? timeProvider, WindowsGpuTelemetryReader? gpuReader,
+        Func<string, Process[]> findProcesses, ITopLevelWindows windows)
     {
+        _findProcesses = findProcesses ?? throw new ArgumentNullException(nameof(findProcesses));
+        _mainWindows = new(windows);
         _clock = timeProvider ?? TimeProvider.System;
         _cadence = new(_clock);
         _ioRates = new(_clock);
@@ -178,24 +187,38 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
             Multiply(performance.CommitLimit, performance.PageSize), Multiply(performance.CommitTotal, performance.PageSize), cpu,
             valid ? null : "Windows memory or commit accounting is temporarily unavailable.", gpu);
     }
-    private DesktopProcessInventory SampleProcesses(CancellationToken ct)
+    /// <summary>One process sample. Callers serialize it (the cadence runs it under the sampling gate).</summary>
+    internal DesktopProcessInventory SampleProcesses(CancellationToken ct)
     {
         var at = _clock.GetUtcNow();
         var sessions = new List<SessionObservation>();
         var alive = new HashSet<string>();
         var liveIo = new HashSet<SessionProcessKey>();
-        int attempted = 0, successfulQueries = 0;
+        int attempted = 0, successfulQueries = 0, found = 0;
         bool complete = true;
-        foreach (string name in ClientProcessNames)
+        var groups = new Process[ClientProcessNames.Length][];
+        try
         {
-            ct.ThrowIfCancellationRequested();
-            if (attempted >= DesktopSamplingCadence.MaximumProcessSamples) { complete = false; break; }
-            Process[] processes;
-            try { processes = Process.GetProcessesByName(name); successfulQueries++; }
-            catch (Exception error) when (error is InvalidOperationException or Win32Exception or UnauthorizedAccessException)
-            { complete = false; continue; }
-            try
+            for (int group = 0; group < groups.Length; group++)
             {
+                ct.ThrowIfCancellationRequested();
+                if (found >= DesktopSamplingCadence.MaximumProcessSamples) { complete = false; break; }
+                try { groups[group] = _findProcesses(ClientProcessNames[group]); successfulQueries++; found += groups[group].Length; }
+                catch (Exception error) when (error is InvalidOperationException or Win32Exception or UnauthorizedAccessException)
+                { complete = false; }
+            }
+            // Every client's main window comes from one shared top-level window pass. Process.MainWindowHandle would
+            // walk every desktop window once per client. The identity re-check below and SameClient before every
+            // window action are unchanged.
+            Span<int> clientIds = stackalloc int[DesktopSamplingCadence.MaximumProcessSamples];
+            int clients = 0;
+            foreach (var processes in groups)
+                if (processes is not null)
+                    foreach (var process in processes) { if (clients == clientIds.Length) break; clientIds[clients++] = process.Id; }
+            _mainWindows.Build(clientIds[..clients], ct);
+            foreach (var processes in groups)
+            {
+                if (processes is null) continue;
                 if (processes.Length >= DesktopSamplingCadence.MaximumProcessSamples - attempted) complete = false;
                 foreach (var process in processes)
                 {
@@ -209,7 +232,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
                         long start = process.StartTime.ToUniversalTime().Ticks;
                         if (start <= 0) throw new InvalidOperationException("Process start time was unavailable.");
                         ioProcess = new(null, processId, start);
-                        nint window = process.MainWindowHandle;
+                        nint window = _mainWindows.MainWindow(processId);
                         var cpu = process.TotalProcessorTime; long ticks = _clock.GetTimestamp();
                         var measured=ProcessMemoryReader.Read(processId,start);
                         if (measured is null) complete = false;
@@ -257,8 +280,8 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
                     }
                 }
             }
-            finally { foreach (var process in processes) process.Dispose(); }
         }
+        finally { foreach (var processes in groups) if (processes is not null) foreach (var process in processes) process.Dispose(); }
         if (successfulQueries == 0) { _ioRates.Clear(); throw new InvalidOperationException("Windows process inventory was unavailable."); }
         _ioRates.Retain(liveIo, ct);
         foreach (string key in _processTimes.Keys.Where(k => !alive.Contains(k)).ToArray()) _processTimes.Remove(key);
