@@ -87,6 +87,19 @@ public sealed class SettingsSearchTests
         Assert.Contains("not configurable", result.Description, StringComparison.Ordinal);
     }
 
+    [Theory]
+    [InlineData("client cpu")]
+    [InlineData("cpu priority")]
+    [InlineData("process priority")]
+    public void ClientCpuSearchPointsToTheSessionsPriorityControl(string query)
+    {
+        var result = Assert.Single(SettingsSearchCatalog.Search(query));
+        Assert.Equal("pending-client-performance", result.Id);
+        Assert.Contains("Sessions", result.Description, StringComparison.Ordinal);
+        Assert.Contains("Client CPU priority", result.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("client CPU/render", result.Description, StringComparison.Ordinal);
+    }
+
     [Fact]
     public void CustomNavigationExplainsThatItDoesNotChangeTheProfileOrDraft()
     {
