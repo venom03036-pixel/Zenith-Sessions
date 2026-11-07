@@ -128,6 +128,25 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Contains(vm.DiagnosticRows,r=>r.Sequence>newest && r.Level=="Error");
     });
     [Fact]
+    public Task PresentationTickWithNoNewDiagnosticEventsRaisesNoDiagnosticLabels()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        vm.Navigate.Execute("Diagnostics");vm.RefreshDiagnostics.Execute(null);
+        string[] labels=[nameof(vm.DiagnosticErrors),nameof(vm.DiagnosticWarnings),nameof(vm.DiagnosticInformation),
+            nameof(vm.DiagnosticViewStatus),nameof(vm.DiagnosticStorageStatus)];
+        var raised=new List<string>();
+        vm.PropertyChanged+=(_,e)=>{if(e.PropertyName is { } name && labels.Contains(name)) raised.Add(name);};
+        // Refresh forces a presentation tick, the same path the monitor loop takes while this tab is open.
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;
+        Assert.Empty(raised);
+        // A new event still reaches the labels and the rows on the next tick, without an explicit diagnostics refresh.
+        long newest=vm.DiagnosticRows.Select(r=>r.Sequence).DefaultIfEmpty().Max();string information=vm.DiagnosticInformation;
+        await vm.SaveAccountAsync(AccountProfile.Create("Saved between ticks"));
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;
+        Assert.Contains(nameof(vm.DiagnosticInformation),raised);Assert.NotEqual(information,vm.DiagnosticInformation);
+        Assert.Contains(vm.DiagnosticRows,r=>r.Sequence>newest && r.Event.Kind==ManagerEventKind.ProfileSaved);
+    });
+    [Fact]
     public Task MonitorFaultOnFirstSampleDoesNotFreezeDiagnosticsStatus()=>OnUi(async ()=>
     {
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new FaultingMonitor());await vm.InitializeAsync();

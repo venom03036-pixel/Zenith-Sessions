@@ -70,6 +70,16 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
             return new(_sequence,_sequence,_infoCount,_warningCount,_errorCount,_dropped,_failure,Array.AsReadOnly(entries));
         }
     }
+    /// <summary>
+    /// True when a snapshot taken now would differ from <paramref name="prior"/>, without copying the ring.
+    /// One lock covers all three values: the writer changes Failure and DroppedEvents without a new sequence.
+    /// </summary>
+    public bool HasChangedSince(ManagerDiagnosticSnapshot? prior)
+    {
+        lock(_gate)
+            return prior is null || prior.LatestSequence!=_sequence || prior.DroppedEvents!=_dropped
+                || !string.Equals(prior.Failure,_failure,StringComparison.Ordinal);
+    }
     // Fixed texts by cause (never the exception message). Only an access denial points at permissions:
     // a log held by a tailer, backup or scanner, or a full disk, would otherwise send the user to the wrong fix.
     private const string AccessDeniedText="Diagnostics could not be written. Check the data-folder permissions.";

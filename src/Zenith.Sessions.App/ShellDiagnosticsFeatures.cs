@@ -107,6 +107,9 @@ public sealed partial class ShellViewModel
         if(_shuttingDown) return;
         RefreshDiagnosticsStatus();
         if(IsLocked || DiagnosticsPaused || (!explicitRequest && !IsDiagnostics)) return;
+        // An unchanged presentation tick copies no ring and raises no labels. Pause, Clear, the filters and
+        // liveness raise the labels on their own paths; Failure or skip-count changes still pass this check.
+        if(!explicitRequest && !_diagnostics.HasChangedSince(_diagnosticSnapshot)) return;
         var snapshot=_diagnostics.GetSnapshot();
         bool rowsChanged=_diagnosticSnapshot?.LatestSequence!=snapshot.LatestSequence;
         _diagnosticSnapshot=snapshot;
@@ -130,8 +133,9 @@ public sealed partial class ShellViewModel
         }
         RaiseDiagnosticLabels();
     }
+    private static readonly string[] DiagnosticLabelNames=[nameof(DiagnosticErrors),nameof(DiagnosticWarnings),nameof(DiagnosticInformation),nameof(DiagnosticViewStatus),nameof(DiagnosticStorageStatus)];
     private void RaiseDiagnosticLabels()
-    {foreach(string name in new[]{nameof(DiagnosticErrors),nameof(DiagnosticWarnings),nameof(DiagnosticInformation),nameof(DiagnosticViewStatus),nameof(DiagnosticStorageStatus)}) Raise(name);}
+    {foreach(string name in DiagnosticLabelNames) Raise(name);}
     public string BuildVisibleDiagnosticText()
     {
         if(IsLocked || _shuttingDown) throw new InvalidOperationException("Unlock the dashboard before copying diagnostics.");

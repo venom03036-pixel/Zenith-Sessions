@@ -104,6 +104,31 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     }
 
     [Fact]
+    public async Task HasChangedSinceSeesNewEventsAndWriterOnlyChangesToFailureOrSkips()
+    {
+        // A file where the diagnostics folder should be makes the writer fail; the gate holds it until the snapshot is taken.
+        Directory.CreateDirectory(Root);await File.WriteAllTextAsync(Path.Combine(Root,"diagnostics"),"not a folder");
+        var release=Signal();
+        await using var diagnostics=new ManagerDiagnostics(Root,8,1024*1024,async ct=>await release.Task.WaitAsync(ct));
+        try
+        {
+            Assert.True(diagnostics.HasChangedSince(null));
+            var empty=diagnostics.GetSnapshot();Assert.False(diagnostics.HasChangedSince(empty));
+            diagnostics.Record(ManagerEventKind.Started);Assert.True(diagnostics.HasChangedSince(empty));
+            var recorded=diagnostics.GetSnapshot();Assert.False(diagnostics.HasChangedSince(recorded));
+            Assert.True(diagnostics.HasChangedSince(recorded with {DroppedEvents=recorded.DroppedEvents+1}));
+            Assert.True(diagnostics.HasChangedSince(recorded with {Failure="An earlier failure text."}));
+            release.TrySetResult(true);
+            await UntilAsync(()=>diagnostics.Failure is not null);
+            // The failed write changes Failure and the skip count but not the sequence, so a sequence-only check would miss it.
+            var failed=diagnostics.GetSnapshot();
+            Assert.Equal(recorded.LatestSequence,failed.LatestSequence);Assert.Equal(1,failed.DroppedEvents);
+            Assert.True(diagnostics.HasChangedSince(recorded));Assert.False(diagnostics.HasChangedSince(failed));
+        }
+        finally {release.TrySetResult(true);}
+    }
+
+    [Fact]
     public async Task DiskFailureRetainsTypedObservationsAndReportsAllUnwrittenEventsWithoutPayloads()
     {
         const string marker="synthetic-secret-must-not-enter-failure";
