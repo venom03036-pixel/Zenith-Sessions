@@ -33,13 +33,18 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
                 // Backup intent is historical. Loading never promotes it or resumes activity;
                 // the coordinator also converts active work into explicit startup review.
                 RecoveryNotice="Loaded the verified launch-queue backup. Recovered requests are paused for review; no client was restarted. Original recovery files were preserved.";
-                return recovered with{Paused=true};
+                return recovered with{Paused=true,Operations=recovered.Operations.Select(BackupRowForReview).ToArray()};
             }
             catch(Exception ex) when(Recoverable(ex)){throw RecoveryRequired(ex);}
         }
         if(primaryPresent || Exists(_path+".tmp") || Exists(_path+".damaged")) throw RecoveryRequired();
         return LaunchQueueSnapshot.Empty;
     }
+    // The backup is one generation behind. The lost primary may already have moved a queued or
+    // blocked request into native startup, so the backup's copy cannot prove that nothing started.
+    private static LaunchOperation BackupRowForReview(LaunchOperation operation)=>
+        operation.State==LaunchState.Queued || operation.State==LaunchState.Blocked&&operation.Problem!=LaunchProblem.PreparationInterrupted
+            ?operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted }:operation;
     private static bool Exists(string path)
     {
         try {File.GetAttributes(path);return true;}

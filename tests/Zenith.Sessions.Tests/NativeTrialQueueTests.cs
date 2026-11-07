@@ -91,11 +91,46 @@ public sealed class NativeTrialQueueTests
         }
         var secondProvider = new Provider(); await using var reopened = Queue(store, secondProvider);
         await reopened.InitializeAsync(default); Assert.False(reopened.IsTrialOperation(request.Intent.OperationId));
-        Assert.Equal(LaunchState.ReviewRequired, store.Row(request.Intent.OperationId)!.State);
+        Assert.Equal(LaunchState.Blocked, store.Row(request.Intent.OperationId)!.State);
+        Assert.Equal(LaunchProblem.Interrupted, store.Row(request.Intent.OperationId)!.Problem);
         Assert.False(await reopened.ResumeTrialAsync(request.Intent.OperationId, default));
         await reopened.SetPausedAsync(false, default); reopened.Signal();
         Assert.Equal(0, firstProvider.Starts); Assert.Equal(0, secondProvider.Preparations);
-        Assert.Equal(LaunchState.ReviewRequired, store.Row(request.Intent.OperationId)!.State);
+        Assert.Equal(LaunchState.Blocked, store.Row(request.Intent.OperationId)!.State);
+        Assert.Equal(LaunchProblem.Interrupted, store.Row(request.Intent.OperationId)!.Problem);
+    }
+
+    [Fact]
+    public async Task RestartKeepsNeverDispatchedRequestsCancellableNonReservingAndDoesNotStallAFreshTrial()
+    {
+        // Queued and Blocked are always saved before any preparation or provider call, so a
+        // saved row still in either state proves no client was started for it.
+        var store = new Store(); LaunchOperation ordinary, oldTrial;
+        await using (var first = Queue(store, new Provider()))
+        {
+            await first.InitializeAsync(default);
+            ordinary = await first.EnqueueAsync(Profile("Ordinary"), default, Binding, Destination);
+            oldTrial = await first.EnqueueTrialAsync(Profile("Old trial"), default, Binding, Destination);
+            Assert.Equal(LaunchState.Blocked, ordinary.State); Assert.Equal(LaunchState.Queued, oldTrial.State);
+        }
+        var provider = new Provider(); await using var reopened = Queue(store, provider);
+        await reopened.InitializeAsync(default); Assert.True(store.Last.Paused);
+        foreach (var id in new[] { ordinary.Intent.OperationId, oldTrial.Intent.OperationId })
+        {
+            var recovered = store.Row(id)!;
+            Assert.Equal(LaunchState.Blocked, recovered.State); Assert.Equal(LaunchProblem.Interrupted, recovered.Problem);
+            Assert.False(LaunchDescriptions.HasUnresolvedReservation(recovered)); Assert.NotNull(recovered.ResourceBudget);
+        }
+        await reopened.CancelAsync(ordinary.Intent.OperationId, default);
+        Assert.Equal(LaunchState.Cancelled, store.Row(ordinary.Intent.OperationId)!.State);
+        Assert.False(await reopened.ResumeTrialAsync(oldTrial.Intent.OperationId, default));
+        var fresh = await reopened.EnqueueTrialAsync(Profile("Fresh"), default, Binding, Destination);
+        Assert.True(await reopened.ResumeTrialAsync(fresh.Intent.OperationId, default));
+        await Until(() => store.Row(fresh.Intent.OperationId)?.State == LaunchState.ClientStartedUnverified);
+        Assert.Equal(1, provider.Starts); Assert.Equal(1, provider.Preparations);
+        Assert.Equal(fresh.Intent.OperationId, Assert.Single(provider.Contexts).OriginalIntent.OperationId);
+        var untouched = store.Row(oldTrial.Intent.OperationId)!;
+        Assert.Equal(LaunchState.Blocked, untouched.State); Assert.Equal(LaunchProblem.Interrupted, untouched.Problem);
     }
 
     [Fact]

@@ -299,7 +299,8 @@ public sealed class LaunchResourceBudgetQueueTests
         { await queue.InitializeAsync(default); row = await queue.EnqueueAsync(Profile("Recovered"), default, Binding); }
         var later = new Provider(); int calls = 0;
         await using var reopened = Queue(store, later, _ => { calls++; throw new IOException(Secret); }); await reopened.InitializeAsync(default);
-        Assert.True(store.Last.Paused); Assert.Equal(LaunchState.ReviewRequired, store.Row(row.Intent.OperationId)!.State);
+        Assert.True(store.Last.Paused); Assert.Equal(LaunchState.Blocked, store.Row(row.Intent.OperationId)!.State);
+        Assert.Equal(LaunchProblem.Interrupted, store.Row(row.Intent.OperationId)!.Problem);
         Assert.Equal(row.ResourceBudget, store.Row(row.Intent.OperationId)!.ResourceBudget); await reopened.SetPausedAsync(false, default); await Settle();
         Assert.Empty(later.Started); Assert.Equal(0, calls); Assert.Equal(Budget(8, 9), store.Row(row.Intent.OperationId)!.ResourceBudget);
     }

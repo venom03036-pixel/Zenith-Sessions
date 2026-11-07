@@ -48,17 +48,38 @@ public sealed class LaunchQueueRecoveryTests : IDisposable
         await queue.SetPausedAsync(false,default); await queue.SetPausedAsync(true,default); Assert.Equal(0, provider.Calls);
     }
 
+    // The backup is one generation behind: the lost primary may already have moved a queued or
+    // capacity-blocked row into a native start, so the backup's row is a possible client.
     [Theory]
-    [InlineData(1)] [InlineData(2)] [InlineData(3)] [InlineData(4)] [InlineData(5)] [InlineData(6)] [InlineData(7)]
-    public async Task EverySupportedOrphanBackupIsPreservedAndLoadedForReview(int version)
+    [InlineData(1, LaunchState.Queued, LaunchProblem.None)] [InlineData(2, LaunchState.Queued, LaunchProblem.None)]
+    [InlineData(3, LaunchState.Queued, LaunchProblem.None)] [InlineData(4, LaunchState.Queued, LaunchProblem.None)]
+    [InlineData(5, LaunchState.Queued, LaunchProblem.None)] [InlineData(6, LaunchState.Queued, LaunchProblem.None)]
+    [InlineData(7, LaunchState.Queued, LaunchProblem.None)]
+    [InlineData(4, LaunchState.Blocked, LaunchProblem.InsufficientCapacity)] [InlineData(7, LaunchState.Blocked, LaunchProblem.InsufficientCapacity)]
+    [InlineData(7, LaunchState.Blocked, LaunchProblem.ProviderUnavailable)]
+    public async Task EverySupportedOrphanBackupIsPreservedAndLoadedForReview(int version, LaunchState state, LaunchProblem problem)
     {
-        var operation = Row() with { State = LaunchState.Queued, Problem = LaunchProblem.None, ProcessReceipt = null, ResourceBudget = null };
+        var operation = Row() with { State = state, Problem = problem, ProcessReceipt = null, ResourceBudget = null };
         var bytes = await Write(".bak", new(false, [operation]), version);
         using var store = new LaunchQueueStore(_root); var loaded = await store.LoadAsync(default);
         Assert.True(loaded.Paused); Assert.Single(loaded.Operations);
         Assert.Equal(operation.Intent, loaded.Operations[0].Intent); Assert.Null(loaded.Operations[0].ResourceBudget);
-        Assert.Equal(version < 4 ? LaunchState.ReviewRequired : LaunchState.Queued, loaded.Operations[0].State);
+        Assert.Equal(LaunchState.ReviewRequired, loaded.Operations[0].State); Assert.Equal(LaunchProblem.Interrupted, loaded.Operations[0].Problem);
         Assert.Equal(bytes, await File.ReadAllBytesAsync(Primary + ".bak")); Assert.False(File.Exists(Primary));
+    }
+
+    [Fact]
+    public async Task ABackupQueuedRequestStaysAReservingPossibleClientAfterCoordinatorRestart()
+    {
+        var operation = Row() with { State = LaunchState.Queued, Problem = LaunchProblem.None, ProcessReceipt = null };
+        await Write(".bak", new(false, [operation]));
+        using var store = new LaunchQueueStore(_root); var provider = new ForbiddenProvider();
+        await using var queue = new LaunchCoordinator(store, provider, (_, _) => throw new InvalidOperationException("No authorization expected."), _ => new(true, "Fixture"));
+        await queue.InitializeAsync(default); var row = Assert.Single((await store.LoadAsync(default)).Operations);
+        Assert.Equal(LaunchState.ReviewRequired, row.State); Assert.Equal(LaunchProblem.Interrupted, row.Problem);
+        Assert.True(LaunchDescriptions.HasUnresolvedReservation(row)); Assert.Equal(operation.ResourceBudget, row.ResourceBudget);
+        await Assert.ThrowsAsync<LaunchQueueException>(() => queue.CancelAsync(operation.Intent.OperationId, default));
+        Assert.Equal(0, provider.Calls);
     }
 
     [Theory]

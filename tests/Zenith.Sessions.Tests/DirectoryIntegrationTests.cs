@@ -26,7 +26,10 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         {
             await reopened.InitializeAsync();await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
             var row=Assert.Single(reopened.Launches);Assert.Equal("Renamed sample",row.Label);
-            Assert.Equal(LaunchState.ReviewRequired,row.Operation.State);Assert.Equal("Review required",Assert.Single(reopened.Accounts).LaunchStatus);
+            // A never-started request is recovered as a cancellable non-reserving row, not a possible client.
+            Assert.Equal(LaunchState.Blocked,row.Operation.State);Assert.Equal(LaunchProblem.Interrupted,row.Operation.Problem);
+            Assert.Equal("Review request",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
+            Assert.Equal("Blocked",Assert.Single(reopened.Accounts).LaunchStatus);
         }
     });
     [Fact]

@@ -145,11 +145,13 @@ public sealed class LaunchResourceBudgetStoreTests : IDisposable
         using var store = new LaunchQueueStore(_root); var first = await SeedBackup(store);
         string backup = await File.ReadAllTextAsync(PathToQueue + ".bak"), malformed = BudgetEnvelope(7, shape, unknown: false);
         await Write(malformed); var recovered = await store.LoadAsync(default);
-        Assert.Equal(first.Operations, recovered.Operations); Assert.Equal(ExactBudget, Assert.Single(recovered.Operations).ResourceBudget);
+        // The backup is one generation behind: its queued row keeps its exact budget but returns for review.
+        var forReview = first.Operations.Select(o => o with { State = LaunchState.ReviewRequired, Problem = LaunchProblem.Interrupted }).ToArray();
+        Assert.Equal(forReview, recovered.Operations); Assert.Equal(ExactBudget, Assert.Single(recovered.Operations).ResourceBudget);
         Assert.Equal(malformed, await File.ReadAllTextAsync(PathToQueue)); Assert.Equal(backup, await File.ReadAllTextAsync(PathToQueue + ".bak"));
         await store.SaveAsync(recovered, default);
         Assert.Equal(malformed, await File.ReadAllTextAsync(PathToQueue + ".damaged")); Assert.Equal(backup, await File.ReadAllTextAsync(PathToQueue + ".bak"));
-        Assert.Equal(first.Operations, (await store.LoadAsync(default)).Operations); Assert.False(File.Exists(PathToQueue + ".tmp"));
+        Assert.Equal(forReview, (await store.LoadAsync(default)).Operations); Assert.False(File.Exists(PathToQueue + ".tmp"));
     }
 
     [Theory]

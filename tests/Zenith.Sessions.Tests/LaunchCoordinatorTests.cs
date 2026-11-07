@@ -320,7 +320,8 @@ public sealed class LaunchCoordinatorTests
         }
         store.BeforeSave=null;
         await using var recovered=Create(store,provider);await recovered.InitializeAsync(default);
-        Assert.True(store.Last.Paused);Assert.Equal(LaunchState.ReviewRequired,Assert.Single(store.Last.Operations).State);Assert.Empty(provider.Started);
+        var recoveredRow=Assert.Single(store.Last.Operations);
+        Assert.True(store.Last.Paused);Assert.Equal(LaunchState.Blocked,recoveredRow.State);Assert.Equal(LaunchProblem.Interrupted,recoveredRow.Problem);Assert.Empty(provider.Started);
     }
     [Theory]
     [InlineData(false)]

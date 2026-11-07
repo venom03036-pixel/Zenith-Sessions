@@ -246,18 +246,21 @@ public sealed class LaunchPacingTests
     [Fact]
     public async Task RestartDoesNotPersistPacingOrAutomaticallyResumeRecoveredRequests()
     {
-        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock); LaunchOperation first, second;
         await using (var queue = Queue(store, provider, clock))
         {
-            await queue.InitializeAsync(default); var first = await queue.EnqueueAsync(Profile("First"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+            await queue.InitializeAsync(default); first = await queue.EnqueueAsync(Profile("First"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
             await Until(() => store.Row(first.Intent.OperationId)?.State == LaunchState.ClientStartedUnverified); await queue.WaitForActiveCleanupAsync(default);
-            await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination); Assert.False(queue.ReadPacing().Ready);
+            second = await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination); Assert.False(queue.ReadPacing().Ready);
             Assert.DoesNotContain("Remaining", JsonSerializer.Serialize(store.Last)); Assert.DoesNotContain("Pacing", JsonSerializer.Serialize(store.Last));
         }
         var reopenedProvider = new Provider(clock); await using var reopened = Queue(store, reopenedProvider, clock); await reopened.InitializeAsync(default);
         Assert.True(reopened.ReadPacing().Ready); Assert.Null(reopened.ReadPacing().OperationId); Assert.True(store.Last.Paused);
         clock.Advance(TimeSpan.FromMinutes(2)); reopened.Signal(); await Settle(); Assert.Empty(reopenedProvider.Starts);
-        Assert.All(store.Last.Operations, row => Assert.Equal(LaunchState.ReviewRequired, row.State));
+        // The started client needs closure review; the never-started request stays a cancellable recovered row.
+        Assert.Equal(LaunchState.ReviewRequired, store.Row(first.Intent.OperationId)!.State);
+        Assert.Equal(LaunchState.Blocked, store.Row(second.Intent.OperationId)!.State);
+        Assert.Equal(LaunchProblem.Interrupted, store.Row(second.Intent.OperationId)!.Problem);
     }
 
     [Fact]

@@ -27,7 +27,9 @@ public sealed class LaunchQueueStoreTests : IDisposable
         string path=Path.Combine(_root,"launch-queue.json");await File.WriteAllTextAsync(path,"corrupt original");
         var recovered=await store.LoadAsync(default);Assert.True(recovered.Paused);Assert.Equal("corrupt original",await File.ReadAllTextAsync(path));
         await store.SaveAsync(recovered,default);Assert.Equal("corrupt original",await File.ReadAllTextAsync(path+".damaged"));
-        Assert.Equal(first.Operations,(await store.LoadAsync(default)).Operations);
+        // A backup is one generation behind, so its queued request returns as a possible client for review.
+        var forReview=first.Operations.Select(o=>o with {State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted}).ToArray();
+        Assert.Equal(forReview,recovered.Operations);Assert.Equal(forReview,(await store.LoadAsync(default)).Operations);
     }
     [Fact]
     public async Task UnknownFormatAndCorruptQueueCannotPretendToBeEmpty()

@@ -152,14 +152,25 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         {
             if(_initialized) return;
             var saved=await _store.LoadAsync(ct).ConfigureAwait(false);ValidateSnapshot(saved);
-            foreach(var operation in saved.Operations)
-                _operations.Add(LaunchDescriptions.Terminal(operation.State)?operation:
-                    operation.State==LaunchState.Preparing || operation.State==LaunchState.Blocked&&operation.Problem==LaunchProblem.PreparationInterrupted
-                        ?operation with { State=LaunchState.Blocked,Problem=LaunchProblem.PreparationInterrupted,UpdatedUtc=_time.GetUtcNow() }
-                        :operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted,UpdatedUtc=_time.GetUtcNow() });
+            foreach(var operation in saved.Operations) _operations.Add(RecoverAfterRestart(operation,_time.GetUtcNow()));
             _paused=true;await PersistAsync(ct).ConfigureAwait(false);_initialized=true;_runner=RunAsync(_stop.Token);
         }
         finally {_serial.Release();}
+    }
+    // Nothing resumes automatically. Only a phase that may have reached native startup becomes
+    // a reserving possible client that needs closure review.
+    private static LaunchOperation RecoverAfterRestart(LaunchOperation operation,DateTimeOffset now)
+    {
+        if(LaunchDescriptions.Terminal(operation.State)) return operation;
+        if(operation.State==LaunchState.Preparing || operation.State==LaunchState.Blocked&&operation.Problem==LaunchProblem.PreparationInterrupted)
+            return operation with { State=LaunchState.Blocked,Problem=LaunchProblem.PreparationInterrupted,UpdatedUtc=now };
+        // Queued and Blocked are saved before any validation, preparation or provider call and
+        // can never carry a receipt, so such a row never started a client. Keep it cancellable,
+        // non-reserving and never auto-selected. A backup generation, which a lost primary may
+        // have moved on, reaches here as ReviewRequired from the store instead.
+        if(operation.State is LaunchState.Queued or LaunchState.Blocked)
+            return operation with { State=LaunchState.Blocked,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
+        return operation with { State=LaunchState.ReviewRequired,Problem=LaunchProblem.Interrupted,UpdatedUtc=now };
     }
     public Task<LaunchOperation> EnqueueAsync(AccountProfile profile,CancellationToken ct,LaunchAccountBinding? binding=null,
         RobloxRequestedDestination? requestedDestination=null)=>EnqueueOwnedAsync(profile,ct,binding,requestedDestination,false);
