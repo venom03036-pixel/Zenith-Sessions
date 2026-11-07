@@ -8,9 +8,13 @@ internal interface IClientWindowAdapter
 {
     ClientDisplayList Displays(CancellationToken ct);
     ClientWindowCheck Check(SessionObservation session);
+    /// <summary>Places the window's visible frame on <paramref name="bounds"/> (the outer rect may extend into invisible borders).</summary>
     WindowPostStatus Move(SessionObservation session, PixelRectangle bounds, Func<bool> stopped);
     WindowPostStatus Change(SessionObservation session, ClientWindowAction action, Func<bool> stopped);
+    /// <summary>Outer window rect, including any invisible resize borders.</summary>
     PixelRectangle? Bounds(SessionObservation session);
+    /// <summary>Visible window frame that tiling confirms; equals <see cref="Bounds"/> for windows without invisible borders.</summary>
+    PixelRectangle? VisibleBounds(SessionObservation session) => Bounds(session);
     ClientWindowGeometry? Geometry(SessionObservation session) => null;
     WindowPostStatus Resize(SessionObservation session, ClientWindowGeometry expected, PixelRectangle bounds, Func<bool> stopped) => WindowPostStatus.Unsupported;
 }
@@ -190,14 +194,15 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
             $"{results.Count(result => result.Status == ClientWindowPlacementStatus.Applied)} of {ordered.Length} client window bounds confirmed. Each remaining result explains its state.");
     }
 
-    // Bounded confirmation (20 × 25 ms) of one posted move: exact physical bounds inside an unchanged target display.
+    // Bounded confirmation (20 × 25 ms) of one posted move: exact physical visible-frame bounds inside an unchanged target
+    // display. The outer rect is not compared: it includes invisible resize borders that may extend past the workarea.
     private async Task<(bool Confirmed, bool Invalid)> ConfirmBoundsAsync(SessionObservation session, PixelRectangle bounds,
         ClientDisplay display, long generation, CancellationToken ct)
     {
         for (int attempt = 0; attempt < 20; attempt++)
         {
             if (Stopped(generation, ct)) break;
-            var observed = await Task.Run(() => (State: adapter.Check(session), Bounds: adapter.Bounds(session))).ConfigureAwait(false);
+            var observed = await Task.Run(() => (State: adapter.Check(session), Bounds: adapter.VisibleBounds(session))).ConfigureAwait(false);
             if (!observed.State.Current) return (false, true);
             if (observed.Bounds is { } actual && actual == bounds && display.WorkArea.Contains(actual))
             {

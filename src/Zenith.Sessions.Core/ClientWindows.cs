@@ -86,3 +86,35 @@ public static class ClientWindowTilePlanner
     }
     private static int Scale(int dip, int percent) => (int)(((long)dip * percent + 99) / 100);
 }
+
+/// <summary>
+/// Pure invisible-border compensation. On Windows 10/11 the outer rect of a thick-frame window includes invisible
+/// DWM resize borders (about 7 px at 100% on the left, right and bottom); the visible frame is inset from it.
+/// Tile cells describe the visible frame, so the outer rect to post is the cell grown by the measured borders.
+/// </summary>
+public static class ClientWindowFrame
+{
+    /// <summary>Largest plausible invisible border per side (about 37 px at the 500% scale limit).</summary>
+    public const int MaximumBorder = 64;
+
+    /// <summary>Visible frame used for confirmation: the DWM frame when it is a plausible inset of the outer rect, else the outer rect.</summary>
+    public static PixelRectangle VisibleOrOuter(PixelRectangle windowRect, PixelRectangle? visibleFrame)
+        => visibleFrame is { } frame && Compensate(windowRect, windowRect, frame) is not null ? frame : windowRect;
+
+    /// <summary>
+    /// Outer rect that puts the visible frame on <paramref name="cell"/>, or null when the frame is not a plausible inset
+    /// of the window rect (unavailable, outside it, or a border above <see cref="MaximumBorder"/>) or the result overflows.
+    /// </summary>
+    public static PixelRectangle? Compensate(PixelRectangle cell, PixelRectangle windowRect, PixelRectangle visibleFrame)
+    {
+        if (!cell.IsValid || !windowRect.Contains(visibleFrame)) return null;
+        long left = (long)visibleFrame.X - windowRect.X, top = (long)visibleFrame.Y - windowRect.Y;
+        long right = (long)windowRect.X + windowRect.Width - ((long)visibleFrame.X + visibleFrame.Width);
+        long bottom = (long)windowRect.Y + windowRect.Height - ((long)visibleFrame.Y + visibleFrame.Height);
+        if (left > MaximumBorder || top > MaximumBorder || right > MaximumBorder || bottom > MaximumBorder) return null;
+        long x = cell.X - left, y = cell.Y - top, width = cell.Width + left + right, height = cell.Height + top + bottom;
+        if (x < int.MinValue || y < int.MinValue || width > int.MaxValue || height > int.MaxValue) return null;
+        var outer = new PixelRectangle((int)x, (int)y, (int)width, (int)height);
+        return outer.IsValid ? outer : null;
+    }
+}

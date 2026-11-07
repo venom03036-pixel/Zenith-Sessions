@@ -83,13 +83,23 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
             var state = Check(session);
             if (!state.Current) return WindowPostStatus.Invalid;
             if (!state.CanArrange || !bounds.IsValid) return WindowPostStatus.Unsupported;
+            // Bounds are the visible frame. Grow them by the invisible resize borders measured now, at the window's current
+            // DPI; without a plausible DWM frame the cell is posted as the outer rect, as before.
+            var outer = Native.GetWindowRect(session.Window, out var rect)
+                ? ClientWindowFrame.Compensate(bounds, Rect(rect), VisibleFrame(session.Window) ?? default) ?? bounds : bounds;
             if (stopped()) return WindowPostStatus.Cancelled;
             // ASYNCWINDOWPOS | NOACTIVATE | NOZORDER | NOOWNERZORDER. No restore/minimize, focus or input call.
-            return Native.SetWindowPos(session.Window, 0, bounds.X, bounds.Y, bounds.Width, bounds.Height, 0x4000 | 0x10 | 0x4 | 0x200)
+            return Native.SetWindowPos(session.Window, 0, outer.X, outer.Y, outer.Width, outer.Height, 0x4000 | 0x10 | 0x4 | 0x200)
                 ? WindowPostStatus.Accepted : WindowPostStatus.Denied;
         }
         catch (Win32Exception) { return WindowPostStatus.Denied; }
     }
+
+    // https://learn.microsoft.com/windows/win32/api/dwmapi/ne-dwmapi-dwmwindowattribute (DWMWA_EXTENDED_FRAME_BOUNDS = 9)
+    // Extended frame bounds are physical screen pixels and are never DPI-virtualized, matching the PMv2 scope.
+    private static PixelRectangle? VisibleFrame(nint window)
+        => Native.DwmGetWindowAttribute(window, 9, out var frame, Marshal.SizeOf<Native.Rect>()) == 0 && Rect(frame) is { IsValid: true } visible
+            ? visible : null;
 
     public WindowPostStatus Change(SessionObservation session, ClientWindowAction action, Func<bool> stopped)
     {
@@ -108,6 +118,19 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         {
             using var dpi = new PhysicalDpiScope();
             return Native.GetWindowRect(session.Window, out var rect) ? Rect(rect) : null;
+        }
+        catch (Win32Exception) { return null; }
+    }
+
+    public PixelRectangle? VisibleBounds(SessionObservation session)
+    {
+        if (!SameClient(session)) return null;
+        try
+        {
+            using var dpi = new PhysicalDpiScope();
+            if (!Native.GetWindowRect(session.Window, out var rect)) return null;
+            var outer = Rect(rect);
+            return outer.IsValid ? ClientWindowFrame.VisibleOrOuter(outer, VisibleFrame(session.Window)) : null;
         }
         catch (Win32Exception) { return null; }
     }
@@ -194,6 +217,7 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool GetClientRect(nint window, out Rect bounds);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool ClientToScreen(nint window, ref Point point);
         [DllImport("user32.dll")] internal static extern nint MonitorFromWindow(nint window, uint flags);
+        [DllImport("dwmapi.dll")] internal static extern int DwmGetWindowAttribute(nint window, int attribute, out Rect value, int size);
         [DllImport("user32.dll", EntryPoint = "GetWindowLongPtrW")] private static extern nint GetWindowLongPtr(nint window, int index);
         [DllImport("user32.dll", EntryPoint = "GetWindowLongW")] private static extern int GetWindowLong(nint window, int index);
         internal static long Style(nint window) => nint.Size == 8 ? GetWindowLongPtr(window, -16).ToInt64() : GetWindowLong(window, -16);

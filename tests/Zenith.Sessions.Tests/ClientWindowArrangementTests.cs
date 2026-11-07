@@ -25,6 +25,9 @@ public sealed class ClientWindowArrangementTests
         public Func<SessionObservation, ClientWindowGeometry?>? GeometryQuery;
         // Rectangle the client actually keeps for the Nth accepted move (1-based), e.g. a WM_DPICHANGED suggested size.
         public Func<int, PixelRectangle, PixelRectangle>? Landed;
+        // Invisible DWM resize borders (left, top, right, bottom) between the outer window rect and the visible frame.
+        // Null keeps visible frame == outer rect, like a window without a DWM frame.
+        public (int Left, int Top, int Right, int Bottom)? InvisibleBorders;
         public ClientWindowGeometry? Geometry(SessionObservation session) => GeometryQuery?.Invoke(session);
         public ClientDisplayList Displays(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return DisplayQuery?.Invoke() ?? new(Array.AsReadOnly(Monitors), "Synthetic"); }
         public ClientWindowCheck Check(SessionObservation session) => new(Current && session.ProcessStartUtcTicks == Now.AddMinutes(-1).UtcTicks
@@ -39,9 +42,16 @@ public sealed class ClientWindowArrangementTests
             if (Denied) return WindowPostStatus.Denied;
             Entered.Set();
             if (Block && !Release.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("Synthetic mutation was not released.");
-            Moves.Add((session, bounds)); if (Confirm) Positions[session.Window] = Landed?.Invoke(Moves.Count, bounds) ?? bounds;
+            Moves.Add((session, bounds));
+            // Like the native adapter: the requested bounds are the visible frame; grow them by the current invisible borders.
+            var outer = Positions.TryGetValue(session.Window, out var at) ? at : new PixelRectangle(100, 100, 800, 600);
+            var posted = InvisibleBorders is null ? bounds : ClientWindowFrame.Compensate(bounds, outer, Visible(outer)) ?? bounds;
+            if (Confirm) Positions[session.Window] = Landed?.Invoke(Moves.Count, posted) ?? posted;
             AfterMutation?.Invoke(); return WindowPostStatus.Accepted;
         }
+        private PixelRectangle Visible(PixelRectangle outer) => InvisibleBorders is { } b
+            ? new(outer.X + b.Left, outer.Y + b.Top, outer.Width - b.Left - b.Right, outer.Height - b.Top - b.Bottom) : outer;
+        public PixelRectangle? VisibleBounds(SessionObservation session) => Bounds(session) is { } outer ? Visible(outer) : null;
         public WindowPostStatus Change(SessionObservation session, ClientWindowAction action, Func<bool> stopped)
         {
             BeforeMutation?.Invoke(); if (!Check(session).Current) return WindowPostStatus.Invalid;
@@ -82,6 +92,44 @@ public sealed class ClientWindowArrangementTests
         Assert.False(ClientWindowTilePlanner.Plan(Display() with { WorkArea = new(int.MaxValue - 10, 0, 100, 1000) }, 1, new()).Fits);
         Assert.False(ClientWindowTilePlanner.Plan(Display(), 129, new()).Fits);
         Assert.Throws<ArgumentOutOfRangeException>(() => ClientWindowTilePlanner.Plan(Display(), 1, new(GapDip: -1)));
+    }
+
+    [Fact]
+    public void FrameCompensationExpandsCellByInvisibleResizeBorders()
+    {
+        PixelRectangle cell = new(8, 8, 944, 524), window = new(100, 100, 800, 600);
+        // Windows 10/11 thick frame at 100%: about 7 px invisible on the left, right and bottom; none at the top.
+        Assert.Equal(new PixelRectangle(1, 8, 958, 531), ClientWindowFrame.Compensate(cell, window, new(107, 100, 786, 593)));
+        Assert.Equal(cell, ClientWindowFrame.Compensate(cell, window, window));
+        Assert.Null(ClientWindowFrame.Compensate(cell, window, new(90, 100, 800, 600)));     // frame outside the window rect
+        Assert.Null(ClientWindowFrame.Compensate(cell, window, new(200, 100, 600, 600)));    // implausibly large inset
+        Assert.Null(ClientWindowFrame.Compensate(cell, window, default));                    // DWM frame unavailable
+        Assert.Null(ClientWindowFrame.Compensate(new(int.MinValue, 0, 100, 100), window, new(107, 100, 786, 593)));
+        // Confirmation reads the same visible frame the move compensated for, or the outer rect when there is none.
+        Assert.Equal(new PixelRectangle(107, 100, 786, 593), ClientWindowFrame.VisibleOrOuter(window, new(107, 100, 786, 593)));
+        Assert.Equal(window, ClientWindowFrame.VisibleOrOuter(window, null));
+        Assert.Equal(window, ClientWindowFrame.VisibleOrOuter(window, new(90, 100, 800, 600)));
+    }
+
+    [Theory]
+    [InlineData(0)] [InlineData(8)]
+    public async Task ArrangementConfirmsVisibleFrameNotOuterWindowRect(int gap)
+    {
+        var adapter = new Adapter { InvisibleBorders = (7, 0, 7, 7) };
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var options = new ClientWindowTileOptions(GapDip: gap);
+        SessionObservation[] selected = [Session(1), Session(2), Session(3), Session(4)];
+        var plan = ClientWindowTilePlanner.Plan(Display(), selected.Length, options);
+        var result = await operations.ArrangeAsync(selected, Display().Id, options, default);
+        Assert.True(result.AllApplied, string.Join(" | ", result.Results.Select(row => $"{row.Status}: {row.Explanation}")));
+        for (int index = 0; index < selected.Length; index++)
+        {
+            var cell = plan.Cells[index];
+            Assert.Equal(cell, result.Results[index].RequestedBounds);
+            // The visible frame lands exactly on the planned cell; the outer rect reaches into the invisible borders.
+            Assert.Equal(cell, adapter.VisibleBounds(selected[index]));
+            Assert.Equal(new PixelRectangle(cell.X - 7, cell.Y, cell.Width + 14, cell.Height + 7), adapter.Positions[selected[index].Window]);
+        }
     }
 
     [Fact]
