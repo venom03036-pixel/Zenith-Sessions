@@ -120,7 +120,21 @@ public sealed class VaultCrossProcessTests
         await using var fixture=await Fixture.CreateAsync();
         var worker=fixture.Start("not-a-scenario",Guid.NewGuid()); // The real worker rejects an unknown scenario with exit code 64.
         var error=await Assert.ThrowsAsync<InvalidOperationException>(worker.ReadyAsync);
-        Assert.Equal("The owned fixture worker exited before readiness: exit code 64 (0x00000040), bad arguments.",error.Message);
+        Assert.Equal("The owned fixture worker exited before readiness: exit code 64 (0x00000040), bad arguments; no standard error output.",error.Message);
+    }
+
+    [Fact]
+    public async Task WorkerThatFailsBeforeItsMainReportsTheRuntimesStandardError()
+    {
+        await using var fixture=await Fixture.CreateAsync();
+        // A startup hook that does not exist makes the .NET runtime stop the worker before its Main runs; only the runtime's
+        // standard error says why. The long name makes that report longer than the excerpt, so the excerpt must keep its start.
+        string hook=Path.Combine(fixture.Root,new string('h',100)+".dll");
+        var worker=fixture.Start("hold",Guid.NewGuid(),("DOTNET_STARTUP_HOOKS",hook));
+        var error=await Assert.ThrowsAsync<InvalidOperationException>(worker.ReadyAsync);
+        // The whole message is the failure text, so a mismatch shows what the fixture actually reported.
+        Assert.True(error.Message.StartsWith("The owned fixture worker exited before readiness: exit code -532462766 (0xE0434352), not one of the worker's own codes, "
+            +"so a host or runtime failure; standard error: Unhandled exception. System.ArgumentException: Startup hook assembly '"+hook+"' failed to load.",StringComparison.Ordinal),error.Message);
     }
 
     private sealed record WorkerResult(int Version,string Scenario,string Status,long? CommittedGeneration=null,bool? Fenced=null);
@@ -140,12 +154,13 @@ public sealed class VaultCrossProcessTests
             }
             catch{await fixture.DisposeAsync();throw;}
         }
-        public OwnedWorker Start(string scenario,Guid mutation)
+        public OwnedWorker Start(string scenario,Guid mutation,(string Name,string Value)? environment=null)
         {
             Validate();string executable=FindWorker();AssertNotRedirected(executable);
             Guid control=Guid.NewGuid();var start=new ProcessStartInfo(executable)
-            {UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Root};
+            {UseShellExecute=false,CreateNoWindow=true,WorkingDirectory=Root,RedirectStandardError=true}; // Drained by OwnedWorker from its construction.
             foreach(string argument in new[]{scenario,Root,control.ToString("N"),mutation.ToString("N")})start.ArgumentList.Add(argument);
+            if(environment is {} variable)start.Environment[variable.Name]=variable.Value;
             var process=Process.Start(start)??throw new InvalidOperationException("The owned vault test worker did not start.");
             var worker=new OwnedWorker(this,process,scenario,control);_workers.Add(worker);
             worker.CaptureIdentity();return worker; // Track before querying identity, including a failed query.
@@ -200,11 +215,15 @@ public sealed class VaultCrossProcessTests
     private sealed class OwnedWorker(Fixture fixture,Process process,string scenario,Guid control) : IAsyncDisposable
     {
         private readonly Stopwatch _age=Stopwatch.StartNew();
+        // Read from the moment the worker starts, so the pipe never fills; it ends at the worker's exit, which DisposeAsync
+        // guarantees (killing the worker if it must) before it observes this read and disposes the process.
+        private readonly Task<string> _standardError=process.StandardError.ReadToEndAsync();
         private int _pid;private long _start;private bool _disposed;
         private TimeSpan Remaining {get{var remaining=TimeSpan.FromSeconds(20)-_age.Elapsed;return remaining>TimeSpan.Zero?remaining:TimeSpan.Zero;}}
         public bool Exited=>process.HasExited;
         public void CaptureIdentity(){_pid=process.Id;_start=process.StartTime.ToUniversalTime().Ticks;}
-        // The worker writes nothing to its console, so its exit code is the only cause it reports (tools\Zenith.Sessions.VaultTestWorker\Program.cs).
+        // The worker writes nothing to its console, so its exit code is the only cause it reports itself (tools\Zenith.Sessions.VaultTestWorker\Program.cs);
+        // a .NET host or runtime failure before or outside its Main is explained only on standard error.
         private static string? ExitMeaning(int code)=>code switch{64=>"bad arguments",65=>"the fixture root was rejected",2=>"cancelled",3=>"failed",
             _=>"not one of the worker's own codes, so a host or runtime failure"};
         public void Signal(string kind)=>fixture.Signal(control,kind);
@@ -216,7 +235,7 @@ public sealed class VaultCrossProcessTests
             {
                 deadline.Token.ThrowIfCancellationRequested();fixture.Validate();
                 if(process.HasExited)
-                    throw new InvalidOperationException("The owned fixture worker exited before readiness: "+await TestWorkerLocator.DescribeExitAsync(process,false,ExitMeaning)+".");
+                    throw new InvalidOperationException("The owned fixture worker exited before readiness: "+await TestWorkerLocator.DescribeExitAsync(process,_standardError,ExitMeaning)+".");
                 var info=new FileInfo(path);
                 if(info.Exists)
                 {
@@ -262,6 +281,10 @@ public sealed class VaultCrossProcessTests
                 await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5));
             }
             if(!process.HasExited)throw new InvalidOperationException("The owned fixture worker did not stop.");
+            // The stderr read ends with the worker's exit; join it (bounded) before disposing the stream it reads. It is
+            // diagnostics only, so a read that failed or is still open after 2 s changes no fixture result and is not reported.
+            try{await _standardError.WaitAsync(TimeSpan.FromSeconds(2));}
+            catch(Exception error) when(error is TimeoutException or IOException or InvalidOperationException){}
             _disposed=true;process.Dispose();
             if(signalFailed)throw new InvalidOperationException("The owned release signal failed; the helper was joined and its synthetic fixture was preserved.");
         }

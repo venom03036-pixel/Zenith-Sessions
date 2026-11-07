@@ -213,7 +213,7 @@ public sealed class MacroHostCatalogViewModelTests
         }
     }
 
-    // Reads the probe's READY line; on anything else the failure names what was read, the exit code and the stderr tail.
+    // Reads the probe's READY line; on anything else the failure names what was read, the exit code and the start of stderr.
     private static async Task ReadReadyLineAsync(Process process)
     {
         string problem;
@@ -226,7 +226,7 @@ public sealed class MacroHostCatalogViewModelTests
         }
         catch (TimeoutException)
         { problem = "printed nothing within " + Deadline.TotalSeconds.ToString(System.Globalization.CultureInfo.InvariantCulture) + " s"; }
-        Assert.Fail("The probe worker " + problem + ": " + await TestWorkerLocator.DescribeExitAsync(process, true, ProbeExitMeaning) + ".");
+        Assert.Fail("The probe worker " + problem + ": " + await TestWorkerLocator.DescribeExitAsync(process, process.StandardError.ReadToEndAsync(), ProbeExitMeaning) + ".");
     }
 
     // The probe's own codes, from tools\Zenith.MacroHost.ProbeWorker\Program.cs.
