@@ -158,6 +158,10 @@ name, creator line, playing + rating, accent border and check when it is the cur
   fetched), and only when that field is itself a share link on an exact Roblox host or in the app form; a wrapper inside
   it, a foreign host, plain HTTP or a still-encoded value is refused. The type is read in any letter case (`server` is
   `Server`), matching how Roblox answers it.
+- A website page tab (R-research-2): a link copied from a game page's Servers or About tab ends in `#!/game-instances` or
+  `#!/about`. That part never reaches Roblox, so on an exact Roblox website host a final `#!/` followed by 1-32
+  lowercase letters or hyphens is dropped and the rest of the link is read as usual. Every other fragment, and a tab on
+  `ro.blox.com` or a `roblox://` link, is still refused, with a message saying to remove the part after `#`.
 - The text box is cleared as soon as a share link is recognised.
 
 ### 4.2 Resolution

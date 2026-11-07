@@ -120,10 +120,15 @@ public static class RobloxDestinationParser
             return share ? OpaqueShareLink() : ParseFields(nativeQuery, null, true);
         }
 
+        // A website page's tab (#!/game-instances, #!/about) stays in the browser and never reaches Roblox, so the link names
+        // the same page without it. Only a Roblox website page may carry one; every other fragment is still refused.
+        bool pageTab = TryRemovePageTab(ref text);
         if (!Uri.TryCreate(text, UriKind.Absolute, out var uri) || uri.Scheme != Uri.UriSchemeHttps
-            || uri.UserInfo.Length != 0 || uri.Port != 443 || uri.Fragment.Length != 0
+            || uri.UserInfo.Length != 0 || uri.Port != 443
             || !IsWebHost(uri.Host) && uri.Host != "ro.blox.com")
             return Invalid("Only exact-host HTTPS Roblox links and the documented Roblox deep-link format are accepted.");
+        if (uri.Fragment.Length != 0 || pageTab && !IsWebHost(uri.Host))
+            return Invalid("Remove the part of the link after #. Only a page tab such as #!/game-instances on a roblox.com page is ignored.");
         // Do not let Uri path/host normalization turn a different input into an allowlisted destination.
         int authorityEnd = text.IndexOfAny(['/', '?', '#'], text.IndexOf("://", StringComparison.Ordinal) + 3);
         string authority = authorityEnd < 0 ? text[(text.IndexOf("://", StringComparison.Ordinal) + 3)..]
@@ -249,6 +254,15 @@ public static class RobloxDestinationParser
     private static bool TryPlaceId(string value, out long id) => long.TryParse(value, NumberStyles.None, CultureInfo.InvariantCulture, out id)
         && value.All(char.IsAsciiDigit) && id > 0;
     private static bool IsNumericLike(string value) => value.Length == 0 || value[0] is '+' or '-' || value.All(char.IsAsciiDigit);
+    // A page tab ends the link: "#!/" then 1-32 lowercase ASCII letters or hyphens. Anything else is left for the fragment check.
+    private static bool TryRemovePageTab(ref string text)
+    {
+        int hash = text.IndexOf('#');
+        if (hash < 0 || !text.AsSpan(hash).StartsWith("#!/", StringComparison.Ordinal) || text.Length - hash - 3 is < 1 or > 32) return false;
+        foreach (char c in text.AsSpan(hash + 3)) if (c is not ((>= 'a' and <= 'z') or '-')) return false;
+        text = text[..hash];
+        return true;
+    }
     private static bool IsLanguage(ReadOnlySpan<char> segment)
     {
         if (segment.Length is not (2 or (>= 5 and <= 7)) || !char.IsAsciiLetter(segment[0]) || !char.IsAsciiLetter(segment[1])) return false;

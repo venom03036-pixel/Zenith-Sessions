@@ -114,11 +114,35 @@ public sealed class DestinationTests
     [InlineData("roblox://experiences/start/?placeId=123")]
     [InlineData("roblox://experiences/start?placeId=123#fragment")]
     [InlineData("roblox://experiences/join?placeId=123")]
+    [InlineData("roblox://experiences/start/../start?placeId=123")]
+    [InlineData("roblox://experiences/start?placeId=123&x=/../")]
+    // Only a page tab (#!/ then 1-32 lowercase letters or hyphens) on a Roblox website page is ignored; every other fragment is refused.
+    [InlineData("https://www.roblox.com/games/123#!/")]
+    [InlineData("https://www.roblox.com/games/123#/game-instances")]
+    [InlineData("https://www.roblox.com/games/123#!/Game-Instances")]
+    [InlineData("https://www.roblox.com/games/123#!/game-instances/")]
+    [InlineData("https://www.roblox.com/games/123#!/game%2Dinstances")]
+    [InlineData("https://www.roblox.com/games/123#!/game-instances#!/about")]
+    [InlineData("https://www.roblox.com/games/123#!/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa")]
+    [InlineData("https://www.roblox.com.evil.invalid/games/123#!/game-instances")]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2FplaceId%3D123#!/about")]
+    [InlineData("roblox://placeId=123#!/game-instances")]
     public void UntrustedUrlsAreRejectedWithoutBeingOpened(string input)
     {
         var parsed = RobloxDestinationParser.Parse(input);
         Assert.Equal(RobloxDestinationStatus.Invalid, parsed.Status);
         Assert.Null(parsed.RequestedDestination);
+    }
+
+    [Theory]
+    [InlineData("https://www.roblox.com/games/123#redirect")]
+    [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2FplaceId%3D123#!/about")]
+    public void ARefusedFragmentSaysWhichPartOfTheLinkToRemove(string input)
+    {
+        var parsed = RobloxDestinationParser.Parse(input);
+        Assert.Equal(RobloxDestinationStatus.Invalid, parsed.Status);
+        Assert.Contains("after #", parsed.Explanation);
+        Assert.Contains("#!/game-instances", parsed.Explanation);
     }
 
     [Theory]
@@ -156,6 +180,11 @@ public sealed class DestinationTests
     [InlineData("https://ro.blox.com/Ebh5?af_web_dp=https%3A%2F%2Fm.roblox.com%2Fde%2Fgames%2F123%2FAn-Experience", null)]
     [InlineData("https://ro.blox.com/Ebh5?deep_link_value=roblox%3A%2F%2Fexperiences%2Fstart%3FplaceId%3D123%26gameInstanceId%3D" + Job, Job)]
     [InlineData("https://ro.blox.com/Ebh5?af_dp=roblox%3A%2F%2Fnavigation%2Fgame_details%3FgameId%3D9&af_web_dp=https%3A%2F%2Fwww.roblox.com%2Fgames%2F123", null)]
+    // A website page's tab (#!/game-instances, #!/about) stays in the browser and never reaches Roblox: it names the same page.
+    [InlineData("https://www.roblox.com/games/123/An-Experience#!/game-instances", null)]
+    [InlineData("https://www.roblox.com/de/games/123/Ein-Erlebnis#!/game-instances", null)]
+    [InlineData("https://web.roblox.com/games/123#!/about", null)]
+    [InlineData("https://www.roblox.com/games/start?placeId=123&gameInstanceId=" + Job + "#!/game-instances", Job)]
     public void OtherRobloxSurfaceFormsResolveTheSameRequestedDestination(string input, string? job)
     {
         var parsed = RobloxDestinationParser.Parse(input);
