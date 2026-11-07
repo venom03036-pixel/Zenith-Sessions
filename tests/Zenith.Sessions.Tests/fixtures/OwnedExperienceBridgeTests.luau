@@ -296,6 +296,37 @@ check("duplicate and competing commands cannot repeat a move", function()
     assert(state.receipts[recordKey].command.operationId == otherOperation and state.teleports == 1)
 end)
 
+-- "Confirm the account is at the source, then move it" must work inside one status check's 45 s.
+check("a completed status check does not hold the slot against a later move or status", function()
+    local lateStatus = "56789012-5678-5678-5678-56789012abcd"
+    local state = fixture()
+    state:send(nil, true)
+    assert(state.receipts[recordKey].stage == "atSource" and state.teleports == 0)
+    state.now = state.now + 10
+    state:send({ operationId = otherOperation })
+    local record = state.receipts[recordKey]
+    assert(state.teleports == 1, "a finished status check blocked a move sent 10 s later")
+    assert(record.command.operationId == otherOperation and record.stage == "teleportInitiated")
+    -- The move still holds the slot for its own 45 s, so a status check cannot replace it.
+    state.now = state.now + 10
+    state:send({ operationId = lateStatus }, true)
+    assert(state.receipts[recordKey].command.operationId == otherOperation and state.teleports == 1,
+        "a status check replaced a live move receipt")
+
+    -- A newer status check also replaces a finished one.
+    local statuses = fixture()
+    statuses:send(nil, true)
+    statuses.now = statuses.now + 10
+    statuses:send({ operationId = lateStatus }, true)
+    record = statuses.receipts[recordKey]
+    assert(record.stage == "atSource" and record.command.operationId == lateStatus,
+        "a finished status check blocked a newer status check")
+    -- An out-of-order command, even a move, still cannot replace it.
+    statuses:send({ operationId = otherOperation, issuedUtc = statuses.now - 5, expiresUtc = statuses.now + 40 })
+    assert(statuses.teleports == 0 and statuses.receipts[recordKey].command.operationId == lateStatus,
+        "a move issued before the newer status check replaced it")
+end)
+
 check("mismatched receipt claims and wrong places cannot confirm arrival", function()
     local state = fixture()
     state:send()

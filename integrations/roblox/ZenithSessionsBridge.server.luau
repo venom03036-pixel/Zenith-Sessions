@@ -152,9 +152,11 @@ local function onMessage(message)
             end
             if type(previous) == "table" and type(previous.command) == "table" then
                 local prior = previous.command
-                -- One live operation per player. An out-of-order request cannot replace it.
+                -- One live move per player, for its whole 45 s, so a move is never repeated. A status check
+                -- is finished once written, so a newer status or move may replace it. An out-of-order
+                -- request never replaces anything.
                 if prior.operationId == command.operationId
-                    or (type(prior.expiresUtc) == "number" and prior.expiresUtc > now)
+                    or (type(prior.expiresUtc) == "number" and prior.expiresUtc > now and previous.stage ~= "atSource")
                     or (type(prior.issuedUtc) == "number" and prior.issuedUtc >= command.issuedUtc) then
                     return nil
                 end
