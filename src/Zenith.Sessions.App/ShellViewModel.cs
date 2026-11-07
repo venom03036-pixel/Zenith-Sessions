@@ -1059,10 +1059,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     // Last-chance seam for UnhandledExceptionGuard. Only a Type crosses it: exception messages can carry
     // links, share codes or account names (Rule 10), so it never goes through Fail(), which echoes some messages.
     internal bool IsShuttingDown=>_shuttingDown;
-    /// <summary>UI thread only. Shows a fixed error for a fault that escaped every handler; Panic and Lock notices stay.</summary>
+    /// <summary>
+    /// UI thread only. Shows a fixed error for a fault that escaped every handler, as <see cref="Fail(Exception,ManagerSubsystem)"/> does,
+    /// also after Panic or Lock: the error has its own line, so the stop notice stays. While locked the lock screen covers the footer,
+    /// so the fault goes to Events and Diagnostics only and no error is left behind it.
+    /// </summary>
     internal void ContainUnhandled(Type errorType)
     {
-        if(!IsLocked && !_preserveStopNotice)
+        if(!IsLocked)
             ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
         AddEvent($"Unexpected error caught ({errorType.Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);

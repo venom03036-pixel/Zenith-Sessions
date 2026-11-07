@@ -78,10 +78,23 @@ public sealed class NoticeSeverityTests : IDisposable
         // A failure after Panic is shown as an error and does not replace the Panic notice.
         vm.Fail(new IOException(Secret), Zenith.Sessions.Windows.ManagerSubsystem.Library);
         Assert.True(vm.HasErrorNotice); Assert.Contains("Panic", vm.Notice);
+        // So is an unexpected fault caught by the last-chance guard after Panic.
+        vm.DismissError.Execute(null);
+        vm.ContainUnhandled(typeof(InvalidOperationException));
+        Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault after Panic showed no error.");
+        Assert.Contains("Panic", vm.Notice);
 
         vm.Lock.Execute(null);
         Assert.False(vm.HasErrorNotice, "Lock left an error showing behind the locked dashboard.");
         Assert.Contains("locked", vm.Notice, StringComparison.OrdinalIgnoreCase);
+        // The lock screen covers the footer, so a fault while locked is kept in Events only, never left behind it.
+        vm.ContainUnhandled(typeof(InvalidOperationException));
+        Assert.False(vm.HasErrorNotice, "An unexpected fault left an error behind the locked dashboard.");
+        Assert.Contains(vm.Events, e => e.Contains("Unexpected error caught (InvalidOperationException)", StringComparison.Ordinal));
+        // Once unlocked, a later unexpected fault is shown as an error again.
+        vm.Unlock.Execute(null);
+        vm.ContainUnhandled(typeof(InvalidOperationException));
+        Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault after Lock and Unlock showed no error.");
     });
 
     [Fact]
