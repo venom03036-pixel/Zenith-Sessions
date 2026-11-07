@@ -21,6 +21,8 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
     private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
+    private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
+    private const string FolderNeedsReview = "Private sign-in storage needs review: a leftover folder in signin-browser-data was not recognized or could not be removed, and it was preserved. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private readonly TimeProvider _time = TimeProvider.System;
     private readonly object _state = new();
     private int _active;
@@ -49,7 +51,12 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct, deadline.Token);
             try
             {
-                var directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false);
+                SignInProfileDirectory directory;
+                // Admission refused before anything was created or opened, so nothing is latched. Fixed text only: no path or
+                // inner exception. A raw IOException reached the shell's generic "check the data folder permissions" notice.
+                try { directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false); }
+                catch (SignInDirectoryInUseException) { throw new AccountLinkException(FolderInUse); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new AccountLinkException(FolderNeedsReview); }
                 bool started = false;
                 try { return await dispatcher.InvokeAsync(() => RunAsync(directory, timeout.Token, () => started = true), DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
                 finally

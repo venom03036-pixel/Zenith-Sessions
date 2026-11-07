@@ -154,7 +154,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         exit.SetResult(); await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(signIn.CleanupPending, "A late confirmed cleanup did not clear the sign-in latch.");
         Assert.False(Directory.Exists(late.Path)); Assert.True(detached);
-        var admitted = await Assert.ThrowsAsync<IOException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        var admitted = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
         Assert.Contains("needs review", admitted.Message);
         // (iii) No exit was awaited after an earlier problem: the folder is preserved and the latch stays until restart.
         var kept = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
@@ -182,7 +182,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.False(signIn.CleanupPending);
         // Not latched: the next attempt reaches folder admission, where unrecognized data stops it before any browser.
         Directory.CreateDirectory(Path.Combine(_root, "signin-browser-data", "unknown"));
-        var admitted = await Assert.ThrowsAsync<IOException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+        var admitted = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
         Assert.Contains("needs review", admitted.Message);
     }
     [Fact]
@@ -234,6 +234,43 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.False(Directory.Exists(folder), "An expired sign-in left its private folder behind.");
         Assert.False(signIn.CleanupPending);
     }
+    // Folder admission stops a sign-in before any browser opens when a leftover folder is unrecognized or still held.
+    // The raw IOException reached the shell's generic "check the data folder permissions" notice, which named
+    // neither the folder nor the way to recover.
+    [Fact]
+    public Task ShellSignInBlockedByUnrecognizedFolderNamesThatFolderInsteadOfPermissions() => OnUi(async () =>
+    {
+        string unknown = Directory.CreateDirectory(Path.Combine(_root, "signin-browser-data", "unknown")).FullName;
+        File.WriteAllText(Path.Combine(unknown, "keep.txt"), "keep");
+        // No sign-in is injected: the shell owns the production OwnedRobloxSignIn, which stops at folder admission.
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        await shell.SaveAccountAsync(AccountProfile.Create("My test alias"));
+        shell.SelectedAccount = Assert.Single(shell.Accounts);
+        shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution;
+        Assert.Contains("signin-browser-data", shell.Notice);
+        Assert.Contains("Close Zenith Sessions", shell.Notice);
+        Assert.DoesNotContain("permissions", shell.Notice);
+        Assert.True(File.Exists(Path.Combine(unknown, "keep.txt")), "Unrecognized data was not preserved for review.");
+        Assert.Null(Assert.Single(shell.Accounts).KnownUserId);
+    });
+    [Fact]
+    public Task SignInBlockedByAnotherOwnersHeldFolderSaysItIsStillInUse() => OnUi(async () =>
+    {
+        // Stands in for a handoff check whose browser is still closing, or one that kept its folder after a cleanup problem.
+        var held = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        try
+        {
+            await using var signIn = new OwnedRobloxSignIn(_root, Dispatcher.CurrentDispatcher);
+            var refused = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+            Assert.Contains("still holds", refused.Message); Assert.Contains("signin-browser-data", refused.Message);
+            Assert.Contains("close Zenith Sessions", refused.Message, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(_root, refused.Message);
+            Assert.True(Directory.Exists(held.Path), "Another owner's held sign-in folder was removed.");
+            Assert.False(signIn.CleanupPending, "A refusal that created nothing latched the sign-in owner.");
+        }
+        finally { held.Remove(default); }
+    });
     [Fact]
     public void CancelledDirectoryAdmissionDoesNotCreatePrivateData()
     {

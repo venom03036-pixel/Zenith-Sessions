@@ -129,7 +129,12 @@ public sealed partial class ClientWindowIntegrationTests
         await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
         using var credential=new RobloxSessionCredential("synthetic-only");
         using(var result=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default))
+        {
             Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
+            // Unrecognized data survives a restart, so the status must name the folder to review, not only "close Zenith".
+            string status=ShellViewModel.DescribeHandoffResult(result.Result,42);
+            Assert.Contains("signin-browser-data",status);Assert.DoesNotContain("WebView2",status);
+        }
         Assert.True(Directory.Exists(foreign),"Unrecognized data was not preserved for review.");
         // Later checks are refused before the caller reserves another account's grant.
         Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,probe.Refusal);

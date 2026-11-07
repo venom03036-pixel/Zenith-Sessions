@@ -71,7 +71,7 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.SignInRequired=>"The selected saved sign-in needs renewal. Sign in again before another inspection; no client was started.",
         RobloxHandoffProbeOutcome.IdentityMismatch=>"The private page's current sign-in did not match the selected player ID. It was not saved as that account; no client was started.",
         RobloxHandoffProbeOutcome.AuthorizationChanged=>"The account's saved authorization changed during inspection. The old result was discarded; no client was started.",
-        RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying.",
+        RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying; if this repeats, review signin-browser-data in the Zenith data folder.",
         RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser is unavailable or its required launch-cancellation guard could not be installed. Check WebView2 Runtime; no page handoff was allowed.",
         RobloxHandoffProbeOutcome.Busy=>"Another account operation or private browser window is still open or closing. Finish or cancel it, then retry the inspection; no page was opened.",
         RobloxHandoffProbeOutcome.ContextRejected=>"The game page changed or was not the approved game-only destination. No handoff was accepted. Renew sign-in if required, then retry with the intended game.",
