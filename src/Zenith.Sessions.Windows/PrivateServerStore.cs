@@ -160,7 +160,7 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
                 string? gameName = version == 1 || entry.GetProperty("GameName").ValueKind == JsonValueKind.Null ? null
                     : entry.GetProperty("GameName").GetString() ?? throw new InvalidDataException();
                 string code = entry.GetProperty("Code").GetString() ?? throw new InvalidDataException();
-                using var holder = new ProtectedPrivateServerCode(code); // Validates the code's shape without keeping it.
+                using var holder = new ProtectedPrivateServerCode(code); // Validates the code's shape without keeping it (the same rule AddAsync writes with).
                 var stored = new StoredServer(entry.GetProperty("Id").GetGuid(), entry.GetProperty("Name").GetString() ?? "", entry.GetProperty("PlaceId").GetInt64(),
                     entry.GetProperty("UniverseId").GetInt64(), owner, code, entry.GetProperty("Revision").GetInt64(), gameName);
                 ToSaved(stored).Validated();
@@ -209,11 +209,17 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         else File.Move(temporary, Path);
     }
 
+    /// <summary>A code is storable when the holder's own shape rule accepts it (the rule <see cref="Parse"/> reads it back
+    /// with, so the store can never write a code its next read rejects) and its last four are the ones the row shows. The
+    /// shape refusal is caught here so it reads as a torn code, not as a bad server name.</summary>
     private static bool IsStorableCode(string value, string last4)
     {
-        if (value.Length is < 4 or > 128 || !value.EndsWith(last4, StringComparison.Ordinal)) return false;
-        foreach (char c in value) if (!char.IsAsciiLetterOrDigit(c)) return false;
-        return true;
+        try
+        {
+            using var check = new ProtectedPrivateServerCode(value);
+            return string.Equals(check.Last4, last4, StringComparison.Ordinal);
+        }
+        catch (ArgumentException) { return false; }
     }
     private static SavedPrivateServer ToSaved(StoredServer item) => new(item.Id, item.Name, item.PlaceId, item.UniverseId, item.OwnerUserId, item.Code[^4..], item.Revision, item.GameName);
     private static PrivateServerStorageException Damaged(string message) => new(PrivateServerStorageProblem.Damaged, message);

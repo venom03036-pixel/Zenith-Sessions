@@ -129,6 +129,29 @@ public sealed class PrivateServerStoreTests : IDisposable
         Assert.Equal("Kept", Assert.Single(await store.ReadAsync(default)).Name);
     }
 
+    // The store must refuse a code exactly when the holder's own shape rule would (the rule Parse reads the file back
+    // with), or when its last four are not the ones the saved row shows. A store-side copy of the rule that drifted
+    // could write a code Parse later rejects, and a damaged file is never rewritten. '_' marks a character that
+    // Array.Clear zeroed while the holder was being copied.
+    [Theory]
+    [InlineData("________", true)]  // every character cleared
+    [InlineData("____5678", true)]  // cleared at the front; the last four the row shows are intact
+    [InlineData("12345_78", true)]  // cleared inside the last four
+    [InlineData("1234abcd", false)] // well formed, but not the code whose last four the row shows
+    public async Task StoreRefusesExactlyWhatTheCodeHolderRefuses(string torn, bool holderRefusesShape)
+    {
+        using var store = Store(); using (var first = Code()) await store.AddAsync("Kept", 5, 6, null, null, first, default);
+        char[] value = torn.Replace('_', (char)0).ToCharArray();
+        if (holderRefusesShape) Assert.Throws<ArgumentException>(() => new ProtectedPrivateServerCode(value));
+        else { using var wellFormed = new ProtectedPrivateServerCode(value); Assert.NotEqual("5678", wellFormed.Last4); }
+        using var holder = Code("12345678");
+        typeof(ProtectedCode).GetField("_value", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!.SetValue(holder, value);
+        var error = await Assert.ThrowsAsync<InvalidOperationException>(() => store.AddAsync("Torn", 5, 6, null, null, holder, default));
+        foreach (string part in new[] { "1234", "5678", "abcd" }) Assert.DoesNotContain(part, error.ToString(), StringComparison.Ordinal);
+        Assert.Equal("Kept", Assert.Single(await store.ReadAsync(default)).Name);
+        using var reopened = new PrivateServerStore(_root); Assert.Equal("Kept", Assert.Single(await reopened.ReadAsync(default)).Name);
+    }
+
     [Fact]
     public void StoredRecordTextNeverContainsTheCodeOrName()
     {
