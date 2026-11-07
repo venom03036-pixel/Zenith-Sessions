@@ -9,7 +9,8 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _publisherStop;
     private long _publisherGeneration;
     private bool _publisherBusy;
-    private string _publisherStatus = "Select a native Roblox installation, then explicitly verify its publisher.";
+    private const string PublisherIdleStatus = "Select a native Roblox installation, then explicitly verify its publisher.";
+    private string _publisherStatus = PublisherIdleStatus;
     public string PublisherVerificationStatus { get => _publisherStatus; private set => Set(ref _publisherStatus, value); }
     public bool IsPublisherVerificationBusy
     {
@@ -66,6 +67,13 @@ public sealed partial class ShellViewModel
         finally
         {
             if (ReferenceEquals(_publisherStop, stop)) _publisherStop = null;
+            // Only CancelPublisherVerificationWork changes the generation, and it left the "waiting for
+            // Windows" text up while this owned check finished. Busy blocks a newer check until the line
+            // below runs, so settling here cannot overwrite a newer result. Shutdown leaves it alone.
+            if (generation != _publisherGeneration && !_shuttingDown)
+                PublisherVerificationStatus = ReferenceEquals(SelectedInstallation, selected)
+                    ? "Verification cancelled. Trust remains unknown; verify again to check this file."
+                    : PublisherIdleStatus;
             IsPublisherVerificationBusy = false;
         }
     }
@@ -81,6 +89,6 @@ public sealed partial class ShellViewModel
         Interlocked.Increment(ref _publisherGeneration); _publisherStop?.Cancel();
         PublisherVerificationStatus = IsPublisherVerificationBusy
             ? "Verification cancelled. Waiting for Windows to finish its owned check; late results are discarded."
-            : "Select a native Roblox installation, then explicitly verify its publisher.";
+            : PublisherIdleStatus;
     }
 }

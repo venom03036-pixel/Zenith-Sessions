@@ -45,6 +45,35 @@ public sealed partial class ClientWindowIntegrationTests
         if(useLock)Assert.Contains("Panic stop",shell.Notice);
     });
 
+    [Theory]
+    [InlineData("button")] [InlineData("select")] [InlineData("panic")]
+    public Task CancelledPublisherCheckSettlesStatusWhenTheOwnedCheckEnds(string cancelPath)=>OnUi(async()=>
+    {
+        var trust=new TrustProbe{Gate=new(TaskCreationOptions.RunContinuationsAsynchronously)};
+        await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),installationDiscovery:new InstallationProbe(),executableTrust:trust);
+        await shell.InitializeAsync();shell.RefreshInstallations.Execute(null);await shell.RefreshInstallations.Execution;
+        shell.SelectedInstallation=shell.InstallationCandidates[0];shell.VerifyInstallationPublisher.Execute(null);
+        try
+        {
+            if(cancelPath=="button")shell.CancelPublisherVerification.Execute(null);
+            else if(cancelPath=="select")shell.SelectedInstallation=shell.InstallationCandidates[1];
+            else shell.Panic.Execute(null);
+            Assert.True(trust.Token.IsCancellationRequested);Assert.True(shell.IsPublisherVerificationBusy);
+            Assert.Contains("Waiting",shell.PublisherVerificationStatus);
+        }
+        finally{trust.Gate.TrySetResult(TrustProbe.Result(trust.Candidate!));}
+        await shell.VerifyInstallationPublisher.Execution;
+        Assert.False(shell.IsPublisherVerificationBusy);Assert.Empty(shell.Launches);
+        Assert.DoesNotContain("Waiting",shell.PublisherVerificationStatus);Assert.DoesNotContain("SHA-256",shell.PublisherVerificationStatus);
+        if(cancelPath=="button")
+        {
+            Assert.Equal("Verification cancelled. Trust remains unknown; verify again to check this file.",shell.PublisherVerificationStatus);
+            Assert.True(shell.CanVerifyInstallationPublisher);
+        }
+        else Assert.Equal("Select a native Roblox installation, then explicitly verify its publisher.",shell.PublisherVerificationStatus);
+        if(cancelPath=="panic")Assert.Contains("Panic stop",shell.Notice);
+    });
+
     [Fact]
     public Task ShutdownCancelsAndJoinsTheActualTrustOwnerBeforeDisposing()=>OnUi(async()=>
     {
