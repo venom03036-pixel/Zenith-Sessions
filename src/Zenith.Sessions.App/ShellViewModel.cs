@@ -743,9 +743,25 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
     public void Inform(string message) => Notice = message;
     public void SetPanicRegistration(bool registered) { _panicRegistered=registered && !IsSample; Raise(nameof(PanicLabel)); Raise(nameof(PanicShortcutStatus)); }
-    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
-    private async Task DisposeCoreAsync()
+    /// <summary>
+    /// UI thread only. Windows is signing out, restarting or shutting down, and WPF closes every window next without
+    /// the tray Exit path, so <see cref="DisposeAsync"/> never runs. Stops all work exactly as exit does, records
+    /// Shutdown and waits at most <paramref name="flushBudget"/> for the log to reach disk; true when it did. Safe to
+    /// repeat and safe before, during or after DisposeAsync: the log takes one Shutdown record and ignores later ones.
+    /// </summary>
+    internal bool PrepareForSessionEnd(TimeSpan flushBudget)
     {
+        BeginShutdown();
+        _diagnostics.Record(ManagerEventKind.Shutdown);
+        // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
+        return _diagnostics.DisposeAsync().AsTask().Wait(flushBudget);
+    }
+    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    // First, synchronous stage of every exit (tray Exit and Windows session end), once: nothing new may start
+    // and every in-flight operation is cancelled, in this order, before any owner is awaited.
+    private void BeginShutdown()
+    {
+        if(_shuttingDown) return;
         _shuttingDown=true;
         StopClientPriorityOperations();
         DestinationSearch?.CancelWork(clearInput:true);
@@ -758,6 +774,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RecipientBundles.CancelWork();
         _launchQueue.SignalPanic();
         _lifetime.Cancel(); _queryCancellation?.Cancel(); _authorizationStop?.Cancel();
+    }
+    private async Task DisposeCoreAsync()
+    {
+        BeginShutdown();
         await DisposeClientPriorityFeaturesAsync();
         await _initializeTask;
         await DisposeMacroAssignmentsAsync();
