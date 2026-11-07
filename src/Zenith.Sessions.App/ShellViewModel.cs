@@ -638,10 +638,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 int index = -1; for (int i = 0; i < Sessions.Count; i++) if (Sessions[i].InstanceKey == session.InstanceKey) { index = i; break; }
                 if (index < 0) { var row=new SessionRow(session);row.PropertyChanged+=SessionSelectionChanged;Sessions.Add(row);clientRowsChanged=true; } else Sessions[index].Update(session);
             }
-            _logProjection.Update(snapshot.Sessions, _logCorrelator?.Snapshot, now);
+            // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
+            var logs = _logCorrelator?.Snapshot;
+            _logProjection.Update(snapshot.Sessions, logs, now);
             RefreshLaunchEvidence();
             RecentClients.Observe(snapshot,_logProjection.EvidenceSnapshot(now),now);
-            var logViews = _logProjection.Snapshot(now);
+            // Rows retained from a failed, partial or stale scan keep their log text but not Join same / Copy.
+            var logViews = _logProjection.Snapshot(now, snapshot, logs);
             foreach (var row in Sessions)
                 row.UpdateLog(logViews.TryGetValue(new(null, row.Observation.ProcessId, row.Observation.ProcessStartUtcTicks), out var log)
                     ? log : SessionLogView.Unknown);

@@ -52,13 +52,27 @@ public sealed class SessionLogProjection
 
     public IReadOnlyList<SessionEvidenceSnapshot> EvidenceSnapshot(DateTimeOffset now) => _registry.Snapshot(now);
 
-    public IReadOnlyDictionary<SessionProcessKey, SessionLogView> Snapshot(DateTimeOffset now)
+    /// <summary>Evidence-only views. They never offer the reported destination for Join same or Copy.</summary>
+    public IReadOnlyDictionary<SessionProcessKey, SessionLogView> Snapshot(DateTimeOffset now) => Snapshot(now, null, null);
+
+    /// <summary>
+    /// Views for the visible rows. Join same game/server and Copy are offered only while the click-time evidence holds:
+    /// a complete, fresh process scan still lists this exact process and the latest log diagnostic is the applied one.
+    /// A failed, partial or stale scan keeps last-known rows on screen, so their reported actions turn off. The click
+    /// still re-checks; a retained row is never the authority.
+    /// </summary>
+    public IReadOnlyDictionary<SessionProcessKey, SessionLogView> Snapshot(DateTimeOffset now, DesktopSnapshot? latestDesktop,
+        SessionLogDiscoverySnapshot? latestLogs)
     {
         var result = new Dictionary<SessionProcessKey, SessionLogView>();
         foreach (var evidence in _registry.Snapshot(now))
         {
             _diagnostics.TryGetValue(evidence.Process, out var diagnostic);
-            result.Add(evidence.Process, SessionLogView.Create(evidence, diagnostic, now));
+            var view = SessionLogView.Create(evidence, diagnostic, now);
+            if (view.HasReportedDestination && diagnostic is not null && HasCurrentProcess(evidence.Process, latestDesktop, now)
+                && CurrentDiagnostic(evidence.Process, latestLogs, now) is { } current && current == diagnostic)
+                view = view with { ReportedEvidenceCurrent = true };
+            result.Add(evidence.Process, view);
         }
         return result;
     }
@@ -137,10 +151,14 @@ public sealed class SessionLogProjection
 
 public sealed record SessionLogView(string Correlation, string ReportedUserId, string CurrentPlace,
     string CurrentServer, string LastKnownDestination, string State, string Time, string Explanation, string LastKnownPlayer = "Unknown",
-    long? ReportedPlaceId = null, Guid? ReportedJobId = null, long? ReportedUniverseId = null, DateTimeOffset? ReportedObservedUtc = null)
+    long? ReportedPlaceId = null, Guid? ReportedJobId = null, long? ReportedUniverseId = null, DateTimeOffset? ReportedObservedUtc = null,
+    bool ReportedEvidenceCurrent = false)
 {
     public bool CanAuthorizeAccountAction => false;
+    /// <summary>The log reports a place and server. Not enough to offer Join same or Copy; see CanUseReportedDestination.</summary>
     public bool HasReportedDestination => ReportedPlaceId is > 0 && ReportedJobId is { } job && job != Guid.Empty;
+    /// <summary>Enables Join same game/server and Copy: a reported destination whose click-time evidence held when this view was presented.</summary>
+    public bool CanUseReportedDestination => ReportedEvidenceCurrent && HasReportedDestination;
     public RobloxRequestedDestination? ReportedDestination => ReportedPlaceId is > 0 && ReportedJobId is { } job && job != Guid.Empty
         ? new(ReportedPlaceId.Value, job.ToString("D")) : null;
     public static SessionLogView Unknown { get; } = new("Not correlated", "Unknown", "Unknown", "Unknown", "Unknown",

@@ -136,9 +136,9 @@ public sealed class JoinWorkspacePresentationTests
     {
         var sessions=Page(Source(),"SessionsPage");var buttons=sessions.Descendants(Ui+"Button").ToList();
         var game=buttons.Single(button=>(string?)button.Attribute("Content")=="Join same game");
-        Assert.Equal("JoinSameGameClick",(string?)game.Attribute("Click"));Assert.Equal("{Binding Log.HasReportedDestination}",(string?)game.Attribute("IsEnabled"));
+        Assert.Equal("JoinSameGameClick",(string?)game.Attribute("Click"));Assert.Equal("{Binding Log.CanUseReportedDestination}",(string?)game.Attribute("IsEnabled"));
         var server=buttons.Single(button=>(string?)button.Attribute("Content")=="Join same server");
-        Assert.Equal("ReviewReportedServerClick",(string?)server.Attribute("Click"));Assert.Equal("{Binding Log.HasReportedDestination}",(string?)server.Attribute("IsEnabled"));
+        Assert.Equal("ReviewReportedServerClick",(string?)server.Attribute("Click"));Assert.Equal("{Binding Log.CanUseReportedDestination}",(string?)server.Attribute("IsEnabled"));
         Assert.Contains("public servers only",(string?)server.Attribute("ToolTip"),StringComparison.Ordinal);
         Assert.Contains(buttons,button=>(string?)button.Attribute("Content")=="Copy reported server link" && (string?)button.Attribute("Click")=="CopyReportedServerLink");
         Assert.DoesNotContain(buttons,button=>(string?)button.Attribute("Content")=="Review reported server");

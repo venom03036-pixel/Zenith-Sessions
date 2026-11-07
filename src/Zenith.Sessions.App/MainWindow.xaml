@@ -682,9 +682,9 @@
                           <Path Style="{StaticResource Glyph}" StrokeThickness="2" Data="M3.5,8 L3.6,8 M8,8 L8.1,8 M12.5,8 L12.6,8" />
                           <Button.ContextMenu>
                             <ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}">
-                              <MenuItem Header="Join same game" Click="JoinSameGameClick" IsEnabled="{Binding Log.HasReportedDestination}" />
-                              <MenuItem Header="Join same server" Click="ReviewReportedServerClick" IsEnabled="{Binding Log.HasReportedDestination}" ToolTip="Unverified · public servers only" />
-                              <MenuItem Header="Copy reported server link" Click="CopyReportedServerLink" IsEnabled="{Binding Log.HasReportedDestination}" />
+                              <MenuItem Header="Join same game" Click="JoinSameGameClick" IsEnabled="{Binding Log.CanUseReportedDestination}" />
+                              <MenuItem Header="Join same server" Click="ReviewReportedServerClick" IsEnabled="{Binding Log.CanUseReportedDestination}" ToolTip="Unverified · public servers only" />
+                              <MenuItem Header="Copy reported server link" Click="CopyReportedServerLink" IsEnabled="{Binding Log.CanUseReportedDestination}" />
                             </ContextMenu>
                           </Button.ContextMenu>
                         </Button>
@@ -785,9 +785,9 @@
               <DockPanel><TextBlock Text="Selected client · log diagnostics" FontWeight="SemiBold" /><TextBlock Text="{Binding Log.State}" Style="{StaticResource Muted}" HorizontalAlignment="Right" /></DockPanel>
               <TextBlock Text="{Binding Log.Explanation}" Style="{StaticResource Muted}" Margin="0,6,0,10" />
               <WrapPanel Margin="0,0,0,10">
-                <Button Content="Join same game" Click="JoinSameGameClick" IsEnabled="{Binding Log.HasReportedDestination}" Margin="0,0,8,6" ToolTip="Set this client's reported game as the requested destination and review the launch. Unverified; nothing launches until you confirm." />
-                <Button Content="Join same server" Click="ReviewReportedServerClick" IsEnabled="{Binding Log.HasReportedDestination}" Margin="0,0,8,6" ToolTip="Unverified · public servers only. Logs cannot tell a private or reserved server apart; Roblox decides. Nothing launches until you confirm." />
-                <Button Content="Copy reported server link" Click="CopyReportedServerLink" IsEnabled="{Binding Log.HasReportedDestination}" Style="{StaticResource QuietButton}" Margin="0,0,0,6" ToolTip="Copy the current unverified log destination." />
+                <Button Content="Join same game" Click="JoinSameGameClick" IsEnabled="{Binding Log.CanUseReportedDestination}" Margin="0,0,8,6" ToolTip="Set this client's reported game as the requested destination and review the launch. Unverified; nothing launches until you confirm." />
+                <Button Content="Join same server" Click="ReviewReportedServerClick" IsEnabled="{Binding Log.CanUseReportedDestination}" Margin="0,0,8,6" ToolTip="Unverified · public servers only. Logs cannot tell a private or reserved server apart; Roblox decides. Nothing launches until you confirm." />
+                <Button Content="Copy reported server link" Click="CopyReportedServerLink" IsEnabled="{Binding Log.CanUseReportedDestination}" Style="{StaticResource QuietButton}" Margin="0,0,0,6" ToolTip="Copy the current unverified log destination." />
               </WrapPanel>
               <Grid><Grid.ColumnDefinitions><ColumnDefinition Width="150" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions><Grid.RowDefinitions><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /><RowDefinition Height="Auto" /></Grid.RowDefinitions>
                 <TextBlock Text="Current server" Style="{StaticResource Muted}" /><TextBlock Grid.Column="1" Text="{Binding Log.CurrentServer}" TextWrapping="Wrap" />

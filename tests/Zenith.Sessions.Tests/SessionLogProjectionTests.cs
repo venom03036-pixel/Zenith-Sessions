@@ -190,6 +190,29 @@ public sealed class SessionLogProjectionTests
     }
 
     [Fact]
+    public void RowViewsOfferReportedActionsOnlyWithTheClickTimeInventoryAndDiagnostic()
+    {
+        var process=Process();var projection=new SessionLogProjection();var logs=Logs(process);
+        projection.Update([process],logs,Now);
+        SessionLogView View(DesktopSnapshot? desktop,SessionLogDiscoverySnapshot? latest,DateTimeOffset at)
+            =>Assert.Single(projection.Snapshot(at,desktop,latest)).Value;
+
+        Assert.True(View(Desktop([process]),logs,Now).CanUseReportedDestination);
+        Assert.False(Assert.Single(projection.Snapshot(Now)).Value.CanUseReportedDestination); // Evidence-only views never offer it.
+        Assert.False(View(null,logs,Now).CanUseReportedDestination);
+        Assert.False(View(Desktop([process]) with {ProcessInventoryComplete=false},logs,Now).CanUseReportedDestination);
+        Assert.False(View(Desktop([process]) with {Problem="Synthetic failed scan"},logs,Now).CanUseReportedDestination);
+        Assert.False(View(Desktop([process with {ProcessStartUtcTicks=process.ProcessStartUtcTicks+1}]),logs,Now).CanUseReportedDestination);
+        Assert.False(View(Desktop([process]),null,Now).CanUseReportedDestination);
+        var unapplied=logs with {Revision=2,ObservedUtc=Now.AddSeconds(1),Sessions=[logs.Sessions[0] with {ObservedUtc=Now.AddSeconds(1)}]};
+        Assert.False(View(Desktop([process]),unapplied,Now.AddSeconds(1)).CanUseReportedDestination);
+        var stale=View(Desktop([process]),logs,Now.AddSeconds(4)); // The scan is older than the click allows; the lease is not.
+        Assert.True(stale.HasReportedDestination);Assert.False(stale.CanUseReportedDestination);
+        Assert.Null(projection.BuildCurrentLink(Key(process),Desktop([process]),logs,Now.AddSeconds(4)));
+        Assert.NotNull(projection.BuildCurrentLink(Key(process),Desktop([process]),logs,Now));
+    }
+
+    [Fact]
     public void UnchangedTypedDestinationsDoNotCauseRecordOrRowRefreshes()
     {
         var process=Process();var projection=new SessionLogProjection();projection.Update([process],Logs(process),Now);

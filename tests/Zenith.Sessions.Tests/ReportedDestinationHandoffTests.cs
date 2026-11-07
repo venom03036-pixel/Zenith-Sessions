@@ -215,12 +215,73 @@ public sealed partial class ClientWindowIntegrationTests
         finally { serial.Release(); }
     });
 
+    [Theory]
+    [InlineData("complete fresh inventory", true)]
+    [InlineData("partial inventory", false)]
+    [InlineData("failed scan keeps last-known rows", false)]
+    [InlineData("stale inventory", false)]
+    public Task PresentedRowOffersReportedActionsOnlyWhileTheClickTimeEvidenceHolds(string kind, bool offered) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.Navigate.Execute("Sessions");
+        var serial = await HoldReportedSamplerAsync(shell);
+        var (process, logs, desktop) = ReportedInputs(DateTimeOffset.UtcNow);
+        if (kind == "partial inventory") desktop = desktop with { ProcessInventoryComplete = false };
+        else if (kind == "failed scan keeps last-known rows") desktop = desktop with { ProcessInventoryComplete = false,
+            Problem = "Windows process inventory is temporarily unavailable. Missing clients were not confirmed absent." };
+        else if (kind == "stale inventory")
+        {
+            var scanned = desktop.ProcessObservedUtc!.Value.AddSeconds(-4);
+            desktop = desktop with { ProcessObservedUtc = scanned, Sessions = [process with { ObservedUtc = scanned }] };
+        }
+        monitor.Inventory = desktop;
+        // A stopped correlator ignores offers, so every presentation reads exactly this synthetic log snapshot.
+        var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
+        await correlator.DisposeAsync();
+        ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
+        ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);
+        serial.Release();
+
+        shell.Refresh.Execute(null); await shell.Refresh.Execution; // The real sample and row presentation path.
+
+        var row = Assert.Single(shell.Sessions);
+        Assert.True(row.Log.HasReportedDestination); // The log still reports a place and server for this row.
+        Assert.Equal(offered, shell.BuildReportedDestinationLink(row) is not null); // The click-time authority.
+        var sessions = ReportedPage(ReportedMainWindow(), "SessionsPage");
+        var actions = sessions.Descendants(ReportedUi + "Button").Where(button => ReportedActions.Contains((string?)button.Attribute("Content")))
+            .Concat(sessions.Descendants(ReportedUi + "MenuItem").Where(item => ReportedActions.Contains((string?)item.Attribute("Header")))).ToList();
+        Assert.Equal(6, actions.Count); // Panel buttons and row-menu items for all three reported actions.
+        foreach (var action in actions)
+            Assert.Equal(offered, (bool)ReportedBinding(row, (string?)action.Attribute("IsEnabled")));
+    });
+
+    private static readonly string[] ReportedActions = ["Join same game", "Join same server", "Copy reported server link"];
+    private static readonly System.Xml.Linq.XNamespace ReportedUi = "http://schemas.microsoft.com/winfx/2006/xaml/presentation",
+        ReportedXaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+    private static System.Xml.Linq.XDocument ReportedMainWindow()
+    {
+        using var stream = typeof(ClientWindowIntegrationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        return System.Xml.Linq.XDocument.Load(stream);
+    }
+    private static System.Xml.Linq.XElement ReportedPage(System.Xml.Linq.XDocument source, string name)
+        => source.Descendants().Single(element => (string?)element.Attribute(ReportedXaml + "Name") == name);
+    /// <summary>Follows a plain "{Binding A.B}" path from the row, as the row template and selected-client panel do.</summary>
+    private static object ReportedBinding(object source, string? binding)
+    {
+        Assert.NotNull(binding);
+        Assert.StartsWith("{Binding ", binding, StringComparison.Ordinal); Assert.EndsWith("}", binding, StringComparison.Ordinal);
+        object value = source;
+        foreach (string member in binding["{Binding ".Length..^1].Split('.'))
+            value = value.GetType().GetProperty(member)?.GetValue(value) ?? throw new InvalidOperationException("Unexpected binding path.");
+        return value;
+    }
+
     private sealed record ReportedFixture(SessionRow Row, DesktopSnapshot Desktop,
         SessionLogDiscoverySnapshot Logs, WindowsSessionLogCorrelator Correlator);
 
-    private static ReportedFixture PublishReportedSession(ShellViewModel shell)
+    private static (SessionObservation Process, SessionLogDiscoverySnapshot Logs, DesktopSnapshot Desktop) ReportedInputs(DateTimeOffset now)
     {
-        var now = DateTimeOffset.UtcNow;
         var process = new SessionObservation(470001, now.AddSeconds(-30).UtcTicks, "Synthetic client", 0,
             "Synthetic windowless client", false, false, 10, 10, null, now);
         var key = new SessionProcessKey(null, process.ProcessId, process.ProcessStartUtcTicks);
@@ -237,6 +298,14 @@ public sealed partial class ClientWindowIntegrationTests
         var desktop = new DesktopSnapshot(new(now, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB,
             64 * CapacityPolicy.GiB, 10 * CapacityPolicy.GiB, 10), [process],
             ProcessObservedUtc: now, ProcessRevision: 1, ProcessInventoryComplete: true);
+        return (process, logs, desktop);
+    }
+
+    private static ReportedFixture PublishReportedSession(ShellViewModel shell)
+    {
+        var now = DateTimeOffset.UtcNow;
+        var (process, logs, desktop) = ReportedInputs(now);
+        var key = new SessionProcessKey(null, process.ProcessId, process.ProcessStartUtcTicks);
         var correlator = new WindowsSessionLogCorrelator(new ReportedProbe());
         ReportedField(correlator, "_snapshot").SetValue(correlator, logs);
         ReportedField(shell, "_logCorrelator").SetValue(shell, correlator);
