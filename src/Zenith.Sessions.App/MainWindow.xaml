@@ -259,7 +259,7 @@
             <Border Width="1" Height="20" Background="{DynamicResource BorderBrushLight}" Margin="8,0" />
             <Button Style="{StaticResource IconButton}" Width="40" Click="MinimizeWindow" AutomationProperties.Name="Minimize" ToolTip="Minimize"><Path Style="{StaticResource Glyph}" Width="12" Height="12" Data="M2,8 L14,8" /></Button>
             <Button Style="{StaticResource IconButton}" Width="40" Click="MaximizeWindow" AutomationProperties.Name="Maximize or restore" ToolTip="Maximize or restore"><Path Style="{StaticResource Glyph}" Width="11" Height="11" Data="M2,2 L14,2 L14,14 L2,14 Z" /></Button>
-            <Button Style="{StaticResource IconButton}" Width="40" Click="CloseToTray" AutomationProperties.Name="Close to tray" ToolTip="Close to tray"><Path Style="{StaticResource Glyph}" Width="11" Height="11" Data="M2,2 L14,14 M14,2 L2,14" /></Button>
+            <Button Style="{StaticResource IconButton}" Width="40" Click="CloseWindow" AutomationProperties.Name="{Binding CloseButtonLabel}" ToolTip="{Binding CloseButtonLabel}"><Path Style="{StaticResource Glyph}" Width="11" Height="11" Data="M2,2 L14,14 M14,2 L2,14" /></Button>
           </StackPanel>
         </Grid>
       </Border>
@@ -1320,7 +1320,7 @@
               </ListBox>
             </StackPanel></Border>
             <TextBlock x:Name="SettingsAppearanceAnchor" Text="Appearance" Style="{StaticResource SectionTitle}" Focusable="True" AutomationProperties.Name="Appearance settings" />
-            <ItemsControl ItemsSource="{Binding Themes}" Margin="0,14,0,24">
+            <ItemsControl ItemsSource="{Binding Themes}" Margin="0,14,0,14">
               <ItemsControl.ItemsPanel>
                 <ItemsPanelTemplate>
                   <WrapPanel />
@@ -1337,6 +1337,8 @@
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
+            <CheckBox x:Name="SettingsCloseButtonExits" Content="Close button exits the manager" IsChecked="{Binding CloseButtonExits}" HorizontalAlignment="Left" MinHeight="36" AutomationProperties.Name="Close button exits the manager" />
+            <TextBlock Text="Off by default: the close button keeps the manager running in the tray, and one click on the tray icon reopens it. When on, the close button stops this manager the same way as Exit. Save settings to apply." Style="{StaticResource Muted}" FontSize="12" Margin="0,4,0,24" />
             <Border Style="{StaticResource Panel}" Margin="0,0,0,24">
               <StackPanel>
                 <TextBlock x:Name="SettingsPerformanceAnchor" Text="Performance profile" Style="{StaticResource SectionTitle}" />
@@ -1482,7 +1484,7 @@
             <TextBlock Text="6. Account avatars and server destinations" Style="{StaticResource SectionTitle}" Margin="0,0,0,10" />
             <TextBlock Text="Use Choose server in Account details to open Join a game. Use the account's … menu to refresh its public avatar or use its preferred game. In Sessions, Review reported server fills the destination field when a current client reports a server. Choose Search / Use to review that request. Headshots load for verified player IDs while the Accounts page is visible, using one shared bounded loader. Use Refresh public avatar to retry. Sample profiles do not contact Roblox. Public names and pictures do not prove a current sign-in or identify a local process. In Sessions → Join a game, enter a public name, place ID or supported game/server link and choose Search / Use. A successful explicit choice loads details; Load game details can refresh them to see its public name, creator, experience-wide players and requested/root place IDs; loading details never replaces your requested place. The icon is optional and validated before display. The experience gallery preserves public media order; use Previous and Next to browse. Pending, unavailable and unsupported video items have explicit states. These pictures are experience artwork, not live client frames. Browse public servers one page at a time, select one, and press Use selected server before Queue checked accounts. Capacity advice compares that observation with the checked recipients, or the selected account when none are checked. It expires after five minutes; reported slots are not reserved seats. Recipients and destination are frozen before queuing; unavailable providers produce blocked requests. Private/share codes are discarded and never guessed into a public destination. A queued request is not confirmed arrival." Style="{StaticResource Muted}" Margin="0,0,0,24" />
             <TextBlock Text="7. Platform capabilities and stopping" Style="{StaticResource SectionTitle}" />
-            <TextBlock Text="Automation lists supported, unavailable, and unverified functionality. Native diagnostic successes are not Roblox compatibility. Panic stop is always available and leaves clients open. Lock hides account controls while monitoring continues. Closing the main window keeps the manager in the tray; use the tray menu's Exit command to shut it down." Style="{StaticResource Muted}" Margin="0,10,0,24" />
+            <TextBlock Text="Automation lists supported, unavailable, and unverified functionality. Native diagnostic successes are not Roblox compatibility. Panic stop is always available and leaves clients open. Lock hides account controls while monitoring continues. Closing the main window keeps the manager in the tray; click the tray icon to reopen it, and use the tray menu's Exit command to shut it down. To make the close button exit instead, turn on Close button exits the manager in Settings and save." Style="{StaticResource Muted}" Margin="0,10,0,24" />
             <TextBlock Text="Saved macros from Personal Zenith" Style="{StaticResource SectionTitle}" />
             <TextBlock Text="Open the matching Personal Zenith build, then choose Automation → Saved macros → Refresh host macros. The list shows successfully saved or loaded macros and their assigned shortcuts, rather than pending edits. Previous and Next browse one page at a time. If Zenith changes its library while you browse, refresh from the beginning. Connection failures keep the last received page clearly marked as stale. This connection does not copy macro contents, start the editor automatically or run playback. Shared playback and broadcasting remain unavailable until their integrations and real-client tests pass. Sample mode does not connect to your real macro library." Style="{StaticResource Muted}" Margin="0,10,0,24" />
             <TextBlock Text="Shared macro assignments" Style="{StaticResource SectionTitle}" />

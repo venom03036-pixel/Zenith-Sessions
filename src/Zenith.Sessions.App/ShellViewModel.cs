@@ -242,6 +242,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public string OAuthClientId { get => _oauthClientId; set { if (Set(ref _oauthClientId, value)) PreferencesEdited(); } }
     public string CallbackPort { get => _callbackPort; set { if (Set(ref _callbackPort,value)) PreferencesEdited(); } }
     public string CallbackUrl => int.TryParse(CallbackPort,out int port) ? $"http://localhost:{port}/zenith/oauth/" : "Enter a valid callback port";
+    private bool _closeButtonExits;
+    /// <summary>Settings draft: the window's close button exits this manager instead of hiding it to the tray. Applies after Save settings.</summary>
+    public bool CloseButtonExits { get => _closeButtonExits; set { if (Set(ref _closeButtonExits, value)) PreferencesEdited(); } }
+    /// <summary>The close button's name and tooltip: what it does with the saved choice, never an unsaved draft.</summary>
+    public string CloseButtonLabel => _savedSettings.CloseButtonExits ? "Exit manager" : "Close to tray";
+    /// <summary>
+    /// UI thread, when the window is asked to close: true when the saved choice is to exit and this manager is not already
+    /// stopping (tray Exit under way, or Windows ending the session), so a close never starts a second exit. False keeps the
+    /// default, hide to the tray.
+    /// </summary>
+    internal bool CloseButtonExitsNow => _savedSettings.CloseButtonExits && !_shuttingDown;
     public bool IsAuthorizing => _authorizationStop is not null;
     public string ThemeName => ThemeCatalog.Resolve(_settings.Theme).Name;
     public Command Navigate { get; }
@@ -363,9 +374,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             SpareRam = limits.SparePhysicalGiB.ToString(CultureInfo.CurrentCulture); PhysicalPerClient = limits.NewClientPhysicalGiB.ToString(CultureInfo.CurrentCulture);
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
+            _closeButtonExits=_settings.CloseButtonExits;
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel) }) Raise(field);
             ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
             await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             await CleanupCredentialsAsync();
@@ -669,7 +681,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var performance=ReadPerformanceDraft();
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft() }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         await SaveCurrentSettingsAsync(requested);
@@ -683,6 +695,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
+            && CloseButtonExits == _savedSettings.CloseButtonExits
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -704,6 +717,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 ApplyPerformance(snapshot.Performance!);
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
                 _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
+                Raise(nameof(CloseButtonLabel));
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
             }

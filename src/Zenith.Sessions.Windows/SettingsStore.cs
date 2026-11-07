@@ -16,9 +16,10 @@ public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = 
 public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-mint", bool DenseAccounts = false,
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
-    ManagerWindowPlacement? ManagerWindow = null)
+    ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false)
 {
-    // ManagerWindow is optional within schema 1: files without it load unchanged, and older builds ignore it.
+    // ManagerWindow and CloseButtonExits are optional within schema 1: files without them load unchanged, and older builds
+    // ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the tray.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))

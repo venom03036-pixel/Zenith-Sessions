@@ -45,7 +45,7 @@ public partial class MainWindow : Window
         menu.Items.Add("Lock controls", null, (_, _) => Dispatcher.Invoke(vm.LockDashboard));
         menu.Items.Add(new Forms.ToolStripSeparator());
         menu.Items.Add("Exit", null, async (_, _) => await Dispatcher.InvokeAsync(RequestExitAsync).Task.Unwrap());
-        _tray.ContextMenuStrip = menu; _tray.DoubleClick += (_, _) => Dispatcher.Invoke(Restore);
+        _tray.ContextMenuStrip = menu; _tray.MouseClick += TrayMouseClick;
         Loaded += async (_, _) => await vm.InitializeAsync();
         Closing += OnClosing;
         SourceInitialized += (_, _) =>
@@ -77,8 +77,19 @@ public partial class MainWindow : Window
         if (message == GlobalPanicRegistration.Message && w == GlobalPanicRegistration.Identifier) { _vm.Panic.Execute(null); handled = true; }
         return 0;
     }
-    private void OnClosing(object? sender, CancelEventArgs e)
-    { if (!_exiting) { e.Cancel = true; Hide(); } }
+    // A single left click on the tray icon reopens the window (a double click starts with one); the right button opens the menu.
+    private void TrayMouseClick(object? sender, Forms.MouseEventArgs e)
+    { if (e.Button == Forms.MouseButtons.Left) Dispatcher.Invoke(Restore); }
+    // The close button, Alt+F4 and the taskbar's Close all arrive here. Hide to the tray by default; with the saved
+    // "Close button exits the manager" choice, run the same exit as tray Exit. RequestExitAsync ends with Close(), which WPF
+    // refuses while this window is closing, so it is queued to run after this handler returns, exactly like the tray command.
+    private async void OnClosing(object? sender, CancelEventArgs e)
+    {
+        if (_exiting) return;
+        e.Cancel = true;
+        if (_vm.CloseButtonExitsNow) await Dispatcher.InvokeAsync(RequestExitAsync).Task.Unwrap();
+        else Hide();
+    }
     protected override void OnClosed(EventArgs e)
     {
         _panicKey.Dispose();
@@ -119,7 +130,7 @@ public partial class MainWindow : Window
     { if (e.ChangedButton == MouseButton.Left) { if (e.ClickCount == 2) WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized; else DragMove(); } }
     private void MinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void MaximizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
-    private void CloseToTray(object sender, RoutedEventArgs e) => Close();
+    private void CloseWindow(object sender, RoutedEventArgs e) => Close();
     private void StartNativeTrialClick(object sender,RoutedEventArgs e)
     {
         var review = _vm.CaptureNativeTrialReview();
@@ -182,6 +193,7 @@ public partial class MainWindow : Window
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,
+                "close-button"=>SettingsCloseButtonExits,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
