@@ -16,18 +16,26 @@ public sealed class SingleInstanceCoordinator : IDisposable
     private static readonly TimeSpan FaultRetryDelay = TimeSpan.FromMilliseconds(250);
     private volatile Type? _lastListenerFault;
     private volatile bool _listenerFaulted;
+    private bool _disposed;
     public bool IsOwner { get; }
     /// <summary>Type of the latest pipe or restore fault the listener survived or stopped on; never its message (Rule 10).</summary>
     public Type? LastListenerFault => _lastListenerFault;
     /// <summary>True once repeated consecutive faults stopped the listener; later launches then cannot restore this instance.</summary>
     public bool IsListenerFaulted => _listenerFaulted;
     internal string PipeName => _pipe;
+    internal string MutexName => "Local\\" + _pipe;
     public SingleInstanceCoordinator(string root)
     {
         using var identity = WindowsIdentity.GetCurrent();
         string scope = (identity.User?.Value ?? throw new InvalidOperationException("Windows identity is unavailable.")) + "|" + Path.GetFullPath(root).TrimEnd('\\').ToUpperInvariant();
         _pipe = "ZenithSessions." + Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(scope)))[..24];
-        _mutex = new Mutex(initiallyOwned:true, "Local\\" + _pipe, out bool created); IsOwner = created;
+        // Ownership means acquiring the mutex, not creating it: a lingering second launch (for example its "already
+        // starting" box) keeps the named object alive after the owner exits, and "created" would then refuse every launch.
+        // Ownership is held by the constructing thread, which must also run Dispose (EntryPoint's Main thread does both).
+        _mutex = new Mutex(initiallyOwned:false, MutexName);
+        try { IsOwner = _mutex.WaitOne(0); }
+        // The previous owner ended without releasing (a crash); Windows hands ownership to this thread, so this launch opens.
+        catch (AbandonedMutexException) { IsOwner = true; }
     }
     public void Listen(Func<CancellationToken, Task> restore)
     { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _lastListenerFault = null; _listenerFaulted = false; _server = ListenAsync(restore, _lifetime.Token); }
@@ -79,9 +87,11 @@ public sealed class SingleInstanceCoordinator : IDisposable
     public async Task StopAsync() { _lifetime.Cancel(); await _server.ConfigureAwait(false); }
     public void Dispose()
     {
+        if (_disposed) return;
         _lifetime.Cancel();
         if (!_server.IsCompleted) throw new InvalidOperationException("Stop the restore listener before disposing its owner.");
-        if (IsOwner) _mutex.ReleaseMutex();
-        _mutex.Dispose(); _lifetime.Dispose();
+        _disposed = true;
+        try { if (IsOwner) _mutex.ReleaseMutex(); }
+        finally { _mutex.Dispose(); _lifetime.Dispose(); }
     }
 }

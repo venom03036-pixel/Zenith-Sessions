@@ -107,11 +107,39 @@ public sealed class ViewModelTests : IDisposable
         using var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
         var restored=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
-        using var second=new SingleInstanceCoordinator(_root); Assert.False(second.IsOwner);
+        // Ownership is held per thread, so a second launch (another process in production) is built off the owner's thread.
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root)); Assert.False(second.IsOwner);
         Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
         // Mirrors EntryPoint's final synchronous teardown, after the dispatcher has stopped pumping.
         owner.StopAsync().GetAwaiter().GetResult();
     }).WaitAsync(TimeSpan.FromSeconds(5));
+    [Fact]
+    public void ALingeringSecondLaunchCannotKeepTheAppFromOpeningAfterTheOwnerExits()
+    {
+        var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        // A second launch's "already starting" box stays open, so its process keeps a handle to the instance mutex.
+        using var lingering=OnOwnThread(()=>new SingleInstanceCoordinator(_root)); Assert.False(lingering.IsOwner);
+        owner.Dispose(); // No listener was started, so Dispose is the whole owner exit here.
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The next launch could not take ownership after the owner exited.");
+    }
+    [Fact]
+    public void ACrashedOwnerCannotKeepTheAppFromOpening()
+    {
+        string name; using(var probe=new SingleInstanceCoordinator(_root)) name=probe.MutexName;
+        // The owner's thread ends without releasing (a crash) while an open handle keeps the named mutex alive.
+        bool created=false;
+        using var crashed=OnOwnThread(()=>new Mutex(true,name,out created)); Assert.True(created);
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }),
+            "The next launch could not take over an abandoned instance.");
+    }
+    [Fact]
+    public void DisposingTheInstanceCoordinatorTwiceIsHarmless()
+    {
+        var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        owner.Dispose(); owner.Dispose();
+        Assert.True(OnOwnThread(()=> { using var next=new SingleInstanceCoordinator(_root); return next.IsOwner; }));
+    }
     [Fact]
     public Task RestoreListenerSurvivesAFailedRestoreAndStopsCleanly()=>OnDispatcherAsync(async ()=>
     {
@@ -123,7 +151,7 @@ public sealed class ViewModelTests : IDisposable
             if(Interlocked.Increment(ref calls)==1) throw new InvalidOperationException("Synthetic restore failure.");
             restored.TrySetResult(); return Task.CompletedTask;
         });
-        using var second=new SingleInstanceCoordinator(_root);
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
         Assert.True(await second.RestoreExistingAsync(default));
         Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.Equal(typeof(InvalidOperationException),owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
@@ -139,7 +167,7 @@ public sealed class ViewModelTests : IDisposable
         using(var idle=new NamedPipeClientStream(".",owner.PipeName,PipeDirection.Out,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly))
         {
             await idle.ConnectAsync(1500); await Task.Delay(TimeSpan.FromSeconds(2.5));
-            using var second=new SingleInstanceCoordinator(_root);
+            using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
             Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
         }
         Assert.Null(owner.LastListenerFault);
@@ -156,7 +184,7 @@ public sealed class ViewModelTests : IDisposable
             owner.Listen(_=> { restored.TrySetResult(); return Task.CompletedTask; });
             await Task.Delay(TimeSpan.FromMilliseconds(600));
         }
-        using var second=new SingleInstanceCoordinator(_root);
+        using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
         Assert.True(await second.RestoreExistingAsync(default)); await restored.Task.WaitAsync(TimeSpan.FromSeconds(2));
         Assert.NotNull(owner.LastListenerFault); Assert.False(owner.IsListenerFaulted);
         await owner.StopAsync();
@@ -321,6 +349,13 @@ public sealed class ViewModelTests : IDisposable
         Assert.False(vm.IsReady); Assert.Contains("Library unavailable",vm.EmptyAccountsText); Assert.Equal("Startup needs attention",vm.SaveStatus);
         await Assert.ThrowsAsync<InvalidOperationException>(()=>vm.SaveAccountAsync(AccountProfile.Create("Must not replace data")));
     });
+    // A dedicated thread stands in for another process: mutex ownership is per thread, and this thread ends before it returns.
+    private static T OnOwnThread<T>(Func<T> create)
+    {
+        T? value=default; System.Runtime.ExceptionServices.ExceptionDispatchInfo? error=null;
+        var thread=new Thread(()=> { try { value=create(); } catch(Exception ex) { error=System.Runtime.ExceptionServices.ExceptionDispatchInfo.Capture(ex); } });
+        thread.Start(); thread.Join(); error?.Throw(); return value!;
+    }
     private static Task OnDispatcherAsync(Func<Task> work)
     {
         var completion=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
