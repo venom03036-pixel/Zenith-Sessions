@@ -257,6 +257,16 @@ public sealed class ViewModelTests : IDisposable
         Assert.False(vm.IsReady); Assert.Contains("Library unavailable",vm.EmptyAccountsText); Assert.Equal("Startup needs attention",vm.SaveStatus);
         await Assert.ThrowsAsync<InvalidOperationException>(()=>vm.SaveAccountAsync(AccountProfile.Create("Must not replace data")));
     });
+    [Fact]
+    public Task CorruptVaultFileOfADeletedProfileDoesNotMakeTheLibraryUnavailable()=>OnDispatcherAsync(async ()=>
+    {
+        using(var repository=new AccountRepository(_root))
+        { await repository.InitializeAsync(default); await CleanupRecoveryTests.DeletedProfileWithDamagedPointerAsync(repository,_root); }
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
+        Assert.True(vm.IsReady); Assert.NotEqual("Startup needs attention",vm.SaveStatus); Assert.DoesNotContain("Library unavailable",vm.EmptyAccountsText);
+        Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("is damaged",vm.CredentialCleanupStatus);
+        Assert.DoesNotContain("Check storage access",vm.CredentialCleanupStatus);
+    });
     private static Task OnDispatcherAsync(Func<Task> work)
     {
         var completion=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

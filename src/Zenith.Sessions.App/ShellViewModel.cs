@@ -822,7 +822,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task CleanupCredentialsAsync()
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
-        CredentialCleanupStatus=result.Remaining==0?"No pending credential cleanup.":$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.";
+        CredentialCleanupStatus=result.Remaining==0?"No pending credential cleanup."
+            :result.ErrorType==nameof(InvalidDataException)?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete."
+            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.";
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.Record(ManagerEventKind.OperationFailed); }
     }
     private LaunchAdmission ReadLaunchAdmission(IReadOnlyList<LaunchOperation> operations)

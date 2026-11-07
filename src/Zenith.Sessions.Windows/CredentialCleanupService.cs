@@ -22,7 +22,9 @@ public sealed class CredentialCleanupService(IAccountRepository profiles,IAccoun
                 {
                     ct.ThrowIfCancellationRequested();
                     try { await vault.DeleteAsync(id,ct); await profiles.CompleteCredentialCleanupAsync(id,ct); }
-                    catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or CryptographicException)
+                    // A damaged or inconsistent vault file (InvalidDataException) belongs to a profile that is already deleted:
+                    // keep its journal row and originals for recovery and report it, instead of failing library startup or a delete.
+                    catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or CryptographicException or InvalidDataException)
                     { return new((await profiles.ReadCredentialCleanupAsync(ct)).Total,ex.GetType().Name); }
                 }
             }

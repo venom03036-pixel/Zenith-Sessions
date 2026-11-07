@@ -42,6 +42,30 @@ public sealed class CleanupRecoveryTests : IDisposable
         vault.Failure=null; Assert.Equal(0,(await service.RunAsync(default)).Remaining);
     }
     [Fact]
+    public async Task CorruptVaultIndexForADeletedProfileIsReportedAndRetainedNotThrown()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var profile=await DeletedProfileWithDamagedPointerAsync(repository,_root);
+        using var vault=new ProtectedCredentialVault(_root);
+        using var cleanup=new CredentialCleanupService(repository,vault);
+        var result=await cleanup.RunAsync(default);
+        Assert.Equal(1,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType);
+        Assert.Equal(profile.Id,Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
+        string record=Path.Combine(_root,"accounts.vault",profile.Id.ToString("N")+".dpapi");
+        Assert.True(File.Exists(record)); Assert.True(File.Exists(record+".identity"));
+    }
+    /// <summary>Deletes a profile whose synthetic protected record remains, then damages its vault pointer file.</summary>
+    internal static async Task<AccountProfile> DeletedProfileWithDamagedPointerAsync(AccountRepository repository,string root)
+    {
+        var profile=await repository.SaveAsync(AccountProfile.Create("A"),default);
+        using(var vault=new ProtectedCredentialVault(root))
+            await vault.SaveAsync(new AuthorizationRecord(profile.Id,"roblox-oauth",123,1,"synthetic-access","synthetic-refresh",DateTimeOffset.UtcNow.AddMinutes(10),
+                Issuer:RobloxOAuthIdentity.Issuer,Subject:"123"),default);
+        await repository.DeleteAsync(profile.Id,profile.Revision,default);
+        await File.WriteAllTextAsync(Path.Combine(root,"accounts.vault",profile.Id.ToString("N")+".dpapi.identity"),"{");
+        return profile;
+    }
+    [Fact]
     public async Task FailedBulkDeleteRollsBackCleanupIntentAsWellAsProfiles()
     {
         using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
