@@ -175,6 +175,34 @@ public sealed class PublicDirectoryTests
     }
 
     [Theory]
+    [InlineData("5", "50", 50)]
+    [InlineData("90", "10", 90)]
+    [InlineData(null, "50", 50)]
+    [InlineData("5", "soon", 5)]
+    public async Task RateLimitPauseUsesTheLongerOfRetryAfterAndTheWindowReset(string? retryAfter, string reset, int expectedSeconds)
+    {
+        var clock = new FakeTime();
+        using var handler = new FakeHandler((_, _) =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            if (retryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
+            response.Headers.TryAddWithoutValidation("x-ratelimit-remaining", "0");
+            response.Headers.TryAddWithoutValidation("x-ratelimit-reset", reset);
+            return Task.FromResult(response);
+        });
+        using var http = new HttpClient(handler);
+        var directory = new RobloxPublicDirectory(http, clock);
+        TimeSpan expected = TimeSpan.FromSeconds(expectedSeconds);
+        Assert.Equal(expected, (await directory.LookupUserAsync(42, default)).RetryAfter);
+        clock.Advance(expected - TimeSpan.FromSeconds(1));
+        Assert.Equal(TimeSpan.FromSeconds(1), (await directory.LookupUserAsync(43, default)).RetryAfter);
+        Assert.Equal(1, handler.Calls);
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await directory.LookupUserAsync(44, default);
+        Assert.Equal(2, handler.Calls);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task LongProviderPauseIsNotShortenedAndNoRequestStartsBeforeItsDeadline(bool dateHeader)

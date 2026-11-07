@@ -15,6 +15,7 @@ namespace Zenith.Sessions.Windows;
 public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
 {
     public const int MaximumResponseBytes = 262144;
+    private const string UsedUpWindowNote = " Roblox's request limit for server lists is used up; wait for it to reset before loading more.";
     private readonly HttpClient _http;
     private readonly TimeSpan _requestTimeout;
     private readonly TimeProvider _time;
@@ -57,6 +58,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);
         // One deadline bounds the entire browse, including all requested pages and body reads.
         deadline.CancelAfter(_requestTimeout);
+        TimeSpan? usedUpWindow = null;
         try
         {
             for (int page = 0; page < query.MaxPages; page++)
@@ -89,10 +91,17 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
                 foreach (var server in parsed.Servers)
                     if (jobIds.Add(server.JobId)) servers.Add(server);
                 cursor = parsed.NextCursor;
+                // The anonymous server list allows only a few requests per minute. When this page used the
+                // last one, the next request would be refused, so report the window reset instead of sending it.
+                usedUpWindow = PublicDirectoryRetryAfter.ReadUsedUpWindow(response, _time.GetUtcNow());
                 if (cursor is null)
-                    return Result(RobloxPublicServerStatus.Complete, null, null, "Public server observations loaded. Availability can change; selection is a requested destination, not confirmed arrival.");
+                    return Result(RobloxPublicServerStatus.Complete, null, usedUpWindow, "Public server observations loaded. Availability can change; selection is a requested destination, not confirmed arrival."
+                        + (usedUpWindow is null ? "" : UsedUpWindowNote));
+                if (usedUpWindow is not null && page + 1 < query.MaxPages)
+                    return Result(RobloxPublicServerStatus.RateLimited, cursor, usedUpWindow, "Roblox's request limit for server lists is used up, so browsing stopped before the next page. No further request was sent; wait for the limit to reset before loading more.");
             }
-            return Result(RobloxPublicServerStatus.PageLimit, cursor, null, "The requested page limit was reached. More public servers may exist; no additional request was made.");
+            return Result(RobloxPublicServerStatus.PageLimit, cursor, usedUpWindow, "The requested page limit was reached. More public servers may exist; no additional request was made."
+                + (usedUpWindow is null ? "" : UsedUpWindowNote));
         }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested)
         {

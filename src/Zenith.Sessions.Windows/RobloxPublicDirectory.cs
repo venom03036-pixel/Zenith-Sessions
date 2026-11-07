@@ -404,32 +404,61 @@ internal static class PublicDirectoryRetryAfter
 {
     // RFC 9110 permits an HTTP date or arbitrarily large decimal delay-seconds. A large valid
     // provider pause is saturated only at the representable clock horizon, never shortened to a
-    // convenience retry cap. This method recommends a deadline; it schedules no work.
+    // convenience retry cap. These methods recommend a deadline; they schedule no work.
     public static TimeSpan? Read(HttpResponseMessage response, DateTimeOffset now, bool useDefaultPause)
     {
         now = now.ToUniversalTime();
         TimeSpan maximum = DateTimeOffset.MaxValue - now;
-        TimeSpan fallback = maximum < TimeSpan.FromSeconds(30) ? maximum : TimeSpan.FromSeconds(30);
-        TimeSpan? missing = useDefaultPause ? fallback : null;
-        if (!response.Headers.NonValidated.TryGetValues("Retry-After", out var values)) return missing;
-        string? raw = null;
-        foreach (string value in values) { if (raw is not null) return missing; raw = value; }
-        string text = raw?.Trim(' ', '\t') ?? "";
-        if (text.Length == 0) return missing;
-        bool numeric = true;
-        foreach (char c in text) if (!char.IsAsciiDigit(c)) { numeric = false; break; }
-        if (numeric)
-        {
-            long seconds = 0, maximumSeconds = maximum.Ticks / TimeSpan.TicksPerSecond;
-            foreach (char c in text)
-            {
-                int digit = c - '0';
-                if (seconds > maximumSeconds / 10 || seconds == maximumSeconds / 10 && digit > maximumSeconds % 10) return maximum;
-                seconds = seconds * 10 + digit;
-            }
-            return seconds > 0 ? TimeSpan.FromTicks(seconds * TimeSpan.TicksPerSecond) : missing;
-        }
+        TimeSpan? pause = ReadRetryAfter(response, now, maximum);
+        // On a 429 Roblox's x-ratelimit-reset names when the request window really reopens. Retry-After
+        // can be much shorter (5 s against a 50 s reset), and waiting only for it earns another 429.
+        if (response.StatusCode == HttpStatusCode.TooManyRequests && ReadWindowReset(response, maximum) is { } reset
+            && (pause is null || reset > pause)) pause = reset;
+        if (pause is not null || !useDefaultPause) return pause;
+        return maximum < TimeSpan.FromSeconds(30) ? maximum : TimeSpan.FromSeconds(30);
+    }
+
+    // A successful response whose x-ratelimit-remaining is 0 used the last request of the window, so
+    // the next request would be refused until x-ratelimit-reset. Missing or unreadable values mean no pause.
+    public static TimeSpan? ReadUsedUpWindow(HttpResponseMessage response, DateTimeOffset now)
+    {
+        if (ReadSingle(response, "x-ratelimit-remaining") is not { } remaining || remaining.Any(c => c != '0')) return null;
+        return ReadWindowReset(response, DateTimeOffset.MaxValue - now.ToUniversalTime());
+    }
+
+    private static TimeSpan? ReadRetryAfter(HttpResponseMessage response, DateTimeOffset now, TimeSpan maximum)
+    {
+        if (ReadSingle(response, "Retry-After") is not { } text) return null;
+        if (ReadDeltaSeconds(text, maximum) is { } seconds) return seconds > TimeSpan.Zero ? seconds : null;
         if (RetryConditionHeaderValue.TryParse(text, out var parsed) && parsed.Date is { } date && date > now) return date - now;
-        return missing;
+        return null;
+    }
+
+    private static TimeSpan? ReadWindowReset(HttpResponseMessage response, TimeSpan maximum) =>
+        ReadSingle(response, "x-ratelimit-reset") is { } text && ReadDeltaSeconds(text, maximum) is { } reset
+            && reset > TimeSpan.Zero ? reset : null;
+
+    // Exactly one non-empty header value, or null when the header is absent, repeated or blank.
+    private static string? ReadSingle(HttpResponseMessage response, string name)
+    {
+        if (!response.Headers.NonValidated.TryGetValues(name, out var values)) return null;
+        string? raw = null;
+        foreach (string value in values) { if (raw is not null) return null; raw = value; }
+        string text = raw?.Trim(' ', '\t') ?? "";
+        return text.Length == 0 ? null : text;
+    }
+
+    // Plain decimal seconds (ASCII digits only), saturated at the representable clock horizon.
+    private static TimeSpan? ReadDeltaSeconds(string text, TimeSpan maximum)
+    {
+        foreach (char c in text) if (!char.IsAsciiDigit(c)) return null;
+        long seconds = 0, maximumSeconds = maximum.Ticks / TimeSpan.TicksPerSecond;
+        foreach (char c in text)
+        {
+            int digit = c - '0';
+            if (seconds > maximumSeconds / 10 || seconds == maximumSeconds / 10 && digit > maximumSeconds % 10) return maximum;
+            seconds = seconds * 10 + digit;
+        }
+        return TimeSpan.FromTicks(seconds * TimeSpan.TicksPerSecond);
     }
 }

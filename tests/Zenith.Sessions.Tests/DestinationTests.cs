@@ -310,6 +310,71 @@ public sealed class DestinationTests
         Assert.Equal(1, handler.Requests);
     }
 
+    [Fact]
+    public async Task ServerListRateLimitWaitsForTheWindowResetNotTheShorterRetryAfter()
+    {
+        var handler = new SyntheticHandler((_, _, _) => Task.FromResult(ServerListTooManyRequests()));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxServerDirectory(http, time: new RetryClock()).BrowseAsync(new(123), default);
+        Assert.Equal(RobloxPublicServerStatus.RateLimited, result.Status);
+        // Retry-After says 5 s, but the 3-per-minute window only reopens after 50 s.
+        Assert.Equal(TimeSpan.FromSeconds(50), result.RetryAfter);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Fact]
+    public async Task UsedUpServerListBudgetStopsBeforeSendingTheRequestThatWouldFail()
+    {
+        var handler = new SyntheticHandler((_, index, _) => Task.FromResult(index switch
+        {
+            1 => WithServerListBudget(Json(Page(Job, "page-2")), remaining: "1", reset: "53"),
+            2 => WithServerListBudget(Json(Page(OtherJob, "page-3")), remaining: "0", reset: "51"),
+            _ => ServerListTooManyRequests()
+        }));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxServerDirectory(http, time: new RetryClock()).BrowseAsync(new(123, MaxPages: 10), default);
+        Assert.Equal(2, handler.Requests);
+        Assert.Equal(RobloxPublicServerStatus.RateLimited, result.Status);
+        Assert.Equal(TimeSpan.FromSeconds(51), result.RetryAfter);
+        Assert.Equal(2, result.Servers.Count);
+        Assert.Equal("page-3", result.NextPageCursor);
+        Assert.Contains("No further request was sent", result.Explanation);
+    }
+
+    [Theory]
+    [InlineData("next-page", RobloxPublicServerStatus.PageLimit)]
+    [InlineData(null, RobloxPublicServerStatus.Complete)]
+    public async Task PageThatUsesUpTheServerListBudgetCarriesTheWindowResetSoTheNextClickWaits(string? cursor, RobloxPublicServerStatus expected)
+    {
+        var handler = new SyntheticHandler((_, _, _) => Task.FromResult(WithServerListBudget(Json(Page(Job, cursor)), remaining: "0", reset: "51")));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxServerDirectory(http, time: new RetryClock()).BrowseAsync(new(123, PageSize: 25), default);
+        Assert.Equal(expected, result.Status);
+        Assert.Single(result.Servers);
+        Assert.Equal(cursor, result.NextPageCursor);
+        Assert.Equal(TimeSpan.FromSeconds(51), result.RetryAfter);
+        Assert.Contains("request limit", result.Explanation);
+        Assert.Equal(1, handler.Requests);
+    }
+
+    [Theory]
+    [InlineData("2", "21")]
+    [InlineData("0", "0")]
+    [InlineData("0", "soon")]
+    [InlineData("0", "-5")]
+    [InlineData("none", "51")]
+    public async Task ServerListBudgetWithRoomLeftOrUnreadableValuesAddsNoPause(string remaining, string reset)
+    {
+        var handler = new SyntheticHandler((_, index, _) => Task.FromResult(
+            WithServerListBudget(Json(index == 1 ? Page(Job, "page-2") : Page(OtherJob)), remaining, reset)));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxServerDirectory(http, time: new RetryClock()).BrowseAsync(new(123, MaxPages: 2), default);
+        Assert.Equal(RobloxPublicServerStatus.Complete, result.Status);
+        Assert.Null(result.RetryAfter);
+        Assert.Equal(2, result.Servers.Count);
+        Assert.Equal(2, handler.Requests);
+    }
+
     [Theory]
     [InlineData(HttpStatusCode.Accepted, RobloxPublicServerStatus.Deferred)]
     [InlineData(HttpStatusCode.ServiceUnavailable, RobloxPublicServerStatus.Deferred)]
@@ -453,6 +518,22 @@ public sealed class DestinationTests
     {
         Content = new StringContent(payload, Encoding.UTF8, "application/json")
     };
+    // Header values replayed from recorded anonymous server-list responses (header lines only):
+    // 3 requests per 60 s, and on a 429 Retry-After (5 s) is shorter than the window reset (50 s).
+    private static HttpResponseMessage WithServerListBudget(HttpResponseMessage response, string remaining, string reset)
+    {
+        response.Headers.TryAddWithoutValidation("x-ratelimit-limit", "3, 3;w=60");
+        response.Headers.TryAddWithoutValidation("x-ratelimit-remaining", remaining);
+        response.Headers.TryAddWithoutValidation("x-ratelimit-reset", reset);
+        return response;
+    }
+    private static HttpResponseMessage ServerListTooManyRequests()
+    {
+        var response = WithServerListBudget(new HttpResponseMessage(HttpStatusCode.TooManyRequests), remaining: "0", reset: "50");
+        response.Headers.TryAddWithoutValidation("Retry-After", "5");
+        response.Headers.TryAddWithoutValidation("x-retry-after-coverage", "/v1/games/{placeId}/servers/{serverType}/");
+        return response;
+    }
     private sealed class SyntheticHandler(Func<HttpRequestMessage, int, CancellationToken, Task<HttpResponseMessage>> send) : HttpMessageHandler
     {
         public int Requests { get; private set; }
