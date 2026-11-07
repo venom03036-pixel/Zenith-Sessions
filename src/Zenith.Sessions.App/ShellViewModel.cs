@@ -148,6 +148,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private CancellationTokenSource? _authorizationStop;
     private Guid? _linkingProfile;
     private bool _preserveStopNotice;
+    // UI-thread only: set by ReportPresentationFault, cleared when a sample presentation completes.
+    private bool _presentationFaulted;
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
@@ -614,6 +616,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         ObserveClientPreviewContext(snapshot);
         _launchQueue.Signal();
         if(!PresentationDue(Volatile.Read(ref _activePerformance),forcePresentation || previousHold!=pressure.Held)) return;
+        // The sample, pressure and admission above are already published. A display defect below must not
+        // end the safety sampler (its catch stops monitoring for good), so the loop reports it and keeps sampling.
+        // A manual refresh (forcePresentation) still surfaces its own failure through its command.
+        try
+        {
         await _dispatcher.InvokeAsync(() =>
         {
             Physical = memory.IsValid ? $"{memory.AvailablePhysical / (double)CapacityPolicy.GiB:0.0} / {memory.TotalPhysical / (double)CapacityPolicy.GiB:0.0} GiB free" : "Unavailable";
@@ -650,9 +657,22 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if (SelectedSession is not null && !Sessions.Contains(SelectedSession)) SelectedSession = null;
             if(clientRowsChanged) NotifyClientSelection();
             RefreshTelemetryPresentation();
+            _presentationFaulted=false;
         }, DispatcherPriority.Background, ct);
         }
+        catch (Exception ex) when (!forcePresentation && (ex is not OperationCanceledException || !ct.IsCancellationRequested))
+        { await _dispatcher.InvokeAsync(()=>ReportPresentationFault(ex),DispatcherPriority.Background,ct); }
+        }
         finally {_sampleSerial.Release();}
+    }
+    private void ReportPresentationFault(Exception exception)
+    {
+        // Every fault reaches diagnostics (type only, Rule 10); the notice and event are latched until a presentation completes.
+        _diagnostics.Record(ManagerEventKind.OperationFailed,exception.GetType());
+        if(_presentationFaulted) return;
+        _presentationFaulted=true;
+        Notice="The dashboard could not show the latest measurement. Monitoring and launch safety checks continue; restart Zenith Sessions if the display stays out of date.";
+        AddEvent($"Display update failed ({exception.GetType().Name}). Monitoring continues.");
     }
     private async Task SavePreferencesAsync()
     {
