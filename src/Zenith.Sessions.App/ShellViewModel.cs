@@ -443,16 +443,28 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var rows=await Task.Run(async ()=>
         {
             var result=new List<AccountRow>();
-            IReadOnlyDictionary<Guid,AuthorizationMetadata> summaries;
-            bool metadataUnavailable=false;
-            try { summaries=(await _vault.ReadSummariesAsync(page.Items.Select(p=>p.Id).ToArray(),ct)).ToDictionary(m=>m.ProfileId); }
+            var ids=page.Items.Select(p=>p.Id).ToArray();
+            var summaries=new Dictionary<Guid,AuthorizationMetadata>(ids.Length);
+            HashSet<Guid>? unavailable=null;
+            try { foreach(var summary in await _vault.ReadSummariesAsync(ids,ct)) summaries[summary.ProfileId]=summary; }
             catch(Exception ex) when(ex is InvalidDataException or IOException or UnauthorizedAccessException)
-            { summaries=new Dictionary<Guid,AuthorizationMetadata>();metadataUnavailable=true; }
+            {
+                // One damaged or locked record must not hide every other row's link. Only on this
+                // degraded path, re-read each visible profile alone (same validation, same lease)
+                // so just the failing rows are marked; cancellation still propagates.
+                unavailable=[];
+                foreach(Guid id in ids)
+                {
+                    ct.ThrowIfCancellationRequested();
+                    try { if(await _vault.GetSummaryAsync(id,ct) is { } summary) summaries[id]=summary; }
+                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException) { unavailable.Add(id); }
+                }
+            }
             foreach(var item in page.Items)
             {
                 ct.ThrowIfCancellationRequested(); var row=new AccountRow(item);
                 if(summaries.TryGetValue(item.Id,out var summary)) row.SetCachedAuthorization(summary);
-                else if(metadataUnavailable) row.SetAuthorization("Link index unavailable","Protected files were preserved. Sign in again or review storage access; account metadata remains usable.");
+                else if(unavailable?.Contains(item.Id)==true) row.SetAuthorization("Link index unavailable","Protected files were preserved. Sign in again or review storage access; account metadata remains usable.");
                 result.Add(row);
             }
             return result;
