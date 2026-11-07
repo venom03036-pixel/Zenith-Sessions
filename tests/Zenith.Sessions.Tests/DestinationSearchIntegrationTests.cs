@@ -31,7 +31,7 @@ public sealed partial class ClientWindowIntegrationTests
         var row=Assert.Single(shell.Accounts);row.IsChecked=true;shell.SelectedAccount=row;var original=row.Profile;
         ShowSearch(shell);shell.ServerBrowser.UsePreferredPlace(909);shell.ServerBrowser.LinkInput="Fisch";
         await shell.DestinationSearch.SearchOrUseAsync();Assert.Equal(909,shell.ServerBrowser.Destination!.PlaceId);Assert.Null(shell.DestinationSearch.SelectedResult);
-        shell.DestinationSearch.SelectedResult=shell.DestinationSearch.Results[0];await shell.DestinationSearch.UseSelectedAsync();
+        await shell.DestinationSearch.UseCardAsync(shell.DestinationSearch.Results[0]);
         Assert.Equal(101,shell.ServerBrowser.Destination!.PlaceId);Assert.Equal(101,shell.GameDetails.Game!.RequestedPlaceId);Assert.Equal(1,directory.GameRequests);
         Assert.Same(row,shell.SelectedAccount);Assert.True(row.IsChecked);Assert.Empty(shell.Launches);Assert.Equal(0,directory.ProfileRequests);
         using var repository=new AccountRepository(_root);Assert.Equal(original,await repository.FindAsync(original.Id,default));

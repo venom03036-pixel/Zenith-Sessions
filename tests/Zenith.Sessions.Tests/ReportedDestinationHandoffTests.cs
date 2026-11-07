@@ -13,31 +13,32 @@ public sealed partial class ClientWindowIntegrationTests
     private const string ReportedJob = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
     private const BindingFlags ReportedPrivate = BindingFlags.Instance | BindingFlags.NonPublic;
 
-    [Fact]
-    public Task ReviewingCurrentReportedServerPinsOnlyTheJoinGameDraft() => OnUi(async () =>
+    // The shipped route from a reported row (Join same game / Join same server, panel and row menu) replaces the
+    // unresolved Find-box draft and the requested destination, and changes nothing else: account, queue, launches.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task JoinSameFromAReportedRowChangesOnlyTheJoinGameRequest(bool sameServer) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         await shell.SaveAccountAsync(AccountProfile.Create("Synthetic chosen profile"));
         shell.SelectedAccount = Assert.Single(shell.Accounts);
         var account = shell.SelectedAccount;
         shell.ServerBrowser.UsePreferredPlace(42);
-        var destination = shell.ServerBrowser.Destination;
         shell.ServerBrowser.LinkInput = "previous unresolved draft";
         shell.Navigate.Execute("Sessions");
         var serial = await HoldReportedSamplerAsync(shell);
         try
         {
             var fixture = PublishReportedSession(shell);
-            string? copied = shell.BuildReportedDestinationLink(fixture.Row);
-            Assert.NotNull(copied);
-            Assert.True(shell.ReviewReportedDestination(fixture.Row));
+            Assert.NotNull(shell.BuildReportedDestinationLink(fixture.Row, sameServer));
+            Assert.True(shell.JoinSameAsReported(fixture.Row, sameServer));
             Assert.True(shell.IsJoinGame);
-            Assert.Equal(copied, shell.ServerBrowser.LinkInput);
-            var parsed = RobloxDestinationParser.Parse(shell.ServerBrowser.LinkInput);
-            Assert.Equal(ReportedPlace, parsed.RequestedDestination!.PlaceId);
-            Assert.Equal(ReportedJob, parsed.RequestedDestination.JobId);
-            Assert.Equal(RobloxServerKind.Unknown, parsed.RequestedDestination.ServerKind);
-            Assert.Same(destination, shell.ServerBrowser.Destination);
+            Assert.True(shell.IsJoinReadyStep);
+            Assert.Equal("", shell.ServerBrowser.LinkInput);
+            Assert.Equal(ReportedPlace, shell.ServerBrowser.Destination!.PlaceId);
+            Assert.Equal(sameServer ? ReportedJob : null, shell.ServerBrowser.Destination.JobId);
+            Assert.Equal(RobloxServerKind.Unknown, shell.ServerBrowser.Destination.ServerKind);
             Assert.Same(account, shell.SelectedAccount);
             Assert.Empty(shell.Launches);
             Assert.True(fixture.Row.Log.HasReportedDestination);
@@ -76,7 +77,8 @@ public sealed partial class ClientWindowIntegrationTests
 
             Assert.True(fixture.Row.Log.HasReportedDestination);
             Assert.Null(shell.BuildReportedDestinationLink(fixture.Row));
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: true));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: false));
             Assert.True(shell.IsSessions);
             Assert.Equal("preserved text draft", shell.ServerBrowser.LinkInput);
             Assert.Same(destination, shell.ServerBrowser.Destination);
@@ -88,7 +90,7 @@ public sealed partial class ClientWindowIntegrationTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public Task StartupOrLockRejectsReportedReviewWithoutAnotherMutation(bool locked) => OnUi(async () =>
+    public Task StartupOrLockRejectsJoinSameWithoutAnotherMutation(bool locked) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         var serial = await HoldReportedSamplerAsync(shell);
@@ -103,7 +105,8 @@ public sealed partial class ClientWindowIntegrationTests
             string tab = shell.Tab;
 
             Assert.Null(shell.BuildReportedDestinationLink(fixture.Row));
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: true));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer: false));
             Assert.Equal(draft, shell.ServerBrowser.LinkInput);
             Assert.Equal(tab, shell.Tab);
             Assert.Empty(shell.Launches);
@@ -111,8 +114,14 @@ public sealed partial class ClientWindowIntegrationTests
         finally { serial.Release(); }
     });
 
-    [Fact]
-    public Task PanicDuringDraftNotificationPreventsTheLaterNavigation() => OnUi(async () =>
+    // Panic wins at both mutation points of Join same: while the reported link is written into the Find box, and while
+    // ResolveInput publishes it as the requested destination. Neither may go on to open Join a game's Ready step.
+    [Theory]
+    [InlineData(nameof(ServerBrowserViewModel.LinkInput), false)]
+    [InlineData(nameof(ServerBrowserViewModel.LinkInput), true)]
+    [InlineData(nameof(ServerBrowserViewModel.Destination), false)]
+    [InlineData(nameof(ServerBrowserViewModel.Destination), true)]
+    public Task PanicDuringJoinSameNotificationPreventsTheLaterNavigation(string notified, bool sameServer) => OnUi(async () =>
     {
         await using var shell = await Ready(new Monitor());
         shell.ServerBrowser.UsePreferredPlace(42);
@@ -124,14 +133,16 @@ public sealed partial class ClientWindowIntegrationTests
             bool stopped = false;
             shell.ServerBrowser.PropertyChanged += (_, args) =>
             {
-                if (stopped || args.PropertyName != nameof(ServerBrowserViewModel.LinkInput)) return;
+                if (stopped || args.PropertyName != notified) return;
                 stopped = true;
                 shell.Panic.Execute(null);
             };
 
-            Assert.False(shell.ReviewReportedDestination(fixture.Row));
+            Assert.False(shell.JoinSameAsReported(fixture.Row, sameServer));
             Assert.True(stopped);
             Assert.True(shell.IsSessions);
+            Assert.False(shell.IsJoinGame);
+            Assert.False(shell.IsJoinReadyStep);
             Assert.Contains("Panic", shell.Notice, StringComparison.OrdinalIgnoreCase);
             Assert.Empty(shell.Launches);
         }

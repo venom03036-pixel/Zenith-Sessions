@@ -311,21 +311,6 @@ public sealed partial class ShellViewModel
         return CanUseDirectories() && generation == _directoryGeneration && IsJoinGame && IsJoinReadyStep
             && Sessions.Contains(row) && row.InstanceKey == instance;
     }
-
-    public bool ReviewReportedDestination(SessionRow row)
-    {
-        if (row is null) return false;
-        string instance = row.InstanceKey;
-        string? link = BuildReportedDestinationLink(row);
-        if (link is null) return false;
-        long generation = _directoryGeneration;
-        ServerBrowser.LinkInput = link;
-        if (!CanUseDirectories() || generation != _directoryGeneration || !Sessions.Contains(row) || row.InstanceKey != instance
-            || ServerBrowser.LinkInput != link) return false;
-        Navigate.Execute("JoinGame");
-        return CanUseDirectories() && generation == _directoryGeneration && IsJoinGame
-            && Sessions.Contains(row) && row.InstanceKey == instance && ServerBrowser.LinkInput == link;
-    }
     private void LoadClientLayoutDraft(ClientWindowLayoutSettings settings)
     {
         settings = settings.Validated(); _preferredDisplayId = settings.PreferredDisplayId;

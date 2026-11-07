@@ -81,24 +81,21 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
     public Task ArtOperation=>_art.Active;
     public Command ShowMore {get;}
     public AsyncCommand UseCard {get;}
-    public PublicGameSearchRow? SelectedResult
-    {get=>_selected;set {if(value is null || Results.Any(row=>ReferenceEquals(row,value))) {Set(ref _selected,value);Raise(nameof(CanUseSelected));}}}
+    /// <summary>The card last used from this page (UseCard). Read-only: choosing a card is the only way to select one.</summary>
+    public PublicGameSearchRow? SelectedResult=>_selected;
     public string Status=>_status;
     public bool IsBusy=>_busy;
     public bool HasResults=>Results.Count>0;
     public bool CanSearch=>Allowed && !_busy && !string.IsNullOrWhiteSpace(_browser.LinkInput);
     public bool CanNext=>Allowed && !_busy && _pagingStop is null && _page?.NextPageToken is not null && PageCurrent();
-    public bool CanUseSelected=>Allowed && !_busy && SelectedResult is { } selected
-        && Results.Any(row=>ReferenceEquals(row,selected)) && PageCurrent();
     public bool CanCancel=>!_disposed && (_busy || _page is not null || _browser.LinkInput.Length>0);
     public string PageSummary=>_page is null?"Search results — choose a destination. Searching does not change the current request."
-        :$"{Results.Count} public results on this page · retrieved {_page.RetrievedUtc.ToLocalTime():T}. Select one, then use it."
+        :$"{Results.Count} public results on this page · retrieved {_page.RetrievedUtc.ToLocalTime():T}. Choose a card to use it."
             +(_page.ResultsTruncated?" This response omitted results; refine the name. A continuation does not recover omitted rows.":" This is not exhaustive search coverage.")
             +(_pagingStop is null?"":" "+_pagingStop);
     public Task ActiveOperation=>_active;
     public AsyncCommand SearchOrUse {get;}
     public AsyncCommand Next {get;}
-    public AsyncCommand UseSelected {get;}
     public Command Cancel {get;}
     private bool Allowed=>!_disposed && !_lifetime.IsCancellationRequested && _canUse();
     public DestinationSearchViewModel(IPublicRobloxGameSearchDirectory? directory,ServerBrowserViewModel browser,
@@ -107,8 +104,7 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
     {
         _directory=directory;_browser=browser;_details=details;_canUse=canUse;_failed=failed??(_=>{});_clock=clock??TimeProvider.System;
         _art=new(art,_failed);_shareLinks=shareLinkHandler;
-        SearchOrUse=new(_=>SearchOrUseAsync(),ReportFailure);Next=new(_=>NextAsync(),ReportFailure);
-        UseSelected=new(_=>UseSelectedAsync(),ReportFailure);Cancel=new(_=>CancelWork());
+        SearchOrUse=new(_=>SearchOrUseAsync(),ReportFailure);Next=new(_=>NextAsync(),ReportFailure);Cancel=new(_=>CancelWork());
         ShowMore=new(_=>ShowMoreRows());UseCard=new(parameter=>parameter is PublicGameSearchRow row?UseCardAsync(row):Task.CompletedTask,ReportFailure);
         browser.PropertyChanged+=SourceChanged;
     }
@@ -151,13 +147,6 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
         {if(_page is not null && !PageCurrent()) Invalidate("Search results expired or changed. Search explicitly again.",false);else SetStatus(_pagingStop??"No next search page is available.");return Task.CompletedTask;}
         if(CoolingDown()) return Task.CompletedTask;
         return Start(Kind.Search,_browser.LinkInput,page.Query with {PageToken=next},null,ct);
-    }
-    public Task UseSelectedAsync(CancellationToken ct=default)
-    {
-        ct.ThrowIfCancellationRequested();if(!Admit()) return Task.CompletedTask;
-        if(!CanUseSelected || SelectedResult is not { } row)
-        {if(_page is not null && !PageCurrent()) Invalidate("Search results expired. Search explicitly again.",false);else SetStatus("Select a current search result before choosing a destination.");return Task.CompletedTask;}
-        return Start(Kind.Use,_browser.LinkInput,null,row,ct);
     }
     /// <summary>Clicking a card uses it: the page is kept and the card is marked current. Nothing is queued or launched.</summary>
     public Task UseCardAsync(PublicGameSearchRow row,CancellationToken ct=default)
@@ -331,7 +320,7 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
         if(pending.Length!=0) _=_art.LoadAsync(pending,Interlocked.Read(ref _generation));
     }
     private void SetStatus(string status){_status=status;Raise(nameof(Status));}
-    private void NotifyAvailability(){Raise(nameof(CanSearch));Raise(nameof(CanNext));Raise(nameof(CanUseSelected));Raise(nameof(CanCancel));}
+    private void NotifyAvailability(){Raise(nameof(CanSearch));Raise(nameof(CanNext));Raise(nameof(CanCancel));}
     private void ObserveRetry(TimeSpan? retry)
     {if(retry is not { } delay || delay<=TimeSpan.Zero)return;var now=_clock.GetUtcNow();var deadline=delay>DateTimeOffset.MaxValue-now?DateTimeOffset.MaxValue:now+delay;if(deadline>_notBefore)_notBefore=deadline;}
     private void ReportFailure(Exception _){if(!_disposed)SetStatus("The destination operation could not finish. Retry explicitly when controls are available.");ReportSafeFailure();}
