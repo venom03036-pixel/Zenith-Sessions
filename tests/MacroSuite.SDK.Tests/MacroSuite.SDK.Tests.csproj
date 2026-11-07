@@ -20,4 +20,9 @@
     <Using Include="Xunit" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- Only the public SDK: these tests check the plugin surface exactly as a third-party plugin sees it. -->
+    <ProjectReference Include="..\..\src\MacroSuite.SDK\MacroSuite.SDK.csproj" />
+  </ItemGroup>
+
 </Project>
