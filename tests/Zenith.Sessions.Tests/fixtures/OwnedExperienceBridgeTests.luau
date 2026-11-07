@@ -257,6 +257,20 @@ check("invalid, expired, wrong-source and unapproved commands do no work", funct
     assert(state.updates == 0 and state.teleports == 0)
 end)
 
+-- The Windows transport reports ClockSkew once the PC clock is more than two seconds off Roblox's. Keep both in step.
+check("commands outside the server clock allowance do no work", function()
+    local state = fixture()
+    -- A PC three seconds ahead of the server, and one a whole lifetime behind it.
+    state:send({ issuedUtc = state.now + 3, expiresUtc = state.now + 48 })
+    state:send({ issuedUtc = state.now - 45, expiresUtc = state.now })
+    assert(state.updates == 0 and state.teleports == 0 and state.receipts[recordKey] == nil,
+        "the script accepted a command outside its clock allowance")
+    -- Two seconds ahead is still inside the allowance, so the limit itself is what stopped the first command.
+    state:send({ issuedUtc = state.now + 2, expiresUtc = state.now + 47 })
+    assert(state.teleports == 1 and state.receipts[recordKey].stage == "teleportInitiated",
+        "the script refused a command issued two seconds ahead of its clock")
+end)
+
 check("exact public move separates initiation and arrival", function()
     local state = fixture()
     state:send()

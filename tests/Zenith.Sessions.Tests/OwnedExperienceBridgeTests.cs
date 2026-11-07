@@ -130,6 +130,91 @@ public sealed class OwnedExperienceBridgeTests
         Assert.Equal(Start.AddSeconds(offsetSeconds), result.Acknowledgement?.ObservedUtc);
     }
 
+    // Open Cloud stamps every response with Roblox's time in whole seconds (the HTTP Date header). The server
+    // script ignores a command issued more than two seconds ahead of its clock and gives a command issued
+    // behind it less than 45 s, so a PC clock more than two seconds off must be named, not shown as Published.
+    [Theory]
+    [InlineData(-3, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(3, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(-120, OwnedExperienceBridgeState.ClockSkew)]
+    [InlineData(-2, OwnedExperienceBridgeState.Published)]
+    [InlineData(2, OwnedExperienceBridgeState.Published)]
+    [InlineData(0, OwnedExperienceBridgeState.Published)]
+    public async Task PublishReportsClockSkewWhenRobloxTimeDiffersByMoreThanTwoSeconds(int robloxAheadSeconds,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        int calls = 0;
+        using var bridge = Fixture((_, _) =>
+        {
+            calls++;
+            return Task.FromResult(Dated(new(HttpStatusCode.OK), Start.AddSeconds(robloxAheadSeconds)));
+        });
+        var result = await bridge.PublishAsync(command, default);
+        Assert.Equal(expected, result.State);
+        Assert.Null(result.Acknowledgement);
+        Assert.Equal(1, calls);
+    }
+
+    // The Date second is stamped somewhere inside the round trip, so a slow response with agreeing clocks
+    // must not look like a PC that runs ahead.
+    [Fact]
+    public async Task SlowRoundTripWithAgreeingClocksIsNotClockSkew()
+    {
+        var command = Command();
+        var clock = new Clock();
+        using var bridge = Fixture((_, _) =>
+        {
+            clock.Now = Start.AddSeconds(4);
+            return Task.FromResult(Dated(new(HttpStatusCode.OK), Start));
+        }, clock);
+        Assert.Equal(OwnedExperienceBridgeState.Published, (await bridge.PublishAsync(command, default)).State);
+    }
+
+    // The Date header is outside the bridge's control. The latest time it can carry must give a result, not an exception.
+    [Fact]
+    public async Task LatestPossibleRobloxTimeIsClockSkewNotAnException()
+    {
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(new(HttpStatusCode.OK), DateTimeOffset.MaxValue)));
+        Assert.Equal(OwnedExperienceBridgeState.ClockSkew, (await bridge.PublishAsync(Command(), default)).State);
+    }
+
+    // A server that dropped the command for its clock leaves no receipt. That must read as ClockSkew, not as a
+    // busy server that is still Pending.
+    [Theory]
+    [InlineData(-5, false)]
+    [InlineData(5, false)]
+    [InlineData(-5, true)]
+    public async Task ReadReportsClockSkewInsteadOfPendingWhenNoReceiptMatches(int robloxAheadSeconds, bool earlierReceipt)
+    {
+        var command = Command();
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(
+            earlierReceipt ? Json(Receipt(Command(), "arrived")) : new(HttpStatusCode.NotFound), Start.AddSeconds(robloxAheadSeconds))));
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(OwnedExperienceBridgeState.ClockSkew, result.State);
+        Assert.Null(result.Acknowledgement);
+    }
+
+    // A receipt is stamped by the Roblox server's clock, so it is checked against Roblox's own response time.
+    // A genuine receipt (possibly after a real teleport) is reported even when the PC clock is off.
+    [Theory]
+    [InlineData(0, 5, 5, OwnedExperienceBridgeState.Acknowledged)]
+    [InlineData(4, 1, 1, OwnedExperienceBridgeState.Acknowledged)]
+    [InlineData(0, 5, 8, OwnedExperienceBridgeState.InvalidResponse)]
+    public async Task ReceiptIsCheckedAgainstRobloxTime(int localSeconds, int robloxSeconds, int observedSeconds,
+        OwnedExperienceBridgeState expected)
+    {
+        var command = Command();
+        var receipt = Receipt(command, "arrived");
+        receipt["value"]!["observedUtc"] = Start.AddSeconds(observedSeconds).ToUnixTimeSeconds();
+        using var bridge = Fixture((_, _) => Task.FromResult(Dated(Json(receipt), Start.AddSeconds(robloxSeconds))),
+            new Clock { Now = Start.AddSeconds(localSeconds) });
+        var result = await bridge.ReadAsync(command, default);
+        Assert.Equal(expected, result.State);
+        if (expected == OwnedExperienceBridgeState.Acknowledged)
+            Assert.Equal(Start.AddSeconds(observedSeconds), result.Acknowledgement?.ObservedUtc);
+    }
+
     [Theory]
     [InlineData("universeId", 5_000_000_001)]
     [InlineData("userId", 5_000_000_002)]
@@ -315,6 +400,12 @@ public sealed class OwnedExperienceBridgeTests
 
     private static HttpResponseMessage Json(JsonObject body) => new(HttpStatusCode.OK)
     { Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json") };
+
+    private static HttpResponseMessage Dated(HttpResponseMessage response, DateTimeOffset robloxTime)
+    {
+        response.Headers.Date = robloxTime;
+        return response;
+    }
 
     private static RobloxOwnedExperienceBridge Fixture(Func<HttpRequestMessage, CancellationToken, Task<HttpResponseMessage>> send, Clock? clock = null)
         => new(Universe, _ => ValueTask.FromResult<string?>("fixture-read"), _ => ValueTask.FromResult<string?>("fixture-publish"),
