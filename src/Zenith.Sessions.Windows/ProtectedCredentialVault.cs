@@ -17,7 +17,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
 {
     public const string WriterLockFileName = ".writer.lock";
     public const int MaximumPendingOperations = 4;
-    private const int Version = 2, MaximumFileBytes = 128 * 1024, MaximumIndexBytes = 8192;
+    private const int Version = 2, MaximumFileBytes = 128 * 1024, MaximumIndexBytes = 8192, MaximumOrphanedTemporaries = 64;
     private static readonly byte[] Magic = "ZENITH-VAULT\n"u8.ToArray();
     private static readonly JsonSerializerOptions JsonOptions = new() { MaxDepth = 8 };
     private static readonly (string Provider, string Issuer)[] RobloxContexts =
@@ -444,10 +444,12 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         DeletePrivateFile(path);
         DeleteObsoleteCopies(path);
         if (pointer is not null)
-        {
-            DeletePrivateFile(IndexPath(pointer.IdentityKey));
-            DeletePrivateFile(IndexPath(pointer.UserKey));
-        }
+            foreach (string claim in new[] { IndexPath(pointer.IdentityKey), IndexPath(pointer.UserKey) })
+            {
+                DeletePrivateFile(claim);
+                // Interrupted claim writes hold the plaintext subject and user ID.
+                DeleteOrphanedTemporaries(claim, claim);
+            }
         // Keep the bounded recovery references until both claims are gone. A crash or failed
         // claim deletion can then retry without scanning the inventory or guessing an identity.
         DeletePrivateFile(PointerPath(profileId));
@@ -775,7 +777,29 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         }
         finally { DeletePrivateFile(temporary); }
     }
-    private static void DeleteObsoleteCopies(string path) { DeletePrivateFile(path + ".bak"); DeletePrivateFile(path + ".tmp"); }
+    private static void DeleteObsoleteCopies(string path)
+    {
+        DeletePrivateFile(path + ".bak"); DeletePrivateFile(path + ".tmp");
+        // The record and its pointer share the record's name prefix, so one scan finds both.
+        DeleteOrphanedTemporaries(path, path, path + ".identity");
+    }
+    // A process kill or power loss inside AtomicWriteAsync leaves "<target>.<guid:N>.tmp" with a
+    // full copy of the target (encrypted credential plus plaintext identity). Callers hold the
+    // writer lease and every atomic write runs under it, so a match is never in flight; nothing
+    // reads these names. Only exact atomic-write names of the given targets are removed.
+    private static void DeleteOrphanedTemporaries(string prefix, params string[] targets)
+    {
+        string directory = Path.GetDirectoryName(prefix)!;
+        if (!Directory.Exists(directory)) return;
+        string[] names = Array.ConvertAll(targets, target => Path.GetFileName(target));
+        string[] orphans = Directory.EnumerateFiles(directory, Path.GetFileName(prefix) + ".*.tmp", SearchOption.TopDirectoryOnly)
+            .Where(file => names.Any(name => IsAtomicTemporaryOf(Path.GetFileName(file), name)))
+            .Take(MaximumOrphanedTemporaries).ToArray();
+        foreach (string orphan in orphans) DeletePrivateFile(orphan);
+    }
+    private static bool IsAtomicTemporaryOf(string candidate, string target) => candidate.Length == target.Length + 37
+        && candidate.StartsWith(target, StringComparison.Ordinal) && candidate[target.Length] == '.'
+        && candidate.EndsWith(".tmp", StringComparison.Ordinal) && candidate.AsSpan(target.Length + 1, 32).IndexOfAnyExcept("0123456789abcdef") < 0;
     private static void DeletePrivateFile(string path)
     {
         if (!File.Exists(path)) return;

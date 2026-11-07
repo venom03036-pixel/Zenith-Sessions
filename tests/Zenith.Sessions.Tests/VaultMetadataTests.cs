@@ -185,6 +185,41 @@ public sealed class VaultMetadataTests : IDisposable
         Assert.Empty(Directory.GetFiles(VaultRoot, "*.tmp", SearchOption.AllDirectories));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task DeleteRemovesCrashOrphanedAtomicWriteTemporariesButKeepsAnotherProfilesFiles(bool throughDisconnectSnapshot)
+    {
+        using var vault = new ProtectedCredentialVault(Root);
+        var record = Record(Guid.NewGuid());
+        var sibling = Record(Guid.NewGuid(), userId: 456);
+        await vault.SaveAsync(record, default);
+        await vault.SaveAsync(sibling, default);
+        string path = RecordPath(record.ProfileId), siblingPath = RecordPath(sibling.ProfileId);
+        var pointer = JsonNode.Parse(await File.ReadAllTextAsync(path + ".identity"))!.AsObject();
+        string index = Path.Combine(VaultRoot, "identity-index");
+        string[] claims = [Path.Combine(index, pointer["IdentityKey"]!.GetValue<string>() + ".json"), Path.Combine(index, pointer["UserKey"]!.GetValue<string>() + ".json")];
+        // A process kill or power loss between creating and publishing an atomic write leaves
+        // these exact names behind: the envelope, the pointer and both plaintext identity claims.
+        foreach (string target in claims.Prepend(path + ".identity").Prepend(path))
+            File.Copy(target, target + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        string siblingTemporary = siblingPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.Copy(siblingPath, siblingTemporary);
+        static string[] Names(IEnumerable<string> files) => files.Select(file => Path.GetFileName(file)!).Order(StringComparer.Ordinal).ToArray();
+        string[] siblingIndex = Names(Directory.GetFiles(index).Where(file => !claims.Contains(file) && !file.EndsWith(".tmp", StringComparison.Ordinal)));
+
+        if (throughDisconnectSnapshot)
+        {
+            AuthorizationWriteSnapshot snapshot = await vault.ReadWriteSnapshotAsync(record.ProfileId, default);
+            Assert.Equal(AuthorizationMutationStatus.Applied, (await vault.TryDeleteSnapshotAsync(snapshot, default)).Status);
+        }
+        else await vault.DeleteAsync(record.ProfileId, default);
+
+        Assert.Equal(Names([siblingPath, siblingPath + ".identity", siblingTemporary, ProtectedCredentialVault.WriterLockFileName]), Names(Directory.GetFiles(VaultRoot)));
+        Assert.Equal(siblingIndex, Names(Directory.GetFiles(index)));
+        Assert.Equal(sibling with { AccessToken = "" }, await vault.ReadAsync(sibling.ProfileId, default));
+    }
+
     [Fact]
     public async Task IdentityAndMappedUserDeduplicateAtomicallyAcrossVaultInstances()
     {
