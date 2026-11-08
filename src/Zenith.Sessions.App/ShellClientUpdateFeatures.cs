@@ -14,7 +14,7 @@ namespace Zenith.Sessions.App;
 /// Refresh installation makes. With no installation row selected it runs the full refresh (rows and release); with a row
 /// selected (someone's trial installation) it only asks for the release and fills the listed rows in place, so the selection and
 /// any native preparation are kept. A pending update is announced once per release. One one-shot DispatcherTimer, re-armed after
-/// each check (Rule 14); nothing polls while off, locked or in the sample profile.
+/// each check (Rule 14); nothing polls while off, locked, suspended by Panic or in the sample profile.
 /// (2) An explicit two-step install. Download Roblox update fetches Roblox's own installer for the offered release from Roblox's
 /// setup host into a fresh temporary folder and verifies it with the executable trust code; the result (publisher, SHA-256) is
 /// shown and the verified file stays held with read sharing. Install Roblox update asks first (the view shows
@@ -28,11 +28,13 @@ public sealed partial class ShellViewModel
     private const string ClientUpdateIdle = "Download Roblox update fetches Roblox's own installer for the current release into a temporary folder and checks its signature. Nothing is run until you choose Install Roblox update and confirm.";
     private const string ClientUpdateDownloadStopped = "Download stopped. Nothing was run.";
     private IClientUpdateInstaller? _clientUpdateInstaller;
-    private bool _clientUpdatePermitted, _checkRobloxUpdates, _clientUpdateBusy, _automaticUpdateCheckRunning;
+    private bool _clientUpdatePermitted, _checkRobloxUpdates, _clientUpdateBusy, _automaticUpdateCheckRunning, _clientUpdateChecksPaused;
     private DispatcherTimer? _clientUpdateCheckTimer;
     private CancellationTokenSource? _clientUpdateStop;
+    private CancellationTokenSource? _automaticUpdateStop;
     private Task _clientUpdateWork = Task.CompletedTask, _automaticUpdateCheck = Task.CompletedTask;
     private long _clientUpdateGeneration;
+    private long _clientUpdateCheckGeneration;
     // The release the listed rows say the native player is behind (null: no update offered), and the release a verified
     // installer is held for. The installer component holds the file; this only remembers which release it belongs to.
     private PublicRobloxClientRelease? _offeredRelease, _heldRelease;
@@ -49,7 +51,9 @@ public sealed partial class ShellViewModel
     // An installation check replaces the rows the offer came from; a publisher check or native trial owns the selected player.
     private bool ClientUpdateLaunchWorkActive => IsInstallationDiscoveryBusy || IsPublisherVerificationBusy || HasNativeTrialInProgress();
     public bool CanDownloadRobloxUpdate => ClientUpdateAvailable && _offeredRelease is not null;
-    public bool CanInstallRobloxUpdate => ClientUpdateAvailable && _heldRelease is not null;
+    public bool CanInstallRobloxUpdate => ClientUpdateAvailable && SameUpdateRelease(_heldRelease, _offeredRelease);
+    private static bool SameUpdateRelease(PublicRobloxClientRelease? left, PublicRobloxClientRelease? right) => left is not null && right is not null
+        && string.Equals(left.ClientVersionUpload, right.ClientVersionUpload, StringComparison.Ordinal);
     /// <summary>The question the view asks before Install Roblox update; empty while nothing verified is held.</summary>
     public string RobloxUpdateConfirmation
     {
@@ -97,16 +101,17 @@ public sealed partial class ShellViewModel
     // CheckDelay from now; otherwise an armed timer keeps its schedule. Off, locked, closing or the sample profile: nothing is armed.
     private void ApplySavedClientUpdateCheck(bool restart)
     {
-        if (!_savedSettings.CheckRobloxUpdates || !_ready || IsLocked || _shuttingDown || IsSample || !_clientUpdatePermitted)
+        if (restart) { _clientUpdateChecksPaused = false; _clientUpdateCheckGeneration++; _automaticUpdateStop?.Cancel(); }
+        if (!_savedSettings.CheckRobloxUpdates || !_ready || IsLocked || _shuttingDown || IsSample || !_clientUpdatePermitted || _clientUpdateChecksPaused)
         {
             StopClientUpdateCheckTimer();
+            _automaticUpdateStop?.Cancel();
             RobloxUpdateCheckStatus = _savedSettings.CheckRobloxUpdates && IsSample ? "Automatic checks are not made in the sample profile." : "";
             return;
         }
         if (!restart && _clientUpdateCheckTimer is { IsEnabled: true }) return;
         ArmClientUpdateCheck(RobloxClientUpdate.CheckDelay);
-        if (RobloxUpdateCheckStatus.Length == 0 || RobloxUpdateCheckStatus.StartsWith("Next automatic check", StringComparison.Ordinal))
-            RobloxUpdateCheckStatus = "Next automatic check in 3 seconds, then every 30 minutes after each check.";
+        RobloxUpdateCheckStatus = "Next automatic check in 3 seconds, then every 30 minutes after each check.";
     }
     private void ClientUpdateCheckPreferenceSaved(bool wasOn) { if (_savedSettings.CheckRobloxUpdates != wasOn) ApplySavedClientUpdateCheck(restart: true); }
     private void ArmClientUpdateCheck(TimeSpan due)
@@ -122,9 +127,13 @@ public sealed partial class ShellViewModel
 
     private async Task RunAutomaticUpdateCheckAsync()
     {
-        if (_automaticUpdateCheckRunning || !_savedSettings.CheckRobloxUpdates || !_ready || IsLocked || _shuttingDown || IsSample || !_clientUpdatePermitted) return;
+        if (_automaticUpdateCheckRunning || !_savedSettings.CheckRobloxUpdates || !_ready || IsLocked || _shuttingDown || IsSample || !_clientUpdatePermitted || _clientUpdateChecksPaused) return;
         _automaticUpdateCheckRunning = true;
-        bool Current() => !IsLocked && !_shuttingDown;
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _automaticUpdateStop = stop;
+        long checkGeneration = _clientUpdateCheckGeneration;
+        bool Current() => !IsLocked && !_shuttingDown && !_clientUpdateChecksPaused && _savedSettings.CheckRobloxUpdates
+            && checkGeneration == _clientUpdateCheckGeneration && !stop.IsCancellationRequested;
         try
         {
             string? problem = null;
@@ -142,7 +151,6 @@ public sealed partial class ShellViewModel
             {
                 // A selected row is a trial installation: ask for the release only and fill the listed rows in place.
                 RobloxUpdateCheckStatus = "Automatic check: asking Roblox's public version service for its current release…";
-                using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
                 stop.CancelAfter(TimeSpan.FromSeconds(15));
                 var result = await ReadCurrentReleaseAsync(stop.Token);
                 if (!Current()) return;
@@ -151,6 +159,7 @@ public sealed partial class ShellViewModel
                 else { _releaseCache?.Remember(latest); PublishLaunchRelease(); }
             }
             else problem = "skipped while an installation check, a publisher check or a native trial is in progress";
+            if (!Current()) return;
             RefreshUpdateOffer(announce: true);
             string outcome = problem ?? (_offeredRelease is { } offered ? $"an update to release {offered.Version} is pending" : "the installed Roblox player is current or nothing could be compared");
             RobloxUpdateCheckStatus = $"Last automatic check {DateTime.Now:T}: {outcome}. Next in 30 minutes.";
@@ -163,8 +172,11 @@ public sealed partial class ShellViewModel
         }
         finally
         {
+            if (ReferenceEquals(_automaticUpdateStop, stop)) _automaticUpdateStop = null;
             _automaticUpdateCheckRunning = false;
-            if (_savedSettings.CheckRobloxUpdates && _ready && !IsLocked && !_shuttingDown && !IsSample && _clientUpdatePermitted) ArmClientUpdateCheck(RobloxClientUpdate.CheckInterval);
+            if (_savedSettings.CheckRobloxUpdates && _ready && !IsLocked && !_shuttingDown && !IsSample && _clientUpdatePermitted
+                && !_clientUpdateChecksPaused && _clientUpdateCheckTimer is not { IsEnabled: true })
+                ArmClientUpdateCheck(checkGeneration == _clientUpdateCheckGeneration ? RobloxClientUpdate.CheckInterval : RobloxClientUpdate.CheckDelay);
         }
     }
 
@@ -182,8 +194,7 @@ public sealed partial class ShellViewModel
             if (row.Release == ClientReleaseMatch.NotCurrent && offered is null && row.ComparedWith is { } compared && File.Exists(row.Candidate.ExecutablePath)) offered = compared;
         }
         if (current) offered = null;
-        if (_heldRelease is { } held && InstallationCandidates.Count > 0
-            && (offered is null || !string.Equals(offered.ClientVersionUpload, held.ClientVersionUpload, StringComparison.Ordinal)))
+        if (_heldRelease is { } held && (current || offered is not null && !SameUpdateRelease(offered, held)))
         {
             DiscardHeldInstaller();
             ClientUpdateStatus = $"The downloaded installer for release {held.Version} no longer matches the installed player or Roblox's current release, so it was deleted. Nothing was run.";
@@ -219,6 +230,12 @@ public sealed partial class ShellViewModel
                 // Panic, Lock, Cancel or exit arrived while the installer worked: nothing from before it may be run later.
                 if (result.Outcome == ClientUpdateDownloadOutcome.Verified) installer.Discard();
                 ClientUpdateStatus = ClientUpdateDownloadStopped; return;
+            }
+            if (result.Outcome == ClientUpdateDownloadOutcome.Verified && !SameUpdateRelease(release, _offeredRelease))
+            {
+                installer.Discard();
+                ClientUpdateStatus = "The current update offer changed while downloading. The downloaded installer was discarded; refresh installation before trying again. Nothing was run.";
+                return;
             }
             switch (result.Outcome)
             {
@@ -262,10 +279,17 @@ public sealed partial class ShellViewModel
                     Inform(text);
                     if (CanRefreshInstallations)
                     {
+                        bool selectionCleared = SelectedInstallation is not null;
                         // The rows the offer came from describe the player before the installer ran; re-read them now.
                         ClientUpdateStatus = text + " Refreshing installations to compare what is installed with Roblox's current release…";
                         RefreshInstallations.Execute(null); await RefreshInstallations.Execution;
+                        if (stop.IsCancellationRequested || generation != _clientUpdateGeneration || IsLocked || _shuttingDown) return;
                         ClientUpdateStatus = text + " Installations were refreshed; the rows above show what is installed now.";
+                        if (selectionCleared)
+                        {
+                            ClientUpdateStatus += " The launch queue is paused because its selected installation was cleared. Select and review the updated installation before resuming launches.";
+                            Inform(ClientUpdateStatus);
+                        }
                     }
                     else ClientUpdateStatus = text + " Refresh installation to see what is installed now.";
                     break;
@@ -303,14 +327,16 @@ public sealed partial class ShellViewModel
     private void CancelClientUpdateWork() { _clientUpdateGeneration++; _clientUpdateStop?.Cancel(); }
     /// <summary>
     /// Panic, Lock and exit: cancels the work in progress and discards a held installer, so nothing verified before the stop is
-    /// run after it. Locking (and exit) also idles the automatic check; Unlock arms it again. Panic leaves the check scheduled: it
-    /// is the same read as Refresh installation and starts, changes or closes nothing.
+    /// run after it. All stops suspend the automatic check; Unlock or explicitly saving the preference off/on arms it again.
     /// </summary>
     private void StopClientUpdateWork(bool locking)
     {
         CancelClientUpdateWork();
         DiscardHeldInstaller();
-        if (locking || _shuttingDown) StopClientUpdateCheckTimer();
+        _clientUpdateChecksPaused = true; _clientUpdateCheckGeneration++;
+        StopClientUpdateCheckTimer(); _automaticUpdateStop?.Cancel();
+        RobloxUpdateCheckStatus = _savedSettings.CheckRobloxUpdates
+            ? "Automatic checks stopped. Unlock, or save automatic checks off and on, to resume; Refresh installation remains available when unlocked." : "";
         RaiseClientUpdateAvailability();
     }
     private void DiscardHeldInstaller()

@@ -33,6 +33,15 @@ public sealed class RobloxClientLogCleanupTests : IDisposable
         => new(roots.Length == 0 ? [(Win32, ClientLogVariant.Win32), (Uwp, ClientLogVariant.Uwp)] : roots, Anchor, () => _watched.ToArray());
 
     [Fact]
+    public void CleanupRecordTextNeverContainsTheLocalLogPath()
+    {
+        var file = new ClientLogCleanupFile(Path.Combine(_root, "private-player-name.log"), 12, DateTimeOffset.UtcNow);
+        Assert.DoesNotContain(_root, file.ToString(), StringComparison.Ordinal);
+        Assert.DoesNotContain("private-player-name", file.ToString(), StringComparison.Ordinal);
+        Assert.Contains("[local path]", file.ToString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task SurveyCountsOnlyPlayerLogsOlderThanTheCutoffAndKeepsWatchedHeldAndNewerOnes()
     {
         string a = Synthetic(Win32, "a_Player_1_last.log", TimeSpan.FromDays(10), 1000);

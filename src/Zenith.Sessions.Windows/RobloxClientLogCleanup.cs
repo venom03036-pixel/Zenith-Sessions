@@ -3,7 +3,10 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Windows;
 
 /// <summary>One Roblox Player log a check found removable: its path (kept only so the delete touches exactly this file), size and last write.</summary>
-public sealed record ClientLogCleanupFile(string Path, long Length, DateTimeOffset ModifiedUtc);
+public sealed record ClientLogCleanupFile(string Path, long Length, DateTimeOffset ModifiedUtc)
+{
+    public override string ToString() => $"ClientLogCleanupFile {{ Path = [local path], Length = {Length}, ModifiedUtc = {ModifiedUtc:O} }}";
+}
 
 /// <summary>
 /// What one check found: the Player logs older than <see cref="OlderThan"/> that may be deleted, and how many were kept because

@@ -118,12 +118,15 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
         Assert.Contains("No Roblox client is running", shell.RobloxUpdateConfirmation, StringComparison.Ordinal);
 
         // The run goes through the installer; afterwards the installations are refreshed so the rows show what is installed now.
+        shell.SelectedInstallation = Assert.Single(shell.InstallationCandidates);
         inventory.Folder = CurrentFolder;
         shell.InstallRobloxUpdate.Execute(null); await shell.InstallRobloxUpdate.Execution;
         Assert.Equal(1, installer.Installs); Assert.Contains("finished", shell.ClientUpdateStatus, StringComparison.Ordinal);
         Assert.Equal(2, inventory.Calls); Assert.Equal("Current release", Assert.Single(shell.InstallationCandidates).ReleaseStatus);
         Assert.False(shell.CanInstallRobloxUpdate); Assert.False(shell.CanDownloadRobloxUpdate); Assert.Equal("", shell.RobloxUpdateConfirmation);
         Assert.Contains("Roblox's installer finished", shell.Notice, StringComparison.Ordinal);
+        Assert.Contains("launch queue is paused", shell.ClientUpdateStatus, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("select", shell.Notice, StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain(_root, shell.ClientUpdateStatus, StringComparison.OrdinalIgnoreCase);
     });
 
@@ -174,10 +177,12 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
         installer.DownloadGate.TrySetResult(); await shell.DownloadRobloxUpdate.Execution;
         Assert.False(shell.IsRobloxUpdateBusy); Assert.Contains("stopped", shell.ClientUpdateStatus, StringComparison.OrdinalIgnoreCase);
         Assert.False(shell.CanInstallRobloxUpdate); Assert.Contains("Panic stop", shell.Notice, StringComparison.Ordinal);
-        // Panic cleared the installation list; the automatic check (a read, not automation) stays scheduled and re-lists it.
-        Assert.Equal(RobloxClientUpdate.CheckInterval, shell.ClientUpdateCheckDue);
+        // Panic suspends the automatic owner as well; an explicit refresh remains available.
+        Assert.Null(shell.ClientUpdateCheckDue);
+        await shell.RunAutomaticUpdateCheckNowAsync(); Assert.Equal(1, inventory.Calls);
         installer.DownloadGate = null;
-        await shell.RunAutomaticUpdateCheckNowAsync(); Assert.Equal(2, inventory.Calls); Assert.True(shell.CanDownloadRobloxUpdate);
+        shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        Assert.Equal(2, inventory.Calls); Assert.True(shell.CanDownloadRobloxUpdate);
 
         shell.DownloadRobloxUpdate.Execute(null); await shell.DownloadRobloxUpdate.Execution;
         Assert.True(shell.CanInstallRobloxUpdate); Assert.True(installer.HasVerifiedInstaller);
@@ -186,6 +191,58 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
         shell.Unlock.Execute(null);
         Assert.False(shell.CanInstallRobloxUpdate); Assert.Equal("", shell.RobloxUpdateConfirmation);
         Assert.Equal(RobloxClientUpdate.CheckDelay, shell.ClientUpdateCheckDue);
+        Assert.Contains("3 seconds", shell.RobloxUpdateCheckStatus, StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task FailedRefreshRetainsTheHeldInstallerUntilAReleaseCanBeComparedAgain() => OnUi(async () =>
+    {
+        var releases = new Releases { Answer = Release() }; var inventory = new Inventory(_root, StaleFolder); var installer = new Installer();
+        await using var shell = await ReadyAsync(new Monitor(), releases, inventory, installer);
+        shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        shell.DownloadRobloxUpdate.Execute(null); await shell.DownloadRobloxUpdate.Execution;
+        Assert.True(shell.CanInstallRobloxUpdate);
+        releases.Answer = null; shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        Assert.True(installer.HasVerifiedInstaller); Assert.Equal(0, installer.Discards);
+        Assert.False(shell.CanInstallRobloxUpdate); // Retained bytes are not a current offer.
+        releases.Answer = Release(); shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        Assert.True(shell.CanInstallRobloxUpdate); Assert.Equal(1, installer.Downloads);
+    });
+
+    [Fact]
+    public Task ChangedReleaseDuringDownloadCannotPublishAnOldVerifiedInstaller() => OnUi(async () =>
+    {
+        var releases = new Releases { Answer = Release() }; var inventory = new Inventory(_root, StaleFolder);
+        var installer = new Installer { DownloadGate = new(TaskCreationOptions.RunContinuationsAsynchronously) };
+        await using var shell = await ReadyAsync(new Monitor(), releases, inventory, installer);
+        shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        shell.DownloadRobloxUpdate.Execute(null);
+        try
+        {
+            releases.Answer = Release(NewerFolder, "0.745.0.7451137");
+            shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        }
+        finally { installer.DownloadGate.TrySetResult(); }
+        await shell.DownloadRobloxUpdate.Execution;
+        Assert.False(installer.HasVerifiedInstaller); Assert.False(shell.CanInstallRobloxUpdate);
+        Assert.Equal(1, installer.Discards); Assert.Contains("changed", shell.ClientUpdateStatus, StringComparison.OrdinalIgnoreCase);
+    });
+
+    [Fact]
+    public Task PanicCancelsAnOutstandingAutomaticReleaseReadAndRejectsItsLateAnswer() => OnUi(async () =>
+    {
+        var releases = new Releases { Answer = Release() }; var inventory = new Inventory(_root, StaleFolder); var installer = new Installer();
+        await using var shell = await ReadyAsync(new Monitor(), releases, inventory, installer);
+        await SaveCheckOnAsync(shell); await shell.RunAutomaticUpdateCheckNowAsync();
+        shell.SelectedInstallation = Assert.Single(shell.InstallationCandidates);
+        releases.Gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        Task pending = shell.RunAutomaticUpdateCheckNowAsync();
+        try { shell.Panic.Execute(null); Assert.True(releases.Token.IsCancellationRequested); }
+        finally { releases.Gate.TrySetResult(); }
+        await pending;
+        Assert.Null(shell.ClientUpdateCheckDue); Assert.False(shell.CanDownloadRobloxUpdate);
+        Assert.DoesNotContain("Next in 30 minutes", shell.RobloxUpdateCheckStatus, StringComparison.Ordinal);
+        Assert.Contains("Panic stop", shell.Notice, StringComparison.Ordinal);
     });
 
     [Fact]
@@ -273,11 +330,13 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
     private sealed class Releases : IPublicRobloxClientReleaseDirectory
     {
         public int Calls; public PublicRobloxClientRelease? Answer;
-        public Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        public TaskCompletionSource? Gate; public CancellationToken Token;
+        public async Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested(); Calls++;
-            return Task.FromResult(Answer is null ? new PublicDirectoryResult<PublicRobloxClientRelease>(PublicDirectoryState.Failure, null, "Synthetic failure.")
-                : new(PublicDirectoryState.Success, Answer, "Synthetic public release."));
+            ct.ThrowIfCancellationRequested(); Calls++; Token = ct;
+            if (Gate is { } gate) await gate.Task; // Deliberately ignores cancellation to exercise the publication fence.
+            return Answer is null ? new PublicDirectoryResult<PublicRobloxClientRelease>(PublicDirectoryState.Failure, null, "Synthetic failure.")
+                : new(PublicDirectoryState.Success, Answer, "Synthetic public release.");
         }
     }
     private sealed class Inventory(string root, string folder) : IClientInstallationDiscovery
