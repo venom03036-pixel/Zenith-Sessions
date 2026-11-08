@@ -199,8 +199,24 @@ public sealed class JoinWorkspacePresentationTests
         Assert.Equal(count,(string?)find.Attribute("CommandParameter"));Assert.Equal(count,(string?)find.Attribute("Content"));
         Assert.Equal("Find a server with room for {0}",(string?)find.Attribute("ContentStringFormat"));
         Assert.Equal("Find a server with room",(string?)find.Attribute("AutomationProperties.Name"));
-        Assert.Equal("{Binding CanUseDestination}",(string?)find.Attribute("IsEnabled"));
+        // N-B2-6: a usable destination alone left "Find a server with room for 0" pressable with nobody to find room for.
+        Assert.Equal("{Binding DataContext.CanFindServerWithRoom, RelativeSource={RelativeSource AncestorType=Window}}",(string?)find.Attribute("IsEnabled"));
         Assert.Equal("{Binding ServerBrowser}",(string?)find.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext"));
+    }
+
+    [Fact]
+    public void LoadNext25AndTheGuideSayItsRowsJoinTheLoadedListWithoutPromisingTheyGoBelow()
+    {
+        // N-B2-6: under Best reported ping the new rows are sorted in among the loaded ones, and a server seen
+        // again leaves its old place for its newest row, so neither text may say the page lands below the list.
+        var source=Source();
+        var next=Page(source,"JoinGamePage").Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Content")=="Load next 25");
+        Assert.Equal("Add the next 25 servers to the loaded list. A server seen again shows only its newest observation, and the list keeps the newest 100.",
+            (string?)next.Attribute("ToolTip"));
+        var guide=Assert.Single(source.Descendants(Ui+"ScrollViewer").Where(element=>((string?)element.Attribute("Visibility"))?.Contains("IsGuide",StringComparison.Ordinal)==true));
+        string servers=Assert.Single(guide.Descendants(Ui+"TextBlock").Select(text=>(string?)text.Attribute("Text")??"").Where(text=>text.Contains("Load next 25",StringComparison.Ordinal)));
+        Assert.Contains("Load next 25 adds the next page to the loaded rows, a server seen again shows only its newest observation, and the list keeps the newest 100.",servers,StringComparison.Ordinal);
+        Assert.DoesNotContain("below the loaded",servers,StringComparison.Ordinal);
     }
 
     [Fact]
