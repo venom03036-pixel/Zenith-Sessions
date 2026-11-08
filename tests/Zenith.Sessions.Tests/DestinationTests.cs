@@ -632,6 +632,48 @@ public sealed class DestinationTests
         await Assert.ThrowsAsync<ArgumentException>(() => directory.BrowseAsync(new(123), default));
     }
 
+    // R-research-11: the production anonymous client, over a real loopback socket, follows no redirect, keeps no cookie
+    // jar and refuses a header past its 16 KiB limit. Only the origin moves; the path and query are the production ones.
+    [Fact]
+    public async Task TheProductionClientOverARealSocketFollowsNoRedirectKeepsNoCookieAndRefusesAnOversizedHeader()
+    {
+        const string request = "GET /v1/games/123/servers/Public?sortOrder=Asc&excludeFullGames=false&limit=10";
+        static string Answer(string? cursor, params string[] headers) =>
+            LoopbackHttpServer.Response("200 OK", Page(cursor is null ? OtherJob : Job, cursor), ["Content-Type: application/json", .. headers]);
+
+        // A real 302 is deferred, not followed: the page waiting at its Location is never collected.
+        await using (var server = new LoopbackHttpServer(LoopbackHttpServer.Response("302 Found", "", "Location: /followed"), Answer(null)))
+        {
+            using var http = RobloxServerDirectory.CreatePublicHttpClient();
+            var result = await new RobloxServerDirectory(http, server.BaseAddress).BrowseAsync(new(123, MaxPages: 2), default);
+            Assert.Equal(RobloxPublicServerStatus.Deferred, result.Status); Assert.Empty(result.Servers);
+            Assert.Equal(request + " HTTP/1.1", LoopbackHttpServer.RequestLine(Assert.Single(server.Requests)));
+        }
+
+        // A cookie set on the first page is neither stored nor sent with the next page.
+        await using (var server = new LoopbackHttpServer(Answer("next", "Set-Cookie: tracker=synthetic-tracker; Path=/"), Answer(null)))
+        {
+            using var http = RobloxServerDirectory.CreatePublicHttpClient();
+            var result = await new RobloxServerDirectory(http, server.BaseAddress).BrowseAsync(new(123, MaxPages: 2), default);
+            Assert.Equal(RobloxPublicServerStatus.Complete, result.Status); Assert.Equal(2, result.Servers.Count);
+            Assert.Equal(2, server.Requests.Count);
+            Assert.Equal(request + "&cursor=next HTTP/1.1", LoopbackHttpServer.RequestLine(server.Requests[1]));
+            Assert.All(server.Requests, sent => Assert.Empty(LoopbackHttpServer.HeaderValues(sent, "Cookie")));
+        }
+
+        // 20 KiB of header is under the 64 KiB default but past this client's 16 KiB limit, so the request fails.
+        await using (var server = new LoopbackHttpServer(Answer(null, "X-Padding: " + new string('a', 20 * 1024))))
+        {
+            using var http = RobloxServerDirectory.CreatePublicHttpClient();
+            var result = await new RobloxServerDirectory(http, server.BaseAddress).BrowseAsync(new(123), default);
+            Assert.Equal(RobloxPublicServerStatus.Unavailable, result.Status); Assert.Empty(result.Servers);
+            Assert.Single(server.Requests);
+        }
+
+        using var anyClient = RobloxServerDirectory.CreatePublicHttpClient();
+        Assert.Throws<ArgumentException>(() => new RobloxServerDirectory(anyClient, new Uri("http://games.roblox.com/")));
+    }
+
     private static string Page(string job, string? cursor = null) => JsonSerializer.Serialize(new
     {
         nextPageCursor = cursor,

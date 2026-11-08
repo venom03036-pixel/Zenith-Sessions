@@ -29,9 +29,16 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
     private readonly Dictionary<RobloxShareLinkTokenScope, string> _tokens = [];
     private long _tokenEpoch; // Bumped by every Forget, so a resolve still in flight cannot keep a token afterwards.
     private readonly TimeProvider _time;
+    private readonly Uri _endpoint = Endpoint, _v2Endpoint = V2Endpoint;
 
-    public RobloxShareLinkClient(TimeSpan? timeout = null) : this(new HttpClientHandler { AllowAutoRedirect = false, UseCookies = false }, timeout) { }
-    // Injected transports are for controlled tests; production uses the constructor above.
+    public RobloxShareLinkClient(TimeSpan? timeout = null) : this(CreateHandler(), timeout) { }
+    // Test-only: the production handler over a real loopback socket. Only the origin moves; the paths stay the production
+    // ones. The origin is checked before the handler exists, so a refused origin leaves nothing to dispose.
+    internal RobloxShareLinkClient(Uri loopbackOrigin, TimeSpan? timeout = null) : this(LoopbackTestOrigin.Require(loopbackOrigin), timeout) { }
+    private RobloxShareLinkClient(string loopbackOrigin, TimeSpan? timeout) : this(CreateHandler(), timeout)
+    { _endpoint = new(loopbackOrigin + Endpoint.PathAndQuery); _v2Endpoint = new(loopbackOrigin + V2Endpoint.PathAndQuery); }
+    private static HttpClientHandler CreateHandler() => new() { AllowAutoRedirect = false, UseCookies = false };
+    // Injected transports are for controlled tests; production uses the timeout-only constructor and its CreateHandler.
     public RobloxShareLinkClient(HttpMessageHandler handler, TimeSpan? timeout = null, TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(handler);
@@ -70,7 +77,7 @@ public sealed class RobloxShareLinkClient : IRobloxShareLinkClient, IDisposable
             _ => null
         };
         if (typeName is null && link.Type != RobloxShareLinkType.DeepLinkV2) return new(RobloxShareLinkOutcome.Invalid);
-        Uri endpoint = typeName is null ? V2Endpoint : Endpoint;
+        Uri endpoint = typeName is null ? _v2Endpoint : _endpoint;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct); stop.CancelAfter(_timeout);
         string? csrf = KeptToken(scope, out long epoch); bool accepted = false;
         // Owned here until it moves onto the returned resolution; any other exit disposes it.

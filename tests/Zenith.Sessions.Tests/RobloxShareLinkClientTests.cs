@@ -420,6 +420,53 @@ public sealed class RobloxShareLinkClientTests
         Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Null(resolution.TakeRotatedCredential());
     }
 
+    // R-research-11: the production handler, over a real loopback socket, follows no redirect, keeps no cookie jar and
+    // refuses an oversized header. Only the origin moves to the loopback server; the paths are the production ones.
+    [Fact]
+    public async Task TheProductionHandlerOverARealSocketFollowsNoRedirectKeepsNoCookieAndRefusesAnOversizedHeader()
+    {
+        string answer = LoopbackHttpServer.Response("200 OK", Experience("Valid"), "Content-Type: application/json");
+
+        // A real 302 is an answer, not a hop: the success waiting at its Location is never collected.
+        await using (var server = new LoopbackHttpServer(LoopbackHttpServer.Response("302 Found", "", "Location: /followed"), answer))
+        {
+            using var client = new RobloxShareLinkClient(server.BaseAddress);
+            using (var redirected = await Resolve(client, Account)) Assert.Equal(RobloxShareLinkOutcome.Unavailable, redirected.Outcome);
+            Assert.Equal("POST /sharelinks/v1/resolve-link HTTP/1.1", LoopbackHttpServer.RequestLine(Assert.Single(server.Requests)));
+        }
+
+        // A cookie set during the CSRF handshake is neither stored nor sent with the retry; only the session cookie goes.
+        await using (var server = new LoopbackHttpServer(
+            LoopbackHttpServer.Response("403 Forbidden", "{}", "Content-Type: application/json", "x-csrf-token: synthetic-csrf", "Set-Cookie: RBXEventTrackerV2=synthetic-tracker; Path=/"),
+            answer))
+        {
+            using var client = new RobloxShareLinkClient(server.BaseAddress);
+            using (var resolution = await Resolve(client, Account))
+            { Assert.Equal(RobloxShareLinkOutcome.Experience, resolution.Outcome); Assert.Null(resolution.TakeRotatedCredential()); }
+            Assert.Equal(2, server.Requests.Count);
+            Assert.Equal("synthetic-csrf", Assert.Single(LoopbackHttpServer.HeaderValues(server.Requests[1], "X-CSRF-TOKEN")));
+            Assert.All(server.Requests, sent =>
+            {
+                Assert.Equal(".ROBLOSECURITY=" + Secret, Assert.Single(LoopbackHttpServer.HeaderValues(sent, "Cookie")));
+                Assert.DoesNotContain("synthetic-tracker", sent, StringComparison.Ordinal);
+            });
+        }
+
+        // A header past the handler's limit (64 KiB by default) fails the request instead of being read.
+        await using (var server = new LoopbackHttpServer(LoopbackHttpServer.Response("200 OK", "{\"linkType\":\"Experience\",\"status\":\"Valid\",\"targetId\":1818}",
+            "Content-Type: application/json", "X-Padding: " + new string('a', 70 * 1024))))
+        {
+            using var client = new RobloxShareLinkClient(server.BaseAddress);
+            using (var oversized = await Resolve(client, Account, RobloxShareLinkType.DeepLinkV2)) Assert.Equal(RobloxShareLinkOutcome.Unavailable, oversized.Outcome);
+            Assert.Equal("POST /deeplinks/v2/resolve HTTP/1.1", LoopbackHttpServer.RequestLine(Assert.Single(server.Requests)));
+        }
+
+        // The seam never sends a session cookie over plain http to another host, and the production origin is unchanged.
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkClient(new Uri("http://apis.roblox.com/")));
+        Assert.Throws<ArgumentException>(() => new RobloxShareLinkClient(new Uri("https://127.0.0.1/")));
+        Assert.Equal(Endpoint, RobloxShareLinkClient.Endpoint.AbsoluteUri); Assert.Equal(V2Endpoint, RobloxShareLinkClient.V2Endpoint.AbsoluteUri);
+    }
+
     private static HttpResponseMessage Rotating(HttpResponseMessage response, string cookie)
     { response.Headers.Add("Set-Cookie", ".ROBLOSECURITY=" + cookie + "; Domain=.roblox.com; Path=/; Secure; HttpOnly; Max-Age=3600"); return response; }
 
