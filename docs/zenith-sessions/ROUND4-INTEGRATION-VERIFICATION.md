@@ -31,3 +31,7 @@ O-C7-3's actual pre-fix `CheckAsync` helper from `42bf80d^` was temporarily rest
 ## Settings update controls
 
 The production Settings page exposed none of the merged updater commands. `update-controls-before.trx` fails the missing-panel contract. A collapsed section now binds the six existing owner commands, feed/publisher configuration, daily opt-in and accessible status using the existing theme styles. Existing settings/recovery actions remain intact. `update-controls-after.trx` passes all 20 presentation, update-session and localization cases with no skips. This is offline wiring evidence; it does not establish production release signing, feed trust or attended installation.
+
+## Update startup ordering
+
+The merged updater could start a persisted daily check before the initial public-network guard locked the shell. `update-startup-before.trx` reproduces an update attempt already persisted when the synthetic network monitor starts. Initialization now applies the saved network guard before starting update scheduling; the updater owner checks current shell admission before a request. `update-startup-after.trx` passes 44 affected network, updater and launch-mode qualification checks with no skips. The test injects a synthetic backend and monitor into the real shell lifecycle and confirms no attempt or backend call occurs while locked, including an explicit Check now. No network/helper/installer runs in this regression.

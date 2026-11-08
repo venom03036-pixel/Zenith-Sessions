@@ -349,7 +349,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null,IRobloxAccountDataClient? accountDataClient=null,IUploadLimitControl? uploadLimit=null,IRobloxSignedInServerClient? signedServerClient=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null,IRobloxAccountDataClient? accountDataClient=null,IUploadLimitControl? uploadLimit=null,IRobloxSignedInServerClient? signedServerClient=null,IReleaseUpdateBackend? releaseUpdateBackend=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
@@ -384,7 +384,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;
-        ReleaseUpdates=new(root,dispatcher,()=>!_shuttingDown&&!IsLocked&&QueueReady&&_latestQueue.Operations.All(operation=>LaunchDescriptions.Terminal(operation.State)&&!LaunchDescriptions.HasUnresolvedReservation(operation)),canOperate:()=>_ready&&!IsSample&&!_shuttingDown&&!IsLocked);
+        ReleaseUpdates=new(root,dispatcher,()=>!_shuttingDown&&!IsLocked&&QueueReady&&_latestQueue.Operations.All(operation=>LaunchDescriptions.Terminal(operation.State)&&!LaunchDescriptions.HasUnresolvedReservation(operation)),backend:releaseUpdateBackend,canOperate:()=>_ready&&!IsSample&&!_shuttingDown&&!IsLocked);
         InitializeDirectoryFeatures(publicDirectory,serverDirectory,gameDirectory);
         InitializeDestinationCapacity();
         _favoriteStore=favoriteStore??new FavoriteDestinationsStore(root);
@@ -535,10 +535,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
-            await ReleaseUpdates.InitializeAsync(_lifetime.Token);
-            // Last, once everything else has opened: a saved guard on a Public network locks the dashboard at once, and nothing
-            // opened after that point would otherwise be running outside the lock.
+            // Apply the saved lock before optional update scheduling can admit its first check.
+            // The updater's owner consults current lock/sample/shutdown permission at every check boundary.
             ApplySavedPublicNetworkGuard();
+            await ReleaseUpdates.InitializeAsync(_lifetime.Token);
             ApplySavedDiscordAlerts(wasOn:false);
             ApplySavedDiscordPresence(wasOn:false);
         }
