@@ -17,7 +17,7 @@ public sealed partial class ShellViewModel
     private Task _clientPriorityWork = Task.CompletedTask;
     private long _clientPriorityGeneration;
     private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes, string Refusal);
-    private string _clientPriorityStatus = "Choose clients to change their Windows CPU scheduling priority.";
+    private string _clientPriorityStatus = "Choose clients to change their Windows CPU priority, efficiency mode or cores.";
 
     public ObservableCollection<ClientProcessPriorityResult> ClientPriorityResults { get; } = [];
     public bool CanChangeClientPriority => _priorityPermitted && _ready && !IsLocked && !_shuttingDown
@@ -27,6 +27,8 @@ public sealed partial class ShellViewModel
     public string ClientPriorityStatus { get => _clientPriorityStatus; private set => Set(ref _clientPriorityStatus, value); }
     public AsyncCommand SetClientsNormalPriority { get; private set; } = null!;
     public AsyncCommand SetClientsBelowNormalPriority { get; private set; } = null!;
+    public AsyncCommand SetClientsEfficiencyMode { get; private set; } = null!;
+    public AsyncCommand SpreadClientsOverCores { get; private set; } = null!;
     public AsyncCommand RestoreClientsPriority { get; private set; } = null!;
     public Command CancelClientPriority { get; private set; } = null!;
 
@@ -36,6 +38,8 @@ public sealed partial class ShellViewModel
         _clientPriority = control ?? new WindowsClientProcessPriorityControl();
         SetClientsNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Normal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         SetClientsBelowNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.BelowNormal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
+        SetClientsEfficiencyMode = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Efficiency, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
+        SpreadClientsOverCores = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.SpreadCores, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         RestoreClientsPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.RestoreOriginal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         CancelClientPriority = new(_ => StopClientPriorityOperations());
         PropertyChanged += ClientPriorityOwnerChanged;

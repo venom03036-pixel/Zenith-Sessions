@@ -94,7 +94,7 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.SignIn, "WebView2", "runtime", "browser", "login", "session", "private", "saved signin"),
         E("settings-folder", "Open settings folder", "Open the companion's writable user settings folder. User data stays outside the application folder.",
             SettingsSearchTarget.Save, "folder", "directory", "data location", "user data", "storage"),
-        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority is set in Sessions, under Client CPU priority.",
+        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];
 

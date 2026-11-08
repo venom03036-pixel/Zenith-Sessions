@@ -1,14 +1,17 @@
+using System.Numerics;
 using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
-internal sealed record ClientPriorityRead(ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false);
-internal sealed record ClientPriorityWrite(bool Accepted, ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false);
+internal sealed record ClientPriorityRead(ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false,
+    ClientProcessSettings? Settings = null, ulong? SystemAffinity = null);
+internal sealed record ClientPriorityWrite(bool Accepted, ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false,
+    ClientProcessSettings? Settings = null);
 internal sealed record ClientPriorityOpen(ClientProcessPriorityStatus Status, IClientPriorityHandle? Handle = null, bool Retired = false);
 internal interface IClientPriorityHandle : IDisposable
 {
     ClientPriorityRead Read();
-    ClientPriorityWrite Change(ClientProcessPriorityClass expected, ClientProcessPriorityClass desired, Func<bool> stopped);
+    ClientPriorityWrite Change(ClientProcessSettings expected, ClientProcessSettings desired, Func<bool> stopped);
 }
 internal interface IClientPriorityAdapter
 {
@@ -82,20 +85,22 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         var duplicatePids = ownedSelection ? null
             : pinned.GroupBy(session => session.ProcessId).Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet();
         var results = new List<ClientProcessPriorityResult>(pinned.Length);
-        foreach (var session in pinned)
+        for (int index = 0; index < pinned.Length; index++)
         {
+            var session = pinned[index];
             var key = Key(session);
             if (Stopped(generation, ct, cleanup))
                 results.Add(Result(session, action, ClientProcessPriorityStatus.Cancelled));
             else if (!key.IsValid || session.Problem is not null || duplicatePids?.Contains(session.ProcessId) == true)
                 results.Add(Result(session, action, ClientProcessPriorityStatus.InvalidClient));
             else
-                results.Add(ChangeOne(session, action, () => Stopped(generation, ct, cleanup)));
+                results.Add(ChangeOne(session, action, () => Stopped(generation, ct, cleanup), index, pinned.Length));
         }
         return new(results, Stopped(generation, ct, cleanup), PendingRestoreCount);
     }
 
-    private ClientProcessPriorityResult ChangeOne(SessionObservation session, ClientProcessPriorityAction action, Func<bool> stopped)
+    private ClientProcessPriorityResult ChangeOne(SessionObservation session, ClientProcessPriorityAction action, Func<bool> stopped,
+        int index, int count)
     {
         var key = Key(session);
         OwnedPriority? owned;
@@ -120,62 +125,105 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             Forget(key);
             return Result(session, action, ClientProcessPriorityStatus.InvalidClient);
         }
-        if (before.Status != ClientProcessPriorityStatus.Unchanged || before.Current is null)
+        if (before.Status != ClientProcessPriorityStatus.Unchanged || before.Settings is not { } current)
             return Result(session, action, Failure(before.Status), current: before.Current);
-        var current = before.Current.Value;
-        if (current is not (ClientProcessPriorityClass.Normal or ClientProcessPriorityClass.BelowNormal))
-            return Result(session, action, ClientProcessPriorityStatus.UnsupportedPriority, current, current: current);
+        var currentClass = current.Class;
+        if (currentClass is not (ClientProcessPriorityClass.Normal or ClientProcessPriorityClass.BelowNormal))
+            return Result(session, action, ClientProcessPriorityStatus.UnsupportedPriority, currentClass, current: currentClass);
         if (action == ClientProcessPriorityAction.RestoreOriginal && owned is not null && current == owned.Original)
         {
             Forget(key);
-            return Result(session, action, ClientProcessPriorityStatus.Unchanged, current, owned.Original, current);
+            return Result(session, action, ClientProcessPriorityStatus.Unchanged, currentClass, owned.Original.Class, currentClass);
         }
+        // Every value this owner wrote must still be what it last applied; any other observed change is preserved.
         if (owned is not null && current != owned.LastApplied)
-            return Result(session, action, ClientProcessPriorityStatus.Conflict, current, current: current);
-        var desired = action switch
-        {
-            ClientProcessPriorityAction.Normal => ClientProcessPriorityClass.Normal,
-            ClientProcessPriorityAction.BelowNormal => ClientProcessPriorityClass.BelowNormal,
-            _ => owned!.Original
-        };
-        if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled, current, desired, current);
+            return Result(session, action, ClientProcessPriorityStatus.Conflict, currentClass, current: currentClass);
+        if (Desired(action, current, owned, before.SystemAffinity, index, count, out var refusal) is not { } desired)
+            return Result(session, action, refusal, currentClass, current: currentClass);
+        if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled, currentClass, desired.Class, currentClass);
         if (current == desired)
         {
             if (owned is not null && desired == owned.Original) Forget(key);
-            return Result(session, action, ClientProcessPriorityStatus.Unchanged, current, desired, current);
+            return Result(session, action, ClientProcessPriorityStatus.Unchanged, currentClass, desired.Class, currentClass);
         }
         lock (_gate)
         {
             if (owned is null && _owned.Count == ClientProcessPriorityBatchResult.MaximumProcesses)
-                return Result(session, action, ClientProcessPriorityStatus.CapacityReached, current, desired, current);
+                return Result(session, action, ClientProcessPriorityStatus.CapacityReached, currentClass, desired.Class, currentClass);
             // Reserve ownership before native dispatch, including a set that succeeds then throws.
             _owned[key] = new(session, owned?.Original ?? current, desired);
         }
         ClientPriorityWrite write;
         try { write = handle.Change(current, desired, stopped); }
-        catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, current, desired); }
+        catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, currentClass, desired.Class); }
         if (!write.Accepted)
         {
             bool originalAlreadyCurrent = action == ClientProcessPriorityAction.RestoreOriginal && owned is not null
-                && write.Status == ClientProcessPriorityStatus.Conflict && write.Current == owned.Original;
+                && write.Status == ClientProcessPriorityStatus.Conflict && write.Settings == owned.Original;
             lock (_gate)
             {
                 if (owned is null || write.Retired || originalAlreadyCurrent) _owned.Remove(key);
                 else _owned[key] = owned;
             }
             return Result(session, action, originalAlreadyCurrent ? ClientProcessPriorityStatus.Unchanged : Failure(write.Status),
-                current, desired, write.Current);
+                currentClass, desired.Class, write.Current);
         }
-        // Cancellation cannot erase an accepted change. Always finish its actual readback.
+        // Cancellation, or a refusal after an earlier value was accepted, cannot erase an accepted change.
+        // Always finish its actual readback; only an exact match of every value confirms it.
         ClientPriorityRead after;
         try { after = handle.Read(); }
-        catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, current, desired); }
+        catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, currentClass, desired.Class); }
         if (after.Retired) Forget(key);
-        if (after.Status != ClientProcessPriorityStatus.Unchanged || after.Current != desired)
-            return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, current, desired, after.Current);
+        if (after.Status != ClientProcessPriorityStatus.Unchanged || after.Settings != desired)
+            return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, currentClass, desired.Class, after.Current);
         if (desired == (owned?.Original ?? current)) Forget(key);
         return Result(session, action, action == ClientProcessPriorityAction.RestoreOriginal
-            ? ClientProcessPriorityStatus.Restored : ClientProcessPriorityStatus.Applied, current, desired, after.Current);
+            ? ClientProcessPriorityStatus.Restored : ClientProcessPriorityStatus.Applied, currentClass, desired.Class, after.Current);
+    }
+
+    /// <summary>The values an action asks for: the current ones with only that action's values replaced.</summary>
+    private static ClientProcessSettings? Desired(ClientProcessPriorityAction action, ClientProcessSettings current, OwnedPriority? owned,
+        ulong? systemAffinity, int index, int count, out ClientProcessPriorityStatus refusal)
+    {
+        refusal = ClientProcessPriorityStatus.SettingUnavailable;
+        switch (action)
+        {
+            case ClientProcessPriorityAction.Normal: return current with { Priority = ClientProcessSettings.NormalClass };
+            case ClientProcessPriorityAction.BelowNormal: return current with { Priority = ClientProcessSettings.BelowNormalClass };
+            case ClientProcessPriorityAction.Efficiency:
+                // An original Windows did not report could never be restored, so it is never changed.
+                if (current.Throttling is not { } throttling || current.MemoryPriority is null) return null;
+                const uint ecoQos = ClientProcessSettings.ExecutionSpeedThrottling;
+                return current with
+                {
+                    Priority = ClientProcessSettings.BelowNormalClass,
+                    Throttling = new(throttling.Control | ecoQos, throttling.State | ecoQos),
+                    MemoryPriority = ClientProcessSettings.VeryLowMemoryPriority
+                };
+            case ClientProcessPriorityAction.SpreadCores:
+                if (current.Affinity is null || systemAffinity is not { } system) return null;
+                refusal = ClientProcessPriorityStatus.NotEnoughCores;
+                return CoreShare(index, count, system) is { } share ? current with { Affinity = share } : null;
+            default: return owned!.Original;
+        }
+    }
+
+    /// <summary>
+    /// Client <paramref name="index"/> of <paramref name="count"/> gets every count-th core of <paramref name="system"/>,
+    /// so the shares of one operation never overlap. Null unless there are at least two clients and two cores for each.
+    /// </summary>
+    internal static ulong? CoreShare(int index, int count, ulong system)
+    {
+        if (count < 2 || index < 0 || index >= count || BitOperations.PopCount(system) < 2 * count) return null;
+        ulong share = 0;
+        int position = 0;
+        for (int bit = 0; bit < 64; bit++)
+        {
+            ulong core = 1UL << bit;
+            if ((system & core) == 0) continue;
+            if (position++ % count == index) share |= core;
+        }
+        return share;
     }
 
     private ClientProcessPriorityResult Result(SessionObservation session, ClientProcessPriorityAction action,
@@ -217,5 +265,6 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         var result = await restore.ConfigureAwait(false);
         if (result.PendingRestoreCount > 0) throw new ClientProcessPriorityCleanupException(result.PendingRestoreCount);
     }
-    private sealed record OwnedPriority(SessionObservation Session, ClientProcessPriorityClass Original, ClientProcessPriorityClass LastApplied);
+    /// <summary>The client's own values before this owner's first change, and every value this owner last applied.</summary>
+    private sealed record OwnedPriority(SessionObservation Session, ClientProcessSettings Original, ClientProcessSettings LastApplied);
 }

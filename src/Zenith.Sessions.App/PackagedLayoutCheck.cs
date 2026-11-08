@@ -113,6 +113,9 @@ internal static class PackagedLayoutCheck
                 || priorityButton.Command != vm.SetClientsBelowNormalPriority || priorityButton.IsEnabled
                 || vm.IsChangingClientPriority || vm.PendingPriorityRestoreCount != 0)
                 throw new InvalidOperationException("The packaged priority controls lost their command binding or sample-mode boundary.");
+            if (window.FindName("SetClientEfficiencyMode") is not System.Windows.Controls.Button efficiencyButton
+                || efficiencyButton.Command != vm.SetClientsEfficiencyMode || efficiencyButton.IsEnabled)
+                throw new InvalidOperationException("The packaged efficiency mode control lost its command binding or sample-mode boundary.");
             if (priorityTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged priority controls could not be laid out.");
             if (window.FindName("TrimClientsNowButton") is not System.Windows.Controls.Button trimButton

@@ -1,11 +1,16 @@
 namespace Zenith.Sessions.Core;
 
-public enum ClientProcessPriorityAction { Normal, BelowNormal, RestoreOriginal }
+/// <summary>
+/// Normal and BelowNormal change only the priority class. Efficiency also turns on EcoQoS power throttling and very low
+/// memory priority. SpreadCores gives each selected client its own share of the CPU cores. RestoreOriginal returns every
+/// value this owner changed to the client's own original.
+/// </summary>
+public enum ClientProcessPriorityAction { Normal, BelowNormal, RestoreOriginal, Efficiency, SpreadCores }
 public enum ClientProcessPriorityClass { Normal, BelowNormal, Unsupported }
 public enum ClientProcessPriorityStatus
 {
     Applied, Restored, Unchanged, InvalidClient, AccessDenied, UnsupportedPriority,
-    Conflict, CapacityReached, Cancelled, NotConfirmed, Busy, Closed
+    Conflict, CapacityReached, Cancelled, NotConfirmed, Busy, Closed, SettingUnavailable, NotEnoughCores
 }
 
 public sealed record ClientProcessPriorityResult(SessionObservation Session, ClientProcessPriorityAction Action,
@@ -14,15 +19,21 @@ public sealed record ClientProcessPriorityResult(SessionObservation Session, Cli
 {
     public string Explanation => Status switch
     {
+        ClientProcessPriorityStatus.Applied when Action == ClientProcessPriorityAction.Efficiency
+            => "Windows confirmed efficiency mode: Below normal priority, EcoQoS power throttling and very low memory priority.",
+        ClientProcessPriorityStatus.Applied when Action == ClientProcessPriorityAction.SpreadCores
+            => "Windows confirmed this client's own share of the CPU cores.",
         ClientProcessPriorityStatus.Applied => "The requested process priority was confirmed by Windows.",
-        ClientProcessPriorityStatus.Restored => "The original process priority was confirmed by Windows.",
+        ClientProcessPriorityStatus.Restored => "Windows confirmed the client's original priority, efficiency and core settings.",
         ClientProcessPriorityStatus.Unchanged when Action == ClientProcessPriorityAction.RestoreOriginal && Requested is null
-            => "No original priority was tracked for this process.",
-        ClientProcessPriorityStatus.Unchanged => "No priority change was needed.",
+            => "No original setting was tracked for this process.",
+        ClientProcessPriorityStatus.Unchanged => "No change was needed.",
         ClientProcessPriorityStatus.InvalidClient => "The exact selected client process is no longer available or could not be validated.",
-        ClientProcessPriorityStatus.AccessDenied => "Windows denied the required process query or priority change.",
+        ClientProcessPriorityStatus.AccessDenied => "Windows denied the required process query or setting change.",
         ClientProcessPriorityStatus.UnsupportedPriority => "The current priority is outside Normal and Below normal. It was preserved.",
-        ClientProcessPriorityStatus.Conflict => "The observed priority changed. The current setting was preserved.",
+        ClientProcessPriorityStatus.Conflict => "Another change to this client's priority, efficiency or core setting was observed. The current settings were preserved.",
+        ClientProcessPriorityStatus.SettingUnavailable => "Windows did not report this client's current efficiency or core setting, so it was not changed.",
+        ClientProcessPriorityStatus.NotEnoughCores => "Spreading needs at least two selected clients and two CPU cores for each. Nothing was changed.",
         ClientProcessPriorityStatus.CapacityReached => "The 128-process restore limit is full. Restore existing settings before changing another process.",
         ClientProcessPriorityStatus.Cancelled => "This client was not changed because the operation was stopped.",
         ClientProcessPriorityStatus.Busy => "Another priority operation still owns its actual work. No additional operation was queued.",

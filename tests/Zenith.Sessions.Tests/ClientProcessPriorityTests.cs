@@ -432,6 +432,163 @@ public sealed class ClientProcessPriorityTests
     }
 
     [Fact]
+    public async Task EfficiencyModeIsConfirmedAndRestoreReturnsTheClientsOwnOriginalValues()
+    {
+        await using var fixture = new Fixture(1);
+        var client = fixture.Native.Clients[1];
+        // The client's own values are deliberately not Windows' defaults: restore must return these, not "normal".
+        client.Throttling = new(0x4, 0x0);
+        client.MemoryPriority = 3;
+        var applied = await fixture.Change(ClientProcessPriorityAction.Efficiency, 1);
+        var row = Assert.Single(applied.Results);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, row.Status);
+        Assert.Equal(ClientProcessPriorityClass.Normal, row.Previous);
+        Assert.Equal(ClientProcessPriorityClass.BelowNormal, row.Requested);
+        Assert.Equal(ClientProcessPriorityClass.BelowNormal, row.Current);
+        Assert.True(row.RestorePending);
+        Assert.Contains("efficiency mode", row.Explanation, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0x4000u, client.Priority);
+        Assert.Equal(new ClientPowerThrottling(0x5, 0x1), client.Throttling); // EcoQoS on; its other control bit kept.
+        Assert.Equal(1u, client.MemoryPriority);
+        Assert.Equal(0xFFul, client.Affinity); // Efficiency leaves the cores alone.
+        Assert.Equal(3, fixture.Native.Reads[1]); // Initial query, final comparison, accepted-set readback.
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, Assert.Single(restored.Results).Status);
+        Assert.Equal(0, restored.PendingRestoreCount);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0x4, 0x0), 3, 0xFF), client.State);
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+    }
+
+    [Fact]
+    public async Task NormalAfterEfficiencyChangesOnlyThePriorityAndRestoreStillReturnsEveryOriginal()
+    {
+        await using var fixture = new Fixture(1);
+        var client = fixture.Native.Clients[1];
+        await fixture.Change(ClientProcessPriorityAction.Efficiency, 1);
+        var normal = await fixture.Change(ClientProcessPriorityAction.Normal, 1);
+        var row = Assert.Single(normal.Results);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, row.Status);
+        Assert.True(row.RestorePending);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0x1, 0x1), 1, 0xFF), client.State);
+
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, Assert.Single(restored.Results).Status);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 5, 0xFF), client.State);
+        Assert.Equal(0, restored.PendingRestoreCount);
+    }
+
+    [Theory]
+    [InlineData("throttling")]
+    [InlineData("memory")]
+    public async Task EfficiencyIsRefusedWithoutAnyWriteWhenWindowsDoesNotReportAnOriginalValue(string unknown)
+    {
+        await using var fixture = new Fixture(1);
+        if (unknown == "throttling") fixture.Native.Clients[1].Throttling = null;
+        else fixture.Native.Clients[1].MemoryPriority = null;
+        var result = await fixture.Change(ClientProcessPriorityAction.Efficiency, 1);
+        Assert.Equal(ClientProcessPriorityStatus.SettingUnavailable, Assert.Single(result.Results).Status);
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, result.PendingRestoreCount);
+        // Normal and Below normal need only the priority class, so they still work for this client.
+        var below = await fixture.Change(ClientProcessPriorityAction.BelowNormal, 1);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, Assert.Single(below.Results).Status);
+        Assert.Empty(fixture.Native.OtherSets);
+    }
+
+    [Fact]
+    public async Task AnEfficiencyChangeRefusedPartwayKeepsOwnershipOfWhatWindowsAccepted()
+    {
+        await using var fixture = new Fixture(1);
+        var client = fixture.Native.Clients[1];
+        fixture.Native.DenyThrottling = true;
+        var result = await fixture.Change(ClientProcessPriorityAction.Efficiency, 1);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientProcessPriorityStatus.NotConfirmed, row.Status);
+        Assert.True(row.RestorePending);
+        Assert.Equal(1, result.PendingRestoreCount);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 1, 0xFF), client.State); // Memory accepted; nothing after the refusal.
+        Assert.Equal(3, fixture.Native.Reads[1]); // The accepted part was still read back.
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+        // Owned in-memory fixture cleanup, not another controller mutation: back to the original so Exit retires ownership.
+        client.MemoryPriority = 5;
+        fixture.Native.LastSet.Remove(1);
+    }
+
+    [Fact]
+    public async Task SpreadGivesEachSelectedClientItsOwnCoresAndRestoreReturnsEachOriginalAffinity()
+    {
+        await using var fixture = new Fixture(1, 2);
+        fixture.Native.Clients[2].Affinity = 0x0F; // Already restricted before Zenith changed it.
+        var spread = await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2);
+        Assert.All(spread.Results, row => Assert.Equal(ClientProcessPriorityStatus.Applied, row.Status));
+        Assert.Contains("cores", spread.Results[0].Explanation, StringComparison.Ordinal);
+        Assert.Equal(0x55ul, fixture.Native.Clients[1].Affinity);
+        Assert.Equal(0xAAul, fixture.Native.Clients[2].Affinity);
+        Assert.Empty(fixture.Native.Sets); // Spreading leaves the priority class alone.
+        Assert.Equal(2, spread.PendingRestoreCount);
+
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.All(restored.Results, row => Assert.Equal(ClientProcessPriorityStatus.Restored, row.Status));
+        Assert.Equal(0xFFul, fixture.Native.Clients[1].Affinity);
+        Assert.Equal(0x0Ful, fixture.Native.Clients[2].Affinity);
+        Assert.Equal(0, restored.PendingRestoreCount);
+    }
+
+    [Theory]
+    [InlineData(1, 0xFFul)] // One client has nothing to spread from.
+    [InlineData(3, 0x1Ful)] // Five cores cannot give three clients two each.
+    public async Task SpreadIsRefusedWithoutAnyWriteWhenEachClientCannotHaveTwoCores(int clients, ulong system)
+    {
+        int[] pids = Enumerable.Range(1, clients).ToArray();
+        await using var fixture = new Fixture(pids);
+        foreach (var client in fixture.Native.Clients.Values) client.Affinity = client.SystemAffinity = system;
+        var result = await fixture.Change(ClientProcessPriorityAction.SpreadCores, pids);
+        Assert.All(result.Results, row => Assert.Equal(ClientProcessPriorityStatus.NotEnoughCores, row.Status));
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, result.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task SpreadIsRefusedWithoutAnyWriteWhenWindowsDoesNotReportTheCores()
+    {
+        await using var fixture = new Fixture(1, 2);
+        fixture.Native.Clients[1].Affinity = fixture.Native.Clients[1].SystemAffinity = null; // Threads in several processor groups.
+        var result = await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2);
+        Assert.Equal(ClientProcessPriorityStatus.SettingUnavailable, result.Results[0].Status);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, result.Results[1].Status);
+        Assert.Equal(new[] { (2, "affinity aa") }, fixture.Native.OtherSets);
+    }
+
+    [Theory]
+    [InlineData("memory")]
+    [InlineData("throttling")]
+    [InlineData("affinity")]
+    public async Task RestorePreservesAnObservedExternalEfficiencyOrCoreChangeAndKeepsOwnership(string changed)
+    {
+        await using var fixture = new Fixture(1, 2);
+        await fixture.Change(ClientProcessPriorityAction.Efficiency, 1, 2);
+        await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2);
+        var client = fixture.Native.Clients[1];
+        switch (changed)
+        {
+            case "memory": client.MemoryPriority = 5; break;
+            case "throttling": client.Throttling = new(0, 0); break;
+            default: client.Affinity = 0xFF; break;
+        }
+        var external = client.State;
+        int sets = fixture.Native.Sets.Count, others = fixture.Native.OtherSets.Count;
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Conflict, restored.Results.Single(row => row.Session.ProcessId == 1).Status);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, restored.Results.Single(row => row.Session.ProcessId == 2).Status);
+        Assert.Equal(external, client.State);
+        Assert.DoesNotContain(fixture.Native.Sets.Skip(sets), set => set.Pid == 1);
+        Assert.DoesNotContain(fixture.Native.OtherSets.Skip(others), set => set.Pid == 1);
+        Assert.Equal(1, restored.PendingRestoreCount);
+    }
+
+    [Fact]
     public async Task RestoreAllWithNoCurrentReservationsStillReportsBusyDuringActualPriorityWork()
     {
         await using var fixture = new Fixture(1);
@@ -471,6 +628,13 @@ public sealed class ClientProcessPriorityTests
         public bool Running = true;
         public string Image = @"C:\owned-fixture\RobloxPlayerBeta.exe", User = "S-1-5-21-current";
         public uint Priority = 0x20;
+        // Null: Windows did not report that value for this client.
+        public ClientPowerThrottling? Throttling = new(0, 0);
+        public uint? MemoryPriority = 5;
+        public ulong? Affinity = 0xFF, SystemAffinity = 0xFF;
+        public ClientProcessSettings State => new(Priority, Throttling, MemoryPriority, Affinity);
+        public void Apply(ClientProcessSettings state)
+            => (Priority, Throttling, MemoryPriority, Affinity) = (state.Priority, state.Throttling, state.MemoryPriority, state.Affinity);
     }
 
     private sealed class Native : IClientPriorityNativeApi
@@ -479,12 +643,13 @@ public sealed class ClientProcessPriorityTests
         public readonly Dictionary<int, Client> Clients = [];
         public readonly List<SafeProcessHandle> Handles = [];
         public readonly List<(int Pid, uint Priority)> Sets = [];
-        public readonly Dictionary<int, uint> LastSet = [];
+        public readonly List<(int Pid, string Value)> OtherSets = [];
+        public readonly Dictionary<int, ClientProcessSettings> LastSet = [];
         public readonly Dictionary<int, int> Reads = [];
         private readonly Dictionary<SafeProcessHandle, Client> _handles = [];
         public Action<Client, int>? BeforeRead;
         public Action<Client>? BeforeSet, AfterSet;
-        public bool DenySet, FailRead;
+        public bool DenySet, FailRead, DenyThrottling;
         public int OpenError;
         public int Attempts;
         public SafeProcessHandle Open(int pid, out int error)
@@ -501,7 +666,8 @@ public sealed class ClientProcessPriorityTests
             int count = Reads.GetValueOrDefault(client.Pid) + 1;
             Reads[client.Pid] = count;
             BeforeRead?.Invoke(client, count);
-            snapshot = FailRead ? null : new(client.Pid, client.Start, client.Running, client.Image, client.User, client.Priority);
+            snapshot = FailRead ? null : new(client.Pid, client.Start, client.Running, client.Image, client.User, client.Priority,
+                client.Throttling, client.MemoryPriority, client.Affinity, client.SystemAffinity);
             return !FailRead;
         }
         public bool Set(SafeProcessHandle handle, uint priority, out int error)
@@ -513,8 +679,25 @@ public sealed class ClientProcessPriorityTests
             if (DenySet) return false;
             client.Priority = priority;
             Sets.Add((client.Pid, priority));
-            LastSet[client.Pid] = priority;
+            LastSet[client.Pid] = client.State;
             AfterSet?.Invoke(client);
+            return true;
+        }
+        public bool SetThrottling(SafeProcessHandle handle, ClientPowerThrottling throttling, out int error)
+            => SetOther(handle, DenyThrottling, out error, client => client.Throttling = throttling, $"throttling {throttling.Control:x}/{throttling.State:x}");
+        public bool SetMemoryPriority(SafeProcessHandle handle, uint memoryPriority, out int error)
+            => SetOther(handle, false, out error, client => client.MemoryPriority = memoryPriority, $"memory {memoryPriority}");
+        public bool SetAffinity(SafeProcessHandle handle, ulong affinity, out int error)
+            => SetOther(handle, false, out error, client => client.Affinity = affinity, $"affinity {affinity:x}");
+        private bool SetOther(SafeProcessHandle handle, bool deny, out int error, Action<Client> apply, string value)
+        {
+            var client = _handles[handle];
+            Attempts++;
+            error = DenySet || deny ? 5 : 0;
+            if (error != 0) return false;
+            apply(client);
+            OtherSets.Add((client.Pid, value));
+            LastSet[client.Pid] = client.State;
             return true;
         }
     }
@@ -536,10 +719,10 @@ public sealed class ClientProcessPriorityTests
             Native.BeforeSet = null;
             Native.AfterSet = null;
             Native.OpenError = 0;
-            Native.DenySet = Native.FailRead = false;
-            foreach (var (pid, priority) in Native.LastSet)
+            Native.DenySet = Native.FailRead = Native.DenyThrottling = false;
+            foreach (var (pid, state) in Native.LastSet)
                 if (Native.Clients.TryGetValue(pid, out var client) && client.Start == Session(pid).ProcessStartUtcTicks)
-                    client.Priority = priority;
+                    client.Apply(state);
             await Control.DisposeAsync();
         }
     }

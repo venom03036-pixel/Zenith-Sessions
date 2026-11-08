@@ -15,6 +15,8 @@ public sealed partial class ClientPreviewPresentationTests
     [InlineData(ClientProcessPriorityAction.Normal)]
     [InlineData(ClientProcessPriorityAction.BelowNormal)]
     [InlineData(ClientProcessPriorityAction.RestoreOriginal)]
+    [InlineData(ClientProcessPriorityAction.Efficiency)]
+    [InlineData(ClientProcessPriorityAction.SpreadCores)]
     public Task PriorityCommandsPassOnlyThePinnedCheckedProcessesAndExactAction(ClientProcessPriorityAction action)=>OnUi(async ()=>
     {
         var control=new PriorityControlProbe();var monitor=new PriorityDesktopMonitor(3);
@@ -371,7 +373,10 @@ public sealed partial class ClientPreviewPresentationTests
     {
         ClientProcessPriorityAction.Normal=>shell.SetClientsNormalPriority,
         ClientProcessPriorityAction.BelowNormal=>shell.SetClientsBelowNormalPriority,
-        _=>shell.RestoreClientsPriority
+        ClientProcessPriorityAction.Efficiency=>shell.SetClientsEfficiencyMode,
+        ClientProcessPriorityAction.SpreadCores=>shell.SpreadClientsOverCores,
+        ClientProcessPriorityAction.RestoreOriginal=>shell.RestoreClientsPriority,
+        _=>throw new ArgumentOutOfRangeException(nameof(action))
     };
     private static ClientProcessPriorityBatchResult PriorityReport(PriorityCall call)
     {
