@@ -310,6 +310,34 @@ public sealed class ServerBrowserViewModelTests
         clock.Advance(TimeSpan.FromHours(1));vm.Browse.Execute(null);await vm.Browse.Execution;Assert.Equal(2,directory.Queries.Count);
     }
     [Fact]
+    public async Task ASuccessfulPageThatUsedUpTheRequestLimitKeepsItsRowsAndPausesNextUntilTheWindowResets()
+    {
+        var clock=new Clock();
+        var directory=new FakeDirectory {Result=new(RobloxPublicServerStatus.PageLimit,[Observation(1,1,when:clock.GetUtcNow())],"next",TimeSpan.FromSeconds(51),
+            "Synthetic page. Roblox's request limit for server lists is used up; wait for it to reset before loading more.")};
+        await using var vm=new ServerBrowserViewModel(directory,clock:clock);vm.UsePreferredPlace(Place);vm.Browse.Execute(null);await vm.Browse.Execution;
+        Assert.Single(vm.Servers);Assert.True(vm.CanNext);Assert.Contains("request limit",vm.Status);
+        clock.Advance(TimeSpan.FromSeconds(50));vm.Next.Execute(null);await vm.Next.Execution;
+        Assert.Single(directory.Queries);Assert.Single(vm.Servers);Assert.True(vm.CanNext);Assert.Contains("No request was sent",vm.Status);
+        directory.Result=new(RobloxPublicServerStatus.Complete,[Observation(2,1,when:clock.GetUtcNow())],null,null,"Synthetic next page");
+        clock.Advance(TimeSpan.FromSeconds(2));vm.Next.Execute(null);await vm.Next.Execution;
+        Assert.Equal(2,directory.Queries.Count);Assert.Equal("next",directory.Queries[1].Cursor);Assert.Equal(Observation(2,1).JobId,Assert.Single(vm.Servers).JobId);
+    }
+    [Theory]
+    [InlineData(RobloxPublicServerStatus.Complete)]
+    [InlineData(RobloxPublicServerStatus.PageLimit)]
+    public async Task AnEmptySuccessfulPageThatUsedUpTheRequestLimitSaysSoBeforeTheNextClick(RobloxPublicServerStatus status)
+    {
+        var clock=new Clock();
+        var directory=new FakeDirectory {Result=new(status,[],status==RobloxPublicServerStatus.PageLimit?"next":null,TimeSpan.FromSeconds(51),"Synthetic explanation")};
+        await using var vm=new ServerBrowserViewModel(directory,clock:clock);vm.UsePreferredPlace(Place);vm.Browse.Execute(null);await vm.Browse.Execution;
+        Assert.Empty(vm.Servers);Assert.Contains("No public servers were returned in this response",vm.Status);Assert.Contains("request limit",vm.Status);
+        clock.Advance(TimeSpan.FromSeconds(50));vm.Browse.Execute(null);await vm.Browse.Execution;Assert.Single(directory.Queries);
+        directory.Result=new(RobloxPublicServerStatus.Complete,[],null,null,"Synthetic empty page");
+        clock.Advance(TimeSpan.FromSeconds(2));vm.Browse.Execute(null);await vm.Browse.Execution;Assert.Equal(2,directory.Queries.Count);
+        Assert.Contains("No public servers were returned in this response",vm.Status);Assert.DoesNotContain("request limit",vm.Status);
+    }
+    [Fact]
     public async Task MultiplePagesAndLocalPingOrdersRetainOnlyTheCurrentTwentyFiveObservations()
     {
         var directory=new FakeDirectory();await using var vm=new ServerBrowserViewModel(directory);vm.UsePreferredPlace(Place);

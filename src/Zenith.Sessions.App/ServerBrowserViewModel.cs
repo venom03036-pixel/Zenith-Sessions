@@ -204,8 +204,11 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
             }
             else ClearRows();
             if(!Current())return;
+            // The empty-state text replaces the provider's explanation, so it must carry that page's request-limit pause itself.
             Status=(result.Status is RobloxPublicServerStatus.Complete or RobloxPublicServerStatus.PageLimit) && result.Servers.Count==0
-                ?"No public servers were returned in this response. Enter an eligible public server link or browse again later."
+                ?(result.RetryAfter is null
+                    ?"No public servers were returned in this response. Enter an eligible public server link or browse again later."
+                    :"No public servers were returned in this response. Roblox's request limit for server lists is used up; wait for it to reset before browsing again, or enter an eligible public server link.")
                 :result.Explanation;
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
