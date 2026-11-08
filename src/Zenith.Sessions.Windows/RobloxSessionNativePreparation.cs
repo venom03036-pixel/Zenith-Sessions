@@ -18,6 +18,7 @@ public sealed partial class RobloxSessionLinkService
         Guid pendingOwner = Guid.NewGuid(); bool pendingIssued = false, success = false;
         CancellationTokenRegistration preparationCancellation = default;
         NativeHandoffContext? context = null; NativeHandoffCandidate? candidate = null;
+        PrivateServerLaunchLease? privateLease = null;
         NativeBrowserPreparationFacts? browserFacts = null;
         NativeHandoffPreparationResult result = new(NativeHandoffPreparationStatus.Failed);
         try
@@ -32,6 +33,7 @@ public sealed partial class RobloxSessionLinkService
         catch (RobloxSessionException error)
         { result = new(error.Failure is RobloxSessionFailure.InvalidSession or RobloxSessionFailure.Challenge ? NativeHandoffPreparationStatus.SignInRequired : NativeHandoffPreparationStatus.Failed); }
         catch (AccountLinkException) { result = new(NativeHandoffPreparationStatus.AuthorizationChanged); }
+        catch (PrivateServerConflictException) { result = new(NativeHandoffPreparationStatus.RequestChanged); }
         catch (Exception)
         {
             // Browser, HTTP, filesystem and provider exceptions may contain protected values.
@@ -51,7 +53,7 @@ public sealed partial class RobloxSessionLinkService
                     if (!fenced) result = new(NativeHandoffPreparationStatus.CleanupFailed);
                 }
             }
-            finally { preparationCancellation.Dispose(); Complete(operation); }
+            finally { privateLease?.Dispose(); preparationCancellation.Dispose(); Complete(operation); }
         }
         return result with { BrowserFacts = browserFacts };
 
@@ -82,8 +84,16 @@ public sealed partial class RobloxSessionLinkService
                     _ => NativeHandoffPreparationStatus.Busy
                 });
             var pending = previous with { Generation = snapshot.NextGeneration, Health = AuthorizationHealth.SignInRequired };
+            if (intent.PrivateServer is { } reference)
+            {
+                if (privateServers is null || browser is SelectableNativeHandoffCapture { Mode: not NativeLaunchMode.OfficialPage })
+                    return new(NativeHandoffPreparationStatus.RequestChanged);
+                privateLease = await privateServers.AcquireForLaunchAsync(reference, intent.PlaceId, operation.Token).ConfigureAwait(false);
+                Ensure(operation);
+            }
             context = new(intent.OperationId, intent.ProfileId, intent.UserId, pending.Generation,
-                new(intent.PlaceId, intent.RequestedJobId, intent.RequestedServerKind));
+                new(intent.PlaceId, intent.RequestedJobId, intent.RequestedServerKind, intent.PrivateServer), privateLease);
+            privateLease = null; // The context owns the lease until dispatch or cancellation.
             pendingIssued = true;
             RequireMutation(await conditional.TryCommitSnapshotAsync(snapshot, pending, pendingOwner, operation.Token).ConfigureAwait(false), pending.Generation);
             Ensure(operation);
@@ -98,6 +108,8 @@ public sealed partial class RobloxSessionLinkService
             catch (Exception) { /* Diagnostic capture cannot change preparation, cleanup or grant decisions. */ }
             Ensure(operation);
             if (captured is null) return new(NativeHandoffPreparationStatus.CaptureRejected);
+            if (intent.PrivateServer is not null && (captured.Mode != NativeLaunchMode.OfficialPage || captured.Outcome != RobloxHandoffProbeOutcome.CapturedAndPrevented))
+                return new(NativeHandoffPreparationStatus.CaptureRejected);
             // A captured official-page request and a request built from an issued ticket (R-api-7) are prepared the same way.
             if (captured.Outcome is not (RobloxHandoffProbeOutcome.CapturedAndPrevented or RobloxHandoffProbeOutcome.TicketIssued))
                 return new(captured.Outcome switch

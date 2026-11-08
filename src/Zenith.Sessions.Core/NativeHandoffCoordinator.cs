@@ -61,6 +61,7 @@ public sealed class NativeHandoffCoordinator(IAuthorizationDispatchVault vault) 
                 || intent.ProfileId != context.ProfileId || intent.UserId != context.ExpectedUserId
                 || intent.AuthorizationGeneration != finalGrant.Record?.Generation
                 || intent.PlaceId != context.Destination.PlaceId || intent.RequestedJobId != context.Destination.JobId
+                || intent.PrivateServer != context.Destination.PrivateServer
                 || intent.RequestedServerKind != context.Destination.ServerKind || !LaunchCoordinator.HasValidDestination(intent))
                 return new(NativeHandoffAttemptStatus.NotAuthorized);
             if (candidate.IsConsumed) return new(NativeHandoffAttemptStatus.NotStarted);

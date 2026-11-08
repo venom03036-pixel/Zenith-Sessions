@@ -183,6 +183,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
                 && context.ExpectedUserId == original.UserId && context.PendingAuthorizationGeneration == original.AuthorizationGeneration + 1
                 && context.Destination.PlaceId == original.PlaceId && context.Destination.JobId == original.RequestedJobId
                 && context.Destination.ServerKind == original.RequestedServerKind
+                && context.Destination.PrivateServer == original.PrivateServer
                 && grant.ProfileId == original.ProfileId && grant.HighestMutationId == context.OperationId
                 && grant.HighestAllocated == final.AuthorizationGeneration && grant.LastCommitted == final.AuthorizationGeneration
                 && record is { Provider: RobloxSessionIdentity.Provider, Health: AuthorizationHealth.Linked }

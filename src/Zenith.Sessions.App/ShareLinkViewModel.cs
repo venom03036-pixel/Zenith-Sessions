@@ -19,6 +19,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private const string NotCheckedNote="The share link pasted while this check ran was not checked; paste it again to check it.";
     private readonly IRobloxShareLinkResolver? _resolver;
     private readonly IPrivateServerStore? _store;
+    private readonly Action? _removingSaved;
     private readonly ServerBrowserViewModel _browser;
     private readonly IPublicRobloxGameDirectory? _games;
     private readonly Func<Guid?> _selectedProfile;
@@ -63,11 +64,11 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     private bool Allowed=>!_disposed && !_lifetime.IsCancellationRequested && _canUse();
 
     public ShareLinkViewModel(IRobloxShareLinkResolver? resolver,IPrivateServerStore? store,ServerBrowserViewModel browser,Func<Guid?> selectedProfile,
-        Func<bool> canUse,Action<Exception>? failed=null,IPublicRobloxGameDirectory? games=null,Func<Guid,CancellationToken,Task>? sessionRejected=null)
+        Func<bool> canUse,Action<Exception>? failed=null,IPublicRobloxGameDirectory? games=null,Func<Guid,CancellationToken,Task>? sessionRejected=null,Action? removingSaved=null)
     {
         ArgumentNullException.ThrowIfNull(browser);ArgumentNullException.ThrowIfNull(selectedProfile);ArgumentNullException.ThrowIfNull(canUse);
         _resolver=resolver;_store=store;_browser=browser;_selectedProfile=selectedProfile;_canUse=canUse;_failed=failed??(_=>{});_games=games;
-        _sessionRejected=sessionRejected;
+        _sessionRejected=sessionRejected;_removingSaved=removingSaved;
         Check=new(_=>CheckAsync(),ReportFailure);SaveAsFavorite=new(_=>SaveAsFavoriteAsync(),ReportFailure);
         Remove=new(_=>RemoveSelectedAsync(),ReportFailure);RefreshSaved=new(_=>LoadSavedAsync(),ReportFailure);
     }
@@ -263,6 +264,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     {
         ct.ThrowIfCancellationRequested();
         if(!CanRemoveSaved || _store is not { } store || _selectedSaved is not { } selected) return Task.CompletedTask;
+        _removingSaved?.Invoke();
         return StartStore(async(token,current)=>
         {
             try {await store.DeleteAsync(selected.Id,selected.Revision,token);}

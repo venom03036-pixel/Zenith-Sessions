@@ -196,6 +196,19 @@ public partial class MainWindow : Window
     private void MinimizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState.Minimized;
     private void MaximizeWindow(object sender, RoutedEventArgs e) => WindowState = WindowState == WindowState.Maximized ? WindowState.Normal : WindowState.Maximized;
     private void CloseWindow(object sender, RoutedEventArgs e) => Close();
+    private void StartPrivateNativeTrialClick(object sender,RoutedEventArgs e)
+    {
+        var review = _vm.CapturePrivateNativeTrialReview();
+        if (review is null) return;
+        try
+        {
+            if(MessageBox.Show(this,review.SelectionSummary+"\n\n"+review.InstallationSummary+"\n"+review.ArgumentsSummary
+                +"\n\nThe official Roblox page opens with the protected saved invite. Press Play there to attempt this one launch. Private access and arrival need your live confirmation. No purchase or renewal is performed.",
+                "Confirm private-server trial",MessageBoxButton.OKCancel,MessageBoxImage.Information,MessageBoxResult.Cancel)==MessageBoxResult.OK)
+                _vm.StartNativeTrial.Execute(review);
+        }
+        finally { _vm.DiscardNativeTrialReview(review); }
+    }
     private void StartNativeTrialClick(object sender,RoutedEventArgs e)
     {
         var review = _vm.CaptureNativeTrialReview();
@@ -444,7 +457,7 @@ public partial class MainWindow : Window
     {
         var shareLink=_vm.ShareLink;
         if(_vm.IsLocked || !shareLink.CanRemoveSaved || shareLink.SelectedSaved is not { } selected) return;
-        if(MessageBox.Show(this,$"Remove the saved private server “{selected.Name}”? Its link code will be deleted from this PC. No account or game client will be changed.","Remove saved private server",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
+        if(MessageBox.Show(this,$"Remove the saved private server “{selected.Name}”? Its link code will be deleted from this PC. Pending launch work and any active trial will stop, and the queue will pause. Existing game clients remain open.","Remove saved private server",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
             shareLink.Remove.Execute(null);
     }
     private void DeleteFavoriteDestination(object sender,RoutedEventArgs e)

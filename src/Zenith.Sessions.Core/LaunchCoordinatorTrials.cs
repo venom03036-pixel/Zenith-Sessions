@@ -43,8 +43,9 @@ public sealed partial class LaunchCoordinator
         finally{_serial.Release();}
         await completion.WaitAsync(ct).ConfigureAwait(false);
     }
-    private bool ProviderPermits(Guid operationId)=>_provider.AccountLaunch.State==CapabilityState.Supported
-        ||_provider is IPreparingLaunchProvider&&_provider.AccountLaunch.State==CapabilityState.Unverified&&IsTrialOperation(operationId);
+    private bool ProviderPermits(LaunchIntent intent)=>(intent.PrivateServer is null || IsTrialOperation(intent.OperationId))
+        &&(_provider.AccountLaunch.State==CapabilityState.Supported
+        ||_provider is IPreparingLaunchProvider&&_provider.AccountLaunch.State==CapabilityState.Unverified&&IsTrialOperation(intent.OperationId));
 
     // Called only by the serialized queue owner. An exact fresh OS observation may remove
     // the single-start uncertainty barrier, never the resource forecast or account/arrival gate.

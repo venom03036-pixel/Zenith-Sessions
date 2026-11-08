@@ -29,6 +29,7 @@ public sealed class DirectTicketNativeHandoffCapture : IRobloxNativeHandoffCaptu
     public async Task<NativeBrowserCapture> CaptureAsync(NativeHandoffContext context, RobloxSessionCredential credential, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(context); ArgumentNullException.ThrowIfNull(credential); ct.ThrowIfCancellationRequested();
+        if (context.Destination.ServerKind == RobloxServerKind.Private) return new(RobloxHandoffProbeOutcome.ContextRejected, mode: NativeLaunchMode.DirectTicket);
         if (Interlocked.CompareExchange(ref _inFlight, 1, 0) != 0) return new(RobloxHandoffProbeOutcome.Busy, mode: NativeLaunchMode.DirectTicket);
         try
         {

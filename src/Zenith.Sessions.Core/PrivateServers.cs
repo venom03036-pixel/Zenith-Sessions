@@ -62,4 +62,6 @@ public interface IPrivateServerStore
     Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, string? gameName, ProtectedPrivateServerCode code, CancellationToken ct);
     Task DeleteAsync(Guid id, long revision, CancellationToken ct);
     Task<ProtectedPrivateServerCode> ReadCodeAsync(Guid id, CancellationToken ct);
+    Task<PrivateServerLaunchLease> AcquireForLaunchAsync(PrivateServerReference reference, long placeId, CancellationToken ct)
+        => throw new NotSupportedException("This private-server store cannot reserve a protected launch target.");
 }
