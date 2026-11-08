@@ -119,8 +119,10 @@ public static class LaunchDescriptions
     {
         // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
         // untrusted client and a closed trial page, so the queue cannot name one cause. The queue rows do not
-        // hold those details; each request's native launch stages in Launch evidence do.
-        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's native launch stages in Launch evidence on Join a game (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
+        // hold those details; each request's native launch stages in Launch evidence do. "Refused" is that
+        // answer, the Guide's word for it, not a cause; "ended before any client started" is not used because
+        // a timed-out, expired or stopped start also ends that way and is never counted (RecordRefusalOwned).
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row were refused before any client started. The remaining requests stay queued. Check each failed request's native launch stages in Launch evidence on Join a game (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more refused start pauses the queue again.",
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;

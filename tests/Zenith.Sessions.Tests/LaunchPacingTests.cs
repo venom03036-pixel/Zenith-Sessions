@@ -126,12 +126,16 @@ public sealed class LaunchPacingTests
         // client, a closed trial page or a local fault too, so the pause cannot blame the sign-ins.
         string text = LaunchDescriptions.ExplainPause(LaunchQueuePauseReason.RepeatedRefusals);
         Assert.DoesNotContain("check the saved sign-ins", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("two starts in a row ended before any client started", text);
+        // O-C2-2: only the provider's Rejected answer counts (RecordRefusalOwned), so the notice uses the
+        // Guide's word for it. A timed-out, expired or stopped start also "ended before any client started"
+        // yet never pauses, so that phrase would promise a re-pause after Resume that does not come.
+        Assert.Contains("two starts in a row were refused before any client started", text);
+        Assert.DoesNotContain("ended before any client started", text);
         Assert.Contains("stay queued", text);
         // The queue rows carry no trust or resource details; the native launch stages in Launch evidence do.
         Assert.DoesNotContain("details in the launch queue", text);
         Assert.Contains("native launch stages in Launch evidence on Join a game (sign-in, client trust, resources)", text);
-        Assert.Contains("Until a client starts or 10 minutes pass, one more such start pauses the queue again.", text);
+        Assert.Contains("Until a client starts or 10 minutes pass, one more refused start pauses the queue again.", text);
     }
 
     [Fact]

@@ -198,7 +198,9 @@ public sealed partial class ShellViewModel
         var pacing=_launchQueue.ReadPacing();
         LaunchPacingStatus=pacing.Ready?"No startup pacing delay. Fresh resources, provider eligibility and explicit permission are still required."
             :pacing.Reason==LaunchPacingReason.ClockUnavailable?"Launch timing is unavailable. Starts are held; preserve existing clients and restart the manager before retrying."
-            :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start ended before any client started. Each such start in a row doubles the wait, up to about 1 minute."
+            // "Refused" is the provider's answer (the Guide's word), not a cause; only it backs off, so the status
+            // must not say "ended before any client started", which a timeout or expiry also does without counting.
+            :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start was refused before any client started. Each refused start in a row doubles the wait, up to about 1 minute."
             :$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s for "+(pacing.Reason==LaunchPacingReason.StartupStabilization?"startup stabilization":"launch spacing")+". Already started clients remain open.";
         Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));
     }
