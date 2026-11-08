@@ -60,10 +60,15 @@ public sealed class SelfCheckOwnersTests
         var gate=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         string root=Path.Combine(Path.GetTempPath(),"zenith-diagnostics-stall-"+Guid.NewGuid().ToString("N"));
         var journal=new Zenith.Sessions.Windows.ManagerDiagnostics(root,1,256,_=>gate.Task);
-        var stage=DistributionSelfCheck.VerifyDiagnosticsAsync(journal,TimeSpan.FromMilliseconds(20));
+        var clock=new ManualDeadline();
+        var stage=DistributionSelfCheck.VerifyDiagnosticsAsync(journal,TimeSpan.FromMilliseconds(20),clock);
         try
         {
-            var failure=await Assert.ThrowsAsync<TimeoutException>(()=>stage.WaitAsync(TimeSpan.FromMilliseconds(500)));
+            Assert.Equal(TimeSpan.FromMilliseconds(20),clock.DueTime);
+            Assert.False(stage.IsCompleted);
+            clock.Expire();
+            // Only the outer containment uses wall time; the actual 20-ms shutdown deadline is driven above.
+            var failure=await Assert.ThrowsAsync<TimeoutException>(()=>stage.WaitAsync(TimeSpan.FromSeconds(5)));
             Assert.Equal(typeof(Zenith.Sessions.Windows.ManagerDiagnostics).FullName,SelfCheckOwners.StalledOwner(failure));
         }
         finally
@@ -141,8 +146,9 @@ public sealed class SelfCheckOwnersTests
     private sealed class ManualDeadline : TimeProvider
     {
         private TimerCallback? _callback;private object? _state;
+        public TimeSpan DueTime {get;private set;}
         public override ITimer CreateTimer(TimerCallback callback,object? state,TimeSpan dueTime,TimeSpan period)
-        { _callback=callback;_state=state;return new Timer(); }
+        { DueTime=dueTime;_callback=callback;_state=state;return new Timer(); }
         public void Expire()=>_callback!(_state);
         private sealed class Timer : ITimer
         {

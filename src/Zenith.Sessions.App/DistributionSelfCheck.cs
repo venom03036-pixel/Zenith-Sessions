@@ -795,7 +795,7 @@ internal static class DistributionSelfCheck
     }
 
     // Extracted unchanged so the actual packaged stage can be exercised with a held writer in offline tests.
-    internal static async Task VerifyDiagnosticsAsync(ManagerDiagnostics diagnostics,TimeSpan? shutdownBound=null)
+    internal static async Task VerifyDiagnosticsAsync(ManagerDiagnostics diagnostics,TimeSpan? shutdownBound=null,TimeProvider? shutdownClock=null)
     {
         await SelfCheckOwners.UseAsync(diagnostics,journal =>
         {
@@ -805,7 +805,7 @@ internal static class DistributionSelfCheck
                 || snapshot.Events.Any(entry=>entry.Subsystem!=ManagerSubsystem.Diagnostics))
                 throw new InvalidDataException("The packaged diagnostic journal exceeded its bound, lost sequence coherence or dropped the failing subsystem.");
             return Task.CompletedTask;
-        },shutdownBound??SelfCheckOwners.ShutdownBound);
+        },shutdownBound??SelfCheckOwners.ShutdownBound,shutdownClock);
         if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
     }
 
