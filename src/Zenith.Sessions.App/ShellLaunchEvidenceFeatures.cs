@@ -212,6 +212,8 @@ public sealed partial class ShellViewModel
         if(SelectedLaunchEvidence is not {View:{ } view} selected)throw new InvalidOperationException("Select a launch request with evidence first.");
         var diagnostic=SelectedNativeDiagnostics.OperationId==selected.Id?SelectedNativeDiagnostics:NativeLaunchDiagnosticPresentation.Unavailable(selected.Id);
         var stages=diagnostic.Snapshot;
+        // The launch-evidence report's own format counter (2 added NativeDiagnostics), separate from the Diagnostics report's, which is also 2:
+        // only Scope and the fields tell the two apart, so add a fixed, allowlisted report-kind field the next time either format changes.
         var report=new
         {
             FormatVersion=2,Product="Zenith Sessions Personal",CreatedUtc=DateTimeOffset.UtcNow,

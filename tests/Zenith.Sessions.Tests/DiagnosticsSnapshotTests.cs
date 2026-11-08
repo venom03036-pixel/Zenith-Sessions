@@ -4,6 +4,7 @@ using System.Reflection.Emit;
 using System.Text.Json;
 using Zenith.Sessions.Windows;
 using Xunit;
+using static Zenith.Sessions.Tests.DiagnosticsWriterProbe;
 
 namespace Zenith.Sessions.Tests;
 
@@ -354,16 +355,6 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
         }
     }
     private static TaskCompletionSource<bool> Signal()=>new(TaskCreationOptions.RunContinuationsAsynchronously);
-    private static async Task UntilAsync(Func<bool> condition)
-    {
-        // Bounded wait for the background writer; the disk has no completion event to observe.
-        var deadline=DateTime.UtcNow.AddSeconds(10);
-        while(!condition())
-        {
-            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
-            await Task.Delay(10);
-        }
-    }
     private static string ReadShared(string path)
     {
         try
@@ -377,11 +368,6 @@ public sealed class DiagnosticsSnapshotTests : IDisposable
     {
         try {Directory.Delete(folder,recursive:true);return true;}
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException) {return false;}
-    }
-    private static FileStream? TryOpenDenyingWriters(string path)
-    {
-        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
-        catch(IOException) {return null;}
     }
     public void Dispose()
     {

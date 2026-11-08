@@ -5,6 +5,7 @@ using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 using Xunit;
+using static Zenith.Sessions.Tests.DiagnosticsWriterProbe;
 
 namespace Zenith.Sessions.Tests;
 
@@ -182,24 +183,6 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Contains("Operation failed (DirectoryNotFoundException).",vm.Events[0]);
         Assert.Equal("IOException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
     });
-    [Fact]
-    public Task AnExportThatFailsAsLockLandsIsJournaledByItsCauseNotItsWrapper()=>OnUi(async ()=>
-    {
-        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
-        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
-        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
-        try
-        {
-            using var removal=new StagedReportRemoval(folder);
-            // The write has already failed, but its continuation waits for this UI step, so Lock lands first.
-            vm.ExportDiagnostics.Execute(report);removal.Wait();vm.Lock.Execute(null);await vm.ExportDiagnostics.Execution;
-        }
-        finally {File.SetAttributes(report,FileAttributes.Normal);}
-        // The late branch kept the lock message and recorded the failure without a notice.
-        Assert.StartsWith("Controls locked",vm.Notice);Assert.DoesNotContain("chosen folder",vm.ErrorNotice);
-        vm.Unlock.Execute(null);
-        Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
-    });
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -224,7 +207,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.False(vm.HasErrorNotice,"An export that failed after the stop showed an error beside the stop notice.");
         Assert.DoesNotContain(vm.Events,line=>line.Contains("Operation failed",StringComparison.Ordinal));
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
-        // The failure is still journaled once, by its cause, against Diagnostics.
+        // The failure is still journaled once against Diagnostics, by its cause and not the ReportFileException wrapper.
         if(locking) vm.Unlock.Execute(null);
         vm.RefreshDiagnostics.Execute(null);
         var failure=Assert.Single(vm.DiagnosticRows,row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==ManagerSubsystem.Diagnostics);
@@ -278,7 +261,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Directory.CreateDirectory(Data);await File.WriteAllTextAsync(Path.Combine(Data,"settings.json"),"damaged settings");
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
         Assert.Equal("Startup needs attention",vm.SaveStatus);
-        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("startup needs attention",vm.DiagnosticsStatus);
+        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("Startup needs attention",vm.DiagnosticsStatus);
         vm.Navigate.Execute("Diagnostics");
         Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
         long newest=vm.DiagnosticRows.Select(r=>r.Sequence).DefaultIfEmpty().Max();
@@ -312,7 +295,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         var until=DateTime.UtcNow.AddSeconds(3);
         while(!vm.Events.Any(e=>e.Contains("Operation failed (InvalidOperationException)",StringComparison.Ordinal)))
         {if(DateTime.UtcNow>until) throw new TimeoutException("The monitor fault was not reported.");await Task.Delay(20);}
-        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("monitoring stopped",vm.DiagnosticsStatus);
+        Assert.NotEqual("Diagnostics starting",vm.DiagnosticsStatus);Assert.Contains("Monitoring stopped",vm.DiagnosticsStatus);
         vm.Navigate.Execute("Diagnostics");
         Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
     });
@@ -366,7 +349,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         string log=Path.Combine(Data,"diagnostics","manager.jsonl");
         await UntilAsync(()=>File.Exists(log));
         vm.Navigate.Execute("Diagnostics");
-        if(monitoringStopped) await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("monitoring stopped",StringComparison.Ordinal);});
+        if(monitoringStopped) await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("Monitoring stopped",StringComparison.Ordinal);});
         FileStream? blocker=null;
         await UntilAsync(()=>(blocker=TryOpenDenyingWriters(log)) is not null);
         using(blocker)
@@ -381,24 +364,50 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         long lost=report.RootElement.GetProperty("DroppedEvents").GetInt64();Assert.True(lost>=1,"No entry was lost to the held log.");
         Assert.DoesNotContain("busy",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("routine",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
-        string unwritten=$"{(lost==1?"1 event was":$"{lost} events were")} not written to the disk log";
-        Assert.Equal(monitoringStopped?$"Diagnostics recording · {unwritten} · monitoring stopped · view updates when refreshed"
-            :$"Diagnostics active · {unwritten}.",vm.DiagnosticsStatus);
+        string unwritten=$"{(lost==1?"1 event":$"{lost} events")} not saved to disk";
+        Assert.Equal(monitoringStopped?$"Monitoring stopped · {unwritten} · diagnostics still recording · view updates when refreshed"
+            :$"Diagnostics active · {unwritten}",vm.DiagnosticsStatus);
     });
-    private static async Task UntilAsync(Func<bool> condition)
+    [Theory]
+    [InlineData(true,false,false,0L,"Diagnostics active")]
+    [InlineData(true,false,false,1L,"Diagnostics active")]
+    [InlineData(true,false,false,123456L,"Diagnostics active")]
+    [InlineData(false,false,false,0L,"Diagnostics starting")]
+    [InlineData(false,true,false,0L,"monitoring stopped")]
+    [InlineData(false,true,false,1L,"monitoring stopped")]
+    [InlineData(false,true,false,123456L,"monitoring stopped")]
+    [InlineData(false,false,true,123456L,"startup needs attention")]
+    public Task TheDiagnosticsHeaderShowsTheStateAndTheSkipCountBeforeItIsTrimmed(bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,string state)=>OnUi(()=>
     {
-        // Bounded wait for the background writer; the disk has no completion event to observe.
-        var deadline=DateTime.UtcNow.AddSeconds(10);
-        while(!condition())
+        // The page header is one trimmed caption line and only its tooltip holds the rest, so the state (a stopped
+        // monitor above all) and the count of events missing from the disk log must both be readable without hovering.
+        string status=ShellViewModel.DiagnosticsStatusText(null,live,monitorStopped,startupNeedsAttention,dropped,restoreListenerStopped:false);
+        string visible=VisibleDiagnosticsHeaderText(status);
+        string[] parts=status.Split(" · ");
+        string Fact(string text)=>parts.Single(part=>part.Contains(text,StringComparison.OrdinalIgnoreCase)).TrimEnd('.');
+        Assert.Contains(Fact(state),visible,StringComparison.Ordinal);
+        if(dropped>0) Assert.Contains(Fact($"{dropped} event"),visible,StringComparison.Ordinal);
+        return Task.CompletedTask;
+    });
+    // What the Diagnostics header draws before its ellipsis: the shipped CaptionLine style within MainWindow's MaxWidth.
+    private static string VisibleDiagnosticsHeaderText(string status)
+    {
+        var window=System.Xml.Linq.XDocument.Load(Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot,"src","Zenith.Sessions.App","MainWindow.xaml"));
+        var header=window.Descendants().Single(e=>e.Name.LocalName=="TextBlock" && (string?)e.Attribute("Text")=="{Binding DiagnosticsStatus}"
+            && (string?)e.Attribute("Style")=="{StaticResource CaptionLine}");
+        double maxWidth=double.Parse((string)header.Attribute("MaxWidth")!,System.Globalization.CultureInfo.InvariantCulture);
+        var resources=(System.Windows.ResourceDictionary)System.Windows.Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml",UriKind.Relative));
+        var style=(System.Windows.Style)resources["CaptionLine"];
+        double Width(string text)
         {
-            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
-            await Task.Delay(10);
+            var block=new System.Windows.Controls.TextBlock {Style=style,Text=text};
+            block.Measure(new System.Windows.Size(double.PositiveInfinity,double.PositiveInfinity));
+            return block.DesiredSize.Width;
         }
-    }
-    private static FileStream? TryOpenDenyingWriters(string path)
-    {
-        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
-        catch(IOException) {return null;}
+        if(Width(status)<=maxWidth) return status;
+        string ellipsis=((char)0x2026).ToString();int fit=0;
+        while(fit<status.Length && Width(status[..(fit+1)]+ellipsis)<=maxWidth) fit++;
+        return status[..fit];
     }
     // The end-to-end check that share-link and private-server codes never reach diagnostics is
     // ClientWindowIntegrationTests.ShareLinkAndSavedPrivateServerFlowsLeaveNoCodeInTheDataFolderOrDiagnostics.
