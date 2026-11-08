@@ -14,7 +14,7 @@ namespace Zenith.Sessions.Tests;
 // the active connection through the Network List Manager's own change events (no polling). While a connected network that
 // reaches the internet is filed Public, new launches are held with that reason and the dashboard locks like Lock, with a
 // clear notice; held requests start again on their own once the network is private. No network name is read or kept.
-public sealed class PublicNetworkGuardTests : IDisposable
+public sealed partial class PublicNetworkGuardTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-public-network-" + Guid.NewGuid().ToString("N"));
     private string Primary => Path.Combine(_root, "settings.json");
@@ -314,6 +314,7 @@ public sealed class PublicNetworkGuardTests : IDisposable
         public event Action<NetworkExposure>? Changed;
         public NetworkExposure Start() { StartCalls++; return Exposure; }
         public void Stop() => StopCalls++;
+        internal Action<NetworkExposure>? CaptureCallback() => Changed;
         internal void Raise(NetworkExposure exposure) { Exposure = exposure; Changed?.Invoke(exposure); }
         public void Dispose() => Disposed = true;
     }

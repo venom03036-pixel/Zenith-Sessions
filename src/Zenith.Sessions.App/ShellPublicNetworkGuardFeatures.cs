@@ -21,6 +21,9 @@ public sealed partial class ShellViewModel
     private IPublicNetworkMonitor? _publicNetwork;
     private bool _publicNetworkGuard, _publicNetworkEnforced;
     private volatile bool _publicNetworkWatching;
+    private readonly object _publicNetworkObservationGate = new();
+    private long _publicNetworkWatchGeneration, _publicNetworkObservationRevision;
+    private Action<NetworkExposure>? _publicNetworkChanged;
     // 0 or 1: read by queue admission on its own thread, so it is a volatile int rather than a bool behind the dispatcher.
     private int _publicNetworkHeld;
     private string _publicNetworkStatus = PublicNetworkOff;
@@ -46,8 +49,16 @@ public sealed partial class ShellViewModel
         bool on = _savedSettings.PublicNetworkGuard;
         if (on && !_publicNetworkWatching)
         {
-            _publicNetworkWatching = true;
-            monitor.Changed += PublicNetworkChanged;
+            long watch, revision;
+            lock (_publicNetworkObservationGate)
+            {
+                _publicNetworkWatching = true;
+                watch = ++_publicNetworkWatchGeneration;
+                revision = ++_publicNetworkObservationRevision;
+            }
+            // The delegate belongs to this subscription, so an in-flight callback retained by Stop cannot join a later watch.
+            _publicNetworkChanged = exposure => PublicNetworkChanged(exposure, watch);
+            monitor.Changed += _publicNetworkChanged;
             NetworkExposure exposure;
             try { exposure = monitor.Start(); }
             catch (Exception error)
@@ -56,7 +67,7 @@ public sealed partial class ShellViewModel
                 exposure = NetworkExposure.Unknown;
                 Fail(error, ManagerSubsystem.PublicNetwork, "Windows could not report the network profile, so launches are not held for it. The guard keeps listening for network changes.");
             }
-            ApplyNetworkExposure(exposure);
+            ApplyNetworkExposure(exposure, watch, revision);
         }
         else if (!on && _publicNetworkWatching) StopPublicNetworkWatch();
         else if (!on) PublicNetworkStatus = PublicNetworkOff;
@@ -64,20 +75,33 @@ public sealed partial class ShellViewModel
 
     // Any thread: Windows delivers on the thread that subscribed (the UI thread) in production, a test's fake on its own. The hold
     // is taken here, before the dispatcher catches up; the lock and the notice follow on the dispatcher, never re-entrantly.
-    private void PublicNetworkChanged(NetworkExposure exposure)
+    private void PublicNetworkChanged(NetworkExposure exposure, long watch)
     {
-        if (!_publicNetworkWatching || _shuttingDown || _dispatcher.HasShutdownStarted) return;
-        if (PublicNetworkPolicy.Holds(exposure) && Interlocked.Exchange(ref _publicNetworkHeld, 1) == 0) _launchQueue.Signal();
-        _dispatcher.BeginInvoke(() => ApplyNetworkExposure(exposure));
+        long revision;
+        bool signal;
+        lock (_publicNetworkObservationGate)
+        {
+            if (!_publicNetworkWatching || watch != _publicNetworkWatchGeneration || _shuttingDown || _dispatcher.HasShutdownStarted) return;
+            revision = ++_publicNetworkObservationRevision;
+            signal = PublicNetworkPolicy.Holds(exposure) && Interlocked.Exchange(ref _publicNetworkHeld, 1) == 0;
+        }
+        if (signal) _launchQueue.Signal();
+        _dispatcher.BeginInvoke(() => ApplyNetworkExposure(exposure, watch, revision));
     }
 
     // UI thread. Entering "guard on and network Public" takes the hold, locks the dashboard like Lock (once per Public network, not
     // again while on it) and says why; leaving it lifts the hold, signals the queue and says so, while the lock stays until Unlock.
-    private void ApplyNetworkExposure(NetworkExposure exposure)
+    private void ApplyNetworkExposure(NetworkExposure exposure, long watch, long revision)
     {
-        if (!_publicNetworkWatching || _shuttingDown) { ClearPublicNetworkHold(); return; }
         bool hold = PublicNetworkPolicy.Holds(exposure);
-        Volatile.Write(ref _publicNetworkHeld, hold ? 1 : 0);
+        lock (_publicNetworkObservationGate)
+        {
+            if (!_publicNetworkWatching || _shuttingDown || watch != _publicNetworkWatchGeneration
+                || revision != _publicNetworkObservationRevision) return;
+            // Validate and publish together: a newer Public callback cannot have its immediate admission hold cleared
+            // by an older UI continuation, including one from before this watch was stopped and restarted.
+            Volatile.Write(ref _publicNetworkHeld, hold ? 1 : 0);
+        }
         if (hold && !_publicNetworkEnforced)
         {
             _publicNetworkEnforced = true;
@@ -107,29 +131,29 @@ public sealed partial class ShellViewModel
         };
     }
 
-    private void ClearPublicNetworkHold()
-    {
-        bool wasHeld = Interlocked.Exchange(ref _publicNetworkHeld, 0) == 1;
-        _publicNetworkEnforced = false;
-        if (!wasHeld) return;
-        _launchQueue.Signal();
-        Raise(nameof(IsPublicNetworkHeld));
-    }
-
     // Saved off, a Windows session end and Exit: stop listening and lift any hold. A notification already under way is ignored by
     // the watching flag. Not a Panic or Lock step: see the file comment.
     private void StopPublicNetworkWatch()
     {
         if (_publicNetwork is not { } monitor) return;
-        bool watching = _publicNetworkWatching;
-        _publicNetworkWatching = false;
+        bool watching, wasHeld;
+        Action<NetworkExposure>? callback;
+        lock (_publicNetworkObservationGate)
+        {
+            watching = _publicNetworkWatching;
+            _publicNetworkWatching = false;
+            _publicNetworkWatchGeneration++; _publicNetworkObservationRevision++;
+            callback = _publicNetworkChanged; _publicNetworkChanged = null;
+            wasHeld = Interlocked.Exchange(ref _publicNetworkHeld, 0) == 1;
+            _publicNetworkEnforced = false;
+        }
         if (watching)
         {
-            monitor.Changed -= PublicNetworkChanged;
+            if (callback is not null) monitor.Changed -= callback;
             try { monitor.Stop(); }
             catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.PublicNetwork, error.GetType()); }
         }
-        ClearPublicNetworkHold();
+        if (wasHeld) { _launchQueue.Signal(); Raise(nameof(IsPublicNetworkHeld)); }
         if (!_shuttingDown) PublicNetworkStatus = PublicNetworkOff;
     }
 

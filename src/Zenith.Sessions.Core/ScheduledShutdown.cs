@@ -26,7 +26,7 @@ public sealed record ShutdownScheduleResult(ShutdownScheduleStatus Status, int? 
         ShutdownScheduleStatus.Closed => "Scheduled shutdown is closed.",
         _ => ErrorCode is { } code
             ? $"Windows did not confirm the request (shutdown tool exit code {code.ToString(CultureInfo.InvariantCulture)})."
-            : "Windows did not confirm the request (its shutdown tool did not finish in time)."
+            : "Windows did not confirm the request (its shutdown tool did not return a confirmed result)."
     };
 }
 
@@ -72,6 +72,7 @@ public static class ScheduledShutdownPolicy
 /// </summary>
 public interface IShutdownScheduler : IAsyncDisposable
 {
+    /// <summary>Cancellation before submission throws; cancellation after the tool starts returns NotConfirmed unless its exit code is known.</summary>
     Task<ShutdownScheduleResult> ScheduleAsync(TimeSpan delay, CancellationToken ct);
     Task<ShutdownScheduleResult> CancelAsync(CancellationToken ct);
 }

@@ -11,7 +11,7 @@ namespace Zenith.Sessions.Tests;
 // Scheduled Windows shutdown (R-shell-21): an explicit action on Settings that asks Windows' own shutdown tool to turn the PC
 // off after a chosen time, with a visible countdown and Cancel. Nothing is scheduled unless the user asks; Panic and Exit
 // cancel a shutdown Zenith scheduled, Lock leaves it in place, and a Windows session end never aborts the shutdown it is part of.
-public sealed class ScheduledShutdownTests : IDisposable
+public sealed partial class ScheduledShutdownTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-shutdown-" + Guid.NewGuid().ToString("N"));
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
@@ -100,7 +100,7 @@ public sealed class ScheduledShutdownTests : IDisposable
         Assert.True(new ShutdownScheduleResult(ShutdownScheduleStatus.Cancelled).Succeeded);
         Assert.False(new ShutdownScheduleResult(ShutdownScheduleStatus.AlreadyScheduled).Succeeded);
         Assert.Contains("exit code 42", new ShutdownScheduleResult(ShutdownScheduleStatus.NotConfirmed, 42).Explanation, StringComparison.Ordinal);
-        Assert.Contains("did not finish in time", new ShutdownScheduleResult(ShutdownScheduleStatus.NotConfirmed).Explanation, StringComparison.Ordinal);
+        Assert.Contains("did not return a confirmed result", new ShutdownScheduleResult(ShutdownScheduleStatus.NotConfirmed).Explanation, StringComparison.Ordinal);
     }
 
     [Fact]
