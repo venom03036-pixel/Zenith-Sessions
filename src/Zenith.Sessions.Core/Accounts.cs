@@ -2,9 +2,12 @@ using System.Text.Json.Serialization;
 
 namespace Zenith.Sessions.Core;
 
+// ExtraClientArguments (R-launch-16) is this account's own extra client arguments for Zenith's direct player start, replacing
+// the saved default when set; empty by default. It stays in the account library only: [JsonIgnore] keeps it out of metadata
+// exports (and an export carrying it is refused by the import allowlist), and it is never logged.
 public sealed record AccountProfile(Guid Id, string Label, string Username, string Group, int Priority,
     long? PreferredPlaceId, long? RobloxUserId, DateTimeOffset UpdatedUtc, long Revision = 0,
-    string Notes = "", bool IsFavorite = false, string AdditionalGroups = "")
+    string Notes = "", bool IsFavorite = false, string AdditionalGroups = "", [property: JsonIgnore] string ExtraClientArguments = "")
 {
     [JsonIgnore] public IReadOnlyList<string> GroupNames => AccountGroups.Names(Group, AdditionalGroups);
     [JsonIgnore] public string GroupsSummary => string.Join(" · ", GroupNames);
@@ -21,7 +24,9 @@ public sealed record AccountProfile(Guid Id, string Label, string Username, stri
         if (PreferredPlaceId is <= 0 || RobloxUserId is <= 0) throw new ArgumentException("Roblox IDs must be positive numbers.");
         if (Notes.Length > 4000 || Notes.Any(c => char.IsControl(c) && c is not '\r' and not '\n' and not '\t'))
             throw new ArgumentException("Notes must contain up to 4,000 readable characters. Do not enter passwords or tokens.");
-        return this with { Label = label, Username = username, Group = group, AdditionalGroups = AccountGroups.Canonicalize(group, AdditionalGroups) };
+        if (ExtraClientArguments is null) throw new ArgumentException("Extra client arguments cannot be null.");
+        string arguments = ExtraClientArgumentPolicy.Validate(ExtraClientArguments);
+        return this with { Label = label, Username = username, Group = group, AdditionalGroups = AccountGroups.Canonicalize(group, AdditionalGroups), ExtraClientArguments = arguments };
     }
     // User-entered metadata is never treated as verified authentication or process identity.
     public string IdentityState => "Not linked";

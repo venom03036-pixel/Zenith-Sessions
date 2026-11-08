@@ -14,6 +14,7 @@ public sealed class PublicServerRow(RobloxPublicServer server)
     public string Occupancy=>$"{Server.Playing} / {Server.MaxPlayers}";
     public string Availability=>Server.HasOpenSlots?"Space reported":"Full when observed";
     public string Ping=>Server.Ping is >=0?$"{Server.Ping} ms":"Unavailable";
+    public string Friends=>Server.FriendCount?.ToString(CultureInfo.CurrentCulture)??"Unknown";
     public string Observed=>Server.ObservedUtc.ToLocalTime().ToString("HH:mm:ss");
     /// <summary>Reported players over reported capacity, clamped to 0..1 for the fill meter. Capacity is advisory.</summary>
     public double FillRatio=>Server.MaxPlayers<=0?0:Math.Clamp((double)Server.Playing/Server.MaxPlayers,0,1);

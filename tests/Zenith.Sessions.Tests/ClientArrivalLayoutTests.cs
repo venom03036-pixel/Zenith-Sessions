@@ -116,6 +116,30 @@ public sealed class ClientArrivalLayoutTests
         Assert.Equal(new[] { 30, 31, 32 }, Pids(tracker.Slots(null)));
     }
 
+    // O-C5-4: a request that finds no slot must say why. Slots counts the connected clients it left out because their window
+    // is minimized or hidden; no slot and a count of zero means no connected client still has a window at all (each closed,
+    // or is listed without one). A client with a window that has not connected yet is neither a slot nor left out.
+    [Fact]
+    public void SlotsCountTheConnectedClientsLeftOutBecauseTheirWindowIsMinimizedOrHidden()
+    {
+        var tracker = StartedWithNoClients();
+        var normal = Client(33, 3); var minimized = Client(34, 2) with { Minimized = true }; var hidden = Client(35, 1) with { Visible = false };
+        Assert.Equal(new[] { 33, 34, 35 }, Pids(tracker.Observe(Scan(true, normal, minimized, hidden), [Log(normal, ObservedSessionLifecycle.Connected),
+            Log(minimized, ObservedSessionLifecycle.Connected), Log(hidden, ObservedSessionLifecycle.Connected)])));
+        Assert.Equal(new[] { 33 }, Pids(tracker.Slots(null, out int leftOut)));
+        Assert.Equal(2, leftOut);
+        // Every connected client minimized or hidden: no slot, and the count says they are all still there to restore.
+        Assert.Empty(tracker.Observe(Scan(true, normal with { Minimized = true }, minimized, hidden), [Log(normal, ObservedSessionLifecycle.Connected),
+            Log(minimized, ObservedSessionLifecycle.Connected), Log(hidden, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Slots(null, out leftOut));
+        Assert.Equal(3, leftOut);
+        // Two closed, one is listed without a window, and a newcomer has not connected yet: no slot, and nothing to restore.
+        var newcomer = Client(36, 0.5);
+        Assert.Empty(tracker.Observe(Scan(true, minimized with { Window = 0 }, newcomer), [Log(newcomer, ObservedSessionLifecycle.Joining)]));
+        Assert.Empty(tracker.Slots(null, out leftOut));
+        Assert.Equal(0, leftOut);
+    }
+
     // N-B5a-5: the evidence registry keeps a Connected line for five minutes, so a client the user joined a few minutes before
     // Zenith started reports Connected on Zenith's first scans. Every client in the first complete scan was already running:
     // it never arrives, even when its log reports Connected only later, and Arrange still tiles it with the clients that arrive.

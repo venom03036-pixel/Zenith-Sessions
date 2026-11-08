@@ -249,4 +249,50 @@ public sealed class RecentClientHistoryTests
         Assert.False(reducer.RecordFaultCheck(ended, found with { CheckedUtc = again.AddSeconds(5) }));
         Assert.NotNull(reducer.NextFaultCheck(again + RecentClientHistoryReducer.FaultCheckDelay));
     }
+
+    [Fact]
+    public void AForcedEndIsRecordedForTheExactActiveClientAndNamesTheCauseAboveEveryOtherEvidence()
+    {
+        // R-instances-12: a confirmed force close is the one end Zenith caused itself, so it outranks a hang, a disconnect
+        // and a fault record (TerminateProcess leaves none; any other evidence describes the state before it).
+        var reducer = new RecentClientHistoryReducer(); var row = Session(); reducer.Observe(Frame(1, Now, row), [], Now);
+        Assert.False(reducer.RecordForcedEnd(Key(Session(456)), Now.AddSeconds(1)));
+        Assert.False(reducer.RecordForcedEnd(Key(row), Now.AddSeconds(-11)));
+        Assert.False(reducer.RecordForcedEnd(Key(row), Now.AddSeconds(11)));
+        Assert.True(reducer.RecordForcedEnd(Key(row), Now.AddSeconds(1)));
+        Assert.False(reducer.RecordForcedEnd(Key(row), Now.AddSeconds(1)));
+        var active = Assert.Single(reducer.Snapshot().Active);
+        Assert.Equal(Now.AddSeconds(1), active.ForcedEndUtc); Assert.Null(active.CloseRequestedUtc);
+        Assert.Equal(ClientEndCause.Unknown, active.EndCause); // Still observed: not ended yet.
+        reducer.Observe(Frame(2, Now.AddSeconds(2)), [], Now.AddSeconds(2));
+        var ended = Assert.Single(reducer.Snapshot().Ended);
+        Assert.Equal(ClientEndCause.ForcedEnd, ended.EndCause); Assert.Equal("Ended by force from Zenith", ended.Cause);
+        var check = new ClientFaultCheck(Now.AddSeconds(9), true, Now.AddSeconds(1), 0xC0000005, 1);
+        var everything = ended with { NotRespondingUtc = Now, DisconnectedUtc = Now, DisconnectReason = 277, FaultCheck = check, CloseRequestedUtc = Now };
+        Assert.Equal(ClientEndCause.ForcedEnd, everything.Validated(ended: true).EndCause);
+        Assert.Equal(ClientEndCause.Crashed, (everything with { ForcedEndUtc = null }).EndCause);
+        Assert.False(ended.CanAuthorizeAccountAction);
+        Assert.DoesNotContain("SYNTHETIC_SECRET_TITLE", JsonSerializer.Serialize(reducer.PersistedSnapshot()));
+        // A forced end before the process started, or long after it was last seen, is inconsistent evidence.
+        Assert.Throws<ArgumentException>(() => (ended with { ForcedEndUtc = Now.AddSeconds(-11) }).Validated(ended: true));
+        Assert.Throws<ArgumentException>(() => (ended with { ForcedEndUtc = Now.AddSeconds(13) }).Validated(ended: true));
+    }
+
+    [Fact]
+    public void AForcedEndRecordedJustAfterTheScanRetiredTheClientStillReachesItsEndedEntry()
+    {
+        // The termination and the scan that no longer sees the client race on different threads; the record must not be lost.
+        var reducer = new RecentClientHistoryReducer(); var row = Session(); var other = Session(456);
+        reducer.Observe(Frame(1, Now, row, other), [], Now);
+        reducer.Observe(Frame(2, Now.AddSeconds(1)), [], Now.AddSeconds(1));
+        long before = reducer.PersistedSnapshot().Revision;
+        Assert.True(reducer.RecordForcedEnd(Key(row), Now.AddMilliseconds(900)));
+        var ended = Assert.Single(reducer.Snapshot().Ended, item => item.Process == Key(row));
+        Assert.Equal(Now.AddMilliseconds(900), ended.ForcedEndUtc); Assert.Equal(ClientEndCause.ForcedEnd, ended.EndCause);
+        Assert.Equal(before + 1, reducer.PersistedSnapshot().Revision); // Persisted history changed.
+        Assert.False(reducer.RecordForcedEnd(Key(row), Now.AddMilliseconds(900)));
+        // An entry that ended long ago is not rewritten by a late record.
+        Assert.False(reducer.RecordForcedEnd(Key(other), Now.AddSeconds(30)));
+        Assert.Null(Assert.Single(reducer.Snapshot().Ended, item => item.Process == Key(other)).ForcedEndUtc);
+    }
 }

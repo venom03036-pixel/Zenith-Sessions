@@ -119,6 +119,24 @@ public sealed class ProfileDialogLayoutTests
     });
 
     [Fact]
+    public Task ExtraClientArgumentsAreEditedPerAccountValidatedByTheirRuleAndSavedInTheirCanonicalForm() => OnSta(() =>
+    {
+        const string label = "Extra client arguments · optional; replaces the default for this account";
+        var original = (AccountProfile.Create("Kept alias") with { Revision = 3, ExtraClientArguments = "--kept" }).Validated();
+        AccountProfile? submitted = null;
+        // The save fails on purpose: a dialog that is not shown cannot set DialogResult, and the submitted draft is what matters here.
+        var dialog = new ProfileDialog(original, draft => { submitted = draft; return Task.FromException(new IOException("Synthetic save failure.")); });
+        var root = Root(dialog); var field = Field(root, label);
+        Assert.Equal("--kept", field.Text); Assert.Equal(ExtraClientArgumentPolicy.MaximumCharacters, field.MaxLength);
+        Assert.Contains(field, Elements(Fields(root)));
+        field.Text = "--own %TEMP%"; Layout(root, 540, 730); Click(Action(root, "Save profile"));
+        Assert.Null(submitted); Assert.Equal("Percent signs are not allowed in extra client arguments.", Error(root).Text);
+        field.Text = "  --own   --value=1 "; Click(Action(root, "Save profile"));
+        Assert.Equal(original with { ExtraClientArguments = "--own --value=1" }, submitted);
+        return Task.CompletedTask;
+    });
+
+    [Fact]
     public Task InitialAndMinimumDimensionsFitTheAvailableWpfWorkArea() => OnSta(() =>
     {
         var dialog = new ProfileDialog(AccountProfile.Create("Local alias"), _ => throw new InvalidOperationException("No save expected."));

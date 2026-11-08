@@ -135,7 +135,7 @@ public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
         }
         bool desired = action == ClientAudioMuteAction.Mute; // Unmute and RestoreOriginal both turn the sound on.
         // Only some sessions muted (Read's Conflict): turning the sound on sets every one on, the safe direction the user asked for;
-        // a mute leaves it as found.
+        // a mute leaves it as found, and its Conflict carries no Previous, which is how the result names the partly muted case.
         bool partly = !desired && before.Status == ClientAudioMuteStatus.Conflict;
         if (!partly && (before.Status != ClientAudioMuteStatus.Unchanged || before.Muted is null))
             return Result(session, action, Failure(before.Status));

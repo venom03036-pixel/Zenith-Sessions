@@ -49,13 +49,32 @@ public sealed class PerformanceProfileTests
         {
             string pending = new ManagerPerformanceSettings(Profile: profile).Resolve().PendingCapabilities;
             Assert.DoesNotContain("client CPU/render", pending, StringComparison.Ordinal);
-            // Core spreading sets process affinity and lives in Sessions, so only CPU caps and automatic affinity
-            // policies are pending; a bare "affinity" in the pending list would contradict the next sentence.
-            Assert.Contains("CPU caps and automatic affinity policies", pending, StringComparison.Ordinal);
+            // Core spreading sets process affinity and the per-client CPU cap (R-instances-7) is a Sessions control too, so
+            // only automatic affinity policies are pending; a bare "affinity" or "CPU caps" in the pending list would
+            // contradict the next sentence.
+            Assert.Contains("automatic affinity policies", pending, StringComparison.Ordinal);
+            Assert.DoesNotContain("CPU caps", pending, StringComparison.Ordinal);
             Assert.DoesNotContain("cap/affinity", pending, StringComparison.Ordinal);
-            Assert.Contains("core spreading", pending, StringComparison.Ordinal);
+            Assert.Contains("core spreading and a per-client CPU cap", pending, StringComparison.Ordinal);
             Assert.Contains("Sessions", pending, StringComparison.Ordinal);
             Assert.Contains("Client CPU priority", pending, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void PendingCapabilitiesNamePreviewRatesChosenByProfileNotTheLivePreviewsSessionsAlreadyShows()
+    {
+        // Sessions ships Previews > Preview checked clients with live thumbnails, so "live previews" cannot be pending.
+        // What no profile chooses yet is the preview rate: every profile keeps the one-second batch ceiling, and the
+        // copy's "once per second" must stay the enforced figure.
+        Assert.Equal(TimeSpan.FromSeconds(1), ClientPreviewLimits.MinimumBatchInterval);
+        foreach (var profile in Enum.GetValues<ManagerPerformanceProfile>())
+        {
+            string pending = new ManagerPerformanceSettings(Profile: profile).Resolve().PendingCapabilities;
+            Assert.DoesNotContain("live previews", pending, StringComparison.Ordinal);
+            Assert.Contains("preview update rates chosen by profile", pending, StringComparison.Ordinal);
+            Assert.Contains("under Previews", pending, StringComparison.Ordinal);
+            Assert.Contains("once per second", pending, StringComparison.Ordinal);
         }
     }
 

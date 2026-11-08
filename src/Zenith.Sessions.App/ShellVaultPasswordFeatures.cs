@@ -184,15 +184,12 @@ public sealed partial class ShellViewModel
         bool wasLocked = IsLocked; IsLocked = false;
         if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked);
         ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started.";
-        RestartIdleLock(); LoadClientDisplaysOnce(); RaiseVaultPasswordProperties();
+        RestartIdleLock(); ApplySavedClientUpdateCheck(restart:true); LoadClientDisplaysOnce(); RaiseVaultPasswordProperties();
     }
     private async Task DisposeVaultPasswordAsync()
     {
-        try { StopVaultPasswordWork(); }
-        finally
-        {
-            try { await _vaultPasswordWork; }
-            finally { PropertyChanged -= VaultPasswordOwnerChanged; }
-        }
+        StopShutdownStep(StopVaultPasswordWork);
+        try { await _vaultPasswordWork; }
+        finally { PropertyChanged -= VaultPasswordOwnerChanged; }
     }
 }

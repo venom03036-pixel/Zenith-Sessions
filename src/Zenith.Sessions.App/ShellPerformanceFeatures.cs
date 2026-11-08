@@ -34,6 +34,12 @@ public sealed partial class ShellViewModel
     public string CustomStagger {get=>_customStagger;set {if(Set(ref _customStagger,value)) {RaisePerformanceDraft();PreferencesEdited();}}}
     public string CustomStabilization {get=>_customStabilization;set {if(Set(ref _customStabilization,value)) {RaisePerformanceDraft();PreferencesEdited();}}}
     public bool IsCustomPerformance=>_draftPerformanceProfile==ManagerPerformanceProfile.Custom;
+    private bool _showClientGpu;
+    /// <summary>Draft of the saved "Show each client's GPU use" option (R-instances-15). Off by default; Save settings applies it.</summary>
+    public bool ShowClientGpu {get=>_showClientGpu;set {if(Set(ref _showClientGpu,value)) PreferencesEdited();}}
+    /// <summary>Applies the saved choice to a monitor that can attribute GPU counters; other monitors keep the setting for later.</summary>
+    private void ApplyClientGpu(bool enabled)
+    { if(_monitor is IClientGpuTelemetryControl control) control.ConfigureClientGpuTelemetry(enabled); }
     public Guid? MainAccountProfileId=>_draftMainAccount;
     public string MainAccountDisplay {get=>_mainAccountDisplay;private set=>Set(ref _mainAccountDisplay,value);}
     public string PerformanceExplanation=>TryReadPerformanceDraft(out var settings)?settings.Resolve().Explanation:"Enter valid timing values in the displayed ranges before saving.";

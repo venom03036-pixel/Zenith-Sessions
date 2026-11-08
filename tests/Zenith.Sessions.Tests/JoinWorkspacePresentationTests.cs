@@ -49,7 +49,7 @@ public sealed class JoinWorkspacePresentationTests
         {Assert.Single(automation.Descendants().Where(element=>(string?)element.Attribute("DataContext")==context));Assert.DoesNotContain(join.Descendants(),element=>(string?)element.Attribute("DataContext")==context);}
         Assert.DoesNotContain(automation.Descendants(),element=>(string?)element.Attribute(X+"Name")=="DestinationInput");
         Assert.Contains(sessions.Descendants(Ui+"Button"),button=>(string?)button.Attribute("CommandParameter")=="JoinGame");
-        var side=source.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("AutomationProperties.Name")=="Sessions");
+        var side=source.Descendants(Ui+"Button").Single(button=>ProductionWindowStrings.Resolve((string?)button.Attribute("AutomationProperties.Name"))=="Sessions");
         Assert.Equal("{Binding IsSessionWorkspace}",(string?)side.Attribute("Tag"));
         var title=join.Descendants(Ui+"TextBlock").Single(element=>(string?)element.Attribute("Text")=="{Binding EmptyTitle}");
         Assert.Equal("{Binding ShowPlaceholder, Converter={StaticResource VisibleIf}}",(string?)title.Parent!.Attribute("Visibility"));

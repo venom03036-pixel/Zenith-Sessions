@@ -40,6 +40,14 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientMemory=>"Client memory",
         ManagerSubsystem.RepeatLaunch=>"Repeat launch",
         ManagerSubsystem.ClientSound=>"Client sound",
+        ManagerSubsystem.ClientLogs=>"Roblox client logs",
+        ManagerSubsystem.ClientUpdate=>"Roblox update",
+        ManagerSubsystem.KeepAwake=>"Keep clients awake",
+        ManagerSubsystem.ScheduledShutdown=>"Scheduled shutdown",
+        ManagerSubsystem.PublicNetwork=>"Public-network guard",
+        ManagerSubsystem.DiscordAlerts=>"Discord alerts",
+        ManagerSubsystem.DiscordPresence=>"Discord status",
+        ManagerSubsystem.UploadLimit=>"Upload limit",
         _=>"Unrecognized subsystem"
     };
 }
@@ -73,8 +81,16 @@ public sealed partial class ShellViewModel
     public Command RefreshDiagnostics {get;private set;}=null!;
     public Command OpenDiagnosticsFolder {get;private set;}=null!;
     public AsyncCommand ExportDiagnostics {get;private set;}=null!;
-    private void InitializeDiagnosticsFeatures()
+    private IClientLogTailReader _clientLogTails=null!;
+    private bool _clientLogTailsPermitted,_includeClientLogTails;
+    /// <summary>Save report only, off until ticked, and cleared again after each report it was included in; Copy diagnostics never includes client log entries.</summary>
+    public bool IncludeClientLogTails {get=>_includeClientLogTails;set {if(!CanIncludeClientLogTails) value=false;Set(ref _includeClientLogTails,value);}}
+    /// <summary>False in the sample profile unless a reader was injected, so the sample profile never reads the real Roblox folders.</summary>
+    public bool CanIncludeClientLogTails=>_clientLogTailsPermitted;
+    private void InitializeDiagnosticsFeatures(IClientLogTailReader? clientLogTails)
     {
+        _clientLogTailsPermitted=!IsSample || clientLogTails is not null;
+        _clientLogTails=clientLogTails??new RobloxClientLogTails();
         PauseDiagnostics=new(_=> {if(!IsLocked && !_shuttingDown) DiagnosticsPaused=!DiagnosticsPaused;});
         ClearDiagnostics=new(_=>
         {
@@ -96,17 +112,32 @@ public sealed partial class ShellViewModel
         });
         ExportDiagnostics=new(p=>p is string path?ExportDiagnosticsAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Diagnostics));
     }
+    private const string ReportSavedNotice="Redacted diagnostic report saved with the Windows version and the active performance, theme and capacity settings. No account names, credentials, game links, paths or raw exception messages were included.";
     private async Task ExportDiagnosticsAsync(string path)
     {
         if(IsLocked || _shuttingDown) return;
-        string report=BuildDiagnosticReport(),dataRoot=DataRoot,applicationRoot=AppContext.BaseDirectory;
+        bool includeClientLogs=IncludeClientLogTails && CanIncludeClientLogTails;
+        string dataRoot=DataRoot,applicationRoot=AppContext.BaseDirectory;
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);_diagnosticExportStop=stop;
         try
         {
+            ClientLogTailReport? clientLogs=null;
+            if(includeClientLogs)
+            {
+                // The tails are read off the UI thread under this export's own stop (a Step in StopOperations), so a Panic or Lock
+                // that lands here ends the read, writes nothing and keeps its own notice.
+                clientLogs=await _clientLogTails.ReadAsync(stop.Token);
+                if(stop.IsCancellationRequested || IsLocked || _shuttingDown) return;
+            }
+            string report=BuildDiagnosticReport(clientLogs);
             await Task.Run(()=>ExplicitReportFile.WriteReportAsync(path,Encoding.UTF8.GetBytes(report),dataRoot,applicationRoot,stop.Token),stop.Token);
             // Panic, Lock and shutdown own the notice once they land; a write that already committed stays on disk silently.
             if(!stop.IsCancellationRequested && !IsLocked && !_shuttingDown)
-                Notice="Redacted diagnostic report saved with the Windows version and the active performance, theme and capacity settings. No account names, credentials, game links, paths or raw exception messages were included.";
+            {
+                Notice=clientLogs is null?ReportSavedNotice:ReportSavedNotice+" "+DescribeClientLogTails(clientLogs);
+                // Each saved report is its own opt-in: the tick clears once a report carried the entries.
+                if(clientLogs is not null) IncludeClientLogTails=false;
+            }
         }
         catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
         {
@@ -116,7 +147,9 @@ public sealed partial class ShellViewModel
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
     private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
-    internal const string RepeatLaunchStoppedStatus="a new launch cannot bring this window forward until you exit from the tray and start Zenith Sessions again";
+    // The fact is short enough for the trimmed header; the remedy ends the status, for the tooltip and the Guide.
+    internal const string RepeatLaunchStoppedStatus="a new launch cannot show Zenith";
+    internal const string RepeatLaunchStoppedRemedy="exit from the tray and start Zenith Sessions again to let a new launch show this window";
     // UI thread only: set by the dispatcher step below, read by RefreshDiagnosticsStatus.
     private bool _repeatLaunchListenerStopped;
     /// <summary>
@@ -144,21 +177,30 @@ public sealed partial class ShellViewModel
     }
     /// <summary>
     /// The Diagnostics page header draws this on one trimmed 320 px line (about 60 characters at 12 px); only its tooltip
-    /// and the Guide show the rest. So a stopped state comes first and the skip count second, and both stay short enough
-    /// to be read without hovering, even with a six-digit count.
+    /// and the Guide show the rest. So the facts come in the order a reader needs them, each short enough to be read
+    /// without hovering: a stopped monitor or startup first, then a stopped restore listener (the only place that says
+    /// why a new launch shows nothing), then the disk writer's failure or its skip count. The storage footer repeats the
+    /// failure and the count, so the count is the one that may fall behind the ellipsis when all three are set. The
+    /// restore listener's remedy comes last, for the tooltip. The first fact carries the line's capital; the writer's
+    /// failure text is a sentence of its own and keeps its own.
     /// </summary>
     internal static string DiagnosticsStatusText(string? failure,bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,bool restoreListenerStopped)
     {
-        string? stopped=live?null:monitorStopped?"Monitoring stopped":startupNeedsAttention?"Startup needs attention":null;
-        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
-        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
+        string? stopped=live?null:monitorStopped?"monitoring stopped":startupNeedsAttention?"startup needs attention":null;
+        // The skip count mixes a full writer queue with entries lost to a disk error (any kind, failures and Panic
+        // included), so it names no cause; a disk-writer failure replaces it so the header agrees with the storage footer.
         string? unwritten=dropped<=0?null:dropped==1?"1 event not saved to disk":$"{dropped} events not saved to disk";
-        string status=failure??(stopped is not null
-            ? $"{stopped} · {(unwritten is null?"":unwritten+" · ")}diagnostics still recording · view updates when refreshed"
-            : !live?"Diagnostics starting"
-            : unwritten is not null?$"Diagnostics active · {unwritten}":"Diagnostics active · bounded to three log files");
-        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
-        return restoreListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
+        var parts=new List<string>(6);
+        if(stopped is not null) parts.Add(stopped);
+        if(restoreListenerStopped) parts.Add(RepeatLaunchStoppedStatus);
+        if(failure is not null) parts.Add(failure);
+        else if(stopped is not null) {if(unwritten is not null) parts.Add(unwritten);parts.Add("diagnostics still recording");}
+        else if(!live) parts.Add("diagnostics starting");
+        else {parts.Add("diagnostics active");parts.Add(unwritten??"bounded to three log files");}
+        if(stopped is not null) parts.Add("view updates when refreshed");
+        if(restoreListenerStopped) parts.Add(RepeatLaunchStoppedRemedy);
+        string status=string.Join(" · ",parts);
+        return char.ToUpperInvariant(status[0])+status[1..];
     }
     private void RefreshDiagnosticsView(bool explicitRequest=false)
     {
@@ -201,18 +243,21 @@ public sealed partial class ShellViewModel
         RefreshDiagnosticsView(true);
         return string.Join(Environment.NewLine,DiagnosticRows.Select(r=>$"{r.Time}  {r.Level}  {r.Subsystem}  {r.Description}  {r.ErrorType}"));
     }
-    public string BuildDiagnosticReport()
+    /// <summary>The clipboard report (Copy diagnostics): never carries Roblox client log entries, whatever the Save report tick says.</summary>
+    public string BuildDiagnosticReport()=>BuildDiagnosticReport(null);
+    internal string BuildDiagnosticReport(ClientLogTailReport? clientLogs)
     {
         if(IsLocked || _shuttingDown) throw new InvalidOperationException("Unlock the dashboard before exporting diagnostics.");
         RefreshDiagnosticsView(true);
         var snapshot=_diagnosticSnapshot??_diagnostics.GetSnapshot();
         // Applied policy and committed limits only; unsaved drafts, the main account, sign-in and window-layout settings stay out.
         var performance=Volatile.Read(ref _activePerformance);var limits=Volatile.Read(ref _savedSettings).Capacity!;
-        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; advance it again whenever an allowlisted field is added.
-        // This counter is the Diagnostics report's own; the launch-evidence report is also format 2 (see BuildNativeTrialEvidenceReport before changing either).
+        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; format 3 added ClientLogs (opt-in typed Roblox client
+        // log entries, Included=false otherwise); advance it again whenever an allowlisted field is added.
+        // This counter is the Diagnostics report's own; the launch-evidence report is format 2 (see BuildNativeTrialEvidenceReport before changing either).
         var report=new
         {
-            FormatVersion=2,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
+            FormatVersion=3,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
             CreatedUtc=DateTimeOffset.UtcNow,Runtime=Environment.Version.ToString(),Architecture=RuntimeInformation.ProcessArchitecture.ToString(),
             Os=new {Description=RuntimeInformation.OSDescription,Version=Environment.OSVersion.Version.ToString()},
             Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
@@ -223,9 +268,38 @@ public sealed partial class ShellViewModel
                 limits.NewClientPhysicalGiB,limits.NewClientCommitGiB,limits.UserMaximum},
             SessionTotals=new {snapshot.TotalEvents,snapshot.InfoCount,snapshot.WarningCount,snapshot.ErrorCount},
             snapshot.DroppedEvents,PersistenceAvailable=snapshot.Failure is null,PausedView=DiagnosticsPaused,
-            Scope="Filtered in-memory view, newest 512 events; no prior-session replay or raw log files.",
-            Events=DiagnosticRows.Select(r=>new {r.Event.Sequence,r.Event.Utc,r.Event.Kind,r.Event.Level,r.Event.Subsystem,r.Event.ErrorType,r.Event.Count}).ToArray()
+            Scope=clientLogs is null
+                ? "Filtered in-memory view, newest 512 events; no prior-session replay or raw log files."
+                : "Filtered in-memory view, newest 512 events; no prior-session replay. Roblox client log entries are parsed fields only (time, kind, place and server IDs, disconnect code): no raw lines, player IDs, URLs or paths.",
+            Events=DiagnosticRows.Select(r=>new {r.Event.Sequence,r.Event.Utc,r.Event.Kind,r.Event.Level,r.Event.Subsystem,r.Event.ErrorType,r.Event.Count}).ToArray(),
+            // Typed fields copied out of the correlator's own parse; the reader keeps no line text, path or name, so none can appear here.
+            ClientLogs=clientLogs is null?new {Included=false}:(object)new
+            {
+                Included=true,clientLogs.ReadUtc,clientLogs.FoldersChecked,clientLogs.FoldersUnreadable,clientLogs.LogsFound,clientLogs.BudgetLimited,
+                Policy=$"Player logs written in the last day, newest {RobloxClientLogTails.MaximumLogs}, last {RobloxClientLogTails.TailBytes/1024} KiB of each, newest {RobloxClientLogTails.MaximumEntriesPerLog} recognised lines of each, as parsed fields only.",
+                Logs=clientLogs.Logs.Select(log=>new
+                {
+                    log.Order,log.StorePackage,log.ModifiedUtc,log.Length,log.BytesRead,log.LinesRead,log.EntriesDropped,log.Outcome,
+                    Entries=log.Entries.Select(entry=>new {entry.LoggedUtc,entry.Fact,entry.PlaceId,entry.JobId,entry.DisconnectReason}).ToArray()
+                }).ToArray()
+            }
         };
         return JsonSerializer.Serialize(report,new JsonSerializerOptions {WriteIndented=true,Converters={new JsonStringEnumConverter()}});
+    }
+    /// <summary>The sentence added to the saved-report notice when client log entries were asked for; counts only, never a path or name.</summary>
+    internal static string DescribeClientLogTails(ClientLogTailReport report)
+    {
+        if(report.FoldersChecked==0 && report.FoldersUnreadable==0) return "No Roblox logs folder was found for this Windows user, so no client log entries were included.";
+        if(report.Logs.Count==0) return report.FoldersUnreadable>0
+            ? "A Roblox logs folder could not be read, so no client log entries were included."
+            : "No Roblox Player log written in the last day was found, so no client log entries were included.";
+        int entries=report.EntryCount;
+        string logs=report.Logs.Count==1?"1 recent Roblox client log":$"{report.Logs.Count} recent Roblox client logs";
+        string head=entries==0?$"No recognised entries were found in {logs}"
+            : $"{(entries==1?"1 recognised entry":$"{entries} recognised entries")} from {logs} included as parsed fields only";
+        int unread=report.Logs.Count(log=>log.Outcome!=ClientLogTailOutcome.Read);
+        string unreadText=unread==0?"":unread==1?" 1 log could not be read.":$" {unread} logs could not be read.";
+        string limit=report.BudgetLimited?" The log read stopped at its limit.":"";
+        return head+"; no raw log lines, player IDs, URLs or paths."+unreadText+limit;
     }
 }

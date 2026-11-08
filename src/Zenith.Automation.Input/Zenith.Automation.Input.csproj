@@ -6,8 +6,6 @@
     <LangVersion>12</LangVersion>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
   </PropertyGroup>
-  <ItemGroup>
-    <!-- The macro runner stops its input lease with the actual reason (TargetedInputRun.StopAsync(string)). -->
-    <InternalsVisibleTo Include="Zenith.MacroHost.Execution" />
-  </ItemGroup>
+  <!-- No InternalsVisibleTo: other assemblies stop a lease through TargetedInputRun.StopAsync(TargetedInputStopReason),
+       never through the owner's lock, lane, transport, run constructor or *Locked members (O-C10-2). -->
 </Project>

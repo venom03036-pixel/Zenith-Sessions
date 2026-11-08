@@ -378,12 +378,16 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(1,releases.Calls);
     });
 
-    // The waiting line is only this start's own: Stop trial (or Panic, Lock, a selection change) replaces it with its reason,
-    // which is kept, and a review change that cancels the check puts back what the card said before the start.
+    // The waiting line is only this start's own: Stop trial, Panic and Lock replace it with their reason, which is kept. A review
+    // change (another account or destination) cancels the check too and sets no line of its own, so the start must say the trial
+    // was not started rather than put back what the card said before (O-C9-2); the user has just read that it is being checked.
     [Theory]
-    [InlineData(true)]
-    [InlineData(false)]
-    public Task AStoppedReleaseCheckNeverLeavesTheTrialCardSayingItIsChecking(bool stopTrial)=>OnUi(async ()=>
+    [InlineData("stop")]
+    [InlineData("panic")]
+    [InlineData("lock")]
+    [InlineData("account")]
+    [InlineData("destination")]
+    public Task AStoppedReleaseCheckNeverLeavesTheTrialCardSayingItIsChecking(string change)=>OnUi(async ()=>
     {
         var releases=new HeldReleaseRead();
         await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
@@ -393,15 +397,58 @@ public sealed partial class ClientWindowIntegrationTests
             shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
             var read=await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
             Assert.StartsWith("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
-            if(stopTrial)shell.CancelNativeTrial.Execute(null);
-            else shell.SelectedAccount=shell.Accounts.Single(row=>row.Profile.Label=="Other synthetic profile");
+            switch(change)
+            {
+                case "stop":shell.CancelNativeTrial.Execute(null);break;
+                case "panic":shell.Panic.Execute(null);break;
+                case "lock":shell.LockDashboard();break;
+                case "account":shell.SelectedAccount=shell.Accounts.Single(row=>row.Profile.Label=="Other synthetic profile");break;
+                case "destination":shell.ServerBrowser.UsePreferredPlace(999);break;
+            }
             Assert.True(read.IsCancellationRequested);
         }
         finally{releases.Finish.TrySetResult();}
         await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
-        if(stopTrial)Assert.StartsWith("Trial stopped.",shell.NativeTrialStatus,StringComparison.Ordinal);
-        else Assert.Equal(before,shell.NativeTrialStatus);
+        switch(change)
+        {
+            case "stop":Assert.StartsWith("Trial stopped, and the launch queue is paused.",shell.NativeTrialStatus,StringComparison.Ordinal);break;
+            case "panic":case "lock":Assert.StartsWith("Trial stopped by Panic or Lock.",shell.NativeTrialStatus,StringComparison.Ordinal);break;
+            default:
+                Assert.Equal("Trial not started: the selected account or destination changed while it was being checked. Review the selected account and destination again before starting.",shell.NativeTrialStatus);
+                Assert.Equal(shell.NativeTrialStatus,shell.Notice);
+                Assert.NotEqual(before,shell.NativeTrialStatus);Assert.False(shell.HasErrorNotice);
+                break;
+        }
+        Assert.DoesNotContain("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
         Assert.Empty(shell.Launches);
+    });
+
+    // O-C9-3: Stop trial pauses the whole launch queue (the queue's Panic signal), not only the trial it stops, so other accounts'
+    // queued requests wait too. The checking line that sends the user to Stop trial says so before they choose it, and the stopped
+    // card confirms it and names Resume queue, as the installation-change stop and the removal notices already do.
+    [Fact]
+    public Task StopTrialSaysItAlsoPausesTheLaunchQueueBeforeAndAfterItIsChosen()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        // The queue starts paused; run it first so the stop below is what pauses it.
+        shell.ToggleQueuePause.Execute(null);await shell.ToggleQueuePause.Execution;
+        Assert.Equal("Pause queue",shell.QueuePauseLabel);
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.EndsWith(" Choose Stop trial to cancel it; that also pauses the launch queue.",shell.NativeTrialStatus,StringComparison.Ordinal);
+            shell.CancelNativeTrial.Execute(null);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("Trial stopped, and the launch queue is paused. Review any process-start receipt in the queue before retrying, then choose Resume queue when ready; existing Roblox clients remain open.",shell.NativeTrialStatus);
+        // The queue publishes its stop on the dispatcher after the signal; the footer must then read paused, as the card says.
+        using(var settle=new CancellationTokenSource(TimeSpan.FromSeconds(6)))
+            while(shell.QueuePauseLabel!="Resume queue")await Task.Delay(5,settle.Token);
+        Assert.Empty(shell.Launches);Assert.False(shell.HasErrorNotice);
     });
 
     // A release request that is still finishing after its cancellation: it returns only when the test lets it.

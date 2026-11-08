@@ -126,12 +126,16 @@ public sealed class LaunchPacingTests
         // client, a closed trial page or a local fault too, so the pause cannot blame the sign-ins.
         string text = LaunchDescriptions.ExplainPause(LaunchQueuePauseReason.RepeatedRefusals);
         Assert.DoesNotContain("check the saved sign-ins", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("two starts in a row ended before any client started", text);
+        // O-C2-2: only the provider's Rejected answer counts (RecordRefusalOwned), so the notice uses the
+        // Guide's word for it. A timed-out, expired or stopped start also "ended before any client started"
+        // yet never pauses, so that phrase would promise a re-pause after Resume that does not come.
+        Assert.Contains("two starts in a row were refused before any client started", text);
+        Assert.DoesNotContain("ended before any client started", text);
         Assert.Contains("stay queued", text);
         // The queue rows carry no trust or resource details; the native launch stages in Launch evidence do.
         Assert.DoesNotContain("details in the launch queue", text);
         Assert.Contains("native launch stages in Launch evidence on Join a game (sign-in, client trust, resources)", text);
-        Assert.Contains("Until a client starts or 10 minutes pass, one more such start pauses the queue again.", text);
+        Assert.Contains("Until a client starts or 10 minutes pass, one more refused start pauses the queue again.", text);
     }
 
     [Fact]
@@ -139,16 +143,29 @@ public sealed class LaunchPacingTests
     {
         // The pause sends the user to each failed request. A preparation refusal can come from the saved
         // sign-in, client trust, a busy provider, a closed page or a local fault, so its row must not name
-        // the sign-in alone, and both refusal rows say where the stage that stopped them is shown.
+        // the sign-in alone, and both refusal rows say where the stage that stopped them may be shown.
         string preparation = LaunchDescriptions.Explain(LaunchProblem.PreparationRejected);
         Assert.DoesNotContain("Review the saved sign-in", preparation);
         foreach (string cause in new[] { "saved sign-in", "client trust", "a busy provider", "a closed page", "a local fault" })
             Assert.Contains(cause, preparation);
-        Assert.Contains("Launch evidence on Join a game shows which", preparation);
         Assert.Contains("create a fresh request", preparation);
         string startup = LaunchDescriptions.Explain(LaunchProblem.StartupRejected);
         Assert.Contains("before a client started", startup);
-        Assert.Contains("Launch evidence on Join a game shows which", startup);
+        // O-C2-3: the pointer is a "may", with its two limits named, never a promise. The native launch
+        // stages are memory-only snapshots (INativeLaunchDiagnosticSource, at most 128, this app run), while
+        // the Failed row is saved and reopens after a restart with no stage to show. PreparationRejected is
+        // also recorded by the coordinator itself for a fault it caught or an invalid prepared handle
+        // (LaunchCoordinatorPreparation: catch(Exception), !validHandle), where no provider stage names a
+        // cause; StartupRejected likewise covers a Rejected answer given before any stage was recorded.
+        foreach (string row in new[] { preparation, startup })
+        {
+            Assert.DoesNotContain("shows which", row);
+            Assert.Contains("native launch stages in Launch evidence on Join a game may show which", row);
+            Assert.Contains("While Zenith stays open", row);
+            Assert.Contains("a restart clears them", row);
+        }
+        Assert.Contains("a fault caught before any stage was recorded leaves none", preparation);
+        Assert.Contains("a refusal before any stage was recorded leaves none", startup);
     }
 
     [Fact]
@@ -518,6 +535,170 @@ public sealed class LaunchPacingTests
     {
         var clock = new Clock(); var provider = new Provider(clock);
         Assert.Throws<ArgumentOutOfRangeException>(() => Queue(new(), provider, clock, stabilization, stagger)); Assert.Empty(provider.Starts);
+    }
+
+    // R-launch-2 (owner decision 2026-11-08): the started client's own log reporting that it joined (the evidence
+    // registry's Connected lifecycle for the receipt's exact PID and creation time) may end the startup stabilization
+    // wait early, down to the launch spacing and never past the full stabilization. The report is advisory: another
+    // process, operation or lifecycle, a refusal backoff or a verified-arrival stabilization changes nothing, and the
+    // fresh-observation and admission gates still apply before the next start.
+    private static SessionEvidenceSnapshot Joined(LaunchProcessReceipt receipt, Clock clock, int? pid = null, long? start = null,
+        ObservedSessionLifecycle lifecycle = ObservedSessionLifecycle.Connected, bool ambiguous = false, bool awaitingTail = false)
+    {
+        var now = clock.GetUtcNow();
+        return new(Guid.NewGuid(), new SessionProcessKey(null, pid ?? receipt.ProcessId, start ?? receipt.ProcessStartUtcTicks), 0, lifecycle, null,
+            lifecycle == ObservedSessionLifecycle.Connected ? new ObservedSessionDestination(1818, Guid.NewGuid(), null, now) : null, null,
+            new ClientLogStreamId(Guid.NewGuid(), 1), SessionEvidenceConfidence.UnverifiedDiagnostic, now, ambiguous) { AwaitingLogTail = awaitingTail };
+    }
+    private static async Task<(LaunchOperation First, LaunchProcessReceipt Receipt)> StartedUnverified(Store store, Provider provider, LaunchCoordinator queue)
+    {
+        var first = await queue.EnqueueAsync(Profile("First"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+        await Until(() => Row(store, first).State == LaunchState.ClientStartedUnverified); await queue.WaitForActiveCleanupAsync(default);
+        Assert.Single(provider.Starts);
+        return (first, Row(store, first).ProcessReceipt!);
+    }
+
+    [Fact]
+    public async Task AJoinReportForTheExactReceiptEndsTheStabilizationWaitButNotBeforeTheLaunchSpacing()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2); await queue.InitializeAsync(default);
+        var (first, receipt) = await StartedUnverified(store, provider, queue);
+        await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination);
+        Assert.Equal(TimeSpan.FromSeconds(20), queue.ReadPacing().Remaining);
+        clock.Advance(TimeSpan.FromMilliseconds(500));
+        Assert.True(queue.ReleasePacingEarly([Joined(receipt, clock)]));
+        var pacing = queue.ReadPacing();
+        // The spacing is the floor: 2 s from the start, so 1.5 s more, now named as launch spacing.
+        Assert.Equal(LaunchPacingReason.BetweenStarts, pacing.Reason); Assert.Equal(TimeSpan.FromMilliseconds(1500), pacing.Remaining);
+        Assert.False(pacing.Ready); Assert.Equal(first.Intent.OperationId, pacing.OperationId);
+        // The same report again changes nothing more.
+        Assert.False(queue.ReleasePacingEarly([Joined(receipt, clock)])); Assert.Equal(TimeSpan.FromMilliseconds(1500), queue.ReadPacing().Remaining);
+        await Settle(); Assert.Single(provider.Starts);
+        clock.Advance(TimeSpan.FromMilliseconds(1499)); queue.Signal(); await Settle(); Assert.Single(provider.Starts);
+        clock.Advance(TimeSpan.FromMilliseconds(1)); queue.Signal(); await Until(() => provider.Starts.Count == 2);
+        Assert.Equal(LaunchState.ClientStartedUnverified, Row(store, first).State);
+        Assert.Equal(0, clock.TimersCreated); Assert.Equal(0, provider.Confirmations);
+    }
+
+    [Fact]
+    public async Task AJoinReportAfterTheLaunchSpacingEndsTheWaitAtOnceAndWakesTheQueueItself()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2); await queue.InitializeAsync(default);
+        var (_, receipt) = await StartedUnverified(store, provider, queue);
+        var second = await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination);
+        clock.Advance(TimeSpan.FromSeconds(8)); await Settle(); Assert.Single(provider.Starts);
+        Assert.True(queue.ReleasePacingEarly([Joined(receipt, clock)]));
+        var pacing = queue.ReadPacing(); Assert.True(pacing.Ready); Assert.Equal(TimeSpan.Zero, pacing.Remaining);
+        // No outside signal: the release itself wakes the queue, which starts the next request now.
+        await Until(() => provider.Starts.Count == 2);
+        Assert.Equal(LaunchState.ClientStartedUnverified, Row(store, second).State);
+    }
+
+    [Theory]
+    [InlineData("pid")]
+    [InlineData("start")]
+    [InlineData("operation")]
+    [InlineData("joining")]
+    [InlineData("disconnected")]
+    [InlineData("ambiguous")]
+    [InlineData("tail")]
+    [InlineData("none")]
+    public async Task AReportThatDoesNotNameTheExactReceiptOrIsNotAJoinLeavesTheFullWait(string mismatch)
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2); await queue.InitializeAsync(default);
+        var (first, receipt) = await StartedUnverified(store, provider, queue);
+        await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination);
+        clock.Advance(TimeSpan.FromSeconds(5));
+        bool released = mismatch switch
+        {
+            "pid" => queue.ReleasePacingEarly([Joined(receipt, clock, pid: receipt.ProcessId + 1)]),
+            "start" => queue.ReleasePacingEarly([Joined(receipt, clock, start: receipt.ProcessStartUtcTicks + 1)]),
+            "operation" => queue.ReleasePacingEarly(Guid.NewGuid(), receipt.ProcessId, receipt.ProcessStartUtcTicks),
+            "joining" => queue.ReleasePacingEarly([Joined(receipt, clock, lifecycle: ObservedSessionLifecycle.Joining)]),
+            "disconnected" => queue.ReleasePacingEarly([Joined(receipt, clock, lifecycle: ObservedSessionLifecycle.Disconnected)]),
+            "ambiguous" => queue.ReleasePacingEarly([Joined(receipt, clock, ambiguous: true)]),
+            "tail" => queue.ReleasePacingEarly([Joined(receipt, clock, awaitingTail: true)]),
+            _ => queue.ReleasePacingEarly([])
+        };
+        Assert.False(released);
+        var pacing = queue.ReadPacing();
+        Assert.Equal(LaunchPacingReason.StartupStabilization, pacing.Reason); Assert.Equal(TimeSpan.FromSeconds(15), pacing.Remaining);
+        Assert.Equal(first.Intent.OperationId, pacing.OperationId);
+        clock.Advance(TimeSpan.FromSeconds(14)); queue.Signal(); await Settle(); Assert.Single(provider.Starts);
+        clock.Advance(TimeSpan.FromSeconds(1)); queue.Signal(); await Until(() => provider.Starts.Count == 2);
+    }
+
+    [Fact]
+    public async Task AJoinReportNeverShortensARefusalBackoffAVerifiedArrivalStabilizationOrASpacingThatIsTheLongerWait()
+    {
+        var clock = new Clock();
+        // Refusal backoff: no client started, so no receipt can match; the doubled gap stays.
+        var refusedStore = new Store(); var refusing = new Provider(clock) { Refusals = 1 };
+        await using (var queue = Queue(refusedStore, refusing, clock, stabilization: 20, stagger: 2, jitter: Jitter(0)))
+        {
+            await queue.InitializeAsync(default);
+            var only = await queue.EnqueueAsync(Profile("Refused"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+            await Until(() => Row(refusedStore, only).State == LaunchState.Failed); await queue.WaitForActiveCleanupAsync(default);
+            Assert.False(queue.ReleasePacingEarly(only.Intent.OperationId, 12346, clock.GetUtcNow().AddMinutes(-1).UtcTicks));
+            Assert.Equal(LaunchPacingReason.RefusalBackoff, queue.ReadPacing().Reason); Assert.Equal(TimeSpan.FromSeconds(4), queue.ReadPacing().Remaining);
+        }
+        // Verified arrival: the stabilization before ConfirmArrival is the provider's confirmation wait, not pacing between accounts.
+        var verifiedStore = new Store(); var verified = new Provider(clock) { Status = ProviderLaunchStatus.VerifiedArrival };
+        await using (var queue = Queue(verifiedStore, verified, clock, 5, 2))
+        {
+            await queue.InitializeAsync(default);
+            var first = await queue.EnqueueAsync(Profile("Verified"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
+            await Until(() => Row(verifiedStore, first).State == LaunchState.Stabilizing && clock.ActiveTimers > 0);
+            var receipt = Row(verifiedStore, first).ProcessReceipt!;
+            Assert.False(queue.ReleasePacingEarly([Joined(receipt, clock)]));
+            Assert.Equal(LaunchPacingReason.StartupStabilization, queue.ReadPacing().Reason); Assert.Equal(TimeSpan.FromSeconds(5), queue.ReadPacing().Remaining);
+            Assert.Equal(0, verified.Confirmations);
+            clock.Advance(TimeSpan.FromSeconds(5)); await Until(() => Row(verifiedStore, first).State == LaunchState.Arrived); await queue.WaitForActiveCleanupAsync(default);
+        }
+        // Spacing longer than stabilization: the gate is already the spacing floor, so there is nothing to shorten.
+        var spacedStore = new Store(); var spaced = new Provider(clock);
+        await using (var queue = Queue(spacedStore, spaced, clock, stabilization: 20, stagger: 30))
+        {
+            await queue.InitializeAsync(default);
+            var (_, receipt) = await StartedUnverified(spacedStore, spaced, queue);
+            clock.Advance(TimeSpan.FromSeconds(3));
+            Assert.False(queue.ReleasePacingEarly([Joined(receipt, clock)]));
+            Assert.Equal(LaunchPacingReason.BetweenStarts, queue.ReadPacing().Reason); Assert.Equal(TimeSpan.FromSeconds(27), queue.ReadPacing().Remaining);
+        }
+    }
+
+    [Theory]
+    [InlineData("observation")]
+    [InlineData("admission")]
+    public async Task AShortenedWaitStillRequiresAFreshExactObservationAndHealthyAdmission(string gate)
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock); bool refreshed = false;
+        await using var queue = Queue(store, provider, clock, stabilization: 20, stagger: 2,
+            observed: rows => refreshed || gate != "observation" ? Fresh(rows) : new HashSet<Guid>(),
+            admission: _ => new(refreshed || gate != "admission" || provider.Starts.Count == 0, "Synthetic resource state"));
+        await queue.InitializeAsync(default);
+        var (_, receipt) = await StartedUnverified(store, provider, queue);
+        await queue.EnqueueAsync(Profile("Second"), default, Binding, Destination);
+        clock.Advance(TimeSpan.FromSeconds(8));
+        Assert.True(queue.ReleasePacingEarly([Joined(receipt, clock)])); Assert.True(queue.ReadPacing().Ready);
+        await Settle(); queue.Signal(); await Settle(); Assert.Single(provider.Starts);
+        refreshed = true; queue.Signal(); await Until(() => provider.Starts.Count == 2);
+    }
+
+    [Fact]
+    public async Task AJoinReportAfterTheMonotonicClockFailedChangesNothing()
+    {
+        var store = new Store(); var clock = new Clock(); var provider = new Provider(clock);
+        await using var queue = Queue(store, provider, clock); await queue.InitializeAsync(default);
+        var (first, receipt) = await StartedUnverified(store, provider, queue);
+        clock.ThrowTimestamp = true;
+        var failed = queue.ReadPacing(); Assert.Equal(LaunchPacingReason.ClockUnavailable, failed.Reason);
+        clock.ThrowTimestamp = false;
+        Assert.False(queue.ReleasePacingEarly([Joined(receipt, clock)]));
+        Assert.Equal(failed, queue.ReadPacing()); Assert.Equal(first.Intent.OperationId, failed.OperationId);
     }
 
     private static ManagerPerformancePolicy Custom(int stabilization, int stagger) => new(ManagerPerformanceProfile.Custom, 1000, 1000, stagger, stabilization);

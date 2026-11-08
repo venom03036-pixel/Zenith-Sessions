@@ -49,6 +49,26 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         Assert.Equal(NativeHandoffAttemptStatus.StartedUnverified,attempt.Status);Assert.Equal(1,starter.Calls);
     }
 
+    // R-api-7: a direct-ticket capture (TicketIssued) is prepared exactly like a captured official-page request, through the
+    // same same-player verification and final grant, and the mode travels only as a fixed fact.
+    [Fact]
+    public async Task ADirectTicketCaptureIsPreparedThroughTheSameVerificationAndGrant()
+    {
+        await using var f=await Fixture.Open(_root);using var browser=new Browser();
+        browser.Run=(context,_,_)=>Task.FromResult(new NativeBrowserCapture(RobloxHandoffProbeOutcome.TicketIssued,SyntheticHandoff.Capture(context,new HandoffClock()),
+            new(Current),NativeHandoffCaptureStatus.AcceptedSourceGrammar,NativeLaunchMode.DirectTicket));
+        var result=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+        Assert.Equal(NativeHandoffPreparationStatus.Ready,result.Status);using var prepared=Assert.IsType<NativeHandoffPreparation>(result.Preparation);
+        Assert.Equal(RobloxHandoffProbeOutcome.TicketIssued,result.BrowserFacts?.Outcome);Assert.Equal(NativeLaunchMode.DirectTicket,result.BrowserFacts?.Mode);
+        Assert.Equal(new[]{Current},f.Client.Seen);var saved=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
+        Assert.Equal(Current,saved.Record!.SessionCookie);Assert.Equal(3,saved.Record.Generation);Assert.Equal(saved,prepared.FinalGrant);
+        // A typed ticket refusal is a rejected capture: no grant is restored and the pending record stays fenced.
+        using var refused=new Browser{Run=(_,_,_)=>Task.FromResult(new NativeBrowserCapture(RobloxHandoffProbeOutcome.RateLimited,mode:NativeLaunchMode.DirectTicket))};
+        var limited=await f.Service.PrepareNativeHandoffAsync(f.Intent with{OperationId=Guid.NewGuid(),AuthorizationGeneration=3},refused,default);
+        Assert.Equal(NativeHandoffPreparationStatus.CaptureRejected,limited.Status);Assert.Equal(RobloxHandoffProbeOutcome.RateLimited,limited.BrowserFacts?.Outcome);
+        Assert.Equal(AuthorizationHealth.SignInRequired,(await f.Vault.ReadAsync(f.Profile.Id,default))!.Health);
+    }
+
     [Theory]
     [InlineData("user")] [InlineData("generation")] [InlineData("revision")] [InlineData("target")]
     [InlineData("missing")] [InlineData("unlinked")] [InlineData("expired")]
@@ -180,6 +200,25 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         Assert.Equal(AuthorizationHealth.Linked,after.Record!.Health);Assert.Equal(before,after);
         Assert.Equal(expected,result.Status);Assert.Null(result.Preparation);Assert.Null(result.BrowserFacts);
         Assert.Equal(0,browser.Calls);Assert.Empty(f.Client.Seen);
+    }
+
+    // O-C1-3: a preparation for an account that is being removed is refused before its grant is reserved (N-B1a-1), and the
+    // status says the account is being removed, not that another preparation was owned.
+    [Fact]
+    public async Task PreparationForAProfileBeingRemovedSaysTheProfileIsRemovedAndLeavesTheLinkedGrantUntouched()
+    {
+        await using var f=await Fixture.Open(_root);
+        using var browser=new Browser{Run=(_,_,_)=>throw new InvalidOperationException("A refused preparation was started.")};
+        var before=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
+        using(await f.Service.BeginProfileRemovalAsync([f.Profile.Id],default))
+        {
+            var result=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+            Assert.Equal(NativeHandoffPreparationStatus.ProfileRemoved,result.Status);Assert.Null(result.Preparation);Assert.Null(result.BrowserFacts);
+            Assert.Equal(before,await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default));Assert.Equal(0,browser.Calls);Assert.Empty(f.Client.Seen);
+        }
+        browser.Run=null;
+        var ready=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+        Assert.Equal(NativeHandoffPreparationStatus.Ready,ready.Status);ready.Preparation?.Dispose();
     }
 
     [Fact]

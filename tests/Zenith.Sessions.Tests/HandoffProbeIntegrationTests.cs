@@ -96,6 +96,7 @@ public sealed partial class ClientWindowIntegrationTests
     [Theory]
     [InlineData(RobloxHandoffProbeOutcome.Cancelled,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.Busy,"HandoffNotCompleted")]
+    [InlineData(RobloxHandoffProbeOutcome.ProfileRemoved,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.TimedOut,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.OriginRejected,"OperationFailed")]
     public Task InspectionThatEndsWithoutAResultIsNotRecordedAsAnError(RobloxHandoffProbeOutcome outcome,string expectedKind)=>OnUi(async()=>
@@ -128,6 +129,15 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Contains("\"HandoffNotCompleted\"",shell.BuildDiagnosticReport());
         }
     });
+    // O-C1-3: an inspection refused because the selected account is being removed (N-B1a-1) says so; it is neither
+    // "another account operation" nor a failed inspection, and no page was opened.
+    [Fact]
+    public void AnInspectionRefusedForAnAccountBeingRemovedSaysTheAccountIsBeingRemoved()
+    {
+        string status=ShellViewModel.DescribeHandoffResult(new(RobloxHandoffProbeOutcome.ProfileRemoved),6564161046);
+        Assert.Contains("being removed",status);Assert.Contains("no page was opened",status);
+        Assert.DoesNotContain("Another account operation",status);Assert.DoesNotContain("failed",status);
+    }
     [Fact]
     public Task LockFencesLateBrowserInspectionAndKeepsItsStopMessage()=>OnUi(async()=>
     {
@@ -452,16 +462,57 @@ public sealed partial class ClientWindowIntegrationTests
     public async Task ProbeDeadlineIsReportedAsTimedOutAndRemovesItsFolder()
     {
         await using var ui=await GatedUiThread.StartAsync();
-        var deadline=new ManualDeadline();
-        await using var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher,deadline);
+        // The probe arms two deadlines: the inspection's, fired here, and Exit's join limit at disposal (Z1559).
+        var deadlines=new ManualDeadlines();
+        await using var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher,deadlines);
         using var credential=new RobloxSessionCredential("synthetic-only");
         var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
         string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
-        Assert.Equal(TimeSpan.FromMinutes(3),deadline.Requested);
-        await deadline.FireAsync();ui.Release();
+        await deadlines.FireAsync(TimeSpan.FromMinutes(3));ui.Release();
         using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
         Assert.Equal(RobloxHandoffProbeOutcome.TimedOut,result.Result.Outcome);
         Assert.False(Directory.Exists(folder),"An expired inspection left its private folder behind.");
+    }
+    // Z1559 (owner decision 2026-11-08, option a): WebView2 initialization has no cancellation contract, so an inspection
+    // that never returns held Exit open for good. Exit now waits at most ten seconds for the inspection and its cleanup
+    // together, then releases the folder's lease and leaves the marked folder for the startup sweep. The gate stands in
+    // for an initialization that never returns: the probe has admitted its folder and waits for its window.
+    [Fact]
+    public async Task ExitStopsWaitingForAnInspectionThatNeverReturnsAfterTenSecondsAndReleasesItsFolderForTheNextStart()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        var deadlines=new ManualDeadlines();
+        var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher,deadlines);
+        using var credential=new RobloxSessionCredential("synthetic-only");
+        var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default);
+        try
+        {
+            string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+            await deadlines.ArmedAsync(TimeSpan.FromMinutes(3));
+            var exit=probe.DisposeAsync().AsTask();
+            var armed=deadlines.ArmedAsync(TimeSpan.FromSeconds(10));
+            Assert.True(ReferenceEquals(armed,await Task.WhenAny(armed,Task.Delay(TimeSpan.FromSeconds(5)))),"Exit joined the inspection with no limit of its own.");
+            await armed;
+            Assert.False(exit.IsCompleted,"Exit finished before its limit while the inspection had not returned.");
+            await deadlines.FireAsync(TimeSpan.FromSeconds(10));
+            Assert.Same(exit,await Task.WhenAny(exit,Task.Delay(TimeSpan.FromSeconds(5))));
+            Assert.IsType<TimeoutException>(exit.Exception?.InnerException);
+            Assert.False(running.IsCompleted,"Exit's limit ended the inspection itself.");
+            // The lease is released although the inspection has not returned; the folder keeps its marker and waits for the
+            // next start, whose sweep removes it.
+            Assert.False(SignInProfileDirectory.HasLiveOwner(_root));
+            Assert.True(File.Exists(Path.Combine(folder,".zenith-private-signin")),"The released folder lost its ownership marker.");
+            Assert.Equal(new SignInSweepResult(1,0),SignInProfileDirectory.SweepOwned(_root,default));
+            Assert.False(Directory.Exists(folder));
+        }
+        // Test hygiene only: the gate opens so the inspection returns, cancelled by Exit, and nothing waits on it afterwards.
+        finally
+        {
+            ui.Release();
+            using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(RobloxHandoffProbeOutcome.Cancelled,result.Result.Outcome);
+            await probe.DisposeAsync().AsTask().ConfigureAwait(ConfigureAwaitOptions.SuppressThrowing|ConfigureAwaitOptions.ContinueOnCapturedContext);
+        }
     }
     [Fact]
     public Task RemovingTheInspectedProfileWaitsForItsActualBrowserOwner()=>OnUi(async()=>

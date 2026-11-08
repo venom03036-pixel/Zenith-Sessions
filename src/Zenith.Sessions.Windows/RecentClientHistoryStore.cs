@@ -36,6 +36,7 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
     {
         public Evidence InlineEvidence() => new(Hung, Disconnected, Reason, Checked, Complete, Fault, Code, Dumps);
     }
+    // Forced (R-instances-12) is one more optional evidence field: absent unless Zenith ended the client by force.
     private sealed record Evidence(
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Hung = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Disconnected = null,
@@ -44,7 +45,8 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Complete = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Fault = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? Code = null,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null)
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Forced = null)
     {
         public static Evidence None { get; } = new();
     }
@@ -220,7 +222,7 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         entry.LastKnownDestination?.PlaceId, entry.LastKnownDestination?.JobId, entry.LastKnownDestination?.UniverseId, entry.LastKnownDestination?.ObservedUtc.UtcTicks);
     private static Evidence ToEvidence(RecentClientHistoryEntry entry) => new(entry.NotRespondingUtc?.UtcTicks, entry.DisconnectedUtc?.UtcTicks,
         entry.DisconnectReason, entry.FaultCheck?.CheckedUtc.UtcTicks, entry.FaultCheck?.Complete, entry.FaultCheck?.FaultRecordedUtc?.UtcTicks,
-        entry.FaultCheck?.ExceptionCode, entry.FaultCheck?.CrashDumps);
+        entry.FaultCheck?.ExceptionCode, entry.FaultCheck?.CrashDumps, entry.ForcedEndUtc?.UtcTicks);
     private static RecentClientHistoryEntry ToEntry(Stored item, Evidence end)
     {
         if ((item.Place.HasValue || item.Job.HasValue || item.Universe.HasValue || item.DestinationTime.HasValue) && !(item.Place.HasValue && item.Job.HasValue && item.DestinationTime.HasValue)) throw new InvalidDataException();
@@ -230,7 +232,8 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
             item.Close is { } close ? Utc(close) : null, item.User, item.UserTime is { } userTime ? Utc(userTime) : null,
             item.Place is { } place ? new(place, item.Job!.Value, item.Universe, Utc(item.DestinationTime!.Value)) : null,
             end.Hung is { } hung ? Utc(hung) : null, end.Disconnected is { } disconnected ? Utc(disconnected) : null, end.Reason,
-            end.Checked is { } checkedAt ? new(Utc(checkedAt), end.Complete!.Value, end.Fault is { } fault ? Utc(fault) : null, end.Code, end.Dumps!.Value) : null)
+            end.Checked is { } checkedAt ? new(Utc(checkedAt), end.Complete!.Value, end.Fault is { } fault ? Utc(fault) : null, end.Code, end.Dumps!.Value) : null,
+            end.Forced is { } forced ? Utc(forced) : null)
             .Validated(ended: true);
     }
     private static DateTimeOffset Utc(long ticks) => new(ticks, TimeSpan.Zero);

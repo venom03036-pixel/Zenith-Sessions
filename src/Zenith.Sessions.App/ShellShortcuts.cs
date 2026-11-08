@@ -16,7 +16,7 @@ public sealed record ShellShortcut(Key Key, ModifierKeys Modifiers, ShellShortcu
 
 /// <summary>
 /// The manager window's keyboard shortcuts. MainWindow builds its key bindings from this table and the Guide lists it, so the
-/// two cannot drift apart. F12 Panic comes first (Rule 11); Ctrl+1 to Ctrl+8 follow the sidebar order. These keys belong to
+/// two cannot drift apart. F12 Panic comes first (Rule 11); Ctrl+1 to Ctrl+9 follow the sidebar order. These keys belong to
 /// this window only: none of them is registered with Windows. The global panic shortcut is a separate setting.
 /// </summary>
 public static class ShellShortcuts
@@ -32,6 +32,7 @@ public static class ShellShortcuts
         new(Key.D6, ModifierKeys.Control, ShellShortcutAction.Navigate, "Diagnostics", "Diagnostics"),
         new(Key.D7, ModifierKeys.Control, ShellShortcutAction.Navigate, "Settings", "Settings"),
         new(Key.D8, ModifierKeys.Control, ShellShortcutAction.Navigate, "Guide", "Guide"),
+        new(Key.D9, ModifierKeys.Control, ShellShortcutAction.Navigate, "News", "News"),
         new(Key.F, ModifierKeys.Control, ShellShortcutAction.FindOnPage, null, "Go to the search box on Accounts, Join a game, Diagnostics or Settings"),
     ]);
 

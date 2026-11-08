@@ -8,12 +8,18 @@ public sealed record TargetedInputTarget(Guid RegistrationId, int ProcessId, lon
         && Window != 0 && Window != (nint)0xffff && ContentBounds.IsValid && GeometryGeneration > 0;
 }
 
-public enum TargetedInputPurpose { MacroPlayback, BroadcastFollower, OwnedWindowDiagnostic }
+// KeepAwake is appended (R-instances-17): one F13 press per client every few minutes, through this owner like any other input.
+public enum TargetedInputPurpose { MacroPlayback, BroadcastFollower, OwnedWindowDiagnostic, KeepAwake }
 public enum TargetedInputKind { KeyDown, KeyUp, LeftDown, LeftUp, RightDown, RightUp, MiddleDown, MiddleUp, Move, Wheel }
 public enum TargetedInputRunState { Running, Pausing, Paused, Resuming, Stopping, Stopped, Faulted, Clearing }
 public enum TargetedInputValidation { Current, GeometryChanged, Gone, Unavailable }
 public enum TargetedInputSubmission { Queued, Rejected, Uncertain }
 public enum TargetedInputDispatchStatus { Submitted, Busy, Invalid, Inactive, Cancelled, Paused, Faulted }
+/// <summary>
+/// Why a run's owner stops it and releases its lease. The set is closed and the owner keeps each reason's text, so
+/// another assembly can say why without writing the explanation or reaching the owner's internals.
+/// </summary>
+public enum TargetedInputStopReason { User, EmergencyStop, Completed, RuntimeLimit, AfterFailure, CompanionStopped, RunnerClosed, NotStarted, KeepAwakeSent }
 
 /// <summary>Client-content physical coordinates; no screen-coordinate reinterpretation or pointer/camera conversion.</summary>
 public readonly record struct TargetedInputSignal(TargetedInputKind Kind, int Key = 0, int X = 0, int Y = 0, int WheelDelta = 0)

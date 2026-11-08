@@ -224,6 +224,34 @@ public sealed class IdleLockTests : IDisposable
         return XDocument.Load(stream);
     }
 
+    // Pins what MANAGER-IMPLEMENTATION.md says about errors and locks: the idle lock is a Lock, so an error already showing
+    // when it fires is cleared like any Lock, while a failure raised after the lock began is still the error after Unlock.
+    [Fact]
+    public Task AnErrorShowingWhenTheIdleLockFiresIsClearedLikeAnyLockAndOneRaisedWhileLockedWaitsForUnlock() => OnDispatcherAsync(async () =>
+    {
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"IdleLockMinutes\":5}");
+        var clock = new ManualClock();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), idleClock: clock);
+        await vm.InitializeAsync();
+        Assert.Equal(5, vm.IdleLockMinutes);
+
+        // A failure in the minutes before the idle lock fires, while the user is away: the idle lock is a Lock, so it clears
+        // the error like any Lock. Whether these locks should keep an existing error is an owner decision, not a doc guarantee.
+        vm.Fail(new IOException("fixture"), ManagerSubsystem.Library);
+        Assert.True(vm.HasErrorNotice, "A failure was not shown as an error.");
+        clock.Advance(TimeSpan.FromMinutes(5)); vm.CheckIdleLock();
+        Assert.True(vm.IsLocked, "Five minutes without input did not lock the manager.");
+        Assert.False(vm.HasErrorNotice, "The idle lock kept an error that was showing when it fired; the design says any lock clears it like Lock.");
+
+        // A failure raised after the idle lock began is still the error after Unlock.
+        vm.Fail(new IOException("fixture"), ManagerSubsystem.Library);
+        vm.Unlock.Execute(null);
+        Assert.False(vm.IsLocked);
+        Assert.True(vm.ErrorNotice.Contains("could not finish", StringComparison.Ordinal), "A failure raised while the idle lock held was gone after Unlock.");
+        Assert.Contains("unlocked", vm.Notice, StringComparison.Ordinal);
+    });
+
     private sealed class ManualClock : TimeProvider
     {
         private long _ticks = 1;

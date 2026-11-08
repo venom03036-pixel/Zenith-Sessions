@@ -176,7 +176,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
         }
     }
 
-    private static (IReadOnlyList<RobloxPublicServer> Servers, string? NextCursor) ParsePage(JsonElement root, long placeId, int limit, DateTimeOffset observed)
+    internal static (IReadOnlyList<RobloxPublicServer> Servers, string? NextCursor) ParsePage(JsonElement root, long placeId, int limit, DateTimeOffset observed, bool includeFriends = false)
     {
         RequireObject(root);
         if (!root.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Array || data.GetArrayLength() > limit)
@@ -206,7 +206,9 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
             }
             int? ping = row.TryGetProperty("ping", out var pingValue) && pingValue.ValueKind != JsonValueKind.Null
                 ? ReadInt(row, "ping", 0, 3600000) : null;
-            rows.Add(new(placeId, jobId!, playing, maxPlayers, fps, ping, observed));
+            int? friends = includeFriends && row.TryGetProperty("friends", out var friendsValue) && friendsValue.ValueKind != JsonValueKind.Null
+                ? ReadInt(row, "friends", 0, 1000000) : null;
+            rows.Add(new(placeId, jobId!, playing, maxPlayers, fps, ping, observed, friends));
         }
         return (rows, cursor);
     }

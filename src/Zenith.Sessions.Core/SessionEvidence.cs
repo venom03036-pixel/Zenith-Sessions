@@ -67,6 +67,15 @@ public sealed record SessionEvidenceSnapshot(Guid SessionId, SessionProcessKey P
     public bool PlayerInitiatedDisconnect => ClientLogObservation.IsPlayerInitiated(DisconnectReason);
     /// <summary>When the client last logged a human-check request since its latest join; display only.</summary>
     public DateTimeOffset? HumanCheckObservedUtc { get; init; }
+    /// <summary>
+    /// The bound log still says Connected, but its destination fact is older than the registry's evidence age, so it
+    /// moved to <see cref="LastKnownDestination"/> and <see cref="CurrentDestination"/> is null (owner decision
+    /// 2026-11-08, R-instances-2). Display may show that destination with how long ago it was last confirmed; it is
+    /// not a current claim, so nothing that needs fresh evidence (Join same server, Copy) may use it. It ends with
+    /// the next join, teleport, disconnect or exit, a lost or lapsed binding, or an unread log tail.
+    /// </summary>
+    public bool ConnectedToLastKnownDestination => Lifecycle == ObservedSessionLifecycle.Connected && !Ambiguous && !AwaitingLogTail
+        && CurrentDestination is null && LastKnownDestination is not null;
 }
 
 /// <summary>
@@ -234,8 +243,11 @@ public sealed class SessionEvidenceRegistry
                 _owners[observation.Stream] = null;
                 return false;
             }
-            // Output is script-writable. A second join while connected, without a transition, is conflicting data.
-            if (observation.Fact == ClientLogFact.Joining && entry.Snapshot.Lifecycle == ObservedSessionLifecycle.Connected)
+            // Output is script-writable. A second join while connected, without a transition, is conflicting data
+            // while the connection's own fact is within the evidence age. After that the state had always been
+            // forgotten, so such a join is a new join; a destination kept for display does not change that.
+            if (observation.Fact == ClientLogFact.Joining && entry.Snapshot.Lifecycle == ObservedSessionLifecycle.Connected
+                && entry.Snapshot.CurrentDestination is { } live && Fresh(live.ObservedUtc, now))
             {
                 Invalidate(entry, now, ObservedSessionLifecycle.Unknown, true);
                 _owners[observation.Stream] = null;
@@ -401,11 +413,18 @@ public sealed class SessionEvidenceRegistry
                 }
                 // Process liveness, a new username line or unrelated log activity must not
                 // renew an old server claim. Each kind of evidence expires independently.
-                if(entry.Snapshot.CurrentDestination is { } destination && !Fresh(destination.ObservedUtc,now)
-                    || entry.Pending is { } pending && !Fresh(pending.ObservedUtc,now))
+                if(entry.Pending is { } pending && !Fresh(pending.ObservedUtc,now))
                     Invalidate(entry,now,ObservedSessionLifecycle.Unknown,false);
-                else if(entry.Snapshot.ObservedUserId is not null && (entry.Snapshot.UserIdentityObservedUtc is not { } identityTime || !Fresh(identityTime,now)))
-                    entry.Snapshot=entry.Snapshot with {ObservedUserId=null,UserIdentityObservedUtc=null,Confidence=SessionEvidenceConfidence.Unknown};
+                else
+                {
+                    // An aged Connected destination becomes last-known while the same bound log still says Connected
+                    // (ConnectedToLastKnownDestination). The binding, lifecycle and read position are kept, so a later
+                    // transition is still read in order; the claim itself is not renewed. Owner decision 2026-11-08.
+                    if(entry.Snapshot.CurrentDestination is { } destination && !Fresh(destination.ObservedUtc,now))
+                    { RememberCurrent(entry); entry.Snapshot=entry.Snapshot with {CurrentDestination=null}; }
+                    if(entry.Snapshot.ObservedUserId is not null && (entry.Snapshot.UserIdentityObservedUtc is not { } identityTime || !Fresh(identityTime,now)))
+                        entry.Snapshot=entry.Snapshot with {ObservedUserId=null,UserIdentityObservedUtc=null,Confidence=SessionEvidenceConfidence.Unknown};
+                }
             }
             return Array.AsReadOnly(_entries.Values.Select(static entry => entry.AwaitingLogTail
                 ? entry.Snapshot with

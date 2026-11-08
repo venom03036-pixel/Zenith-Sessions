@@ -16,7 +16,7 @@ using Zenith.Sessions.Windows;
 namespace Zenith.Sessions.App;
 
 /// <summary>One visible, app-owned private Roblox sign-in. Only an explicit Save reads its own cookie manager.</summary>
-public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : IRobloxSessionSignIn, IAsyncDisposable
+public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher, Func<bool>? retainBrowserData = null) : IRobloxSessionSignIn, IAsyncDisposable
 {
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
     // How long a cleanup waits for its browser's exit, well past CleanupObservation. Until then the latch says the browser is
@@ -62,7 +62,8 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                 // inner exception. Only leftover data kept for review names that folder; any other storage failure (remote,
                 // redirected, unwritable or full storage, or a file another program has open) asks for usable storage. A folder
                 // another owner kept after its cleanup failed is held until Zenith closes, so it asks for a restart, not a wait.
-                try { directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false); }
+                bool retain = retainBrowserData?.Invoke() == true;
+                try { directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, retain, timeout.Token), timeout.Token).ConfigureAwait(false); }
                 catch (SignInDirectoryInUseException ex) when (ex.KeptAfterFailedCleanup) { throw new AccountLinkException(FolderKept); }
                 catch (SignInDirectoryInUseException) { throw new AccountLinkException(FolderInUse); }
                 catch (SignInDirectoryNeedsReviewException) { throw new AccountLinkException(FolderNeedsReview); }
@@ -98,7 +99,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
         actions.Children.Add(save); actions.Children.Add(cancel);
         var footer = new StackPanel { Margin = new Thickness(16) }; footer.Children.Add(actions); footer.Children.Add(status);
-        var address = new TextBlock { Text = "https://www.roblox.com/login · private sign-in for this account", Margin = new Thickness(16), TextWrapping = TextWrapping.Wrap };
+        var address = new TextBlock { Text = "https://www.roblox.com/login · " + (directory.RetainAfterUse ? "kept device data; saved accounts remain separate" : "private sign-in for this account"), Margin = new Thickness(16), TextWrapping = TextWrapping.Wrap };
         var content = new DockPanel(); DockPanel.SetDock(address, Dock.Top); DockPanel.SetDock(footer, Dock.Bottom);
         content.Children.Add(address); content.Children.Add(footer); content.Children.Add(browser);
         var window = new Window { Title = "Sign in with Roblox — Zenith Sessions", Width = 700, Height = 820, MinWidth = 480, MinHeight = 500,
@@ -143,7 +144,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             if (!string.Equals(Path.GetFullPath(environment.UserDataFolder), Path.GetFullPath(directory.Path), StringComparison.OrdinalIgnoreCase))
                 throw new AccountLinkException("WebView2 redirected the private sign-in folder. No browser sign-in was opened or saved.");
             ct.ThrowIfCancellationRequested();
-            var options = environment.CreateCoreWebView2ControllerOptions(); options.IsInPrivateModeEnabled = true;
+            var options = environment.CreateCoreWebView2ControllerOptions(); options.IsInPrivateModeEnabled = !directory.RetainAfterUse;
             options.ProfileName = "ZenithSignIn";
             initializationStarted = true;
             await browser.EnsureCoreWebView2Async(environment, options);
@@ -163,6 +164,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             core.DownloadStarting += DownloadStarting;
             core.PermissionRequested += PermissionRequested;
             core.ProcessFailed += ProcessFailed; navigationInstalled = true;
+            if (directory.RetainAfterUse) ClearRobloxSessionCookies(core.CookieManager.DeleteCookies);
             core.Navigate("https://www.roblox.com/login");
             save.IsEnabled = true;
             status.Text = "Complete sign-in on Roblox, including any security challenge. Then choose Save this Roblox sign-in. Zenith saves the session with Windows protection, never your password.";
@@ -183,7 +185,12 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             // clears the latch. Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
             var live = core; var initialized = initializationStarted ? environment : null;
             cleaned = await SettleCleanupAsync(TeardownAsync(
-                live is null ? null : () => { live.Stop(); live.CookieManager.DeleteAllCookies(); },
+                live is null ? null : () =>
+                {
+                    live.Stop();
+                    if (directory.RetainAfterUse) ClearRobloxSessionCookies(live.CookieManager.DeleteCookies);
+                    else live.CookieManager.DeleteAllCookies();
+                },
                 browser.Dispose,
                 () => { closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close(); },
                 controllerReady, initialized is null ? null : () => initialized.GetProcessInfos().Count, browserExited.Task, directory,
@@ -202,7 +209,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             try
             {
                 ct.ThrowIfCancellationRequested();
-                if (!RobloxSignInNavigation.IsAllowed(browser.Source?.AbsoluteUri)) throw new AccountLinkException("Return to Roblox’s own sign-in page before saving.");
+                if (!RobloxSignInNavigation.CanSave(browser.Source?.AbsoluteUri)) throw new AccountLinkException("Return to Roblox’s own sign-in page before saving.");
                 var credential = await OwnedRobloxSessionCookie.ReadAsync(browser.CoreWebView2.CookieManager, ct);
                 if (!completion.TrySetResult(credential)) credential.Dispose();
             }
@@ -214,7 +221,13 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         }
         void NavigationStarting(object? _, CoreWebView2NavigationStartingEventArgs e)
         {
-            if (!RobloxSignInNavigation.IsAllowed(e.Uri)) { e.Cancel = true; status.Text = "This window stays on Roblox’s own HTTPS pages. Use a Roblox passkey, password, or supported sign-in option on this page."; }
+            if (!RobloxSignInNavigation.IsAllowed(e.Uri)) { e.Cancel = true; status.Text = "This window permits Roblox and the Google or Apple sign-in pages. Return to Roblox to save the sign-in."; }
+            else if (!RobloxSignInNavigation.CanSave(e.Uri))
+            {
+                // Provider sessions may include storage beyond cookies. Never preserve their signed-in browser data.
+                directory.DiscardAfterUse();
+                address.Text = "Google or Apple sign-in · this browser data will be removed when the window closes";
+            }
         }
         // Exactly the tested bodies: the cancel runs first and unconditionally, so this window never forwards a launch.
         void ExternalScheme(object? _, CoreWebView2LaunchingExternalUriSchemeEventArgs e)
@@ -259,6 +272,11 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         cancel();
         showStatus(ExternalLaunchRefused);
     }
+
+    /// <summary>Delete this credential name across the app-owned profile without reading any provider cookies.
+    /// A null URI means all domains/paths for this name in WebView2; device/tracking cookies remain.</summary>
+    internal static void ClearRobloxSessionCookies(Action<string, string?> deleteCookies)
+        => deleteCookies(".ROBLOSECURITY", null);
 
     /// <summary>The body of the FrameNavigationStarting handler. A child frame that <see cref="RobloxSignInNavigation.IsAllowedFrame"/>
     /// refuses is cancelled first and then explained: an app's protocol, such as the hidden roblox-player: frame behind
@@ -310,7 +328,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             if (awaitBrowserExit) { await browserExited.WaitAsync(BrowserExitLimit, time ?? TimeProvider.System); exitConfirmed = true; }
             if (priorProblem && !awaitBrowserExit) throw new IOException("Private sign-in cleanup needs review; its files were preserved.");
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
-            await Task.Run(() => directory.Remove(deadline.Token));
+            await Task.Run(() => directory.CompleteAfterBrowserExit(priorProblem, deadline.Token));
         }
         catch (Exception) { directory.KeepAfterFailedCleanup(); throw; }
         // A browser whose exit was never confirmed may still be live, so its guards stay installed.

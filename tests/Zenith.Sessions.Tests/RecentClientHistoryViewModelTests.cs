@@ -239,6 +239,7 @@ public sealed class RecentClientHistoryViewModelTests
                 ClientEndCause.NotResponding => "a hang at its last observation",
                 ClientEndCause.Disconnected or ClientEndCause.LeftGame or ClientEndCause.LaunchedElsewhere => "a disconnect in its log",
                 ClientEndCause.PossibleCrash => "a Roblox crash dump written as it ended",
+                ClientEndCause.ForcedEnd => "a Force close you confirmed",
                 ClientEndCause.Unknown => "Otherwise the cause is unknown",
                 _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Name this end cause's evidence in the history help text.")
             }, help);

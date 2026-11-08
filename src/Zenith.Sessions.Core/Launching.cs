@@ -89,10 +89,12 @@ public static class LaunchDescriptions
 {
     public static string Explain(LaunchProblem problem)=>problem switch
     {
-        LaunchProblem.ProviderUnavailable=>"Native account launch provider unavailable; no client was started.",
+        // Ordinary and group requests are recorded with this until one explicit trial is recorded as verified for the saved launch
+        // mode and the selected installation (R-launch-0); the Shell's installation settings say which is missing.
+        LaunchProblem.ProviderUnavailable=>"Native account launch is not available for ordinary requests; no client was started. It turns on once a native trial is recorded as verified for the saved launch mode and the selected installation (Settings → Roblox installation); queue this account again afterwards.",
         LaunchProblem.IdentityUnverified=>"Link and verify the intended account before launching.",
         LaunchProblem.InsufficientCapacity=>"Waiting for fresh measurements and sufficient resource headroom.",
-        LaunchProblem.StartupRejected=>"The provider refused startup before a client started. Launch evidence on Join a game shows which check stopped it.",
+        LaunchProblem.StartupRejected=>"The provider refused startup before a client started. While Zenith stays open, this request's native launch stages in Launch evidence on Join a game may show which check stopped it; a restart clears them, and a refusal before any stage was recorded leaves none.",
         LaunchProblem.ArrivalUnverified=>"The correct account and destination were not verified. Reconcile before retrying.",
         LaunchProblem.TimedOut=>"Startup exceeded its deadline. A client may exist; reconcile before retrying.",
         LaunchProblem.CancelledDuringStartup=>"Startup was cancelled. A client may exist; reconcile before retrying.",
@@ -102,7 +104,11 @@ public static class LaunchDescriptions
         LaunchProblem.ClientStartedUnverified=>"A client process was reported started. Its account, current liveness and destination are unverified; review before retrying.",
         // Cause-neutral: the provider's Rejected answer covers the saved sign-in, client trust, a busy
         // provider, a closed page and local faults; only the request's native launch stages name which.
-        LaunchProblem.PreparationRejected=>"Preparation ended before native startup. The saved sign-in, client trust, a busy provider, a closed page or a local fault can cause this; Launch evidence on Join a game shows which. Then create a fresh request.",
+        // The pointer to them is a "may", not a promise (O-C2-3): the stages are memory-only snapshots
+        // (INativeLaunchDiagnosticSource, this app run, at most 128) while this Failed row is saved and
+        // reopens after a restart, and the coordinator also records this problem for a fault it caught
+        // itself or an invalid prepared handle (LaunchCoordinatorPreparation), where no stage was recorded.
+        LaunchProblem.PreparationRejected=>"Preparation ended before native startup. The saved sign-in, client trust, a busy provider, a closed page or a local fault can cause this. While Zenith stays open, this request's native launch stages in Launch evidence on Join a game may show which; a restart clears them, and a fault caught before any stage was recorded leaves none. Then create a fresh request.",
         LaunchProblem.PreparationTimedOut=>"Preparation exceeded its deadline before native startup. Its actual worker must finish cleanup before another attempt.",
         LaunchProblem.PreparationExpired=>"The temporary launch request expired before native startup. Prepare a fresh request.",
         LaunchProblem.PreparationCleanupFailed=>"Launch preparation cleanup could not be confirmed. Preserve the data and close Zenith before retrying.",
@@ -119,8 +125,10 @@ public static class LaunchDescriptions
     {
         // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
         // untrusted client and a closed trial page, so the queue cannot name one cause. The queue rows do not
-        // hold those details; each request's native launch stages in Launch evidence do.
-        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's native launch stages in Launch evidence on Join a game (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
+        // hold those details; each request's native launch stages in Launch evidence do. "Refused" is that
+        // answer, the Guide's word for it, not a cause; "ended before any client started" is not used because
+        // a timed-out, expired or stopped start also ends that way and is never counted (RecordRefusalOwned).
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row were refused before any client started. The remaining requests stay queued. Check each failed request's native launch stages in Launch evidence on Join a game (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more refused start pauses the queue again.",
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
@@ -129,8 +137,11 @@ public static class LaunchDescriptions
     public static bool AwaitsCapacity(LaunchOperation operation)=>operation.State==LaunchState.Blocked && operation.Problem==LaunchProblem.InsufficientCapacity;
     /// <summary>A waiting row held because starting the selected player would let Roblox's update close running clients.</summary>
     public static bool AwaitsClientUpdate(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.ClientUpdate;
-    /// <summary>The row's explanation: its problem's, or the update hold's for a row waiting on a Roblox update.</summary>
-    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation:Explain(operation.State,operation.Problem);
+    /// <summary>A waiting row held because the active network is Public (the public-network guard); it starts on its own once that ends.</summary>
+    public static bool AwaitsPublicNetwork(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.PublicNetwork;
+    /// <summary>The row's explanation: its problem's, or the hold's for a row waiting on a Roblox update or on a public network.</summary>
+    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation
+        :AwaitsPublicNetwork(operation)?PublicNetworkPolicy.HoldExplanation:Explain(operation.State,operation.Problem);
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
@@ -531,8 +542,11 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
                 ForgetRefusalsOwned();
                 if(hasReceipt)
                 {
-                    BeginPacing(chosen.Intent.OperationId,stabilization>=stagger?stabilization:stagger,
-                        stabilization>=stagger?LaunchPacingReason.StartupStabilization:LaunchPacingReason.BetweenStarts);
+                    // The gate keeps this start's receipt and the stagger floor so that the client's own join report may
+                    // end the stabilization early, down to the stagger (ReleasePacingEarly, R-launch-2).
+                    BeginStartupPacing(chosen.Intent.OperationId,stabilization>=stagger?stabilization:stagger,
+                        stabilization>=stagger?LaunchPacingReason.StartupStabilization:LaunchPacingReason.BetweenStarts,
+                        stagger,result!.ProcessId!.Value,result.ProcessStartUtcTicks!.Value);
                     unverifiedPacing=true;
                 }
                 await UpdateAsync(chosen,hasReceipt?LaunchState.ClientStartedUnverified:LaunchState.Uncertain,

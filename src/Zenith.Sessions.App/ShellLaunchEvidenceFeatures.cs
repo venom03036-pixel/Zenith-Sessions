@@ -36,10 +36,13 @@ public sealed class LaunchEvidenceRow(LaunchOperation operation) : Observable
         ?"Client log: not matched · no browser tracker was recorded for this launch"
         :link?.Status switch
         {
-            LaunchLogLinkStatus.Linked when link.Process is { } holder=>$"Client log: names this launch's browser tracker · held by PID {holder.ProcessId} · supporting evidence only, not account or arrival proof",
-            LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · no running process holds it now · supporting evidence only, not account or arrival proof",
+            // The qualifier is the OwnerOf tradeoff (HANDOFF.md, launch-to-log): a relaunch's log may be the earlier launch's, created late.
+            LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · "
+                +(link.Process is { } holder?$"held by PID {holder.ProcessId}":"no running process holds it now")
+                +(link.EarlierLaunchMayOwnLog?" · an earlier launch with the same tracker has no log yet, so this log may be that launch's":"")
+                +" · supporting evidence only, not account or arrival proof",
             LaunchLogLinkStatus.NotLinked=>"Client log: none found yet that names this launch's browser tracker",
-            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker",
+            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker, or the log naming it also names another launch's tracker",
             LaunchLogLinkStatus.Unavailable=>"Client log: unavailable · client logs could not be read right now",
             _=>"Client log: not checked yet"
         };
@@ -165,11 +168,14 @@ public sealed partial class ShellViewModel
         ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Launch));
     }
     private void RefreshLaunchEvidence()=>RefreshLaunchEvidenceWith(null);
+    // Test-only seam: projects the given log facts as one presentation tick would, so the record gate (R-launch-0) can be
+    // exercised without a real client log. Production ticks pass their own snapshot through RefreshLaunchEvidenceWith.
+    internal void RefreshLaunchEvidenceWithLogsForTest(IReadOnlyList<SessionEvidenceSnapshot> logs)=>RefreshLaunchEvidenceWith(logs);
     // The sample tick passes the log snapshot it already took; other callers take their own.
     private void RefreshLaunchEvidenceWith(IReadOnlyList<SessionEvidenceSnapshot>? logs)
     {
         if(IsLocked||_shuttingDown)
-        {LaunchEvidenceRows.Clear();SelectedLaunchEvidence=null;ClearSelectedNativeDiagnostics();LaunchPacingStatus="Controls locked or stopping. Monitoring does not grant launch permission.";Raise(nameof(HasLaunchEvidence));return;}
+        {LaunchEvidenceRows.Clear();SelectedLaunchEvidence=null;ClearSelectedNativeDiagnostics();LaunchPacingStatus="Controls locked or stopping. Monitoring does not grant launch permission.";Raise(nameof(HasLaunchEvidence));RefreshRecordableTrial();return;}
         var now=DateTimeOffset.UtcNow;var queue=Volatile.Read(ref _latestQueue);var desktop=Volatile.Read(ref _latestDesktop);
         logs??=_logProjection.EvidenceSnapshot(now);
         var candidates=queue.Operations.Where(row=>row.Intent.UserId>0&&(row.Intent.HasExplicitDestination||row.ProcessReceipt is not null))
@@ -198,9 +204,11 @@ public sealed partial class ShellViewModel
         var pacing=_launchQueue.ReadPacing();
         LaunchPacingStatus=pacing.Ready?"No startup pacing delay. Fresh resources, provider eligibility and explicit permission are still required."
             :pacing.Reason==LaunchPacingReason.ClockUnavailable?"Launch timing is unavailable. Starts are held; preserve existing clients and restart the manager before retrying."
-            :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start ended before any client started. Each such start in a row doubles the wait, up to about 1 minute."
+            // "Refused" is the provider's answer (the Guide's word), not a cause; only it backs off, so the status
+            // must not say "ended before any client started", which a timeout or expiry also does without counting.
+            :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start was refused before any client started. Each refused start in a row doubles the wait, up to about 1 minute."
             :$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s for "+(pacing.Reason==LaunchPacingReason.StartupStabilization?"startup stabilization":"launch spacing")+". Already started clients remain open.";
-        Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));
+        Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));RefreshRecordableTrial();
     }
     public string BuildNativeTrialEvidenceReport()
     {

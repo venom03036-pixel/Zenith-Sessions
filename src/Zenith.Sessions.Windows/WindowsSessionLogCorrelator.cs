@@ -54,16 +54,22 @@ public enum LaunchLogLinkStatus
 {
     /// <summary>
     /// No client log names its tracker in the part read so far that was created since the launch began and before any
-    /// later offered launch with the same tracker began; or one does, but another log written since the launch began has
-    /// not yet had a successful head read.
+    /// later offered launch with the same tracker began; or one does, but the last head read of another log written since
+    /// the launch began has not succeeded (no read yet, or the latest one failed). Another offered launch with the same
+    /// tracker that began at the same instant changes nothing on its own: the tie counts only once such a log names it.
     /// </summary>
     NotLinked,
     /// <summary>
-    /// Every log written since the launch began has had a successful head read, exactly one such log names it, no other
-    /// offered launch with the same tracker began at the same instant, and that log names no other offered launch's tracker.
+    /// The last head read of every log written since the launch began succeeded, exactly one such log names it, no other
+    /// offered launch with the same tracker began at the same instant, and that log names the tracker of no other offered
+    /// launch that had begun when the log was created (a launch that began later cannot own it).
     /// </summary>
     Linked,
-    /// <summary>More than one such log names it, another offered launch with the same tracker began at the same instant, or the log names another launch's tracker too.</summary>
+    /// <summary>
+    /// More than one such log names it; one does and another offered launch with the same tracker began at the same
+    /// instant; or the launch would otherwise be Linked, but its log also names the tracker of another launch that had
+    /// begun when the log was created.
+    /// </summary>
     Ambiguous,
     /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>
     Unavailable
@@ -72,9 +78,12 @@ public enum LaunchLogLinkStatus
 /// <summary>
 /// Launch-to-log, kept separate from the holder binding: Status says whether one client log's head names this launch's
 /// browser tracker; Process is the process that currently holds that log (the holder binding), or null when none is bound.
+/// EarlierLaunchMayOwnLog is set on a Linked row only, when an earlier offered launch with the same tracker has no log of
+/// its own (NotLinked): the log credited here may be that launch's, created only after this launch began (the OwnerOf
+/// tradeoff recorded in HANDOFF.md), so the row says so for as long as that holds.
 /// A linked log is corroboration only: never writer proof, account identity, arrival or permission to act.
 /// </summary>
-public sealed record LaunchLogLink(Guid OperationId, LaunchLogLinkStatus Status, SessionProcessKey? Process = null)
+public sealed record LaunchLogLink(Guid OperationId, LaunchLogLinkStatus Status, SessionProcessKey? Process = null, bool EarlierLaunchMayOwnLog = false)
 {
     public bool CanAuthorizeAccountAction => false;
 }
@@ -186,6 +195,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private readonly Dictionary<string, Reader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Task _worker;
     private Input _latest = new([], false, []);
+    private string[] _watched = [];
     private SessionLogDiscoverySnapshot _snapshot = new(0, DateTimeOffset.MinValue, Array.Empty<ProcessLogDiagnostic>(), 0, false);
     private ClientLogCandidates _candidates = new(Array.Empty<ClientLogCandidate>(), false);
     private long? _lastPass, _lastDiscovery;
@@ -209,6 +219,13 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     }
 
     public SessionLogDiscoverySnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+    /// <summary>
+    /// Any thread. The client logs this owner is watching as of its last discovery: every discovered candidate (written
+    /// within the last day) and every log still bound to an offered process, whether or not it is being read right now. The
+    /// log cleanup leaves each of these alone. Kept apart from <see cref="Snapshot"/>, which carries no path.
+    /// </summary>
+    public IReadOnlyList<string> WatchedLogPaths => Volatile.Read(ref _watched);
 
     public void Offer(DesktopSnapshot snapshot, string? hostId = null, IReadOnlyList<LaunchLogExpectation>? launches = null)
     {
@@ -319,6 +336,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 foreach (var candidate in candidates)
                     if (!_readers.ContainsKey(candidate.Path))
                         _readers.Add(candidate.Path, new(candidate));
+                Volatile.Write(ref _watched, _readers.Keys.ToArray());
             }
         }
 
@@ -512,9 +530,11 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one's
     /// head has been read and its last read succeeded, and exactly one names its tracker and is this launch's (OwnerOf: created since it
     /// began, and before any later offered launch with that tracker began); no other launch with that tracker began at the
-    /// same instant; and that log names no other offered launch's tracker. A relaunch with the same tracker therefore links each
-    /// launch to its own log. Process is that log's holder only while the holder binding is current and unique, exactly as
-    /// the per-process rows report it.
+    /// same instant; and that log names no other offered launch's tracker, counting only launches that had begun when the
+    /// log was created, since a launch that began later cannot own it. A relaunch with the same tracker therefore links each
+    /// launch to its own log; while an earlier launch with that tracker has no log, the relaunch's row says its log may be
+    /// that launch's (EarlierLaunchMayOwnLog). Process is that log's holder only while the holder binding is current and
+    /// unique, exactly as the per-process rows report it.
     /// </summary>
     private static LaunchLogLink[] LinkLaunches(Input input, Reader[] readers, Dictionary<SessionProcessKey, Reader?> matches, bool unavailable)
     {
@@ -544,17 +564,37 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         {
             if (linked[index] is not { Head: { } head } reader) continue;
             // Exclusive: the log names no other offered launch's tracker, whether or not that launch could link itself
-            // (Ambiguous or pending), and no other launch links to it. Same-tracker launches are settled by OwnerOf.
-            // Bounded: at most MaximumLaunches x 4 tracker comparisons per linked launch, and no allocation.
+            // (Ambiguous or pending), and no other launch links to it. Same-tracker launches are settled by OwnerOf, and a
+            // launch that began after the log was created cannot own it (the same time rule the loop above applies), so
+            // its tracker in the head takes nothing from this launch. Bounded: at most MaximumLaunches x 4 tracker
+            // comparisons per linked launch, and no allocation.
             bool exclusive = true;
             for (int other = 0; other < launches.Length; other++)
                 exclusive &= other == index || !ReferenceEquals(linked[other], reader)
-                    && (launches[other].BrowserTrackerId == launches[index].BrowserTrackerId || Array.IndexOf(head.Trackers, launches[other].BrowserTrackerId) < 0);
+                    && (launches[other].BrowserTrackerId == launches[index].BrowserTrackerId
+                        || launches[other].NotBeforeUtcTicks > head.CreatedUtcTicks
+                        || Array.IndexOf(head.Trackers, launches[other].BrowserTrackerId) < 0);
             links[index] = !exclusive ? new(launches[index].OperationId, LaunchLogLinkStatus.Ambiguous)
                 : new(launches[index].OperationId, LaunchLogLinkStatus.Linked,
-                    reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null);
+                    reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null,
+                    EarlierLaunchMayOwnLog(launches, links, linked, index));
         }
         return links;
+    }
+
+    // The OwnerOf tradeoff, told to the user: an earlier offered launch with this launch's tracker has no log of its own
+    // (NotLinked, from the first loop; a launch that links or is Ambiguous has one), so the log credited to this launch
+    // may be that earlier client's, created only after this launch began. A later launch with no log says nothing: a log
+    // created before it began cannot be its own. Bounded: at most MaximumLaunches comparisons per linked launch, and no
+    // allocation.
+    private static bool EarlierLaunchMayOwnLog(LaunchLogExpectation[] launches, LaunchLogLink[] links, Reader?[] linked, int index)
+    {
+        var launch = launches[index];
+        for (int other = 0; other < launches.Length; other++)
+            if (other != index && launches[other].BrowserTrackerId == launch.BrowserTrackerId
+                && launches[other].NotBeforeUtcTicks < launch.NotBeforeUtcTicks
+                && linked[other] is null && links[other] is { Status: LaunchLogLinkStatus.NotLinked }) return true;
+        return false;
     }
 
     private enum LogOwner { This, Tied, Later }
@@ -562,9 +602,11 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     // A log naming a tracker belongs to the offered launch with that tracker that began last at or before the log was
     // created, so a relaunch with the same tracker leaves the earlier launch's own log with it. Later: another launch with
     // the tracker began after this one and no later than the log, so the log is that one's. Tied: another began at the same
-    // instant, so the log could be either's. Tradeoff: an earlier launch whose client created its log only after the
-    // relaunch began would have that log taken for the relaunch's (the link stays corroboration only). Bounded: at most
-    // MaximumLaunches comparisons per log, and no allocation.
+    // instant, so the log could be either's. Tradeoff (recorded in HANDOFF.md, launch-to-log, for the owner to keep or
+    // reverse): an earlier launch whose client created its log only after the relaunch began has that log taken for the
+    // relaunch's, whose row then names the earlier client's PID while the earlier launch shows no log; the row says so
+    // (EarlierLaunchMayOwnLog) for as long as the earlier launch has none, and the link stays corroboration only.
+    // Bounded: at most MaximumLaunches comparisons per log, and no allocation.
     private static LogOwner OwnerOf(LaunchLogExpectation[] launches, int index, long createdUtcTicks)
     {
         var launch = launches[index];
@@ -644,7 +686,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     }
 
     private void Remove(Reader reader) { CloseReader(reader); _readers.Remove(reader.Candidate.Path); }
-    private void ClearReaders() { foreach (var reader in _readers.Values) CloseReader(reader); _readers.Clear(); }
+    private void ClearReaders() { foreach (var reader in _readers.Values) CloseReader(reader); _readers.Clear(); Volatile.Write(ref _watched, []); }
 
     public async ValueTask DisposeAsync()
     {

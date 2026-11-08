@@ -12,7 +12,7 @@ namespace Zenith.Sessions.Tests;
 public sealed partial class ClientWindowIntegrationTests
 {
     [Fact]
-    public Task InstallationDiscoveryIsExplicitAndNeverSelectsAProviderOrWritesSettings() => OnUi(async () =>
+    public Task InstallationDiscoveryIsExplicitSelectsNothingWhenRegistrationsConflictAndWritesNoSettings() => OnUi(async () =>
     {
         var discovery = new InstallationProbe();
         await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
@@ -278,8 +278,8 @@ public sealed partial class ClientWindowIntegrationTests
         // Each line says which product and where it came from; the same line is never shown twice.
         Assert.Equal(new[]
         {
-            "Roblox: Multiple executable candidates remain for a product. No version or provider was selected automatically.",
-            "Bloxstrap: Multiple executable candidates remain for a product. No version or provider was selected automatically.",
+            "Roblox: Multiple executable candidates remain for a product. A row is suggested only when exactly one present native Roblox player remains, or the Roblox registrations name one.",
+            "Bloxstrap: Multiple executable candidates remain for a product. A row is suggested only when exactly one present native Roblox player remains, or the Roblox registrations name one.",
             "Discovery reached a bounded query or result limit. Additional candidates may exist.",
             "Roblox: Discovery reached a bounded query or result limit. Additional candidates may exist.",
             "Roblox · version folder: Some executable version metadata could not be read. The candidate remains unverified.",
@@ -318,7 +318,8 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(new[] { "Not current", "Not compared" }, vm.InstallationCandidates.Select(row => row.ReleaseStatus));
         Assert.StartsWith("Update pending:", vm.InstallationReleaseStatus, StringComparison.Ordinal);
         Assert.Contains("0.744.0.7441080 (version-9ac8595712b447a7)", vm.InstallationReleaseStatus, StringComparison.Ordinal);
-        Assert.Contains("Zenith never downloads or installs updates", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.Contains("Nothing is downloaded or installed unless you choose Download Roblox update", vm.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.DoesNotContain("never downloads", vm.InstallationReleaseStatus, StringComparison.Ordinal);
 
         discovery.Override = ReleaseSnapshot("version-9ac8595712b447a7");
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
@@ -355,7 +356,7 @@ public sealed partial class ClientWindowIntegrationTests
         // Each row still says what its own files show; a current Bloxstrap copy never makes a stale native player "Up to date".
         Assert.Equal(new[] { "Not current", "Current release" }, vm.InstallationCandidates.Select(row => row.ReleaseStatus));
         Assert.Equal("Update pending: no native Roblox player matches Roblox's current release 0.744.0.7441080 (version-9ac8595712b447a7). Roblox normally updates when it next starts."
-            + " The Bloxstrap-managed player matches that release. Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+            + " The Bloxstrap-managed player matches that release. Only Roblox's default live channel is checked. Nothing is downloaded or installed unless you choose Download Roblox update and then confirm Install Roblox update.", vm.InstallationReleaseStatus);
 
         // Only a bootstrapper-managed player: no native headline, and the bootstrapper, not Roblox, is named as the one that updates it.
         discovery.Override = ReleaseSnapshot(stale) with { Candidates = [BloxstrapManagedPlayer(current)] };
@@ -367,14 +368,14 @@ public sealed partial class ClientWindowIntegrationTests
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
         Assert.Equal("Roblox's current release is 0.744.0.7441080 (version-9ac8595712b447a7). No native Roblox player could be compared with it."
             + " The Bloxstrap-managed player does not match that release; Bloxstrap, not Roblox, decides when that copy updates and may keep an older version."
-            + " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+            + " Only Roblox's default live channel is checked. Nothing is downloaded or installed unless you choose Download Roblox update and then confirm Install Roblox update.", vm.InstallationReleaseStatus);
 
         // A current native player with a stale managed copy is up to date, and the managed copy is named on its own.
         discovery.Override = ReleaseSnapshot(current) with { Candidates = [ReleaseSnapshot(current).Candidates[0], BloxstrapManagedPlayer(stale)] };
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
         Assert.Equal("Up to date: a native Roblox player matches Roblox's current release 0.744.0.7441080 (version-9ac8595712b447a7)."
             + " The Bloxstrap-managed player does not match that release; Bloxstrap, not Roblox, decides when that copy updates and may keep an older version."
-            + " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+            + " Only Roblox's default live channel is checked. Nothing is downloaded or installed unless you choose Download Roblox update and then confirm Install Roblox update.", vm.InstallationReleaseStatus);
     });
 
     [Fact]
@@ -514,6 +515,101 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Single(document.Descendants(ui + "TextBlock").Where(item => (string?)item.Attribute("Text") == "{Binding InstallationReleaseStatus}"));
         string xaml = document.ToString();
         Assert.Contains("public version service", xaml, StringComparison.Ordinal);
+    }
+
+    // R-launch-18: when the hints single out one present native Roblox player, Refresh preselects it as "Suggested". It is a
+    // preselection through the same setter a click uses, so the same provider acceptance applies and the user can change it.
+    [Fact]
+    public Task RefreshPreselectsTheOneNativePlayerAsSuggestedAndTheUserCanStillChooseAnotherRow() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-9ac8595712b447a7") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync();
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+
+        Assert.Equal(2, vm.InstallationCandidates.Count);
+        var player = vm.InstallationCandidates[0]; var froststrap = vm.InstallationCandidates[1];
+        Assert.Same(player, vm.SelectedInstallation);
+        Assert.True(player.IsSuggested); Assert.Equal("Suggested", player.Suggestion);
+        Assert.False(froststrap.IsSuggested); Assert.Equal("", froststrap.Suggestion);
+        // The provider accepted the preselection exactly as it would a click, so the trial card names the file.
+        Assert.Equal(player.ExecutablePath, vm.NativeTrialInstallation);
+        Assert.Contains("Native file selected", vm.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.Contains("Suggested", vm.InstallationStatus, StringComparison.Ordinal);
+        Assert.Contains("preselection", vm.InstallationStatus, StringComparison.Ordinal);
+        Assert.Empty(vm.Launches);
+
+        // The user may choose another row; the mark stays on the suggested row so it can still be found.
+        vm.SelectedInstallation = froststrap;
+        Assert.Same(froststrap, vm.SelectedInstallation); Assert.True(player.IsSuggested); Assert.False(froststrap.IsSuggested);
+        Assert.Contains("not usable", vm.NativeTrialInstallation, StringComparison.Ordinal);
+
+        // Panic clears the preselection with the list, like any selection.
+        vm.SelectedInstallation = player; Assert.Equal(player.ExecutablePath, vm.NativeTrialInstallation);
+        vm.Panic.Execute(null);
+        Assert.Null(vm.SelectedInstallation); Assert.Empty(vm.InstallationCandidates);
+        Assert.Contains("Choose a native Roblox installation", vm.NativeTrialInstallation, StringComparison.Ordinal);
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
+    public Task SuggestedPreselectionExplainsWhyTheRunningQueueWasPaused() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-9ac8595712b447a7") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync();
+        await ResumeQueueForInstallationTestAsync(vm);
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+        Assert.NotNull(vm.SelectedInstallation); Assert.True(vm.SelectedInstallation.IsSuggested);
+        Assert.Contains("launch queue was paused", vm.Notice, StringComparison.Ordinal);
+        Assert.Contains("Resume queue", vm.Notice, StringComparison.Ordinal);
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
+    public Task NoRowIsSuggestedWhenTheRegistrationsConflictOrNoNativePlayerIsPresent() => OnUi(async () =>
+    {
+        // The default probe carries a conflicting-protocols issue beside a present player.
+        var discovery = new InstallationProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync();
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count); Assert.Null(vm.SelectedInstallation);
+        Assert.All(vm.InstallationCandidates, row => { Assert.False(row.IsSuggested); Assert.Equal("", row.Suggestion); });
+        Assert.DoesNotContain("Suggested", vm.InstallationStatus, StringComparison.Ordinal);
+        Assert.Contains("Choose a native Roblox installation", vm.NativeTrialInstallation, StringComparison.Ordinal);
+
+        // Only a bootstrapper-managed player: inspection-only by design, so nothing is preselected.
+        discovery.Override = ReleaseSnapshot("version-9ac8595712b447a7") with { Candidates = [BloxstrapManagedPlayer("version-9ac8595712b447a7")] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Single(vm.InstallationCandidates); Assert.Null(vm.SelectedInstallation);
+        Assert.False(vm.InstallationCandidates[0].IsSuggested); Assert.DoesNotContain("Suggested", vm.InstallationStatus, StringComparison.Ordinal);
+
+        // Two present native players and no registration naming one: both stay unmarked.
+        var first = ReleaseSnapshot("version-9ac8595712b447a7").Candidates[0];
+        discovery.Override = ReleaseSnapshot("version-9ac8595712b447a7") with { Candidates = [first, first with { ExecutablePath = first.ExecutablePath.Replace("version-9ac8595712b447a7", "version-117ad38284844374", StringComparison.Ordinal) }] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal(2, vm.InstallationCandidates.Count); Assert.Null(vm.SelectedInstallation);
+        Assert.All(vm.InstallationCandidates, row => Assert.False(row.IsSuggested));
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
+    public void InstallationListMarksTheSuggestedRowAndTheSettingsTextExplainsThePreselection()
+    {
+        using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
+        var document = XDocument.Load(source!); XNamespace ui = "http://schemas.microsoft.com/winfx/2006/xaml/presentation";
+        var list = Assert.Single(document.Descendants(ui + "ListView").Where(item => (string?)item.Attribute("AutomationProperties.Name") == "Unverified installation candidates"));
+        var columns = list.Descendants(ui + "GridViewColumn").ToArray();
+        var suggested = Assert.Single(columns.Where(column => (string?)column.Attribute("DisplayMemberBinding") == "{Binding Suggestion}"));
+        Assert.Equal("Suggested", (string?)suggested.Attribute("Header"));
+        // First, so it is read without scrolling the wide list sideways.
+        Assert.Same(columns[0], suggested);
+        string xaml = document.ToString();
+        Assert.Contains("marks it Suggested", xaml, StringComparison.Ordinal);
+        Assert.Contains("Microsoft Store", xaml, StringComparison.Ordinal);
+        Assert.DoesNotContain("never guesses a preferred provider", xaml, StringComparison.Ordinal);
     }
 
     private sealed class ReleaseProbe : IPublicRobloxClientReleaseDirectory

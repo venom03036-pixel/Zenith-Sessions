@@ -183,7 +183,7 @@ public sealed partial class AccountRepository
     private static async Task RequireCurrentAccountSchemaAsync(SqliteConnection db,SqliteTransaction tx,CancellationToken ct)
     {
         using var query=db.CreateCommand();query.Transaction=tx;query.CommandText="PRAGMA user_version";
-        if(Convert.ToInt64(await query.ExecuteScalarAsync(ct))!=5)throw UnsupportedAccountSchema();
+        if(Convert.ToInt64(await query.ExecuteScalarAsync(ct))!=CurrentSchema)throw UnsupportedAccountSchema();
     }
     private static async Task RequireCatalogAsync(SqliteConnection db,SqliteTransaction tx,long expected,CancellationToken ct)
     {if(await ReadCatalogRevisionAsync(db,tx,ct)!=expected)throw new AccountGroupCatalogConflictException();}

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
@@ -16,45 +17,63 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _clientPriorityStop;
     private Task _clientPriorityWork = Task.CompletedTask;
     private long _clientPriorityGeneration;
-    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes, string Refusal);
-    private string _clientPriorityStatus = "Choose clients to change their Windows CPU priority, efficiency mode or cores.";
+    private int _clientCpuCapPercent = 25;
+    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes, string Refusal, int CpuCapPercent);
+    private string _clientPriorityStatus = "Choose clients to change their Windows CPU priority, efficiency mode, cores or CPU cap.";
 
     public ObservableCollection<ClientProcessPriorityResult> ClientPriorityResults { get; } = [];
+    /// <summary>The shares Cap CPU offers, as percent of all CPU time on this PC. A per-click choice, never saved: every start offers 25.</summary>
+    public IReadOnlyList<int> ClientCpuCapChoices { get; } = [10, 25, 50, 75];
+    public int ClientCpuCapPercent
+    {
+        get => _clientCpuCapPercent;
+        set
+        {
+            if (value is < IClientProcessPriorityControl.MinimumCpuCapPercent or > IClientProcessPriorityControl.MaximumCpuCapPercent) return;
+            Set(ref _clientCpuCapPercent, value);
+        }
+    }
     public bool CanChangeClientPriority => _priorityPermitted && _ready && !IsLocked && !_shuttingDown
         && !IsChangingClientPriority && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
     public bool IsChangingClientPriority => _changingClientPriority;
     public int PendingPriorityRestoreCount => _clientPriority.PendingRestoreCount;
     /// <summary>
     /// Exit's warning, read after DisposeAsync: null until Exit starts, and then unless Windows did not confirm that every client
-    /// Zenith changed got its original settings back. A pending restore can cover the priority class, EcoQoS, memory priority
-    /// and affinity; Task Manager shows and resets all but memory priority, which only a restart of the client returns.
+    /// Zenith changed got its original settings back. A pending restore can cover the priority class, EcoQoS, memory priority,
+    /// affinity and the CPU cap; Task Manager shows and resets all but memory priority, which only a restart of the client
+    /// returns, and the cap, which lasts until the client exits (Windows keeps a process in its job for life) and which the
+    /// next start of Zenith names from its own record.
     /// </summary>
     internal string? ExitPriorityWarning => !_shuttingDown ? null : PendingPriorityRestoreCount switch
     {
         <= 0 => null,
-        1 => "Windows could not confirm that Zenith restored the original priority, efficiency or core settings of 1 client. "
+        1 => "Windows could not confirm that Zenith restored the original priority, efficiency, core or CPU cap settings of 1 client. "
             + "They last until you change them or the client exits. Review its priority, efficiency mode and affinity in Task Manager. "
-            + "Task Manager cannot show or reset memory priority; the client's own memory priority returns when it restarts.",
-        var count => $"Windows could not confirm that Zenith restored the original priority, efficiency or core settings of {count} clients. "
+            + "Task Manager cannot show or reset memory priority or a CPU cap; the client's own memory priority returns when it restarts, "
+            + "and a CPU cap lasts until the client exits (Zenith names such clients when it next starts).",
+        var count => $"Windows could not confirm that Zenith restored the original priority, efficiency, core or CPU cap settings of {count} clients. "
             + "They last until you change them or the clients exit. Review their priority, efficiency mode and affinity in Task Manager. "
-            + "Task Manager cannot show or reset memory priority; each client's own memory priority returns when it restarts."
+            + "Task Manager cannot show or reset memory priority or a CPU cap; each client's own memory priority returns when it restarts, "
+            + "and a CPU cap lasts until that client exits (Zenith names such clients when it next starts)."
     };
     public string ClientPriorityStatus { get => _clientPriorityStatus; private set => Set(ref _clientPriorityStatus, value); }
     public AsyncCommand SetClientsNormalPriority { get; private set; } = null!;
     public AsyncCommand SetClientsBelowNormalPriority { get; private set; } = null!;
     public AsyncCommand SetClientsEfficiencyMode { get; private set; } = null!;
     public AsyncCommand SpreadClientsOverCores { get; private set; } = null!;
+    public AsyncCommand CapClientsCpu { get; private set; } = null!;
     public AsyncCommand RestoreClientsPriority { get; private set; } = null!;
     public Command CancelClientPriority { get; private set; } = null!;
 
     private void InitializeClientPriorityFeatures(IClientProcessPriorityControl? control)
     {
         _priorityPermitted = !IsSample || control is not null;
-        _clientPriority = control ?? new WindowsClientProcessPriorityControl();
+        _clientPriority = control ?? new WindowsClientProcessPriorityControl(Path.Combine(DataRoot, WindowsClientProcessPriorityControl.CpuCapRecordFileName));
         SetClientsNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Normal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         SetClientsBelowNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.BelowNormal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         SetClientsEfficiencyMode = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Efficiency, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         SpreadClientsOverCores = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.SpreadCores, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
+        CapClientsCpu = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.CapCpu, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         RestoreClientsPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.RestoreOriginal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         CancelClientPriority = new(_ => StopClientPriorityOperations());
         PropertyChanged += ClientPriorityOwnerChanged;
@@ -130,7 +149,7 @@ public sealed partial class ShellViewModel
 
     private object? CaptureClientPriorityRequest(object? parameter)
         => CanChangeClientPriority
-            ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection(out var refusal), refusal) : null;
+            ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection(out var refusal), refusal, ClientCpuCapPercent) : null;
 
     private Task ChangeClientPriorityAsync(ClientProcessPriorityAction action, object? parameter)
     {
@@ -148,7 +167,7 @@ public sealed partial class ShellViewModel
         var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         _changingClientPriority = true;
         _clientPriorityStatus = "Checking the selected process instances and applying their priority…";
-        _clientPriorityWork = RunClientPriorityAsync(pinned, action, generation, stop, published.Task);
+        _clientPriorityWork = RunClientPriorityAsync(pinned, action, request.CpuCapPercent, generation, stop, published.Task);
         try
         {
             ClientPriorityResults.Clear();
@@ -158,14 +177,17 @@ public sealed partial class ShellViewModel
         return _clientPriorityWork;
     }
 
-    private async Task RunClientPriorityAsync(SessionObservation[] pinned, ClientProcessPriorityAction action,
+    private async Task RunClientPriorityAsync(SessionObservation[] pinned, ClientProcessPriorityAction action, int cpuCapPercent,
         long generation, CancellationTokenSource stop, Task published)
     {
         await published;
         try
         {
             stop.Token.ThrowIfCancellationRequested();
-            var result = await _clientPriority.ChangeAsync(Array.AsReadOnly(pinned), action, stop.Token);
+            // The share was pinned with the selection, so a change of the choice during the operation cannot reach it.
+            var result = action == ClientProcessPriorityAction.CapCpu
+                ? await _clientPriority.CapCpuAsync(Array.AsReadOnly(pinned), cpuCapPercent, stop.Token)
+                : await _clientPriority.ChangeAsync(Array.AsReadOnly(pinned), action, stop.Token);
             if (result.Results.Count != pinned.Length || result.PendingRestoreCount is < 0 or > 128
                 || result.Results.Any(row => row is null || row.Action != action || !Enum.IsDefined(row.Status)
                     || !pinned.Any(client => client.InstanceKey == row.Session.InstanceKey))
@@ -201,9 +223,49 @@ public sealed partial class ShellViewModel
         Fail(error, ManagerSubsystem.ClientPriority);
     }
 
+    /// <summary>
+    /// Startup only, before the library is ready: a CPU cap lives in a Windows job that only the handle of the run that
+    /// created it can reach, so a cap outlives a Zenith that did not exit normally and no later run can lift it. The control
+    /// checks its own record (and nothing else) and the shell names the clients that still carry one, so the user knows why
+    /// they are slow and that closing them is the way out. Sample mode without an injected control has no permission to
+    /// touch clients, so it never looks.
+    /// </summary>
+    private async Task CheckLeftoverClientCpuCapsAsync()
+    {
+        if (!_priorityPermitted) return;
+        ClientCpuCapLeftovers leftovers;
+        try { leftovers = await _clientPriority.CheckLeftoverCpuCapsAsync(_lifetime.Token); }
+        catch (Exception error) when (error is not OperationCanceledException)
+        {
+            Fail(error, ManagerSubsystem.ClientPriority, "Zenith could not check for CPU caps an earlier run left on clients. "
+                + "A cap left by a run that did not exit normally lasts until that client exits.");
+            return;
+        }
+        string? problem = leftovers.RecordUnreadable
+            ? "Zenith could not read its record of the CPU caps earlier runs set (" + WindowsClientProcessPriorityControl.CpuCapRecordFileName
+                + " in the data folder), so it cannot name the clients that still carry one; such a cap lasts until that client exits. The next cap replaces the record."
+            : leftovers.StillCapped switch
+            {
+                0 => leftovers.NotChecked switch
+                {
+                    0 => null,
+                    1 => "Zenith could not check whether 1 client an earlier run capped still runs. A cap it left lasts until that client exits.",
+                    var count => $"Zenith could not check whether {count} clients an earlier run capped still run. A cap it left lasts until each of those clients exits."
+                },
+                1 => "1 client still carries the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
+                    + "Windows keeps a process in its job for life, so the cap lasts until that client exits; close and reopen it to lift the cap.",
+                var count => $"{count} clients still carry the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
+                    + "Windows keeps a process in its job for life, so each cap lasts until that client exits; close and reopen them to lift the caps."
+            };
+        if (problem is null) return;
+        ShowError(problem);
+        AddEvent(problem);
+        _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority);
+    }
+
     private async Task DisposeClientPriorityFeaturesAsync()
     {
-        StopClientPriorityOperations();
+        StopShutdownStep(StopClientPriorityOperations);
         try { await _clientPriorityWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType()); }
         PropertyChanged -= ClientPriorityOwnerChanged;
@@ -211,8 +273,8 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType());
-            ClientPriorityStatus = "Windows could not confirm that every original priority, efficiency or core setting was restored. "
-                + "Review those clients in Task Manager; memory priority returns only when a client restarts.";
+            ClientPriorityStatus = "Windows could not confirm that every original priority, efficiency, core or CPU cap setting was restored. "
+                + "Review those clients in Task Manager; memory priority returns only when a client restarts, and a CPU cap lasts until that client exits.";
         }
     }
 }

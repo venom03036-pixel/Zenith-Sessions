@@ -6,11 +6,12 @@ namespace Zenith.Sessions.Windows;
 /// <summary>
 /// One owned saved-session operation and one bounded waiting disconnect. Never launches a client. <paramref name="failed"/>
 /// receives only the type of an expected failure that the service absorbs without changing its answer, or of a fence of its
-/// own interrupted write that could not run (never its message).
+/// own interrupted write that could not run (never its message). <paramref name="launchTickets"/> is the direct launch-ticket
+/// client (R-api-7) whose kept anti-forgery tokens a disconnect forgets, like the share-link client's; it is borrowed, not owned.
 /// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
     IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
-    Action<Type>? failed = null)
+    Action<Type>? failed = null, IRobloxLaunchTicketClient? launchTickets = null, IRobloxAccountDataClient? accountData = null, IRobloxSignedInServerClient? signedServers = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();
@@ -130,7 +131,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         if (profileId == Guid.Empty || placeId <= 0) return new(RobloxHandoffProbeOutcome.ContextRejected);
         Operation operation;
         try { operation = Begin(profileId, SavedSessionOperationKind.HandoffInspection, ct); }
-        catch (AccountLinkException) { return new(RobloxHandoffProbeOutcome.Busy); }
+        // Both refusals happen before any grant is reserved; a row being removed is reported as such, not as another operation.
+        catch (AccountLinkException refused) { return new(refused.ProfileRemoved ? RobloxHandoffProbeOutcome.ProfileRemoved : RobloxHandoffProbeOutcome.Busy); }
         AuthorizationRecord? pending = null;
         var inspectionMutationId = Guid.NewGuid();
         RobloxHandoffProbeResult? result = null;
@@ -353,13 +355,14 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_disconnect is not null) throw new AccountLinkException("Another saved-session disconnect is in progress.");
             _disconnect = completion = new(TaskCreationOptions.RunContinuationsAsynchronously); active = _active;
-            if (active?.ProfileId == profileId) active.Invalidated = true;
+            if (active is not null && (active.ProfileId == profileId || active.RelatedProfileId == profileId)) active.Invalidated = true;
         }
         shareLinks?.ForgetTokens(profileId); // Sign-out: no anti-forgery token kept for this profile outlives its saved session.
+        launchTickets?.ForgetTokens(profileId);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
         try
         {
-            if (active?.ProfileId == profileId) active.Cancel();
+            if (active is not null && (active.ProfileId == profileId || active.RelatedProfileId == profileId)) active.Cancel();
             // An uncooperative browser/network/storage owner is awaited to actual completion.
             if (active is not null) await active.Completion.Task.WaitAsync(stop.Token).ConfigureAwait(false);
             stop.Token.ThrowIfCancellationRequested();
@@ -506,6 +509,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         private int _finished;
         // Changed only under the service state gate, by AdoptSavedSessionAsync.
         public Guid ProfileId { get; set; } = profileId;
+        public Guid? RelatedProfileId { get; set; }
         public SavedSessionOperationKind Kind { get; } = kind;
         public CancellationToken Token { get; } = stop.Token;
         public bool Invalidated;

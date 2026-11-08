@@ -89,17 +89,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
             inspected >= 256 || Stopwatch.GetElapsedTime(began) >= TimeSpan.FromMilliseconds(50), denied);
     }
 
-    private bool SafeDirectories(string path)
-    {
-        string local = Path.GetFullPath(_anchor);
-        if (path.StartsWith(@"\\", StringComparison.Ordinal) || !path.StartsWith(local + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) return false;
-        for (var directory = new DirectoryInfo(path); directory is not null; directory = directory.Parent)
-        {
-            if ((directory.Attributes & FileAttributes.ReparsePoint) != 0) return false;
-            if (string.Equals(directory.FullName, local, StringComparison.OrdinalIgnoreCase)) return true;
-        }
-        return false;
-    }
+    private bool SafeDirectories(string path) => RobloxClientFolders.IsBelowAnchor(path, _anchor);
 
     private void NextRoot() { _scan?.Dispose(); _scan = null; _root = (_root + 1) % _roots.Length; }
 
@@ -126,8 +116,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
     {
         string name = Path.GetFileName(imagePath);
         if (!ClientImageNames.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
-        bool packaged = imagePath.Split(Path.DirectorySeparatorChar).Any(component => component.Equals("WindowsApps", StringComparison.OrdinalIgnoreCase));
-        return packaged == (variant == ClientLogVariant.Uwp);
+        return RobloxNativePlayerFiles.IsPackagedPath(imagePath) == (variant == ClientLogVariant.Uwp);
     }
 
     public ResourceHolderResult QueryHolders(string path, CancellationToken ct) => RestartManagerLogQuery.Query(path, ct);

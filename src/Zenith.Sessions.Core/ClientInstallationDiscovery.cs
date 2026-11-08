@@ -1,9 +1,10 @@
 namespace Zenith.Sessions.Core;
 
-public enum ClientInstallationProduct { Roblox, Bloxstrap, Fishstrap, Froststrap }
+// Voidstrap (a Bloxstrap fork with the same layout) was added for R-launch-17; the bootstrappers are listed in BootstrapperProducts.All.
+public enum ClientInstallationProduct { Roblox, Bloxstrap, Fishstrap, Froststrap, Voidstrap }
 public enum ClientInstallationSnapshotStatus { Complete, Partial, Unavailable, Deferred }
 public enum ClientInstallationFileState { PresentUnverified, Missing, AccessDenied, MetadataUnavailable, SkippedUnsafe, TooLarge }
-public enum ClientInstallationRegistryHint { RobloxProtocol, RobloxPlayerProtocol, BloxstrapInstallLocation, FishstrapInstallLocation, FroststrapInstallLocation }
+public enum ClientInstallationRegistryHint { RobloxProtocol, RobloxPlayerProtocol, BloxstrapInstallLocation, FishstrapInstallLocation, FroststrapInstallLocation, VoidstrapInstallLocation }
 public enum ClientInstallationHintSource { RobloxProtocol, RobloxPlayerProtocol, UninstallRegistry, StandardInstallPath, VersionDirectory }
 public enum ClientInstallationIssueCode { InventoryUnavailable, LocalAppDataUnavailable, EnvironmentRedirected, NoMatchingCandidates, InvalidHint, AccessDenied, MetadataUnavailable, UnsafePath, LimitReached, ConflictingProtocols, MultipleCandidates }
 public sealed record ClientInstallationEvidence(ClientInstallationHintSource Source,ClientInstallationProduct Product);
@@ -28,7 +29,7 @@ public sealed record ClientInstallationIssue(ClientInstallationIssueCode Code,Cl
         ClientInstallationIssueCode.UnsafePath=>"A redirected, nonlocal or otherwise unsafe metadata path was skipped.",
         ClientInstallationIssueCode.LimitReached=>"Discovery reached a bounded query or result limit. Additional candidates may exist.",
         ClientInstallationIssueCode.ConflictingProtocols=>"Roblox protocol registrations point to different executables. No provider was selected.",
-        ClientInstallationIssueCode.MultipleCandidates=>"Multiple executable candidates remain for a product. No version or provider was selected automatically.",
+        ClientInstallationIssueCode.MultipleCandidates=>"Multiple executable candidates remain for a product. A row is suggested only when exactly one present native Roblox player remains, or the Roblox registrations name one.",
         _=>"Installation discovery was unavailable for part of the inventory. Absence cannot be established."
     };
 }

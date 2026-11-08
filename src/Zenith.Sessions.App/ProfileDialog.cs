@@ -7,7 +7,7 @@ namespace Zenith.Sessions.App;
 
 public sealed class ProfileDialog : Window
 {
-    private readonly TextBox _label = new(), _username = new(), _group = new(), _additionalGroups = new(), _place = new(), _priority = new(), _notes = new();
+    private readonly TextBox _label = new(), _username = new(), _group = new(), _additionalGroups = new(), _place = new(), _priority = new(), _notes = new(), _arguments = new();
     private readonly ComboBox? _groupPicker;
     private readonly CheckBox _favorite = new() { Content="Favorite account",Margin=new Thickness(0,0,0,14) };
     private readonly TextBlock _error = new() { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 10, 0, 0) };
@@ -23,7 +23,7 @@ public sealed class ProfileDialog : Window
         SetResourceReference(BackgroundProperty, "CardBackground"); SetResourceReference(ForegroundProperty, "TextPrimary");
         _label.Text = profile.Label; _username.Text = profile.Username; _group.Text = profile.Group; _additionalGroups.Text = profile.AdditionalGroups;
         _place.Text = profile.PreferredPlaceId?.ToString(CultureInfo.InvariantCulture) ?? ""; _priority.Text = profile.Priority.ToString(CultureInfo.InvariantCulture);
-        _notes.Text=profile.Notes; _favorite.IsChecked=profile.IsFavorite;
+        _notes.Text=profile.Notes; _favorite.IsChecked=profile.IsFavorite; _arguments.Text=profile.ExtraClientArguments;
         var layout = new Grid { Margin = new Thickness(26) };
         layout.RowDefinitions.Add(new() { Height = GridLength.Auto });
         layout.RowDefinitions.Add(new() { Height = new GridLength(1, GridUnitType.Star) });
@@ -50,6 +50,10 @@ public sealed class ProfileDialog : Window
         _additionalGroups.TextWrapping = TextWrapping.Wrap; _additionalGroups.Height = 80; _additionalGroups.VerticalScrollBarVisibility = ScrollBarVisibility.Auto;
         AddField(panel, "Preferred Roblox place ID · optional", _place); AddField(panel, "Priority · 0 to 100", _priority);
         panel.Children.Add(_favorite);
+        AddField(panel, "Extra client arguments · optional; replaces the default for this account", _arguments);
+        _arguments.MaxLength = ExtraClientArgumentPolicy.MaximumCharacters;
+        var argumentsHelp = new TextBlock { Text = "Added after Roblox's own launch request only when Zenith starts the native Roblox player itself, never through a bootstrapper. Up to 512 characters and 16 arguments separated by spaces; quotes, percent signs, < > | &, backslashes and line breaks are refused. Kept in this library only, not in metadata exports. Never enter sign-in cookies or tokens.", TextWrapping = TextWrapping.Wrap, FontSize = 12, Margin = new Thickness(0, -6, 0, 12) };
+        argumentsHelp.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary"); panel.Children.Add(argumentsHelp);
         AddField(panel,"Notes · included in metadata exports; never enter secrets",_notes);
         _notes.MaxLength=4000; _notes.AcceptsReturn=true; _notes.TextWrapping=TextWrapping.Wrap; _notes.Height=100; _notes.VerticalScrollBarVisibility=ScrollBarVisibility.Auto;
         var fields = new ScrollViewer { Content = panel, VerticalScrollBarVisibility = ScrollBarVisibility.Auto, HorizontalScrollBarVisibility = ScrollBarVisibility.Disabled, Padding = new Thickness(0, 0, 4, 0) };
@@ -75,7 +79,7 @@ public sealed class ProfileDialog : Window
                 long? place = null;
                 if (!string.IsNullOrWhiteSpace(_place.Text)) { if (!long.TryParse(_place.Text, NumberStyles.None, CultureInfo.InvariantCulture, out long id) || id <= 0) throw new ArgumentException("Enter a positive numeric place ID, or leave it blank."); place = id; }
                 if (!int.TryParse(_priority.Text, out int priority)) throw new ArgumentException("Priority must be a whole number between 0 and 100.");
-                var draft = (profile with { Label = _label.Text, Username = _username.Text, Group = _groupPicker?.Text ?? _group.Text, AdditionalGroups = _additionalGroups.Text, PreferredPlaceId = place, Priority = priority,Notes=_notes.Text,IsFavorite=_favorite.IsChecked==true }).Validated();
+                var draft = (profile with { Label = _label.Text, Username = _username.Text, Group = _groupPicker?.Text ?? _group.Text, AdditionalGroups = _additionalGroups.Text, PreferredPlaceId = place, Priority = priority,Notes=_notes.Text,IsFavorite=_favorite.IsChecked==true, ExtraClientArguments = _arguments.Text }).Validated();
                 _saving = true; commit.IsEnabled = false; cancel.IsEnabled = false; commit.Content = "Saving…";
                 await save(draft); _saving = false; DialogResult = true;
             }

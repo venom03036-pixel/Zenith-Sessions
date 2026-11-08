@@ -6,14 +6,15 @@ namespace Zenith.Sessions.Windows;
 public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImported,MetadataExported,SettingsSaved,AuthorizationLinked,
     AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents,
     // Appended so earlier numeric values keep their meaning; the disk log and export store names.
-    AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked }
+    AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked,ShutdownScheduled,ShutdownScheduleCancelled,
+    PublicNetworkDetected,PublicNetworkCleared,DiscordWebhookSaved,DiscordWebhookCleared,DiscordAlertSent,DiscordPresenceConnected }
 
 /// <summary>
 /// The closed set of manager areas a failure can be attributed to, so a record says which subsystem failed
 /// without any free text. Append new members only; the live journal and the report carry the name.
 /// </summary>
 public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
-    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound }
+    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ClientLogs,ClientUpdate,KeepAwake,ScheduledShutdown,PublicNetwork,DiscordAlerts,DiscordPresence,UploadLimit }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable
@@ -202,6 +203,7 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
     {
         if(type is null) return null;
         if(typeof(OperationCanceledException).IsAssignableFrom(type)) return "OperationCanceledException";
+        if(typeof(AggregateException).IsAssignableFrom(type)) return "AggregateException";
         if(typeof(UnauthorizedAccessException).IsAssignableFrom(type)) return "UnauthorizedAccessException";
         if(typeof(System.Security.Cryptography.CryptographicException).IsAssignableFrom(type)) return "CryptographicException";
         if(typeof(JsonException).IsAssignableFrom(type)) return "JsonException";
@@ -215,6 +217,8 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         if(typeof(InvalidOperationException).IsAssignableFrom(type)) return "InvalidOperationException";
         if(typeof(NotSupportedException).IsAssignableFrom(type)) return "NotSupportedException";
         if(typeof(System.ComponentModel.Win32Exception).IsAssignableFrom(type)) return "Win32Exception";
+        // Outbound web faults (the Discord webhook, for one) are kept apart from local I/O faults; still a type name only.
+        if(typeof(System.Net.Http.HttpRequestException).IsAssignableFrom(type)) return "HttpRequestException";
         if(typeof(System.Data.Common.DbException).IsAssignableFrom(type)) return "DatabaseException";
         return typeof(Exception).IsAssignableFrom(type)?"Exception":"NonExceptionType";
     }

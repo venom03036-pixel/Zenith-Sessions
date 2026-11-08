@@ -13,8 +13,12 @@ public sealed class PublicDirectorySharedRulesTests
     // cannot see every possible spelling, so a copy written some other way still needs a reviewer to spot it.
     private static readonly Dictionary<string, Regex> Rules = new()
     {
-        // Roblox's raw thumbnail state names. One map turns them into states for every thumbnail reply.
-        ["thumbnail states"] = new(@"""InReview""", RegexOptions.CultureInvariant),
+        // Roblox's raw thumbnail state names. One map turns them into states for every thumbnail reply, so any other
+        // comparison with one of the names is a copy. A run of names with no other string literal between them (the
+        // map's arms) counts once; a message literal between two names ends the run, so a check elsewhere counts again.
+        ["thumbnail states"] = new(
+            @"""(?:Completed|Pending|InReview|Blocked|Error)""(?:[^""]*""(?:Completed|Pending|InReview|Blocked|Error)"")*",
+            RegexOptions.CultureInvariant),
         // ASCII letters, digits and '_' with no other character allowed beside them.
         ["username characters"] = new(
             @"Is(?:Ascii)?LetterOrDigit\(\s*(?<v>\w+)\s*\)\s*(?:\|\||&&)\s*\k<v>\s*(?:==|!=|is\s+not|is)\s*'_'(?!\s*(?:or\b|and\b|\|\||&&)\s*(?:\(?\s*\k<v>\b|'))"
@@ -33,6 +37,7 @@ public sealed class PublicDirectorySharedRulesTests
         ("username characters", "Zenith.Sessions.Core/RobloxDestinations.cs", "key.Any(", "query keys in a Roblox link"),
         ("username characters", "Zenith.Sessions.Windows/WindowsGpuTelemetryReader.cs", "in value)", "GPU engine type names"),
         ("distinct positive IDs", "Zenith.Sessions.Windows/RobloxPublicGameGallery.cs", "parsed <= 0", "image IDs inside Roblox's media reply, not a caller's batch"),
+        ("thumbnail states", "Zenith.Sessions.Windows/IncrementalClientLogReader.cs", "SequenceEqual(\"Error\")", "client log channel names"),
     ];
 
     [Theory]
@@ -68,8 +73,22 @@ public sealed class PublicDirectorySharedRulesTests
     [InlineData("distinct positive IDs", "if (!unique.Add(universe) || universe < 1) return null;", true)]
     [InlineData("distinct positive IDs", "if (row.Revision <= 0 || !ids.Add(row.Id)) throw Invalid();", false)] // Checks one value, adds another.
     [InlineData("thumbnail states", "if (state is \"InReview\" or \"Pending\")", true)]
+    [InlineData("thumbnail states", "if (state != \"Completed\") return Unknown<PublicRobloxAvatar>(\"The public avatar state is not supported.\");", true)]
+    [InlineData("thumbnail states", "state is \"Blocked\" or \"Error\"", true)]
+    [InlineData("thumbnail states", "channel.SequenceEqual(\"Warning\")", false)] // Not a thumbnail state name.
+    [InlineData("thumbnail states", "PublicRobloxThumbnailState.Blocked => PublicRobloxGameGalleryState.Blocked", false)] // The mapped state, not Roblox's name.
     public void RulePatternsCatchTheUsualRewrites(string rule, string code, bool expected) =>
         Assert.Equal(expected, Rules[rule].IsMatch(code));
+
+    [Fact]
+    public void AMapOfThumbnailStateNamesCountsOnceAndACheckAfterAnotherLiteralCountsAgain()
+    {
+        const string map = "\"Completed\" => PublicRobloxThumbnailState.Ready,\n        \"Pending\" or \"InReview\" => PublicRobloxThumbnailState.Pending,\n"
+            + "        \"Blocked\" => PublicRobloxThumbnailState.Blocked,\n        \"Error\" => PublicRobloxThumbnailState.Unavailable,";
+        Assert.Single(Rules["thumbnail states"].Matches(map));
+        Assert.Equal(2, Rules["thumbnail states"].Matches(map
+            + "\n return Unknown<PublicRobloxAvatar>(\"The public avatar is unavailable.\");\n if (state != \"Completed\") throw;").Count);
+    }
 
     [Theory]
     [InlineData("Roblox_1", true)]

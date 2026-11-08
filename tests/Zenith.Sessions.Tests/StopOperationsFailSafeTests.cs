@@ -115,6 +115,43 @@ public sealed class StopOperationsFailSafeTests : IDisposable
         object queue = GetField(vm, "_launchQueue")!;
         return (long)queue.GetType().GetField("_generation", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(queue)!;
     }
+
+    [Theory]
+    [InlineData("lifetime")]
+    [InlineData("trim")]
+    public Task AThrowingShutdownStopStillCancelsEveryOtherOwnerAndDisposesTheirResources(string failingStep) => OnDispatcherAsync(async () =>
+    {
+        var monitor = new SyntheticMonitor();
+        var trim = new ThrowingTrim();
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, clientTrim: trim);
+        using var query = new CancellationTokenSource();
+        using var authorization = new CancellationTokenSource();
+        await vm.InitializeAsync();
+        SetField(vm, "_queryCancellation", query);
+        SetField(vm, "_authorizationStop", authorization);
+        var lifetime = (CancellationTokenSource)GetField(vm, "_lifetime")!;
+        using var callback = failingStep == "lifetime"
+            ? lifetime.Token.Register(() => throw new InvalidOperationException(Secret)) : default;
+        trim.ThrowOnStop = failingStep == "trim";
+        var error = await Record.ExceptionAsync(() => vm.DisposeAsync().AsTask());
+        Assert.True(authorization.IsCancellationRequested, "A throwing stop skipped authorization cancellation.");
+        Assert.True(query.IsCancellationRequested, "A throwing stop skipped the active query cancellation.");
+        Assert.True(trim.Disposed, "A throwing trim stop skipped its own resource disposal.");
+        Assert.True(monitor.Disposed, "A throwing stop skipped later owners.");
+        Assert.Null(error);
+        string log = File.ReadAllText(Path.Combine(_root, "diagnostics", "manager.jsonl"));
+        Assert.Contains(failingStep == "lifetime" ? "AggregateException" : "InvalidOperationException", log);
+        Assert.DoesNotContain("SECRET123", log);
+    });
+
+    private sealed class ThrowingTrim : IClientWorkingSetTrimControl
+    {
+        public bool ThrowOnStop, Disposed;
+        public Task<ClientWorkingSetTrimBatchResult> TrimAsync(IReadOnlyList<SessionObservation> sessions, CancellationToken ct)
+            => Task.FromResult(new ClientWorkingSetTrimBatchResult([], false));
+        public void CancelOperations() { if (ThrowOnStop) throw new InvalidOperationException(Secret); }
+        public ValueTask DisposeAsync() { Disposed = true; return ValueTask.CompletedTask; }
+    }
     private static object? GetField(ShellViewModel vm, string name)
         => typeof(ShellViewModel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(vm);
     private static void SetField(ShellViewModel vm, string name, object? value)
@@ -128,8 +165,10 @@ public sealed class StopOperationsFailSafeTests : IDisposable
         public void Advance(TimeSpan by) => _ticks += by.Ticks;
     }
 
-    private sealed class SyntheticMonitor : IDesktopMonitor
+    private sealed class SyntheticMonitor : IDesktopMonitor, IDisposable
     {
+        public bool Disposed;
+        public void Dispose() => Disposed = true;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         { ct.ThrowIfCancellationRequested(); return Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 20), [])); }
         public Task<bool> FocusAsync(SessionObservation session, CancellationToken ct) => Task.FromResult(false);

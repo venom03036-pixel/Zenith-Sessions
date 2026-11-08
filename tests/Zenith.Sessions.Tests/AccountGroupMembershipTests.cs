@@ -188,14 +188,14 @@ public sealed class AccountGroupMembershipTests : IDisposable
         await backup.OpenAsync(); using var verify = backup.CreateCommand(); verify.CommandText = "PRAGMA integrity_check"; Assert.Equal("ok", await verify.ExecuteScalarAsync());
         verify.CommandText = "PRAGMA user_version"; Assert.Equal(3L, await verify.ExecuteScalarAsync());
         verify.CommandText = "SELECT count(*) FROM pragma_table_info('profiles') WHERE name='additional_groups'"; Assert.Equal(0L, await verify.ExecuteScalarAsync());
-        await using var current = await DatabaseAsync(); using var version = current.CreateCommand(); version.CommandText = "PRAGMA user_version"; Assert.Equal(5L, await version.ExecuteScalarAsync());
+        await using var current = await DatabaseAsync(); using var version = current.CreateCommand(); version.CommandText = "PRAGMA user_version"; Assert.Equal(6L, await version.ExecuteScalarAsync());
     }
 
     [Fact]
     public async Task FutureSchemaCannotBeDowngradedOrRewritten()
     {
         using (var repository = await OpenAsync()) await repository.SaveAsync(AccountProfile.Create("Preserved"), default);
-        await using (var db = await DatabaseAsync()) { using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version=6"; await command.ExecuteNonQueryAsync(); }
+        await using (var db = await DatabaseAsync()) { using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version=7"; await command.ExecuteNonQueryAsync(); }
         byte[] before = await File.ReadAllBytesAsync(DatabasePath);
         using var rejected = new AccountRepository(_root); await Assert.ThrowsAsync<InvalidDataException>(() => rejected.InitializeAsync(default));
         Assert.Equal(before, await File.ReadAllBytesAsync(DatabasePath)); Assert.False(File.Exists(DatabasePath + ".schema6.bak"));

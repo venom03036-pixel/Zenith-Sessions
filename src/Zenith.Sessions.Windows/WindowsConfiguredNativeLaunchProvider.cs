@@ -3,17 +3,24 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Windows;
 
 /// <summary>
-/// Explicit, transient native installation selection. Capability remains Unverified. The real
-/// constructor owns one shared trust verifier; preparer, capture and vault remain caller-owned.
-/// Changing selection never abandons an existing preparation, native start or child cleanup.
+/// Explicit, transient native installation selection. The capability is Unverified until the user records one explicit trial
+/// through the exact selected executable and the saved launch mode as verified (R-launch-0, read from
+/// <see cref="INativeLaunchVerificationSource"/> on every read); then it is Supported, so the queue records ordinary and group
+/// requests as Queued and starts them through the same preparation and checks as a trial. The real constructor owns one shared
+/// trust verifier; preparer, capture and vault remain caller-owned. Changing selection never abandons an existing preparation,
+/// native start or child cleanup.
 /// </summary>
 public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProvider, INativeLaunchDiagnosticSource, IAsyncDisposable
 {
     private readonly object _gate = new();
     private readonly Func<ClientInstallationCandidate, IConfiguredNativeLaunchChild> _factory;
     private readonly IAsyncDisposable _trustOwner;
+    private readonly Func<ClientInstallationCandidate, NativeLaunchExecutableIdentity, bool> _matchesExecutable;
+    private NativeLaunchVerification? _rejectedVerification;
     private readonly CancellationTokenSource _lifetime = new();
     private ClientInstallationCandidate? _selected;
+    private INativeLaunchVerificationSource? _verifications;
+    private SupportedLaunch? _supported;
     private Owner? _active;
     private Task? _dispose;
     private long _generation;
@@ -21,21 +28,100 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     private readonly Dictionary<Guid, DiagnosticEntry> _diagnostics = new();
     private long _diagnosticRevision, _diagnosticAttempt;
 
+    /// <param name="extraArguments">Where each account's saved extra client arguments (R-launch-16) are read at preparation time;
+    /// null passes none. Only the direct player this provider accepts ever receives them, never a bootstrapper.</param>
+    /// <param name="acceptedPublishers">Where the publisher the user accepted for each bootstrapper (R-launch-17) is read when the
+    /// selected bootstrapper's executable is verified; null accepts none, so no bootstrapper is ever started.</param>
+    /// <param name="verifications">Where the trial the user recorded as verified for the saved launch mode and the selected product
+    /// (R-launch-0) is read when the capability is read; null finds none, so the capability stays Unverified and ordinary launching off.</param>
     public WindowsConfiguredNativeLaunchProvider(IRobloxNativeHandoffPreparer preparer, IRobloxNativeHandoffCapture capture,
-        IAuthorizationDispatchVault dispatchVault)
+        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null,
+        INativeLaunchVerificationSource? verifications = null)
     {
         ArgumentNullException.ThrowIfNull(preparer); ArgumentNullException.ThrowIfNull(capture); ArgumentNullException.ThrowIfNull(dispatchVault);
-        var trust = new WindowsClientExecutableTrust(); _trustOwner = trust;
-        _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault));
+        var trust = new WindowsClientExecutableTrust(acceptedPublishers); _trustOwner = trust; _verifications = verifications;
+        _matchesExecutable = WindowsClientExecutableTrust.MatchesLaunchIdentity;
+        _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault, extraArguments));
     }
     // The injected owner is transferred to this wrapper. Factories/children must not own borrowed
     // authentication/browser/vault services. Tests use memory-only children and a tracked owner.
     internal WindowsConfiguredNativeLaunchProvider(Func<ClientInstallationCandidate, IConfiguredNativeLaunchChild> childFactory,
-        IAsyncDisposable trustOwner)
-    { _factory = childFactory ?? throw new ArgumentNullException(nameof(childFactory)); _trustOwner = trustOwner ?? throw new ArgumentNullException(nameof(trustOwner)); }
+        IAsyncDisposable trustOwner, INativeLaunchVerificationSource? verifications = null,
+        Func<ClientInstallationCandidate, NativeLaunchExecutableIdentity, bool>? matchesExecutable = null)
+    { _factory = childFactory ?? throw new ArgumentNullException(nameof(childFactory)); _trustOwner = trustOwner ?? throw new ArgumentNullException(nameof(trustOwner)); _verifications = verifications;
+        _matchesExecutable = matchesExecutable ?? WindowsClientExecutableTrust.MatchesLaunchIdentity; }
 
-    public ProviderCapability AccountLaunch { get; } = new("Native account launch", CapabilityState.Unverified,
-        "An explicitly selected native installation can be prepared for a separately consented trial. Account selection, browser/native compatibility and arrival remain unverified; ordinary launching stays disabled.");
+    private static readonly ProviderCapability UnverifiedLaunch = new("Native account launch", CapabilityState.Unverified,
+        "An explicitly selected native installation can be prepared for a separately consented trial. Account selection, browser/native compatibility and arrival remain unverified; ordinary launching stays off until a trial is recorded as verified for the saved launch mode and the selected installation.");
+
+    /// <summary>
+    /// Unverified, as before, unless an installation is selected and the verification source finds a trial recorded as verified for
+    /// the saved launch mode and that exact executable identity: then Supported, and the queue's ordinary gate opens. Read on every call
+    /// (the saved settings, never a draft, decide), fail-closed: no selection, no source, a source that reports none or throws, a
+    /// poisoned or disposed provider all read Unverified. The source is never invoked under this provider's gate.
+    /// </summary>
+    public ProviderCapability AccountLaunch
+    {
+        get
+        {
+            ClientInstallationCandidate? selected; INativeLaunchVerificationSource? source;
+            lock (_gate) { if (_disposed || _poisoned) return UnverifiedLaunch; selected = _selected; source = _verifications; }
+            if (selected is null || source is null || selected.Product != ClientInstallationProduct.Roblox) return UnverifiedLaunch;
+            NativeLaunchVerification? verification;
+            try { verification = source.Find(selected.Product); }
+            catch (Exception) { return UnverifiedLaunch; }
+            if (verification is null || !MatchesVerification(selected, verification)) return UnverifiedLaunch;
+            var cached = Volatile.Read(ref _supported);
+            if (cached is not null && cached.Verification == verification) return cached.Capability;
+            var capability = new ProviderCapability("Native account launch", CapabilityState.Supported, verification.ExplainSupported());
+            Volatile.Write(ref _supported, new(verification, capability));
+            return capability;
+        }
+    }
+    /// <summary>
+    /// Gives a provider created without a verification source (an injected one) the composition root's source, once. False when one
+    /// is already attached or the provider is disposed; nothing else changes, and no preparation or start is affected.
+    /// </summary>
+    public bool TryUseVerificationSource(INativeLaunchVerificationSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        lock (_gate)
+        {
+            if (_disposed || _verifications is not null) return false;
+            _verifications = source; return true;
+        }
+    }
+    private sealed record SupportedLaunch(NativeLaunchVerification Verification, ProviderCapability Capability);
+    private bool MatchesVerification(ClientInstallationCandidate selected, NativeLaunchVerification verification)
+    {
+        try
+        {
+            return selected.Product == ClientInstallationProduct.Roblox && verification.Validated().Product == selected.Product.ToString()
+                && verification != Volatile.Read(ref _rejectedVerification) && verification.Executable is { } identity
+                && _matchesExecutable(selected, identity);
+        }
+        catch (Exception) { return false; }
+    }
+    private NativeLaunchVerification? CurrentVerification(ClientInstallationCandidate selected)
+    {
+        try
+        {
+            var verification = _verifications?.Find(selected.Product);
+            return verification is not null && MatchesVerification(selected, verification) ? verification : null;
+        }
+        catch (Exception) { return null; }
+    }
+    /// <summary>The exact held executable of a successful explicit trial, never a later file observed when recording.</summary>
+    public NativeLaunchExecutableIdentity? GetStartedExecutableIdentity(Guid operationId)
+    {
+        lock (_gate) return _diagnostics.TryGetValue(operationId, out var entry) ? entry.StartedExecutable : null;
+    }
+    public bool MatchesSelectedExecutable(NativeLaunchExecutableIdentity identity)
+    {
+        ClientInstallationCandidate? selected; lock (_gate) selected = _selected;
+        try { return selected?.Product == ClientInstallationProduct.Roblox && _matchesExecutable(selected, identity); }
+        catch (Exception) { return false; }
+    }
     public bool Selected { get { lock (_gate) return !_disposed && _selected is not null; } }
     public bool CleanupHealthy
     {
@@ -50,8 +136,11 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
 
     /// <summary>
     /// True when <see cref="Configure"/> would accept this candidate as the trial installation. It runs the
-    /// same check (direct-player filename, Roblox-only evidence, safe full path, readable metadata), so a
-    /// caller can tell an inspect-only row (the launcher, a bootstrapper-managed player) from a real change.
+    /// same check (the direct-player filename with Roblox-only evidence, or since R-launch-17 a bootstrapper's own
+    /// executable with that bootstrapper's evidence; safe full path; readable metadata), so a caller can tell an
+    /// inspect-only row (the launcher, a bootstrapper-managed player) from a real change. Whether a bootstrapper's
+    /// publisher is accepted is not a shape question: the Shell checks it before configuring, and the trust
+    /// verifier again before any start.
     /// </summary>
     public static bool CanSelect(ClientInstallationCandidate? candidate)
     {
@@ -107,17 +196,28 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         try
         {
             owner.Token.ThrowIfCancellationRequested();
+            if (owner.Context.RequiresVerifiedExecutable)
+            {
+                owner.Verification = CurrentVerification(owner.Selection);
+                if (owner.Verification is null) throw new InvalidOperationException("The selected executable needs a new trial.");
+            }
             var child = _factory(owner.Selection) ?? throw new InvalidOperationException("Native preparation could not be created.");
             Volatile.Write(ref owner.Child, child);
             var result = await child.PrepareAsync(owner.Context, owner.Token).ConfigureAwait(false);
             CopyChildDiagnostic(owner, child);
             Volatile.Write(ref owner.Prepared, result?.Prepared);
+            owner.Executable = child.ExecutableIdentity;
             // A cleanup failure has priority over cancellation and late configuration changes.
             if (result?.Failure == LaunchPreparationFailure.CleanupFailed) Poison(owner);
             CheckChildHealth(owner);
             failure = result?.Failure is LaunchPreparationFailure.Expired ? LaunchPreparationFailure.Expired : LaunchPreparationFailure.Rejected;
             if (result?.Failure == LaunchPreparationFailure.None && result.Prepared is { } prepared)
             {
+                if (owner.Context.RequiresVerifiedExecutable && owner.Executable != owner.Verification!.Executable)
+                {
+                    Volatile.Write(ref _rejectedVerification, owner.Verification);
+                    throw new InvalidOperationException("The held executable does not match the recorded trial.");
+                }
                 if (prepared.IsExpired) failure = LaunchPreparationFailure.Expired;
                 else if (ReferenceEquals(prepared.Context, owner.Context)) lock (_gate)
                 {
@@ -320,7 +420,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
                     TrustStatus = facts.TrustStatus ?? previous.TrustStatus, TrustReason = facts.TrustReason ?? previous.TrustReason,
                     PreparationStatus = facts.PreparationStatus ?? previous.PreparationStatus,
                     BrowserOutcome = facts.BrowserOutcome ?? previous.BrowserOutcome, ShapeStatus = facts.ShapeStatus ?? previous.ShapeStatus,
-                    DispatchStatus = facts.DispatchStatus ?? previous.DispatchStatus,
+                    DispatchStatus = facts.DispatchStatus ?? previous.DispatchStatus, LaunchMode = facts.LaunchMode ?? previous.LaunchMode,
                     ExecutableObservedUtc = facts.ExecutableObservedUtc ?? previous.ExecutableObservedUtc,
                     PreparationObservedUtc = facts.PreparationObservedUtc ?? previous.PreparationObservedUtc,
                     BrowserObservedUtc = facts.BrowserObservedUtc ?? previous.BrowserObservedUtc,
@@ -353,13 +453,16 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     }
     private static ClientInstallationCandidate CopySelection(ClientInstallationCandidate candidate)
     {
-        const string invalid = "Select a present, unverified native Roblox player installation. Bootstrapper and unsafe paths are unsupported.";
+        const string invalid = "Select a present, unverified native Roblox player installation, or a bootstrapper's own executable (Bloxstrap, Fishstrap, Froststrap or Voidstrap). Bootstrapper-managed players and unsafe paths are unsupported.";
         string? supplied = candidate.ExecutablePath;
-        if (candidate.Product != ClientInstallationProduct.Roblox || candidate.FileState != ClientInstallationFileState.PresentUnverified
+        bool bootstrapper = BootstrapperProducts.IsBootstrapper(candidate.Product);
+        // Every evidence item must name the row's own product: a Roblox player under a bootstrapper's folder carries that
+        // bootstrapper's evidence and is refused; a bootstrapper row with Roblox evidence is not its own executable.
+        if (!Enum.IsDefined(candidate.Product) || candidate.FileState != ClientInstallationFileState.PresentUnverified
             || supplied is not { Length: > 3 and <= WindowsClientExecutableTrust.MaximumPathCharacters }
             || supplied.Any(char.IsControl) || supplied.Contains('"') || !Readable(supplied)
             || candidate.Evidence is null || candidate.Evidence.Count is < 1 or > 32
-            || candidate.Evidence.Any(item => item is null || !Enum.IsDefined(item.Source) || item.Product != ClientInstallationProduct.Roblox)
+            || candidate.Evidence.Any(item => item is null || !Enum.IsDefined(item.Source) || item.Product != candidate.Product)
             || candidate.Evidence.Distinct().Count() != candidate.Evidence.Count) throw new ArgumentException(invalid);
         string path = supplied.Replace('/', '\\');
         if (!char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\' || path.AsSpan(2).Contains(':')
@@ -367,7 +470,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         try
         {
             if (!Path.IsPathFullyQualified(path) || !Path.GetFullPath(path).Equals(path, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(invalid);
-            if (!RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
+            if (bootstrapper ? !BootstrapperProducts.IsOwnExecutable(candidate.Product, path) : !RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { throw new ArgumentException(invalid); }
         if (!Metadata(candidate.ProductName) || !Metadata(candidate.FileVersion)) throw new ArgumentException(invalid);
@@ -380,7 +483,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             if (char.IsSurrogate(value[index]) && (!char.IsHighSurrogate(value[index]) || ++index >= value.Length || !char.IsLowSurrogate(value[index]))) return false;
         return true;
     }
-    public override string ToString() => "WindowsConfiguredNativeLaunchProvider { Capability = unverified, Selection = [local], Handoff = [redacted] }";
+    public override string ToString() => "WindowsConfiguredNativeLaunchProvider { Capability = gated by a recorded trial, Selection = [local], Handoff = [redacted] }";
 
     private sealed class Owner(LaunchPreparationContext context, ClientInstallationCandidate selection, long generation, CancellationTokenSource stop)
     {
@@ -393,6 +496,8 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public Task? PreparationWork; public IConfiguredNativeLaunchChild? Child; public IPreparedAccountLaunch? Prepared;
         public WrappedLaunch? Handle; public int Fenced, CleanupStarted; public bool CleanupFailed;
         public long DiagnosticStamp;
+        public NativeLaunchExecutableIdentity? Executable;
+        public NativeLaunchVerification? Verification;
         public CancellationTokenRegistration DiagnosticCancellation;
     }
     private sealed class DiagnosticEntry(long stamp, long generation, NativeLaunchDiagnosticSnapshot snapshot)
@@ -402,6 +507,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public NativeLaunchDiagnosticSnapshot Snapshot = snapshot;
         public long ChildRevision;
         public bool Completed;
+        public NativeLaunchExecutableIdentity? StartedExecutable;
     }
     private sealed class WrappedLaunch : IPreparedAccountLaunch
     {
@@ -442,8 +548,16 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             {
                 _provider.UpdateDiagnostic(_owner, value => value with { Stage = NativeLaunchDiagnosticStage.Dispatching });
                 using var stop = CancellationTokenSource.CreateLinkedTokenSource(_owner.Token, ct);
-                if (allowed && !IsExpired && !stop.IsCancellationRequested)
-                { invoked = true; result = NativeResult(await _prepared.DispatchAsync(boundary, stop.Token).ConfigureAwait(false)); }
+                bool verified = !_owner.Context.RequiresVerifiedExecutable
+                    || _owner.Verification is { } accepted && _owner.Executable == accepted.Executable
+                        && _provider.CurrentVerification(_owner.Selection) == accepted;
+                if (allowed && verified && !IsExpired && !stop.IsCancellationRequested)
+                {
+                    invoked = true; result = NativeResult(await _prepared.DispatchAsync(boundary, stop.Token).ConfigureAwait(false));
+                    if (result.Status == ProviderLaunchStatus.ClientStartedUnverified && !_owner.Context.RequiresVerifiedExecutable)
+                        lock (_provider._gate)
+                            if (_provider.DiagnosticEntryFor(_owner, out var entry)) entry.StartedExecutable = _owner.Executable;
+                }
             }
             catch (Exception) { result = invoked ? new(ProviderLaunchStatus.Uncertain) : Rejected(); }
             finally
@@ -482,6 +596,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     {
         public bool CleanupHealthy => !child.CleanupBlocked;
         public INativeLaunchDiagnosticSource DiagnosticSource => child;
+        public NativeLaunchExecutableIdentity? ExecutableIdentity => child.ExecutableIdentity;
         public Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct) => child.PrepareAsync(context, ct);
         public ValueTask DisposeAsync() => child.DisposeAsync();
     }
@@ -491,5 +606,6 @@ internal interface IConfiguredNativeLaunchChild : IAsyncDisposable
 {
     bool CleanupHealthy { get; }
     INativeLaunchDiagnosticSource? DiagnosticSource => null;
+    NativeLaunchExecutableIdentity? ExecutableIdentity => null;
     Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct);
 }

@@ -150,11 +150,12 @@ public sealed class WindowsClientInstallationInventoryTests : IDisposable
             Assert.Equal([new ClientInstallationEvidence(ClientInstallationHintSource.RobloxPlayerProtocol,ClientInstallationProduct.Roblox)],candidate.Evidence);
             Assert.Contains(new ClientInstallationIssue(ClientInstallationIssueCode.InvalidHint),snapshot.Issues);
             Assert.Equal(ClientInstallationSnapshotStatus.Partial,snapshot.Status);
-            // One fresh root per read (six direct, five during discovery), each closed by the source that opened it.
-            Assert.Equal(11,opened.Count);Assert.All(opened,handle=>Assert.True(handle.IsClosed));
+            // One fresh root per read (six direct, six during discovery: two protocol registrations and the four bootstrappers'
+            // install locations, Voidstrap's since R-launch-17), each closed by the source that opened it.
+            Assert.Equal(12,opened.Count);Assert.All(opened,handle=>Assert.True(handle.IsClosed));
             var disabled=new WindowsClientInstallationInventorySource(_root,false,Open);
             foreach(var hint in Enum.GetValues<ClientInstallationRegistryHint>()) Assert.Null(disabled.ReadRegistryValue(hint,default));
-            Assert.Equal(11,opened.Count);
+            Assert.Equal(12,opened.Count);
         }
         Assert.False(File.Exists(player));
     }

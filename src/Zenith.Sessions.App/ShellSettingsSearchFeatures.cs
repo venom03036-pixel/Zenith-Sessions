@@ -82,6 +82,8 @@ internal static class SettingsSearchDestinations
         // Mute and Unmute change running clients at once, so search lands on the saved option, which only edits the draft
         // until Save all settings; focusing it never ticks it.
         SettingsSearchTarget.ClientSound => new("ClientSoundTools", "MuteArrivingClientsOption"),
+        // Apply and Remove each start an administrator run, so search lands on the rate box, which changes nothing by itself.
+        SettingsSearchTarget.UploadLimit => new("UploadLimitTools", "UploadLimitRateBox"),
         SettingsSearchTarget.DiagnosticsFilters => new(null, "DiagnosticsFilterBox"),
         _ => null
     };

@@ -35,8 +35,12 @@ public sealed record ClientAudioMuteResult(SessionObservation Session, ClientAud
         ClientAudioMuteStatus.AccessDenied => "Windows denied the process query or the sound change.",
         ClientAudioMuteStatus.NoAudioSession
             => "Windows reports no sound for this client yet, so nothing was changed. A client gets a Volume mixer entry when it first plays sound.",
+        // Only Mute refuses a partly muted client (Unmute and RestoreOriginal turn every session on), and that refusal reports no Previous
+        // because Windows gave no single answer for the whole client.
+        ClientAudioMuteStatus.Conflict when Action == ClientAudioMuteAction.Mute && Previous is null
+            => "Only part of this client's sound is muted, so Mute left it as found. To mute all of it, choose Unmute, which turns every part of its sound on, then Mute.",
         ClientAudioMuteStatus.Conflict
-            => "This client's sound was changed outside Zenith, for example in Volume mixer, or only part of it is muted. The current state was preserved.",
+            => "This client's sound was changed outside Zenith, for example in Volume mixer, between Zenith's check and its change. The current state was preserved.",
         ClientAudioMuteStatus.CapacityReached => "The 128-client restore limit is full. Unmute clients Zenith muted before muting another.",
         ClientAudioMuteStatus.Cancelled => "This client was not changed because the operation was stopped.",
         ClientAudioMuteStatus.Busy => "Another sound operation is still running. No additional operation was queued.",

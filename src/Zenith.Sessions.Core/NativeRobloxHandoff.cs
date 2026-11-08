@@ -92,7 +92,12 @@ public sealed class NativeHandoffCandidate : IDisposable
     }
 }
 
-/// <summary>Conservative prospective grammar. No browser, HTTP, URI construction or native dispatch.</summary>
+/// <summary>
+/// Conservative prospective grammar. No browser, HTTP or native dispatch. <see cref="Capture"/> accepts the official page's
+/// own request after its page and origin checks; <see cref="AcceptBuilt"/> accepts a request Zenith built itself in the
+/// Direct ticket mode (R-api-7) through exactly the same grammar, destination, time-window and one-claim rules, so the
+/// request is validated as-is and nothing is rewritten after validation.
+/// </summary>
 public static class NativeRobloxHandoff
 {
     public const int MaximumCharacters = 32 * 1024;
@@ -111,9 +116,25 @@ public static class NativeRobloxHandoff
         if (context is null || !NativeHandoffNavigation.IsAllowedPage(context, currentPage))
             return new(NativeHandoffCaptureStatus.ContextRejected);
         if (!RobloxHandoffProbePolicy.IsAllowedOrigin(initiatingOrigin)) return new(NativeHandoffCaptureStatus.OriginRejected);
+        return Accept(context, original, time ?? TimeProvider.System);
+    }
+
+    /// <summary>
+    /// Direct ticket mode: there is no page or initiating origin to check, because Zenith built the request itself from a
+    /// ticket Roblox issued for the saved sign-in; every other rule is the one <see cref="Capture"/> applies.
+    /// </summary>
+    public static NativeHandoffCaptureResult AcceptBuilt(NativeHandoffContext? context, string? original, TimeProvider? time = null)
+    {
+        try { context = context?.Validated(); }
+        catch (ArgumentException) { return new(NativeHandoffCaptureStatus.ContextRejected); }
+        if (context is null) return new(NativeHandoffCaptureStatus.ContextRejected);
+        return Accept(context, original, time ?? TimeProvider.System);
+    }
+
+    private static NativeHandoffCaptureResult Accept(NativeHandoffContext context, string? original, TimeProvider time)
+    {
         if (original is not { Length: > 0 and <= MaximumCharacters } || !original.StartsWith(Prefix, StringComparison.Ordinal)
             || original.Any(value => value is < '!' or > '~')) return new(NativeHandoffCaptureStatus.InvalidShape);
-        time ??= TimeProvider.System;
         try
         {
             string[] pieces = original[Prefix.Length..].Split('+', 10);
@@ -138,7 +159,7 @@ public static class NativeRobloxHandoff
             if (!Positive(values["launchtime"], out long milliseconds)) return new(NativeHandoffCaptureStatus.InvalidShape);
             DateTimeOffset issued = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
             if ((time.GetUtcNow() - issued).Duration() > TimeSpan.FromSeconds(30)) return new(NativeHandoffCaptureStatus.StaleTimestamp);
-            var destination = ParseDestination(values["placelauncherurl"], tracker, context!.Destination);
+            var destination = ParseDestination(values["placelauncherurl"], tracker, context.Destination);
             if (destination != NativeHandoffCaptureStatus.AcceptedSourceGrammar) return new(destination);
             if (!context.TryClaimCapture()) return new(NativeHandoffCaptureStatus.OperationAlreadyCaptured);
             // Retain the original opaque request. Never rebuild or normalize its ticket-bearing URI.

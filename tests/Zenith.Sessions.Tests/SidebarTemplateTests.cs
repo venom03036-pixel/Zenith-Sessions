@@ -17,6 +17,32 @@ namespace Zenith.Sessions.Tests;
 public sealed class SidebarTemplateTests
 {
     [Theory]
+    [InlineData("pseudo")]
+    [InlineData("pseudo-rtl")]
+    public Task LongerAndRightToLeftNavigationKeepsLabelsInsideTheirControls(string language)
+        =>PackagedLayoutCheck.RunOnStaAsync(()=>new object(),_=>
+        {
+            var (view,resources)=ProductionRail();ThemeManager.Apply(resources,"graphite-mint");
+            var strings=new ShellStrings(ShellLanguages.Resolve(language,System.Globalization.CultureInfo.GetCultureInfo("en-US")));
+            Zenith.Sessions.App.Localization.SetStrings(view,strings);view.FlowDirection=strings.FlowDirection;view.DataContext=new RailModel();
+            view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
+            var buttons=Descendants(view).OfType<Button>().ToArray();Assert.Equal(9,buttons.Length);
+            foreach(var button in buttons)
+            {
+                string caption=AutomationProperties.GetName(button);Assert.StartsWith("[",caption);
+                Assert.Equal(strings.FlowDirection,button.FlowDirection);
+                var label=Assert.Single(Descendants(button).OfType<TextBlock>().Where(t=>t.Text==caption));
+                var bounds=label.TransformToAncestor(button).TransformBounds(new Rect(label.RenderSize));
+                Assert.True(bounds.Left>=0 && bounds.Right<=button.ActualWidth+0.5,$"{language}: {caption} falls outside its control: {bounds}, width {button.ActualWidth}");
+                Assert.True(bounds.Top>=0 && bounds.Bottom<=button.ActualHeight+0.5,$"{language}: {caption} is vertically clipped.");
+                var text=new FormattedText(label.Text,System.Globalization.CultureInfo.GetCultureInfo("en-US"),label.FlowDirection,
+                    new Typeface(label.FontFamily,label.FontStyle,label.FontWeight,label.FontStretch),label.FontSize,Brushes.White,VisualTreeHelper.GetDpi(label).PixelsPerDip);
+                if(label.TextWrapping==TextWrapping.NoWrap) Assert.True(text.Width<=label.ActualWidth+0.5,$"{language}: {caption} loses its full label: {text.Width} in {label.ActualWidth}.");
+            }
+            return Task.CompletedTask;
+        },_=>{},CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
+
+    [Theory]
     [InlineData("graphite-mint")]
     [InlineData("midnight")]
     [InlineData("amber-night")]
@@ -32,7 +58,7 @@ public sealed class SidebarTemplateTests
                 var (view,resources)=ProductionRail();ThemeManager.Apply(resources,theme);
                 view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
                 var buttons=Descendants(view).OfType<Button>().ToArray();
-                Assert.Equal(new[]{"Overview","Accounts","Sessions","Windows","Automation","Diagnostics","Settings","Guide"},buttons.Select(AutomationProperties.GetName));
+                Assert.Equal(new[]{"Overview","Accounts","Sessions","Windows","Automation","Diagnostics","Settings","Guide","News"},buttons.Select(AutomationProperties.GetName));
                 foreach(var button in buttons)
                 {
                     Assert.True(button.ActualHeight>=36);Assert.True(button.ActualWidth>=140);Assert.True(button.Focusable);
@@ -99,6 +125,7 @@ public sealed class SidebarTemplateTests
         var rail=new XElement(document.Descendants(ui+"Border").Single(e=>(string?)e.Attribute(x+"Name")=="NavigationRail"));
         rail.Attribute(x+"Name")!.Remove();rail.Add(new XAttribute(x+"Key","Rail")); // A standalone resource has a key, not a window name scope.
         var dictionary=new XElement(ui+"ResourceDictionary",new XAttribute(XNamespace.Xmlns+"x",x.NamespaceName),
+            new XAttribute(XNamespace.Xmlns+"local","clr-namespace:Zenith.Sessions.App;assembly=Zenith.Sessions.App"),
             new XElement(ui+"ResourceDictionary.MergedDictionaries",new XElement(ui+"ResourceDictionary",new XAttribute("Source","/Zenith.Sessions.App;component/Themes/ModernControls.xaml"))),
             document.Descendants(ui+"Style").Where(e=>(string?)e.Attribute(x+"Key") is "SessionNav" or "NavigationIcon" or "Muted").Select(e=>new XElement(e)),rail);
         var resources=(ResourceDictionary)XamlReader.Parse(dictionary.ToString());

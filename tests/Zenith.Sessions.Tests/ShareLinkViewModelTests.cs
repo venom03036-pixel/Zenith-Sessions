@@ -10,6 +10,7 @@ public sealed class ShareLinkViewModelTests
     private static readonly Guid ProfileA=Guid.Parse("11111111-1111-4111-8111-111111111111"),ProfileB=Guid.Parse("22222222-2222-4222-8222-222222222222");
     private const string ShareCode="4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e",LinkCode="98765432109876543210",Job="0f8fad5b-d9cb-469f-a165-70867728950e";
     private const string AccountChanged="Share link check stopped because the selected account changed. Paste the link again to check it with the selected account.";
+    private const string OwnerStopped="Share link check stopped because the account, or its saved sign-in, was removed. Paste the link again to check it with a signed-in account.";
     private static string Link(string type)=>"https://www.roblox.com/share?code="+ShareCode+"&type="+type;
     private static RobloxShareLinkResolution Private()=>new(RobloxShareLinkOutcome.PrivateServer,5,6,7,new ProtectedPrivateServerCode(LinkCode));
 
@@ -84,6 +85,47 @@ public sealed class ShareLinkViewModelTests
         profile=null; // The account was filtered out of the list, so nothing is selected when the answer arrives.
         resolver.Hold=false;resolver.Release();await check;
         Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);Assert.Equal(0,late!.PrivateServerCode!.Length);
+    });
+
+    // O-C1-2: the saved-session service stops a check itself when its account, or that account's saved sign-in, is removed
+    // (the shell removes rows and disconnects through that service, not through this view model's stop). The removed row
+    // then leaves the list with nothing selected, which SelectedAccountChanged rightly ignores, so the status must say here
+    // that the check ended instead of staying on "Checking…" with nothing running.
+    [Fact]
+    public Task ACheckTheSavedSessionOwnerStoppedSaysSoInsteadOfStayingOnChecking()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true,ThrowCancelled=true};var store=new Store();Guid? profile=ProfileA;var failures=new List<Exception>();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,failures.Add,games:f.Directory);
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+        resolver.Hold=false;resolver.Release();await check.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(resolver.LastToken.IsCancellationRequested); // The view model did not stop it; its owner did.
+        Assert.Equal(OwnerStopped,vm.Status);Assert.False(vm.IsBusy);Assert.False(vm.HasResult);Assert.Empty(failures);Assert.Null(f.Browser.Destination);
+        profile=null;vm.SelectedAccountChanged(); // The removed row's list reloads with nothing selected: the explanation stands.
+        Assert.Equal(OwnerStopped,vm.Status);Assert.False(vm.IsBusy);
+        profile=ProfileB;vm.SelectedAccountChanged();resolver.ThrowCancelled=false;vm.LinkInput=Link("ExperienceDetails");await vm.CheckAsync(); // Checking again with another account works as usual.
+        Assert.Equal(ProfileB,resolver.LastProfile);Assert.True(vm.HasResult);Assert.DoesNotContain("stopped",vm.Status,StringComparison.Ordinal);
+    });
+
+    // The view model's own stops (leaving the page, another account) already say what happened; a resolver that then ends
+    // cancelled must not replace that with the removal explanation.
+    [Fact]
+    public Task TheViewModelsOwnStopKeepsItsOwnStatusWhenTheResolverEndsCancelled()=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();Guid? profile=ProfileA;
+        var left=new Resolver{Hold=true,ThrowCancelled=true};
+        await using(var vm=new ShareLinkViewModel(left,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory))
+        {
+            vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await left.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            vm.Cancel();Assert.True(left.LastToken.IsCancellationRequested);left.Hold=false;left.Release();await check.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal("Paste a private server or game share link, then choose Check link.",vm.Status);Assert.False(vm.IsBusy);
+        }
+        var changed=new Resolver{Hold=true,ThrowCancelled=true};
+        await using(var vm=new ShareLinkViewModel(changed,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory))
+        {
+            vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await changed.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            profile=ProfileB;vm.SelectedAccountChanged();Assert.True(changed.LastToken.IsCancellationRequested);changed.Hold=false;changed.Release();await check.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(AccountChanged,vm.Status);Assert.False(vm.IsBusy);
+        }
     });
 
     [Fact]
@@ -218,7 +260,7 @@ public sealed class ShareLinkViewModelTests
 
     [Theory]
     [MemberData(nameof(UniverseLookups))]
-    public Task AUniverseOnlyLinkToARestrictedGameSaysItCannotBeOpenedWithoutRetryAdvice(string lookup,string status)=>SearchTest.OnUi(async()=>
+    public Task AUniverseOnlyLinkSaysItCannotBeOpenedOnlyWhenTheListingAnsweredWithoutTheUniverse(string lookup,string status)=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var store=new Store();
         var listing=new Listing(lookup switch
@@ -317,6 +359,7 @@ public sealed class ShareLinkViewModelTests
     [InlineData(RobloxShareLinkOutcome.Invalid,"This share link is not valid for a game or private server.")]
     [InlineData(RobloxShareLinkOutcome.Unavailable,"The share link could not be checked right now. Try again later.")]
     [InlineData(RobloxShareLinkOutcome.Busy,"Another account operation is running. Try again when it finishes.")]
+    [InlineData(RobloxShareLinkOutcome.ProfileRemoved,"The selected account is being removed from your library, so the share link was not checked. Paste the link again to check it with another signed-in account.")]
     [InlineData(RobloxShareLinkOutcome.NotListed,"This link's game is restricted or not publicly listed, so it cannot be opened from Zenith.")]
     [InlineData(RobloxShareLinkOutcome.Cancelled,"Share link check cancelled.")]
     public Task OutcomesMapToStatusesWithoutCodes(RobloxShareLinkOutcome outcome,string status)=>SearchTest.OnUi(async()=>
@@ -446,12 +489,18 @@ public sealed class ShareLinkViewModelTests
     private sealed class Resolver:IRobloxShareLinkResolver
     {
         public int Calls;public Guid LastProfile;public CancellationToken LastToken;public bool Hold;
+        /// <summary>Ends cancelled after the hold, like the link service when a removal or disconnect invalidated the operation it owns.</summary>
+        public bool ThrowCancelled;
         public Func<RobloxShareLink,RobloxShareLinkResolution>? Response;
         public TaskCompletionSource Entered {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release=new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Release()=>_release.TrySetResult();
         public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId,RobloxShareLink link,CancellationToken ct)
-        {Calls++;LastProfile=profileId;LastToken=ct;Entered.TrySetResult();if(Hold)await _release.Task;return Response?.Invoke(link)??new(RobloxShareLinkOutcome.Experience,5,6);}
+        {
+            Calls++;LastProfile=profileId;LastToken=ct;Entered.TrySetResult();if(Hold)await _release.Task;
+            if(ThrowCancelled) throw new OperationCanceledException("The saved-session owner stopped this check.");
+            return Response?.Invoke(link)??new(RobloxShareLinkOutcome.Experience,5,6);
+        }
     }
     private sealed class RootPlaces(long universeId,long rootPlaceId):IPublicRobloxGameBatchDirectory
     {
