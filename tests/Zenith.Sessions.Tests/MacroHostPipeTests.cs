@@ -372,6 +372,66 @@ public sealed class MacroHostPipeTests
     }
 
     [Fact]
+    public async Task ClientsThatConnectAndCloseInALoopCannotStopTheEndpoint()
+    {
+        // M-L9-3: only the window before the first accept lets a client connect early. A reset or disconnected instance
+        // refuses clients until the next accept is waiting, so a connect-and-close loop causes at most one failed accept.
+        string name = Name(); var source = new Source((_, _) => Task.FromResult(Ready())); var firstAccept = Gate();
+        var server = new MacroCatalogPipeServer(source, name, firstAccept.Task);
+        using var storm = new CancellationTokenSource(TimeSpan.FromSeconds(10)); int connections = 0;
+        async Task ConnectAndCloseAsync()
+        {
+            while (Volatile.Read(ref connections) < 300 && !storm.IsCancellationRequested)
+            {
+                using var peer = RawClient(name);
+                try { await peer.ConnectAsync(20, storm.Token); Interlocked.Increment(ref connections); }
+                catch (TimeoutException) { }
+                catch (OperationCanceledException) when (storm.IsCancellationRequested) { }
+            }
+        }
+        MacroCatalogPage page; bool workerEnded; Exception? shutdown;
+        try
+        {
+            Task[] peers = [Task.Run(ConnectAndCloseAsync), Task.Run(ConnectAndCloseAsync)];
+            await Task.Delay(100); firstAccept.TrySetResult();
+            await Task.WhenAll(peers).WaitAsync(TimeSpan.FromSeconds(15));
+            workerEnded = server.Completion.IsCompleted;
+            await using var client = new MacroCatalogPipeClient(name);
+            page = await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5));
+        }
+        finally
+        {
+            firstAccept.TrySetResult();
+            shutdown = await Record.ExceptionAsync(() => server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        }
+        Assert.False(workerEnded, "The endpoint stopped during the connect-and-close loop.");
+        Assert.True(Volatile.Read(ref connections) >= 300, $"Only {connections} connect-and-close cycles ran.");
+        Assert.Equal(MacroCatalogState.Ready, page.State); Assert.Equal(1, source.Calls);
+        Assert.Null(shutdown);
+    }
+
+    [Fact]
+    public async Task AcceptThatKeepsFailingEndsTheEndpointAndDisposalReportsTheFailure()
+    {
+        // Repeated failed accepts cannot come from a client (see the test above), only from the endpoint itself. The
+        // worker must then stop after a bounded number of attempts, fault Completion and release the name.
+        string name = Name(); int attempts = 0;
+        var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name, Task.CompletedTask, (_, _) =>
+        {
+            Interlocked.Increment(ref attempts);
+            return Task.FromException(new IOException("Injected failed accept."));
+        });
+        var stopped = await Record.ExceptionAsync(() => server.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+        var disposal = await Record.ExceptionAsync(() => server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.IsType<IOException>(stopped); Assert.Same(stopped, disposal); Assert.True(server.Completion.IsFaulted);
+        Assert.InRange(Volatile.Read(ref attempts), 2, MacroCatalogPipeServer.MaximumConsecutiveAcceptFailures + 1);
+        // The name is no longer owned, so a restarted Personal serves the companion again.
+        await using var restarted = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name);
+        await using var client = new MacroCatalogPipeClient(name);
+        Assert.Equal(MacroCatalogState.Ready, (await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5))).State);
+    }
+
+    [Fact]
     public async Task StopWhileWaitingForFirstAcceptEndsCleanly()
     {
         var firstAccept = Gate();

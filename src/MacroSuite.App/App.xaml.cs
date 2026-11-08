@@ -52,6 +52,7 @@ public partial class App : Application
     private SettingsViewModel? _settingsVM;
 #if DEVELOPER_MODE
     private Zenith.MacroHost.Windows.MacroCatalogPipeServer? _macroCatalogServer;
+    private Task? _macroCatalogStopNotice;
 #endif
 
     protected override void OnStartup(StartupEventArgs e)
@@ -226,10 +227,14 @@ public partial class App : Application
             {
                 _macroCatalogServer = new(editorVM.CompanionCatalog);
                 // A stopped endpoint must not be silent: the companion would only say "not connected" with no recorded reason.
-                _ = _macroCatalogServer.Completion.ContinueWith(static stopped => System.Diagnostics.Trace.TraceWarning(
-                        "The optional Personal macro metadata endpoint stopped ({0}). Restart Personal to reconnect the companion; editing and saved macros remain available.",
-                        stopped.Exception?.GetBaseException().GetType().Name),
-                    CancellationToken.None, TaskContinuationOptions.OnlyOnFaulted | TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                // The notice always completes (it checks the fault itself) so OnExit can join it (Rule 12).
+                _macroCatalogStopNotice = _macroCatalogServer.Completion.ContinueWith(static stopped =>
+                    {
+                        if (stopped.Exception is { } fault) System.Diagnostics.Trace.TraceWarning(
+                            "The optional Personal macro metadata endpoint stopped ({0}). Restart Personal to reconnect the companion; editing and saved macros remain available.",
+                            fault.GetBaseException().GetType().Name);
+                    },
+                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             }
             catch (Exception)
             {
@@ -320,7 +325,8 @@ public partial class App : Application
         try
         {
             _macroCatalogServer?.SignalStop();
-            if (_macroCatalogServer is { } catalog) catalog.DisposeAsync().AsTask().GetAwaiter().GetResult();
+            try { if (_macroCatalogServer is { } catalog) catalog.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+            finally { _macroCatalogStopNotice?.GetAwaiter().GetResult(); } // The worker has ended, so its owned notice finishes promptly.
         }
         catch (Exception)
         {
