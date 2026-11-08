@@ -278,8 +278,9 @@ public sealed partial class ClientWindowIntegrationTests
         }
     }
 
+    // trialAvailable is false when the test saved a verified trial first (R-launch-0): ordinary launching is then on and the trial is not offered.
     private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null,
-        IPublicRobloxClientReleaseDirectory? releases=null)
+        IPublicRobloxClientReleaseDirectory? releases=null,bool trialAvailable=true)
     {
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
@@ -294,7 +295,7 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(456, shell.SelectedAccount!.KnownUserId);
             shell.SelectedInstallation = NativeTrialMetadataOnlyInstallation(); shell.ServerBrowser.UsePreferredPlace(42);
             shell.Refresh.Execute(null); await shell.Refresh.Execution;
-            Assert.True(shell.IsReady); Assert.True(shell.QueueReady); Assert.True(shell.CanRunNativeTrial);
+            Assert.True(shell.IsReady); Assert.True(shell.QueueReady); Assert.Equal(trialAvailable, shell.CanRunNativeTrial);
             Assert.False(Directory.Exists(Path.Combine(_root, "signin-browser-data")));
             Assert.False(File.Exists(NativeTrialMetadataOnlyInstallation().ExecutablePath));
             return shell;

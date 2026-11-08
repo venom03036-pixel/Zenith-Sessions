@@ -3,9 +3,12 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Windows;
 
 /// <summary>
-/// Explicit, transient native installation selection. Capability remains Unverified. The real
-/// constructor owns one shared trust verifier; preparer, capture and vault remain caller-owned.
-/// Changing selection never abandons an existing preparation, native start or child cleanup.
+/// Explicit, transient native installation selection. The capability is Unverified until the user records one explicit trial
+/// through the selected installation's product and the saved launch mode as verified (R-launch-0, read from
+/// <see cref="INativeLaunchVerificationSource"/> on every read); then it is Supported, so the queue records ordinary and group
+/// requests as Queued and starts them through the same preparation and checks as a trial. The real constructor owns one shared
+/// trust verifier; preparer, capture and vault remain caller-owned. Changing selection never abandons an existing preparation,
+/// native start or child cleanup.
 /// </summary>
 public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProvider, INativeLaunchDiagnosticSource, IAsyncDisposable
 {
@@ -14,6 +17,8 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     private readonly IAsyncDisposable _trustOwner;
     private readonly CancellationTokenSource _lifetime = new();
     private ClientInstallationCandidate? _selected;
+    private INativeLaunchVerificationSource? _verifications;
+    private SupportedLaunch? _supported;
     private Owner? _active;
     private Task? _dispose;
     private long _generation;
@@ -25,21 +30,63 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     /// null passes none. Only the direct player this provider accepts ever receives them, never a bootstrapper.</param>
     /// <param name="acceptedPublishers">Where the publisher the user accepted for each bootstrapper (R-launch-17) is read when the
     /// selected bootstrapper's executable is verified; null accepts none, so no bootstrapper is ever started.</param>
+    /// <param name="verifications">Where the trial the user recorded as verified for the saved launch mode and the selected product
+    /// (R-launch-0) is read when the capability is read; null finds none, so the capability stays Unverified and ordinary launching off.</param>
     public WindowsConfiguredNativeLaunchProvider(IRobloxNativeHandoffPreparer preparer, IRobloxNativeHandoffCapture capture,
-        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null)
+        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null,
+        INativeLaunchVerificationSource? verifications = null)
     {
         ArgumentNullException.ThrowIfNull(preparer); ArgumentNullException.ThrowIfNull(capture); ArgumentNullException.ThrowIfNull(dispatchVault);
-        var trust = new WindowsClientExecutableTrust(acceptedPublishers); _trustOwner = trust;
+        var trust = new WindowsClientExecutableTrust(acceptedPublishers); _trustOwner = trust; _verifications = verifications;
         _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault, extraArguments));
     }
     // The injected owner is transferred to this wrapper. Factories/children must not own borrowed
     // authentication/browser/vault services. Tests use memory-only children and a tracked owner.
     internal WindowsConfiguredNativeLaunchProvider(Func<ClientInstallationCandidate, IConfiguredNativeLaunchChild> childFactory,
-        IAsyncDisposable trustOwner)
-    { _factory = childFactory ?? throw new ArgumentNullException(nameof(childFactory)); _trustOwner = trustOwner ?? throw new ArgumentNullException(nameof(trustOwner)); }
+        IAsyncDisposable trustOwner, INativeLaunchVerificationSource? verifications = null)
+    { _factory = childFactory ?? throw new ArgumentNullException(nameof(childFactory)); _trustOwner = trustOwner ?? throw new ArgumentNullException(nameof(trustOwner)); _verifications = verifications; }
 
-    public ProviderCapability AccountLaunch { get; } = new("Native account launch", CapabilityState.Unverified,
-        "An explicitly selected native installation can be prepared for a separately consented trial. Account selection, browser/native compatibility and arrival remain unverified; ordinary launching stays disabled.");
+    private static readonly ProviderCapability UnverifiedLaunch = new("Native account launch", CapabilityState.Unverified,
+        "An explicitly selected native installation can be prepared for a separately consented trial. Account selection, browser/native compatibility and arrival remain unverified; ordinary launching stays off until a trial is recorded as verified for the saved launch mode and the selected installation.");
+
+    /// <summary>
+    /// Unverified, as before, unless an installation is selected and the verification source finds a trial recorded as verified for
+    /// the saved launch mode and that installation's product: then Supported, and the queue's ordinary gate opens. Read on every call
+    /// (the saved settings, never a draft, decide), fail-closed: no selection, no source, a source that reports none or throws, a
+    /// poisoned or disposed provider all read Unverified. The source is never invoked under this provider's gate.
+    /// </summary>
+    public ProviderCapability AccountLaunch
+    {
+        get
+        {
+            ClientInstallationCandidate? selected; INativeLaunchVerificationSource? source;
+            lock (_gate) { if (_disposed || _poisoned) return UnverifiedLaunch; selected = _selected; source = _verifications; }
+            if (selected is null || source is null) return UnverifiedLaunch;
+            NativeLaunchVerification? verification;
+            try { verification = source.Find(selected.Product); }
+            catch (Exception) { return UnverifiedLaunch; }
+            if (verification is null || !NativeLaunchVerification.TryParseProduct(verification.Product, out var product) || product != selected.Product) return UnverifiedLaunch;
+            var cached = Volatile.Read(ref _supported);
+            if (cached is not null && cached.Verification == verification) return cached.Capability;
+            var capability = new ProviderCapability("Native account launch", CapabilityState.Supported, verification.ExplainSupported());
+            Volatile.Write(ref _supported, new(verification, capability));
+            return capability;
+        }
+    }
+    /// <summary>
+    /// Gives a provider created without a verification source (an injected one) the composition root's source, once. False when one
+    /// is already attached or the provider is disposed; nothing else changes, and no preparation or start is affected.
+    /// </summary>
+    public bool TryUseVerificationSource(INativeLaunchVerificationSource source)
+    {
+        ArgumentNullException.ThrowIfNull(source);
+        lock (_gate)
+        {
+            if (_disposed || _verifications is not null) return false;
+            _verifications = source; return true;
+        }
+    }
+    private sealed record SupportedLaunch(NativeLaunchVerification Verification, ProviderCapability Capability);
     public bool Selected { get { lock (_gate) return !_disposed && _selected is not null; } }
     public bool CleanupHealthy
     {
@@ -390,7 +437,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             if (char.IsSurrogate(value[index]) && (!char.IsHighSurrogate(value[index]) || ++index >= value.Length || !char.IsLowSurrogate(value[index]))) return false;
         return true;
     }
-    public override string ToString() => "WindowsConfiguredNativeLaunchProvider { Capability = unverified, Selection = [local], Handoff = [redacted] }";
+    public override string ToString() => "WindowsConfiguredNativeLaunchProvider { Capability = gated by a recorded trial, Selection = [local], Handoff = [redacted] }";
 
     private sealed class Owner(LaunchPreparationContext context, ClientInstallationCandidate selection, long generation, CancellationTokenSource stop)
     {

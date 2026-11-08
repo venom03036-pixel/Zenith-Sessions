@@ -356,9 +356,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _queueStore=new(root);
         // One capture for the provider: the official page by default, or the direct ticket request once that mode is saved (R-api-7).
         _nativeCapture=new SelectableNativeHandoffCapture(new OwnedRobloxNativeHandoffCapture(root,dispatcher),new DirectTicketNativeHandoffCapture(_launchTicketClient));
-        // An injected development provider transfers ownership; it must remain Unverified. The real one reads each account's saved
-        // extra arguments (R-launch-16) and each bootstrapper's accepted publisher (R-launch-17) from saved state at preparation time.
-        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this),new SavedAcceptedBootstrapperPublishers(this));
+        // An injected development provider transfers ownership. The real one reads each account's saved extra arguments (R-launch-16)
+        // and each bootstrapper's accepted publisher (R-launch-17) from saved state at preparation time. Either one reads the trial the
+        // user recorded as verified (R-launch-0) from the saved settings when its capability is read: without one it stays Unverified.
+        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this),new SavedAcceptedBootstrapperPublishers(this),new SavedNativeLaunchVerifications(this));
+        if(nativeProvider is not null)nativeProvider.TryUseVerificationSource(new SavedNativeLaunchVerifications(this));
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;

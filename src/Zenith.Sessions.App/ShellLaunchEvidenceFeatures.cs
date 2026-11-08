@@ -165,11 +165,14 @@ public sealed partial class ShellViewModel
         ExportLaunchEvidence=new(p=>p is string path?ExportLaunchEvidenceAsync(path):Task.CompletedTask,error=>Fail(error,ManagerSubsystem.Launch));
     }
     private void RefreshLaunchEvidence()=>RefreshLaunchEvidenceWith(null);
+    // Test-only seam: projects the given log facts as one presentation tick would, so the record gate (R-launch-0) can be
+    // exercised without a real client log. Production ticks pass their own snapshot through RefreshLaunchEvidenceWith.
+    internal void RefreshLaunchEvidenceWithLogsForTest(IReadOnlyList<SessionEvidenceSnapshot> logs)=>RefreshLaunchEvidenceWith(logs);
     // The sample tick passes the log snapshot it already took; other callers take their own.
     private void RefreshLaunchEvidenceWith(IReadOnlyList<SessionEvidenceSnapshot>? logs)
     {
         if(IsLocked||_shuttingDown)
-        {LaunchEvidenceRows.Clear();SelectedLaunchEvidence=null;ClearSelectedNativeDiagnostics();LaunchPacingStatus="Controls locked or stopping. Monitoring does not grant launch permission.";Raise(nameof(HasLaunchEvidence));return;}
+        {LaunchEvidenceRows.Clear();SelectedLaunchEvidence=null;ClearSelectedNativeDiagnostics();LaunchPacingStatus="Controls locked or stopping. Monitoring does not grant launch permission.";Raise(nameof(HasLaunchEvidence));RefreshRecordableTrial();return;}
         var now=DateTimeOffset.UtcNow;var queue=Volatile.Read(ref _latestQueue);var desktop=Volatile.Read(ref _latestDesktop);
         logs??=_logProjection.EvidenceSnapshot(now);
         var candidates=queue.Operations.Where(row=>row.Intent.UserId>0&&(row.Intent.HasExplicitDestination||row.ProcessReceipt is not null))
@@ -202,7 +205,7 @@ public sealed partial class ShellViewModel
             // must not say "ended before any client started", which a timeout or expiry also does without counting.
             :pacing.Reason==LaunchPacingReason.RefusalBackoff?$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s before the next start because the last start was refused before any client started. Each refused start in a row doubles the wait, up to about 1 minute."
             :$"Waiting {Math.Ceiling(pacing.Remaining.TotalSeconds):0} s for "+(pacing.Reason==LaunchPacingReason.StartupStabilization?"startup stabilization":"launch spacing")+". Already started clients remain open.";
-        Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));
+        Raise(nameof(HasLaunchEvidence));Raise(nameof(CanShowEvidenceProcess));RefreshRecordableTrial();
     }
     public string BuildNativeTrialEvidenceReport()
     {

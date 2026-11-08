@@ -89,7 +89,9 @@ public static class LaunchDescriptions
 {
     public static string Explain(LaunchProblem problem)=>problem switch
     {
-        LaunchProblem.ProviderUnavailable=>"Native account launch provider unavailable; no client was started.",
+        // Ordinary and group requests are recorded with this until one explicit trial is recorded as verified for the saved launch
+        // mode and the selected installation (R-launch-0); the Shell's installation settings say which is missing.
+        LaunchProblem.ProviderUnavailable=>"Native account launch is not available for ordinary requests; no client was started. It turns on once a native trial is recorded as verified for the saved launch mode and the selected installation (Settings → Roblox installation); queue this account again afterwards.",
         LaunchProblem.IdentityUnverified=>"Link and verify the intended account before launching.",
         LaunchProblem.InsufficientCapacity=>"Waiting for fresh measurements and sufficient resource headroom.",
         LaunchProblem.StartupRejected=>"The provider refused startup before a client started. While Zenith stays open, this request's native launch stages in Launch evidence on Join a game may show which check stopped it; a restart clears them, and a refusal before any stage was recorded leaves none.",

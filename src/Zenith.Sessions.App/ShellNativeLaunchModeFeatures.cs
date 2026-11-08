@@ -44,10 +44,12 @@ public sealed partial class ShellViewModel
         ApplySavedNativeLaunchMode();
         Raise(nameof(SelectedNativeLaunchMode));
     }
-    // After every successful settings write, explicit or autosave: only the saved value reaches the capture.
+    // After every successful settings write, explicit or autosave: only the saved value reaches the capture. The saved mode also
+    // decides which recorded trial, if any, turns ordinary launching on (R-launch-0), so that state is refreshed with it.
     private void ApplySavedNativeLaunchMode()
     {
         _nativeCapture.Mode = SavedNativeLaunchMode;
         Raise(nameof(NativeLaunchModeStatus));
+        RefreshNativeLaunchVerification();
     }
 }

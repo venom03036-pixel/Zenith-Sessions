@@ -255,6 +255,7 @@ public partial class MainWindow : Window
                 "shorten-wait-after-join"=>ShortenWaitAfterJoinOption,
                 "native-launch-mode"=>SettingsNativeLaunchMode,
                 "bootstrapper-launch"=>SettingsBootstrapperLaunch,
+                "verified-launch"=>SettingsNativeLaunchVerification,
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,

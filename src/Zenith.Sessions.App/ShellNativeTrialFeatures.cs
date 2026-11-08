@@ -25,8 +25,9 @@ public sealed partial class ShellViewModel
     public string NativeTrialInstallation=>SelectedInstallation?.Candidate is not { } candidate?"Choose a native Roblox installation in Settings first."
         :_nativeLaunch.Selected?candidate.ExecutablePath
         :"The selected installation is not usable for a native trial; see the trial status.";
+    // While a recorded trial has turned ordinary launching on (R-launch-0) the queue refuses a trial, so none is offered.
     public bool CanRunNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
-        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
+        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy&&!IsNativeLaunchVerified
         &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0}&&ServerBrowser.ReadyDestination is {PlaceId:>0};
     public AsyncCommand StartNativeTrial {get;private set;}=null!;
     public Command CancelNativeTrial {get;private set;}=null!;
@@ -89,7 +90,7 @@ public sealed partial class ShellViewModel
         StartNativeTrial=new(StartNativeTrialAsync,error=>Fail(error,ManagerSubsystem.Launch));
         CancelNativeTrial=new(_=>{FenceNativeTrial("Trial stopped. Review any process-start receipt before retrying; existing Roblox clients remain open.");_launchQueue.SignalPanic();});
         PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;
-        InitializeLaunchEvidenceFeatures();
+        InitializeLaunchEvidenceFeatures();InitializeNativeLaunchVerificationFeatures();
     }
     private void NativeTrialOwnerChanged(object? sender,PropertyChangedEventArgs args)
     {
@@ -135,7 +136,9 @@ public sealed partial class ShellViewModel
         try
         {
             _nativeLaunch.Configure(eligible);
-            NativeTrialStatus=_nativeLaunch.Selected?(BootstrapperProducts.IsBootstrapper(eligible!.Product)
+            // A recorded trial for the saved mode and this row's product (R-launch-0) means ordinary launching is on through it.
+            NativeTrialStatus=_nativeLaunch.Selected?(SavedNativeLaunchVerification is { } verified&&IsNativeLaunchVerified?VerifiedNativeLaunchStatus(verified)
+                    :BootstrapperProducts.IsBootstrapper(eligible!.Product)
                     ?$"Launch through {eligible.Product} selected for an explicit trial. {eligible.Product} starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files. Its signature is checked against the publisher you accepted, and the account and destination are checked again, before any start; compatibility remains unverified."
                     :"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified.")
                 :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation(SelectedInstallation);
@@ -149,7 +152,7 @@ public sealed partial class ShellViewModel
         // so the user knows the trial stopped. A Panic or Lock reason keeps priority.
         if(interrupted&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice)NativeTrialStatus=Notice=NativeTrialStoppedBySelection;
         PublishLaunchRelease();
-        RefreshNativeTrialFeatures();
+        RefreshNativeTrialFeatures();RefreshNativeLaunchVerification();
     }
     private const string NativeTrialStoppedBySelection="Trial stopped because the installation selection changed, and the launch queue is paused. Review any process-start receipt in the queue before retrying; existing Roblox clients remain open.";
     // Read before the fence: the queue's Panic signal ends IsTrialOperation for the current request.
@@ -231,6 +234,8 @@ public sealed partial class ShellViewModel
             stop.Token.ThrowIfCancellationRequested();
             _preserveStopNotice=false;
             request=await _launchQueue.EnqueueTrialAsync(review.Profile,stop.Token,new(review.PlayerId,review.AuthorizationGeneration),review.Destination);
+            // The one request that may later be recorded as verified (R-launch-0), with the mode and installation it actually uses.
+            _lastTrialStart=(request.Intent.OperationId,review.Mode,review.Installation.Product);
             if(stop.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)
                 ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))
             {await CancelAbandonedNativeTrialAsync(request);return;}
