@@ -636,7 +636,7 @@
                                     </StackPanel>
                                     <StackPanel Visibility="{Binding ActionEditor.RedirectOnAppearance, Converter={StaticResource BoolToVis}}">
                                         <TextBlock Text="Jump destination" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
-                                        <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName" SelectedValuePath="StepId" SelectedValue="{Binding ActionEditor.AppearanceTargetStepId}" Margin="0,0,0,8"/>
+                                        <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName" SelectedItem="{Binding ActionEditor.SelectedAppearanceTarget}" Margin="0,0,0,8"/>
                                         <TextBlock Text="Minimum time between jumps (ms)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
                                         <TextBox Text="{Binding ActionEditor.AppearanceCooldownMs, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"/>
                                         <TextBlock Text="Monitors throughout playback. Jumps once when visible, then waits for the image to disappear before another jump." FontSize="12" TextWrapping="Wrap" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,8"/>
@@ -762,8 +762,8 @@
                                         <ComboBoxItem Content="Stop macro"/>
                                     </ComboBox>
                                     <TextBlock Text="Jump destination (main action list)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
-                                    <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName" SelectedValuePath="StepId"
-                                              SelectedValue="{Binding ActionEditor.RouteTargetStepId}" Margin="0,0,0,8"/>
+                                    <ComboBox ItemsSource="{Binding ActionEditor.RouteTargets}" DisplayMemberPath="DisplayName"
+                                              SelectedItem="{Binding ActionEditor.SelectedRouteTarget}" Margin="0,0,0,8"/>
                                     <TextBlock Text="Extra retry attempts (0–20)" FontSize="12" Foreground="{DynamicResource TextSecondary}" Margin="0,0,0,4"/>
                                     <TextBox Text="{Binding ActionEditor.RouteRetryCount, UpdateSourceTrigger=LostFocus}" Margin="0,0,0,8"
                                              Background="{DynamicResource AppBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource ControlBorder}" Padding="8,5"/>
