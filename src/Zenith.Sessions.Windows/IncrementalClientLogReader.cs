@@ -279,7 +279,8 @@ public sealed class IncrementalClientLogReader : IDisposable
         CryptographicOperations.ZeroMemory(_buffer.AsSpan(0, _anchorLength));
         return matches;
     }
-    private static ClientLogObservation? Parse(string line, ClientLogStreamId stream, long start, long end, DateTimeOffset readUtc)
+    /// <summary>The one allowlist of recognised line shapes, shared with the support report's tail reader (RobloxClientLogTails): a line either yields typed fields or nothing.</summary>
+    internal static ClientLogObservation? Parse(string line, ClientLogStreamId stream, long start, long end, DateTimeOffset readUtc)
     {
         // First tag only: text printed by a game cannot smuggle a second network/identity tag through Output.
         int comma = line.IndexOf(',');
@@ -385,7 +386,7 @@ public sealed class IncrementalClientLogReader : IDisposable
         if (!GetFileInformationByHandle(handle, out var info)) throw new Win32Exception(Marshal.GetLastWin32Error());
         return new(info.VolumeSerial, info.IndexHigh, info.IndexLow, info.Creation.High, info.Creation.Low);
     }
-    private static void ValidatePhysicalPath(SafeFileHandle handle, string expected)
+    internal static void ValidatePhysicalPath(SafeFileHandle handle, string expected)
     {
         // Reject redirected paths before reading contents. No junction/symlink may turn a discovered log into another file.
         var path = new StringBuilder(1024);

@@ -23,6 +23,22 @@ public sealed partial class ShellViewModel
     private ClientHistoryChoice? _selectedHistoryChoice;
     // Dispatcher-thread scratch, reused on every presentation (Rule 7).
     private readonly HashSet<SessionProcessKey> _liveHistoryKeys=[];
+    private readonly Dictionary<SessionProcessKey,GpuClientTelemetry> _clientGpu=[];
+    /// <summary>
+    /// Writes each row's GPU cell from the sample's confirmed client rows. A row is matched by PID and start time, the same
+    /// identity the sampler confirmed on both sides of the collection; an expired GPU snapshot shows no number.
+    /// </summary>
+    private void PresentClientGpu(DesktopSnapshot snapshot,DateTimeOffset now)
+    {
+        var gpu=snapshot.Resources.Gpu; bool enabled=_savedSettings.ShowClientGpu, fresh=gpu?.IsFresh(now)==true;
+        _clientGpu.Clear();
+        if(enabled && fresh) foreach(var client in gpu!.Clients) _clientGpu[new(null,client.ProcessId,client.ProcessStartUtcTicks)]=client;
+        for(int i=0;i<Sessions.Count;i++)
+        {
+            var row=Sessions[i];
+            row.UpdateGpu(_clientGpu.TryGetValue(row.ProcessKey,out var client)?client:null,fresh,enabled);
+        }
+    }
     public ClientHistoryChoice? SelectedHistoryChoice
     {
         get=>_selectedHistoryChoice;

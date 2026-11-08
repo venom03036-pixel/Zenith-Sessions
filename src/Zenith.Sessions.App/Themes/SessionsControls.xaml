@@ -332,14 +332,20 @@
                         </ContentPresenter>
                     </Border>
                     <ControlTemplate.Triggers>
-                        <Trigger Property="IsMouseOver" Value="True"><Setter TargetName="Border" Property="Background" Value="{DynamicResource HoverBackground}"/></Trigger>
                         <Trigger Property="IsEnabled" Value="False"><Setter Property="Opacity" Value="0.45"/></Trigger>
                     </ControlTemplate.Triggers>
                 </ControlTemplate>
             </Setter.Value>
         </Setter>
+        <!-- Hover is a style trigger listed before the selected trigger, so the selected segment keeps its selection fill and text
+             while the pointer is over it. A template hover trigger would win over the style's selection fill: under Windows High
+             Contrast the hover fill is the window colour and the selection text colour is the highlight text colour, both black in
+             High Contrast Black and both white in High Contrast White, so the selected segment's label disappeared under the pointer. -->
         <Style.Triggers>
-            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/></Trigger>
+            <Trigger Property="IsMouseOver" Value="True">
+                <Setter Property="Background" Value="{DynamicResource HoverBackground}"/>
+                <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+            </Trigger>
             <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True">
                 <Setter Property="Background" Value="{DynamicResource SelectionBackground}"/>
                 <Setter Property="BorderBrush" Value="{DynamicResource SelectionBorder}"/>
@@ -531,7 +537,11 @@
                         <ContentPresenter HorizontalAlignment="Center" VerticalAlignment="Center" TextElement.Foreground="{TemplateBinding Foreground}"/>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <!-- Hover takes the theme's hover fill as the default button does, not only the muted border: under Windows
+                             High Contrast TextMuted and the resting BorderBrushLight are both the window text colour, so the border
+                             alone showed nothing there; the hover fill is then the window colour with a bar of the window text colour. -->
                         <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Shell" Property="Background" Value="{DynamicResource HoverBackground}"/>
                             <Setter TargetName="Shell" Property="BorderBrush" Value="{DynamicResource TextMuted}"/>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">
@@ -567,7 +577,10 @@
                         <ContentPresenter Margin="{TemplateBinding Padding}" HorizontalAlignment="Stretch" VerticalAlignment="Stretch"/>
                     </Border>
                     <ControlTemplate.Triggers>
+                        <!-- Hover fill as ChipButton: the muted border alone shows nothing under Windows High Contrast. The card's art
+                             area covers the bar at the top, so it shows beside the card's text. -->
                         <Trigger Property="IsMouseOver" Value="True">
+                            <Setter TargetName="Shell" Property="Background" Value="{DynamicResource HoverBackground}"/>
                             <Setter TargetName="Shell" Property="BorderBrush" Value="{DynamicResource TextMuted}"/>
                         </Trigger>
                         <Trigger Property="IsKeyboardFocused" Value="True">

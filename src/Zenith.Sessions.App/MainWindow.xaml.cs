@@ -160,6 +160,14 @@ public partial class MainWindow : Window
         var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
         return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
     }
+    // The webhook URL is a secret: the masked field is read once here, handed to the shell as the command's parameter and cleared
+    // at once, so it is never bound to a property, never kept by the window and never written anywhere but the protected store.
+    private void SaveDiscordWebhook_Click(object sender, RoutedEventArgs e)
+    {
+        string url = SettingsDiscordWebhook.Password;
+        SettingsDiscordWebhook.Clear();
+        _vm.SaveDiscordWebhook.Execute(url);
+    }
     // The footer's error (assertive) and status (polite) texts are live regions. WPF does not raise LiveRegionChanged when a
     // bound text changes, so each update of either binding announces it; Fail and Inform notify even for identical text.
     private void AnnounceNotice(object sender, System.Windows.Data.DataTransferEventArgs e)
@@ -194,8 +202,8 @@ public partial class MainWindow : Window
         if (review is null) return;
         try
         {
-            var answer = MessageBox.Show(this, review.SelectionSummary + "\n\n" + review.InstallationSummary
-                + "\n\nContinue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.",
+            var answer = MessageBox.Show(this, review.SelectionSummary + "\n\n" + review.InstallationSummary + "\n" + review.ArgumentsSummary
+                + "\n\n" + review.LaunchModeSummary,
                 "Confirm native account trial", MessageBoxButton.OKCancel, MessageBoxImage.Information, MessageBoxResult.Cancel);
             if (answer == MessageBoxResult.OK) _vm.StartNativeTrial.Execute(review);
         }
@@ -274,12 +282,24 @@ public partial class MainWindow : Window
                 "dashboard-timing"=>SettingsDashboardTiming,
                 "launch-spacing"=>SettingsLaunchSpacing,
                 "stabilization-timing"=>SettingsStabilizationTiming,
+                "shorten-wait-after-join"=>ShortenWaitAfterJoinOption,
+                "native-launch-mode"=>SettingsNativeLaunchMode,
+                "bootstrapper-launch"=>SettingsBootstrapperLaunch,
+                "verified-launch"=>SettingsNativeLaunchVerification,
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,
                 "close-button"=>SettingsCloseButtonExits,
                 "idle-lock"=>SettingsIdleLock,
+                // The saved choice only edits the draft until Save settings; focusing it never ticks it.
+                "public-network-guard"=>SettingsPublicNetworkGuard,
+                // The on/off choice, never the masked URL field or a button that sends.
+                "discord-alerts"=>SettingsDiscordAlerts,
+                // The on/off choice, never the application ID field or Resume Discord status.
+                "discord-presence"=>SettingsDiscordPresence,
                 "panic-shortcut"=>SettingsPanicShortcut,
+                // The delay choice, never Schedule shutdown: search lands on a field, not on a button that starts work.
+                "scheduled-shutdown"=>SettingsShutdownDelay,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
@@ -311,6 +331,20 @@ public partial class MainWindow : Window
         if(MessageBox.Show(this,_vm.SetAsideInterruptedQueueWriteConfirmation,"Set aside interrupted save",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
             _vm.SetAsideInterruptedQueueWrite.Execute(null);
     }
+    // The question names the exact count and size the last check showed; the command then deletes only those files, each re-checked.
+    private void DeleteOldClientLogs(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.CanDeleteClientLogs) return;
+        if (MessageBox.Show(this, _vm.ClientLogCleanupConfirmation, "Delete old Roblox client logs", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.DeleteClientLogs.Execute(null);
+    }
+    // The question names the release, the verified publisher and the running clients the installer will close; only a Yes runs the held file.
+    private void InstallRobloxUpdate(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.CanInstallRobloxUpdate) return;
+        if (MessageBox.Show(this, _vm.RobloxUpdateConfirmation, "Install Roblox update", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.InstallRobloxUpdate.Execute(null);
+    }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)
     {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex,ManagerSubsystem.Diagnostics);}}
     private void CopyDiagnosticReport(object sender,RoutedEventArgs e)
@@ -329,6 +363,16 @@ public partial class MainWindow : Window
         if(link is null) {_vm.Inform("This client has no current diagnostic destination. Refresh observations; stale or ambiguous values are not copied.");return;}
         try {Clipboard.SetText(link);_vm.Inform("Unverified reported destination link copied. Access and arrival remain unverified.");}
         catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex,ManagerSubsystem.Directory);}
+    }
+    private void OpenNewsArticleClick(object sender,RoutedEventArgs e)
+    {
+        if(sender is not FrameworkElement {DataContext:PublicNewsItem item} || _vm.ReviewNewsLink(item) is not { } link) return;
+        if(MessageBox.Show(this,"Open this official article in your default browser?\n\n"+link.AbsoluteUri,"Open news article",
+            MessageBoxButton.YesNo,MessageBoxImage.Question,MessageBoxResult.No)!=MessageBoxResult.Yes) return;
+        if(_vm.ReviewNewsLink(item)!=link) return;
+        try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link.AbsoluteUri) {UseShellExecute=true});}
+        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException)
+        {_vm.Fail(ex,ManagerSubsystem.Directory,"The browser could not be opened.");}
     }
     private void OpenGamePageClick(object sender,RoutedEventArgs e)
     {
@@ -515,6 +559,14 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", CheckFileExists = true };
         if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ImportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
+    private void EncryptDataFolder(object sender, RoutedEventArgs e)
+    {
+        var review = _vm.ReviewDataEncryption();
+        if (review is null) return;
+        if (MessageBox.Show(this, ShellViewModel.DataEncryptionConfirmation, "Windows data-folder encryption",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.EncryptDataFolder.Execute(review);
+    }
     private async void ExportProfiles(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", FileName = "Zenith-Sessions-Profiles.json", AddExtension = true };
@@ -530,8 +582,18 @@ public partial class MainWindow : Window
     {
         if (sender is not FrameworkElement { DataContext: SessionRow row }) return;
         var session = row.Observation;
-        if (MessageBox.Show(this, $"Ask Roblox process {session.ProcessId} to close? Unsaved game activity may be lost. Account identity is unverified.", "Close selected client", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (MessageBox.Show(this, $"Ask Roblox process {session.ProcessId} to close? Zenith asks its window to close, asks again for Roblox's leave prompt and waits a few seconds for it to exit. Unsaved game activity may be lost. Account identity is unverified.", "Close selected client", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         try { await _vm.RequestCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.ClientWindows); }
+    }
+    // R-instances-12: offered on a row only after Close left that client open. The confirmation names the exact client; No is the default.
+    private async void ForceCloseSession(object sender, RoutedEventArgs e)
+    {
+        if (_vm.IsLocked || sender is not FrameworkElement { DataContext: SessionRow row } || !row.ForceCloseOffered) return;
+        var session = row.Observation;
+        string started = new DateTimeOffset(session.ProcessStartUtcTicks, TimeSpan.Zero).ToLocalTime().ToString("T");
+        if (MessageBox.Show(this, $"End Roblox process {session.ProcessId} (started {started}) by force? It stayed open after Zenith asked it to close. Windows ends it at once: unsaved game activity is lost and Roblox cannot save or sign out first. Account identity is unverified. Recent clients will record a forced end.",
+            "Force close selected client", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        try { await _vm.ForceCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.ClientWindows); }
     }
     private async void ReviewLaunch(object sender,RoutedEventArgs e)
     {

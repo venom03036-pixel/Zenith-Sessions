@@ -83,6 +83,50 @@ public sealed class SessionLogProjectionTests
         Assert.Contains("unverified", view.LastKnownPlayer);
     }
 
+    [Fact]
+    public void APlaceAndServerLastConfirmedOverFiveMinutesAgoStayShownWithThatAgeButAreNotOfferedForJoinOrCopy()
+    {
+        // Owner decision 2026-11-08 (R-instances-2): the row keeps the place and server with a "last confirmed" marker
+        // while the same bound log still says Connected; Join same game/server and Copy still need fresh evidence.
+        var process = Process(); var projection = new SessionLogProjection(); var logs = Logs(process);
+        projection.Update([process], logs, Now);
+        SessionLogView Renew(DateTimeOffset at, long revision, out DesktopSnapshot desktop, out SessionLogDiscoverySnapshot renewed)
+        {
+            var current = process with { ObservedUtc = at };
+            renewed = logs with { Revision = revision, ObservedUtc = at, Sessions = [logs.Sessions[0] with { ObservedUtc = at, LeaseExpiresUtc = at.AddSeconds(10) }] };
+            desktop = Desktop([current]) with { ProcessObservedUtc = at };
+            projection.Update([current], renewed, at);
+            return Assert.Single(projection.Snapshot(at, desktop, renewed)).Value;
+        }
+        var later = Now.AddMinutes(6);
+        var view = Renew(later, 2, out var desktop, out var renewed);
+        Assert.Equal("6564161046 · last confirmed 6 min ago", view.CurrentPlace);
+        Assert.Equal("09000000-0000-0000-0000-000000000002 · last confirmed 6 min ago", view.CurrentServer);
+        Assert.Equal("Connected · last confirmed 6 min ago", view.State);
+        Assert.Equal("File use observed · unverified", view.Correlation);
+        Assert.Contains("6564161046", view.LastKnownDestination);
+        Assert.False(view.HasReportedDestination); Assert.False(view.CanUseReportedDestination); Assert.Null(view.ReportedPlaceId); Assert.Null(view.ReportedJobId);
+        Assert.Null(projection.BuildCurrentLink(Key(process), desktop, renewed, later));
+        // The marker changes once a minute, not every tick, so unchanged rows do not refresh.
+        Assert.Equal(view, Renew(later.AddSeconds(30), 3, out _, out _));
+        Assert.Equal("Connected · last confirmed 7 min ago", Renew(later.AddMinutes(1), 4, out _, out _).State);
+        Assert.Equal("Connected · last confirmed 1 h 5 min ago", Renew(Now.AddMinutes(65), 5, out _, out _).State);
+    }
+
+    [Fact]
+    public void ADisconnectAfterTheRememberedConnectionShowsTheDisconnectNotTheOldPlace()
+    {
+        var process = Process(); var projection = new SessionLogProjection(); var logs = Logs(process);
+        projection.Update([process], logs, Now);
+        var later = Now.AddMinutes(6); var old = logs.Sessions[0];
+        var batch = old.Batch! with { Observations = [.. old.Batch!.Observations, new(Stream, 30, 40, later, later, ClientLogFact.Disconnected, DisconnectReason: 267)], ReadOffset = 40, CompleteLineOffset = 40 };
+        projection.Update([process with { ObservedUtc = later }], logs with { Revision = 2, ObservedUtc = later, Sessions = [old with { Batch = batch, ObservedUtc = later, LeaseExpiresUtc = later.AddSeconds(10) }] }, later);
+        var view = Assert.Single(projection.Snapshot(later)).Value;
+        Assert.Equal("Unknown", view.CurrentPlace); Assert.Equal("Unknown", view.CurrentServer);
+        Assert.Equal("Disconnected · reason 267 · connection lost", view.State);
+        Assert.Contains("6564161046", view.LastKnownDestination);
+    }
+
     [Theory]
     [InlineData(SessionLogCorrelationStatus.Ambiguous)]
     [InlineData(SessionLogCorrelationStatus.AccessDenied)]

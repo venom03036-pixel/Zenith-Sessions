@@ -1,7 +1,7 @@
 namespace Zenith.Sessions.Core;
 
 /// <summary>How an ended client most likely ended, from the strongest evidence recorded for that exact process.</summary>
-public enum ClientEndCause { Unknown, Crashed, NotResponding, Disconnected, LeftGame, PossibleCrash, LaunchedElsewhere }
+public enum ClientEndCause { Unknown, Crashed, NotResponding, Disconnected, LeftGame, PossibleCrash, LaunchedElsewhere, ForcedEnd }
 
 /// <summary>
 /// One read-only look for crash records after a client ended. A fault is Windows' Application Error record naming this
@@ -24,9 +24,10 @@ public interface IClientFaultProbe
 }
 
 /// <summary>
-/// Pure. Names the strongest recorded end evidence: a Windows fault record for this exact process, then a hang seen at the
-/// last observation, then a disconnect the client logged, then an unattributed crash dump. A Zenith close request alone is
-/// never a cause; it stays a separate fact because it does not prove why the process ended.
+/// Pure. Names the strongest recorded end evidence: a force close Zenith itself carried out at the user's confirmation,
+/// then a Windows fault record for this exact process, then a hang seen at the last observation, then a disconnect the
+/// client logged, then an unattributed crash dump. A Zenith close request alone is never a cause; it stays a separate fact
+/// because it does not prove why the process ended.
 /// </summary>
 public static class ClientEndClassifier
 {
@@ -34,6 +35,8 @@ public static class ClientEndClassifier
     {
         ArgumentNullException.ThrowIfNull(entry);
         if (entry.NoLongerObservedUtc is null) return ClientEndCause.Unknown;
+        // TerminateProcess leaves no fault record; any other evidence describes the client before Zenith ended it.
+        if (entry.ForcedEndUtc is not null) return ClientEndCause.ForcedEnd;
         if (entry.FaultCheck?.FaultRecordedUtc is not null) return ClientEndCause.Crashed;
         if (entry.NotRespondingUtc is not null) return ClientEndCause.NotResponding;
         if (entry.DisconnectedUtc is not null)
@@ -46,12 +49,14 @@ public static class ClientEndClassifier
 /// <summary>
 /// Presence history; reported identity/destination are last-known unverified diagnostics. NotRespondingUtc and
 /// DisconnectedUtc describe the latest observation before the client ended; FaultCheck is the one check made after it ended.
+/// ForcedEndUtc is when Windows accepted the force close the user confirmed in Zenith (R-instances-12); null otherwise.
 /// </summary>
 public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Process, DateTimeOffset FirstObservedUtc,
     DateTimeOffset LastObservedUtc, DateTimeOffset? NoLongerObservedUtc = null, DateTimeOffset? CloseRequestedUtc = null,
     long? LastKnownUserId = null, DateTimeOffset? LastKnownUserIdentityUtc = null,
     ObservedSessionDestination? LastKnownDestination = null, DateTimeOffset? NotRespondingUtc = null,
-    DateTimeOffset? DisconnectedUtc = null, int? DisconnectReason = null, ClientFaultCheck? FaultCheck = null)
+    DateTimeOffset? DisconnectedUtc = null, int? DisconnectReason = null, ClientFaultCheck? FaultCheck = null,
+    DateTimeOffset? ForcedEndUtc = null)
 {
     public string Outcome => NoLongerObservedUtc is null ? "Currently observed" : "No longer observed";
     public ClientEndCause EndCause => ClientEndClassifier.Classify(this);
@@ -60,7 +65,7 @@ public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Pr
         ClientEndCause.Crashed => "Crashed", ClientEndCause.NotResponding => "Not responding",
         ClientEndCause.Disconnected => "Disconnected", ClientEndCause.LeftGame => "Left the game",
         ClientEndCause.LaunchedElsewhere => "Account launched elsewhere",
-        ClientEndCause.PossibleCrash => "Possible crash", _ => "Unknown"
+        ClientEndCause.PossibleCrash => "Possible crash", ClientEndCause.ForcedEnd => "Ended by force from Zenith", _ => "Unknown"
     };
     public bool CanAuthorizeAccountAction => false;
 
@@ -72,6 +77,8 @@ public sealed record RecentClientHistoryEntry(Guid EntryId, SessionProcessKey Pr
             || NoLongerObservedUtc is { } absent && absent < LastObservedUtc
             || CloseRequestedUtc is { } close && (close.UtcTicks < Process.ProcessStartUtcTicks
                 || NoLongerObservedUtc is { } until && close - until > RecentClientHistoryReducer.MaximumInventoryAge)
+            || ForcedEndUtc is { } forced && (forced.UtcTicks < Process.ProcessStartUtcTicks
+                || NoLongerObservedUtc is { } gone && forced - gone > RecentClientHistoryReducer.MaximumInventoryAge)
             || LastKnownUserId.HasValue != LastKnownUserIdentityUtc.HasValue || LastKnownUserId is <= 0
             || LastKnownUserIdentityUtc is { } userTime && !ValidFactTime(userTime)
             || LastKnownDestination is { } destination && (destination.PlaceId <= 0 || destination.JobId == Guid.Empty || destination.UniverseId is <= 0 || !ValidFactTime(destination.ObservedUtc))
@@ -231,6 +238,29 @@ public sealed class RecentClientHistoryReducer
                 || (requestedUtc - entry.LastObservedUtc).Duration() > MaximumInventoryAge
                 || entry.CloseRequestedUtc is { } previous && requestedUtc <= previous) return false;
             _active[process] = entry with { CloseRequestedUtc = requestedUtc }; return true;
+        }
+    }
+    /// <summary>
+    /// Records the force close Windows accepted at <paramref name="endedUtc"/> for the exact client. The termination and
+    /// the scan that stops seeing the client race, so an entry that ended within the inventory age is updated too, and that
+    /// changes persisted history. False for an unknown client, a time that cannot belong to it, or a second record.
+    /// </summary>
+    public bool RecordForcedEnd(SessionProcessKey process, DateTimeOffset endedUtc)
+    {
+        lock (_gate)
+        {
+            if (endedUtc.UtcTicks < process.ProcessStartUtcTicks) return false;
+            if (_active.TryGetValue(process, out var entry))
+            {
+                if (entry.ForcedEndUtc is not null || (endedUtc - entry.LastObservedUtc).Duration() > MaximumInventoryAge) return false;
+                _active[process] = entry with { ForcedEndUtc = endedUtc }; return true;
+            }
+            int index = _ended.FindIndex(item => item.Process == process);
+            if (index < 0) return false;
+            var ended = _ended[index];
+            if (ended.ForcedEndUtc is not null || ended.NoLongerObservedUtc is not { } gone || (endedUtc - gone).Duration() > MaximumInventoryAge) return false;
+            var next = (ended with { ForcedEndUtc = endedUtc }).Validated(ended: true);
+            Advance(); _ended[index] = next; return true;
         }
     }
     /// <summary>The earliest-ended client still waiting for its one settled crash-record check, or null.</summary>

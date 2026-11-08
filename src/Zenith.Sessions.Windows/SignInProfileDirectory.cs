@@ -10,14 +10,17 @@ public sealed class SignInProfileDirectory
     private const string Marker = ".zenith-private-signin";
     private const string MarkerContents = "Zenith Sessions private sign-in profile v1";
     private const string OwnerLock = "owner.lock";
+    private const string KeptName = "kept";
+    private const string CleanMarker = ".zenith-kept-ready";
     // Leases this process holds, per browser-data root. Reading it opens no lock file, so a check
     // can never disturb a folder whose owner is still removing it.
     private static readonly ConcurrentDictionary<string, int> HeldLeases = new(StringComparer.OrdinalIgnoreCase);
     // Serializes admission and the startup sweep in this process. A folder Create has made but not yet marked and
     // locked holds only ownership files, which recovery deletes, so a sweep must never see it mid-creation.
     private static readonly SemaphoreSlim Admission = new(1, 1);
-    // Leftover folders one admission or sweep may open; each removal is itself bounded by Remove's file budget.
-    private const int RecoveryBudget = 8;
+    // Leftover folders one admission or sweep may open; each removal is itself bounded by Remove's file budget. Internal so
+    // the sweep's result can tell whether the folders it left behind already exceed it (SignInSweepResult.NeedsReview).
+    internal const int RecoveryBudget = 8;
     private const string NeedsReview = "Private sign-in cleanup needs review before another browser can open.";
     // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
     // reserved, including from the UI thread, so it is memory only; the value is unused.
@@ -42,6 +45,7 @@ public sealed class SignInProfileDirectory
     private FileStream? _lease;
     private bool _kept;
     public string Path { get; }
+    public bool RetainAfterUse { get; private set; }
     private SignInProfileDirectory(string path, FileStream? lease = null)
     {
         Path = path; _lease = lease;
@@ -117,6 +121,11 @@ public sealed class SignInProfileDirectory
     }
 
     public static SignInProfileDirectory Create(string dataRoot, Guid profileId, CancellationToken ct)
+        => Create(dataRoot, profileId, false, ct);
+
+    /// <summary>Opt-in cache reuse. A kept folder without its completed-cleanup marker is removed before reuse.
+    /// The marker is removed before browser initialization, so a crash cannot silently reuse a signed-in profile.</summary>
+    public static SignInProfileDirectory Create(string dataRoot, Guid profileId, bool retainAfterUse, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         if (profileId == Guid.Empty) throw new ArgumentException("A saved account profile is required.");
@@ -145,6 +154,7 @@ public sealed class SignInProfileDirectory
                 foreach (string old in Directory.EnumerateDirectories(browserRoot))
                 {
                     ct.ThrowIfCancellationRequested();
+                    if (IsCleanKeptFolder(old)) continue;
                     if (++prior > RecoveryBudget) throw new SignInDirectoryNeedsReviewException(NeedsReview);
                     RecoverLeftover(old, ct);
                 }
@@ -155,14 +165,19 @@ public sealed class SignInProfileDirectory
             ReviewPending.TryRemove(browserRoot, out _);
             // Every folder an earlier sweep kept or left for later is gone now.
             SweptLeftovers.TryRemove(browserRoot, out _);
-            string path = System.IO.Path.Combine(browserRoot, profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
+            string path = System.IO.Path.Combine(browserRoot, retainAfterUse ? KeptName : profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
             ct.ThrowIfCancellationRequested();
             Directory.CreateDirectory(path);
-            File.WriteAllText(System.IO.Path.Combine(path, Marker), MarkerContents);
-            var lease = new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            var lease = OpenLease(path);
+            try
+            {
+                File.WriteAllText(System.IO.Path.Combine(path, Marker), MarkerContents);
+                File.Delete(System.IO.Path.Combine(path, CleanMarker));
+            }
+            catch { lease.Dispose(); throw; }
             // This storage just held a new private folder, so whatever stopped an earlier admission or sweep is gone.
             StorageRefused.TryRemove(browserRoot, out _);
-            return new(path, lease);
+            return new(path, lease) { RetainAfterUse = retainAfterUse };
         }
         // Redirected, unwritable or full storage, or a file another program still has open, is not leftover data to review,
         // but the next admission would most likely fail the same way. Remember it apart from review, so the handoff checks
@@ -209,7 +224,7 @@ public sealed class SignInProfileDirectory
                     ct.ThrowIfCancellationRequested();
                     // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
                     if (removed + kept >= RecoveryBudget) { deferred++; continue; }
-                    try { RecoverLeftover(old, ct); removed++; }
+                    try { if (IsCleanKeptFolder(old)) continue; RecoverLeftover(old, ct); removed++; }
                     // A held folder is busy and frees itself, and only data that needs review waits for someone to look at
                     // it. A storage error (such as a file another program still has open) would stop the next admission too.
                     catch (SignInDirectoryInUseException) { kept++; }
@@ -220,13 +235,15 @@ public sealed class SignInProfileDirectory
             // A redirected or unreadable root is a storage problem, not leftover data: it is not remembered for review, but
             // every admission would fail on it, so the handoff checks refuse before reserving a grant.
             catch (Exception ex) when (IsStorageFailure(ex)) { StorageRefused.TryAdd(browserRoot, 0); throw; }
-            // Admission also refuses when more folders remain than one admission may open.
-            if (review > 0 || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
+            var result = new SignInSweepResult(removed, kept, deferred, review);
+            // The result's own rule decides, so what the caller reports and what the handoff checks refuse cannot disagree:
+            // admission also refuses when more folders remain than one admission may open, whatever kept each one.
+            if (result.NeedsReview) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
             // Only a sweep that left nothing behind has tested every folder again: one it skipped because it was held, kept
             // for review or past the budget may still hold what stopped the last admission.
             if (storage) StorageRefused.TryAdd(browserRoot, 0); else if (kept + deferred == 0) StorageRefused.TryRemove(browserRoot, out _);
             if (kept + deferred == 0) SweptLeftovers.TryRemove(browserRoot, out _);
-            return new(removed, kept, deferred, review);
+            return result;
         }
         finally { Admission.Release(); }
     }
@@ -255,6 +272,55 @@ public sealed class SignInProfileDirectory
         }
         try { if (ownershipFilesOnly) recovered.DeleteOwnershipFiles(); else recovered.Remove(ct); }
         finally { recovered.ReleaseOwnership(); }
+    }
+
+    // Examines only our ownership markers, never browser cookies/databases. Taking the lease proves no browser owner
+    // is still flushing this cache. Unknown markers and redirected paths remain preserved for review.
+    private static bool IsCleanKeptFolder(string path)
+    {
+        if (!System.IO.Path.GetFileName(path).Equals(KeptName, StringComparison.OrdinalIgnoreCase)) return false;
+        string ready = System.IO.Path.Combine(path, CleanMarker);
+        if (!File.Exists(ready)) return false;
+        AssertAncestors(path); AssertMarker(path);
+        var info = new FileInfo(ready);
+        if ((info.Attributes & FileAttributes.ReparsePoint) != 0 || info.Length != 0)
+            throw new SignInDirectoryNeedsReviewException(NeedsReview);
+        using var lease = OpenLease(path);
+        return true;
+    }
+
+    public void DiscardAfterUse() => RetainAfterUse = false;
+
+    /// <summary>Called only after credential removal and confirmed browser exit. Any prior teardown failure removes the
+    /// folder instead. Browser-held cookies use WebView2's protection; no cookie database is read by this component.</summary>
+    public void CompleteAfterBrowserExit(bool priorProblem, CancellationToken ct)
+    {
+        if (!RetainAfterUse || priorProblem) { Remove(ct); return; }
+        ct.ThrowIfCancellationRequested(); AssertAncestors(Path); AssertMarker(Path);
+        lock (ReleaseGate)
+        {
+            // A marker is published only while our lease is still held, before another process may open this folder.
+            lock (_leaseGate) if (_lease is null) throw new IOException("The sign-in browser no longer owns its folder.");
+            using (var ready = new FileStream(System.IO.Path.Combine(Path, CleanMarker), FileMode.CreateNew, FileAccess.Write, FileShare.None))
+                ready.Flush(true);
+            DropLease();
+        }
+    }
+
+    public static void ForgetKept(string dataRoot, CancellationToken ct)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot); ct.ThrowIfCancellationRequested();
+        string root = System.IO.Path.GetFullPath(dataRoot);
+        if (IsRemote(root)) throw new IOException("Browser sign-in needs local private storage.");
+        string path = System.IO.Path.Combine(BrowserRootOf(root), KeptName);
+        Admission.Wait(ct);
+        try
+        {
+            AssertAncestors(path);
+            if (!Directory.Exists(path)) return;
+            RecoverLeftover(path, ct);
+        }
+        finally { Admission.Release(); }
     }
 
     public void Remove(CancellationToken ct)
@@ -369,8 +435,8 @@ public sealed class SignInProfileDirectory
             if (parent.Exists && (parent.Attributes & FileAttributes.ReparsePoint) != 0)
                 throw new IOException("Browser sign-in storage cannot use redirected directories.");
     }
-    private static bool OwnedName(string name) => name.Length == 65 && name[32] == '-'
-        && Guid.TryParseExact(name[..32], "N", out _) && Guid.TryParseExact(name[33..], "N", out _);
+    private static bool OwnedName(string name) => name.Equals(KeptName, StringComparison.OrdinalIgnoreCase)
+        || name.Length == 65 && name[32] == '-' && Guid.TryParseExact(name[..32], "N", out _) && Guid.TryParseExact(name[33..], "N", out _);
     private static void AssertMarker(string path)
     {
         if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
@@ -386,9 +452,25 @@ public sealed class SignInProfileDirectory
 /// unrecognized, redirected or could not be removed; folders past its budget that it did not open, which the next
 /// admission or sweep removes; and how many of the kept folders hold data that needs review
 /// (<see cref="SignInDirectoryNeedsReviewException"/>). The other kept folders were held by another owner or met a storage
-/// error such as a file still open; the next admission or sweep tries them again.
+/// error such as a file still open; the next admission or sweep tries them again, unless <see cref="NeedsReview"/> says
+/// that together with the deferred ones they already outnumber what the next admission may open.
 /// </summary>
-public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0, int KeptForReview = 0);
+public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0, int KeptForReview = 0)
+{
+    /// <summary>
+    /// True when the folders this sweep left behind, kept for any reason or not opened, outnumber what one admission may
+    /// open, so the next admission refuses them all as needing review (<see cref="SignInDirectoryNeedsReviewException"/>)
+    /// whatever kept each one. Saying they are retried or removed next time would be wrong: they wait for a review.
+    /// </summary>
+    public bool MoreRemainThanAdmissionMayOpen => Kept + Deferred > SignInProfileDirectory.RecoveryBudget;
+    /// <summary>
+    /// True when the next admission under the swept root would refuse with <see cref="SignInDirectoryNeedsReviewException"/>:
+    /// data kept for review, or <see cref="MoreRemainThanAdmissionMayOpen"/>. <see cref="SignInProfileDirectory.SweepOwned"/>
+    /// remembers exactly this for <see cref="SignInProfileDirectory.LeftoverNeedsReview"/>, which the handoff checks read, so
+    /// a caller that reports review from this never disagrees with them.
+    /// </summary>
+    public bool NeedsReview => KeptForReview > 0 || MoreRemainThanAdmissionMayOpen;
+}
 
 /// <summary>
 /// Another private browser holds its sign-in folder. Nothing was opened or removed. Usually that owner is open or still

@@ -41,7 +41,7 @@ public sealed class AccountGroupCatalogTests : IDisposable
         using var reopened=await Open();Assert.Equal(group,await reopened.FindGroupAsync(group.Id,default));Assert.Equal(group,await reopened.FindGroupAsync("empty TEAM",default));
         var page=await reopened.ReadGroupCatalogAsync(new(),default);Assert.Equal(group,Assert.Single(page.Items));Assert.Equal(2,page.CatalogRevision);
         Assert.Throws<NotSupportedException>(()=>((IList<AccountGroupDefinition>)page.Items).Clear());
-        Assert.Equal(5L,await SchemaVersion(DatabasePath));
+        Assert.Equal(6L,await SchemaVersion(DatabasePath));
     }
 
     [Fact]
@@ -277,7 +277,9 @@ public sealed class AccountGroupCatalogTests : IDisposable
         Assert.All(page.Items,item=>{Assert.Null(item.ColorHex);Assert.Equal(1,item.Revision);});
         await using var backup=await Database(DatabasePath+".schema4.bak",true);using var verify=backup.CreateCommand();verify.CommandText="PRAGMA integrity_check";Assert.Equal("ok",await verify.ExecuteScalarAsync());
         verify.CommandText="PRAGMA user_version";Assert.Equal(4L,await verify.ExecuteScalarAsync());verify.CommandText="SELECT count(*) FROM sqlite_master WHERE name='account_groups'";Assert.Equal(0L,await verify.ExecuteScalarAsync());
-        Assert.Equal(before,await ProfileState(DatabasePath+".schema4.bak"));Assert.Equal(1,(await repository.ReadCredentialCleanupAsync(default)).Total);Assert.Equal(5L,await SchemaVersion(DatabasePath));
+        Assert.Equal(before,await ProfileState(DatabasePath+".schema4.bak"));Assert.Equal(1,(await repository.ReadCredentialCleanupAsync(default)).Total);Assert.Equal(6L,await SchemaVersion(DatabasePath));
+        // The schema 5 step that follows the catalog seed is backed up in turn (R-launch-16 arguments column).
+        Assert.Equal(before,await ProfileState(DatabasePath+".schema5.bak"));Assert.Equal(5L,await SchemaVersion(DatabasePath+".schema5.bak"));
     }
 
     [Fact]
@@ -297,7 +299,7 @@ public sealed class AccountGroupCatalogTests : IDisposable
     {
         await CreateLegacyFour(1);string before=await ProfileState();string backup=DatabasePath+".schema4.bak",temporary=DatabasePath+".schema4.tmp";
         if(damaged)await File.WriteAllTextAsync(backup,"synthetic preserved damaged rollback");
-        else{await using var future=await Database(backup);using var version=future.CreateCommand();version.CommandText="PRAGMA user_version=6";await version.ExecuteNonQueryAsync();}
+        else{await using var future=await Database(backup);using var version=future.CreateCommand();version.CommandText="PRAGMA user_version=7";await version.ExecuteNonQueryAsync();}
         await File.WriteAllTextAsync(temporary,"synthetic preserved interrupted migration");byte[] preserved=await File.ReadAllBytesAsync(backup);
         using var repository=new AccountRepository(Root);
         if(damaged){var error=await Assert.ThrowsAsync<SqliteException>(()=>repository.InitializeAsync(default));Assert.Equal(26,error.SqliteErrorCode);}
@@ -312,7 +314,7 @@ public sealed class AccountGroupCatalogTests : IDisposable
         using var repository=await Open();var group=await Create(repository,"Saved");
         var profile=await repository.SaveAsync(Profile("Preserved profile"),default);
         var removed=await repository.SaveAsync(Profile("Pending cleanup"),default);await repository.DeleteAsync(removed.Id,removed.Revision,default);
-        await Execute("PRAGMA user_version=6");byte[] before=await File.ReadAllBytesAsync(DatabasePath);
+        await Execute("PRAGMA user_version=7");byte[] before=await File.ReadAllBytesAsync(DatabasePath);
         await Assert.ThrowsAsync<InvalidDataException>(()=>repository.FindGroupAsync(group.Id,default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>repository.ReadAsync(new(),default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>repository.CreateGroupAsync("Rejected",null,2,default));
@@ -385,7 +387,8 @@ public sealed class AccountGroupCatalogTests : IDisposable
     private async Task<long> SchemaVersion(string path)
     {await using var db=await Database(path,true);using var query=db.CreateCommand();query.CommandText="PRAGMA user_version";return Convert.ToInt64(await query.ExecuteScalarAsync());}
     private async Task<string> ProfileState(string? path=null)
-    {await using var db=await Database(path,path is not null);using var query=db.CreateCommand();query.CommandText="SELECT * FROM profiles ORDER BY id";var rows=new List<object[]>();await using var reader=await query.ExecuteReaderAsync();while(await reader.ReadAsync()){var values=new object[reader.FieldCount];reader.GetValues(values);rows.Add(values);}return JsonSerializer.Serialize(rows);}
+    // The schema 4 columns by name, so a later schema's added column (extra_client_arguments, schema 6) does not make unchanged rows differ.
+    {await using var db=await Database(path,path is not null);using var query=db.CreateCommand();query.CommandText="SELECT id,label,username,group_name,priority,place_id,user_id,updated_utc,revision,notes,is_favorite,additional_groups FROM profiles ORDER BY id";var rows=new List<object[]>();await using var reader=await query.ExecuteReaderAsync();while(await reader.ReadAsync()){var values=new object[reader.FieldCount];reader.GetValues(values);rows.Add(values);}return JsonSerializer.Serialize(rows);}
     private async Task<string> CatalogState()
     {await using var db=await Database();using var query=db.CreateCommand();query.CommandText="SELECT id,name,color_hex,sort_order,revision,updated_utc FROM account_groups ORDER BY id";var rows=new List<object[]>();await using(var reader=await query.ExecuteReaderAsync())while(await reader.ReadAsync()){var values=new object[reader.FieldCount];reader.GetValues(values);rows.Add(values);}query.CommandText="SELECT revision FROM account_group_catalog";return JsonSerializer.Serialize(rows)+":"+await query.ExecuteScalarAsync();}
     public void Dispose()

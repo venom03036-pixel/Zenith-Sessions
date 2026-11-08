@@ -80,6 +80,18 @@ public static class RobloxClientRelease
     public static bool IsValid(PublicRobloxClientRelease? release) => release is not null
         && IsUploadName(release.ClientVersionUpload) && TryParseBuild(release.Version, out _);
 
+    /// <summary>
+    /// The address of Roblox's own installer for <paramref name="release"/> on Roblox's setup host, built only from a valid
+    /// upload name ("version-" and 16 lowercase hex digits), so no other text can reach the address. Nothing is requested here.
+    /// </summary>
+    public static bool TryInstallerUri(PublicRobloxClientRelease? release, out Uri? uri)
+    {
+        uri = null;
+        if (!IsValid(release)) return false;
+        uri = new Uri("https://" + RobloxClientUpdate.SetupHost + "/" + release!.ClientVersionUpload + "-" + RobloxClientUpdate.InstallerFileName);
+        return true;
+    }
+
     public static ClientReleaseMatch Compare(ClientInstallationCandidate candidate, PublicRobloxClientRelease? latest)
     {
         if (!IsValid(latest)) return ClientReleaseMatch.NotChecked;

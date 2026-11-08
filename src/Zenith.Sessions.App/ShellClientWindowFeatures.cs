@@ -53,7 +53,7 @@ public sealed partial class ShellViewModel
         && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
     public bool CanEditClientSize => !IsSample && _monitor is IClientWindowResizer && !IsLocked && !_shuttingDown && _ready && !_arranging;
     public bool CanResizeClients => CanEditClientSize && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
-    public bool IsArrangingClients { get => _arranging; private set { if (Set(ref _arranging, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); if (!value) ManualWindowOperationEnded(); } } }
+    public bool IsArrangingClients { get => _arranging; private set { if (Set(ref _arranging, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); } } }
     public string CheckedClientCount
     {
         get { int count=Sessions.Count(row => row.IsChecked); return $"{count} {(count == 1 ? "client" : "clients")} checked"; }
@@ -91,10 +91,12 @@ public sealed partial class ShellViewModel
             ClientWindowStatus = "Window operations cancelled. Requests already sent to Windows cannot be undone automatically.";
         });
         RefreshClientDisplays = new(_ => RefreshClientDisplaysAsync(), ReportClientWindowFailure);
-        ArrangeClients = new(_ => ArrangeClientsAsync(), ReportClientWindowFailure);
-        MinimizeCheckedClients = new(_ => ChangeClientStatesAsync(ClientWindowAction.Minimize), ReportClientWindowFailure);
-        RestoreCheckedClients = new(_ => ChangeClientStatesAsync(ClientWindowAction.Restore), ReportClientWindowFailure);
-        ResizeCheckedClients = new(_ => ResizeClientsAsync(), ReportClientWindowFailure);
+        // The manual operations run through RunManualWindowOperationAsync, which reports their failure itself so the note
+        // about a client that connected meanwhile can follow that report; the command's handler is only a backstop.
+        ArrangeClients = new(_ => RunManualWindowOperationAsync(ArrangeClientsAsync), ReportClientWindowFailure);
+        MinimizeCheckedClients = new(_ => RunManualWindowOperationAsync(() => ChangeClientStatesAsync(ClientWindowAction.Minimize)), ReportClientWindowFailure);
+        RestoreCheckedClients = new(_ => RunManualWindowOperationAsync(() => ChangeClientStatesAsync(ClientWindowAction.Restore)), ReportClientWindowFailure);
+        ResizeCheckedClients = new(_ => RunManualWindowOperationAsync(ResizeClientsAsync), ReportClientWindowFailure);
         UseTinyClientSize = new(_ =>
         {
             if (!CanEditClientSize) return;
@@ -270,6 +272,16 @@ public sealed partial class ShellViewModel
     }
     private void ReportClientWindowFailure(Exception exception)
     { ClientWindowStatus = "The window operation could not finish. Refresh clients and monitors before retrying."; Fail(exception, ManagerSubsystem.ClientWindows); }
+    // A manual operation's report is final only once its outcome is handled: a failure's report comes after the operation's
+    // own finally block has turned IsArrangingClients off, so a note added from that setter would be replaced (O-C5-3). The
+    // failure is reported here instead, and why Zenith left a client alone is added after whichever report is final: the
+    // result, the stopped report, or the failure. A cancellation keeps the stop's report and is swallowed by the command.
+    private async Task RunManualWindowOperationAsync(Func<Task> operation)
+    {
+        try { await operation(); }
+        catch (Exception error) when (error is not OperationCanceledException) { ReportClientWindowFailure(error); }
+        finally { ManualWindowOperationEnded(); }
+    }
     private void StopClientWindowOperations()
     {
         Interlocked.Increment(ref _windowOperationsGeneration);

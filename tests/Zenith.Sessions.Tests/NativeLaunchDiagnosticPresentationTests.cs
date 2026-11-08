@@ -52,6 +52,15 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         view=NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id) with {BrowserOutcome=RobloxHandoffProbeOutcome.StorageUnavailable,ShapeStatus=null});
         Assert.Contains("storage",view.Browser);
     }
+    [Fact]
+    public void PreparationRefusedForARemovedAccountSaysTheAccountWasBeingRemovedRatherThanAnotherPreparationWasOwned()
+    {
+        // O-C1-3: mapped to Busy, a refusal for a row being removed read "another preparation was still owned".
+        var id=Guid.NewGuid();var view=NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id) with
+        {PreparationStatus=NativeHandoffPreparationStatus.ProfileRemoved,BrowserOutcome=null,ShapeStatus=null,DispatchStatus=null});
+        Assert.Contains("being removed",view.Preparation);Assert.Contains("saved sign-in",view.Preparation);
+        Assert.DoesNotContain("still owned",view.Preparation);Assert.DoesNotContain("failed",view.Preparation);
+    }
     [Theory]
     [InlineData("foreign")]
     [InlineData("enum")]

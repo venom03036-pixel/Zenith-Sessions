@@ -26,10 +26,27 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     [InlineData("file:///C:/Windows/test.html", false)]
     [InlineData("javascript:alert(1)", false)]
     [InlineData("roblox-player:launch", false)]
-    [InlineData("https://accounts.google.com/", false)]
+    [InlineData("https://accounts.google.com/", true)]
+    [InlineData("https://appleid.apple.com/", true)]
+    [InlineData("https://accounts.google.com.evil.invalid/", false)]
+    [InlineData("https://appleid.apple.com.evil.invalid/", false)]
+    [InlineData("https://google.com/", false)]
+    [InlineData("https://apple.com/", false)]
+    [InlineData("https://evil.accounts.google.com/", false)]
+    [InlineData("https://accounts.google.com:444/", false)]
+    [InlineData("https://user@appleid.apple.com/", false)]
     [InlineData(null, false)]
     public void TopLevelSignInNavigationCannotDispatchExternalPages(string? value, bool expected)
         => Assert.Equal(expected, RobloxSignInNavigation.IsAllowed(value));
+
+    [Theory]
+    [InlineData("https://www.roblox.com/home", true)]
+    [InlineData("https://accounts.google.com/", false)]
+    [InlineData("https://appleid.apple.com/", false)]
+    [InlineData("https://roblox.com.evil.invalid/", false)]
+    [InlineData("http://www.roblox.com/", false)]
+    public void SavingRemainsLimitedToRobloxAfterProviderNavigation(string value, bool expected)
+        => Assert.Equal(expected, RobloxSignInNavigation.CanSave(value));
 
     // Roblox's Play button delivers roblox-player: through a hidden child frame, which NavigationStarting never sees.
     // Frames stay scheme-based: Roblox's sign-in challenges may load third-party HTTPS frames.
@@ -531,6 +548,43 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.Equal(new SignInSweepResult(8, 0, 9), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
     }
+    // The sweep's result says review exactly when the next admission would refuse, which is what it remembers for the
+    // handoff checks: data kept for review, or more folders remaining (kept for any reason, or not opened) than one run
+    // may open. A caller that reported review from KeptForReview alone missed the second case.
+    [Fact]
+    public void SweepResultSaysReviewExactlyWhenTheNextAdmissionWouldRefuse()
+    {
+        Assert.False(default(SignInSweepResult).NeedsReview);
+        Assert.True(new SignInSweepResult(0, 1, KeptForReview: 1).NeedsReview);
+        // Eight held or busy folders are within the budget; one more, held, busy or not opened, is not.
+        Assert.False(new SignInSweepResult(0, 8).NeedsReview); Assert.False(new SignInSweepResult(0, 8).MoreRemainThanAdmissionMayOpen);
+        Assert.True(new SignInSweepResult(0, 8, 1).NeedsReview); Assert.True(new SignInSweepResult(0, 8, 1).MoreRemainThanAdmissionMayOpen);
+        Assert.True(new SignInSweepResult(7, 1, 9).NeedsReview);
+        Assert.False(new SignInSweepResult(7, 1, 9).KeptForReview > 0);
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
+        var within = SignInProfileDirectory.SweepOwned(_root, default);
+        Assert.Equal(new SignInSweepResult(8, 0, 2), within);
+        Assert.False(within.NeedsReview); Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        for (int i = 0; i < 15; i++) Leftover(browserRoot, true);
+        var past = SignInProfileDirectory.SweepOwned(_root, default);
+        Assert.Equal(new SignInSweepResult(8, 0, 9), past);
+        Assert.True(past.NeedsReview); Assert.True(past.MoreRemainThanAdmissionMayOpen); Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        // That admission recovered eight folders before it refused the ninth, so one remains. A folder kept only because a
+        // file in it was still open is not data to review, but it counts toward that limit wherever the sweep meets it:
+        // 17 folders leave at least 9 behind.
+        Assert.Single(Directory.EnumerateDirectories(browserRoot));
+        for (int i = 0; i < 15; i++) Leftover(browserRoot, true);
+        string busy = Leftover(browserRoot, true);
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var crowded = SignInProfileDirectory.SweepOwned(_root, default);
+            Assert.Equal(0, crowded.KeptForReview);
+            Assert.True(crowded.Kept + crowded.Deferred >= 9, crowded.ToString());
+            Assert.True(crowded.NeedsReview); Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        }
+    }
     // What a sweep kept, left for later or could not check may stay on disk until a sweep or an admission finds the root
     // clean; the shell's startup note about those folders lasts only that long.
     [Fact]
@@ -594,6 +648,38 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.DoesNotContain(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
         // Once nothing holds them, the next start removes both.
         Assert.Equal(new SignInSweepResult(2, 0), SignInProfileDirectory.SweepOwned(_root, default));
+    });
+    // Admission refuses when more leftover folders remain than one run may open, whatever kept each one, and the sweep
+    // remembers that for the handoff checks, which then refuse as a cleanup failure. Startup still described those folders
+    // with the routine lines alone (left for the next sign-in or start to remove), showed no review note and recorded no
+    // sign-in failure, so nothing had announced the refusal the next sign-in and every saved-session check met.
+    [Fact]
+    public Task StartupReportsMoreLeftoversThanOneSignInMayCheckForReview() => OnUi(async () =>
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        for (int i = 0; i < 17; i++) Leftover(browserRoot, true);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        // One run's budget removed 8; the 9 past it were not opened, and 9 is more than the next admission may open.
+        Assert.Equal(9, Directory.EnumerateDirectories(browserRoot).Count());
+        Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        await using var probe = new OwnedRobloxHandoffProbe(_root, Dispatcher.CurrentDispatcher);
+        Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed, probe.Refusal);
+        // So startup says so where it says it for other data kept for review: the events, the status and the diagnostics.
+        Assert.Contains(shell.Events, line => line.Contains("Removed 8 leftover private sign-in folder", StringComparison.Ordinal));
+        Assert.Contains(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
+        Assert.Contains(shell.Events, line => line.Contains("9 leftover private sign-in folder(s) remain", StringComparison.Ordinal) && line.Contains("more than one sign-in may check", StringComparison.Ordinal));
+        // The routine lines would promise a removal or a retry that the next sign-in refuses.
+        Assert.DoesNotContain(shell.Events, line => line.Contains("left for the next sign-in or start", StringComparison.Ordinal));
+        Assert.DoesNotContain(shell.Events, line => line.Contains("retries them", StringComparison.Ordinal));
+        Assert.Contains("9 leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check", shell.CredentialCleanupStatus);
+        Assert.Contains("review signin-browser-data in the Zenith data folder", shell.CredentialCleanupStatus);
+        Assert.DoesNotContain(_root, shell.CredentialCleanupStatus);
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.Contains(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
+        // Nothing holds them: the next start removes 8 more, and the one left is within the next admission's budget.
+        Assert.Equal(new SignInSweepResult(8, 0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
     });
     // The startup note about kept folders was added to every later credential-cleanup status, so it stayed after a sign-in's
     // admission had removed those folders, and each Retry credential cleanup showed it again.
@@ -785,6 +871,27 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.DoesNotContain("Binding OAuthClientId", xaml); Assert.DoesNotContain("Binding CallbackPort", xaml);
         Assert.Contains("Saved Roblox sign-ins", xaml); Assert.Contains("Check saved sign-in", xaml);
     }
+
+    [Fact]
+    public Task KeptBrowserPreferenceNeedsExplicitSaveAndForgetPreservesAccounts() => OnUi(async () =>
+    {
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        Assert.False(shell.KeepSignInBrowserData);
+        shell.KeepSignInBrowserData = true;
+        shell.ApplyTheme.Execute("ocean-blue"); await shell.ApplyTheme.Execution;
+        using var settings = new SettingsStore(_root);
+        Assert.False((await settings.LoadAsync(default)).Settings.KeepSignInBrowserData);
+        Assert.Equal("Unsaved settings", shell.SaveStatus);
+        shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        Assert.True((await settings.LoadAsync(default)).Settings.KeepSignInBrowserData);
+        var profile = AccountProfile.Create("Synthetic metadata"); await shell.SaveAccountAsync(profile);
+        var kept = SignInProfileDirectory.Create(_root, profile.Id, true, default); kept.CompleteAfterBrowserExit(false, default);
+        shell.ForgetSignInBrowserData.Execute(null); await shell.ForgetSignInBrowserData.Execution;
+        Assert.False(Directory.Exists(kept.Path)); Assert.Single(shell.Accounts);
+        Assert.Equal("Synthetic metadata", shell.Accounts[0].Label);
+        Assert.Contains("Saved accounts", shell.Notice);
+    });
     private sealed class SignIn : IRobloxSessionSignIn
     {
         public int Calls;

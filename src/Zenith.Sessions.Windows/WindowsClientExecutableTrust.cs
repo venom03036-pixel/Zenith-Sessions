@@ -15,6 +15,9 @@ namespace Zenith.Sessions.Windows;
 /// Explicit, read-only selected-file verification. One owned worker, no queued requests or persisted
 /// trust cache. Native cache-only trust calls cannot be interrupted; cancellation and disposal join
 /// their actual owner rather than abandon it. A result never authorizes a future client handoff.
+/// The Roblox player must be signed by Roblox Corporation; a bootstrapper's own executable (R-launch-17)
+/// must be validly signed by the certificate the user accepted for that product, read from
+/// <see cref="IAcceptedBootstrapperPublisherSource"/> at verification time (none accepted without one).
 /// </summary>
 public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrustVerifier
 {
@@ -22,6 +25,7 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
     public const int MaximumPathCharacters = 2048;
     private readonly object _gate = new();
     private readonly IClientAuthenticodePolicy _policy;
+    private readonly IAcceptedBootstrapperPublisherSource? _acceptedPublishers;
     private readonly TimeProvider _time;
     private readonly long _maximumFileBytes;
     private readonly Func<SafeFileHandle, ClientExecutableFileSnapshot> _snapshot;
@@ -31,13 +35,19 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
     private bool _disposed;
 
     public WindowsClientExecutableTrust(TimeProvider? time = null) : this(new WindowsAuthenticodePolicy(), time, MaximumFileBytes) { }
+    /// <param name="acceptedPublishers">Where the publisher the user accepted for each bootstrapper is read (saved settings); null accepts none.</param>
+    public WindowsClientExecutableTrust(IAcceptedBootstrapperPublisherSource? acceptedPublishers, TimeProvider? time = null)
+        : this(new WindowsAuthenticodePolicy(), time, MaximumFileBytes, acceptedPublishers: acceptedPublishers) { }
     internal WindowsClientExecutableTrust(IClientAuthenticodePolicy policy, TimeProvider? time = null, long maximumFileBytes = MaximumFileBytes,
-        Func<SafeFileHandle, ClientExecutableFileSnapshot>? snapshot = null, INativeHandoffProcessStarter? starter = null)
+        Func<SafeFileHandle, ClientExecutableFileSnapshot>? snapshot = null, INativeHandoffProcessStarter? starter = null,
+        IAcceptedBootstrapperPublisherSource? acceptedPublishers = null, IInstallerProcessStarter? installerStarter = null)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy)); _time = time ?? TimeProvider.System;
         if (maximumFileBytes is < 1 or > MaximumFileBytes) throw new ArgumentOutOfRangeException(nameof(maximumFileBytes));
         _maximumFileBytes = maximumFileBytes; _snapshot = snapshot ?? Snapshot;
         _starter = starter ?? new WindowsNativeHandoffProcessStarter();
+        _installerStarter = installerStarter ?? new WindowsInstallerProcessStarter();
+        _acceptedPublishers = acceptedPublishers;
     }
 
     public Task<ClientExecutableTrustResult> VerifyAsync(ClientInstallationCandidate candidate, CancellationToken ct)
@@ -68,20 +78,36 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
         }
     }
 
-    private ClientExecutableTrustResult VerifyCore(ClientInstallationCandidate candidate, CancellationToken ct, out VerifiedExecutableLease? held)
+    // installer: the file is Roblox's downloaded installer (PrepareInstallerAsync), accepted only under its fixed file name; the
+    // same path, size, digest, signature, publisher and re-open checks apply, so a player or launcher can never pass as one.
+    private ClientExecutableTrustResult VerifyCore(ClientInstallationCandidate candidate, CancellationToken ct, out VerifiedExecutableLease? held, bool installer = false)
     {
         held = null;
         ct.ThrowIfCancellationRequested();
         if (!OperatingSystem.IsWindows()) return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.UnsupportedPlatform);
         if (!Enum.IsDefined(candidate.Product) || !Enum.IsDefined(candidate.FileState))
             return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
-        if (candidate.Product != ClientInstallationProduct.Roblox)
-            return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
         if (!TryPath(candidate.ExecutablePath, out string path)) return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.UnsafePath);
-        if (RobloxNativePlayerFiles.IsLauncher(path))
-            return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
-        if (!RobloxNativePlayerFiles.IsDirectPlayer(path))
-            return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        bool bootstrapper = !installer && BootstrapperProducts.IsBootstrapper(candidate.Product);
+        if (installer)
+        {
+            if (!RobloxNativePlayerFiles.IsInstaller(path))
+                return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        }
+        else if (bootstrapper)
+        {
+            // R-launch-17: only the bootstrapper's own executable is evaluated, under its accepted-publisher policy below. A player
+            // under its folder is a Roblox row with that bootstrapper's evidence, which the provider refuses; any other file is invalid.
+            if (!BootstrapperProducts.IsOwnExecutable(candidate.Product, path))
+                return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        }
+        else
+        {
+            if (RobloxNativePlayerFiles.IsLauncher(path))
+                return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
+            if (!RobloxNativePlayerFiles.IsDirectPlayer(path))
+                return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        }
         ClientExecutableFileSnapshot? before = null;
         string? hash = null;
         SafeFileHandle? handle = null; FileStream? file = null;
@@ -121,18 +147,19 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
             };
             ClientExecutableSigner? signer = ValidSigner(evidence.Signer) ? evidence.Signer : null;
             if (reason == ClientExecutableTrustReason.Verified && signer is null) reason = ClientExecutableTrustReason.MetadataUnavailable;
-            if (reason == ClientExecutableTrustReason.Verified && !string.Equals(signer!.Organization, "Roblox Corporation", StringComparison.OrdinalIgnoreCase))
-                reason = ClientExecutableTrustReason.PublisherMismatch;
+            if (reason == ClientExecutableTrustReason.Verified)
+                reason = bootstrapper ? AcceptedPublisherReason(candidate.Product, signer!)
+                    : string.Equals(signer!.Organization, "Roblox Corporation", StringComparison.OrdinalIgnoreCase) ? reason : ClientExecutableTrustReason.PublisherMismatch;
             ClientExecutableTrustStatus status = reason switch
             {
-                ClientExecutableTrustReason.Verified => ClientExecutableTrustStatus.VerifiedRobloxPublisher,
+                ClientExecutableTrustReason.Verified => bootstrapper ? ClientExecutableTrustStatus.VerifiedAcceptedPublisher : ClientExecutableTrustStatus.VerifiedRobloxPublisher,
                 ClientExecutableTrustReason.Unsigned or ClientExecutableTrustReason.InvalidSignature => ClientExecutableTrustStatus.Rejected,
                 _ => ClientExecutableTrustStatus.Unknown
             };
             var result = Result(candidate, status, reason, before, hash, signer);
-            if (status == ClientExecutableTrustStatus.VerifiedRobloxPublisher)
+            if (status is ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher)
             {
-                held = new(file, before); file = null; handle = null;
+                held = new(file, before, hash); file = null; handle = null;
             }
             return result;
         }
@@ -159,6 +186,18 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
     private ClientExecutableTrustResult Result(ClientInstallationCandidate candidate, ClientExecutableTrustStatus status, ClientExecutableTrustReason reason,
         ClientExecutableFileSnapshot? file = null, string? hash = null, ClientExecutableSigner? signer = null) =>
         new(candidate.Product, candidate.ExecutablePath ?? "", status, reason, _time.GetUtcNow(), file, hash, signer);
+
+    // R-launch-17: a validly signed bootstrapper is Verified only when its certificate thumbprint is the one the user accepted for
+    // that product, read from saved state now. No source, or none saved, means not accepted; a different signer is reported as
+    // changed. A failing source leaves trust unknown (never accepted by default). Exception text is never kept.
+    private ClientExecutableTrustReason AcceptedPublisherReason(ClientInstallationProduct product, ClientExecutableSigner signer)
+    {
+        AcceptedBootstrapperPublisher? accepted;
+        try { accepted = _acceptedPublishers?.Find(product); }
+        catch (Exception) { return ClientExecutableTrustReason.VerificationUnavailable; }
+        if (accepted is null || !accepted.IsFor(product)) return ClientExecutableTrustReason.PublisherNotAccepted;
+        return accepted.Matches(signer) ? ClientExecutableTrustReason.Verified : ClientExecutableTrustReason.AcceptedPublisherChanged;
+    }
 
     private static bool ValidSigner(ClientExecutableSigner? signer) => signer is not null
         && signer.DisplayName is { Length: > 0 and <= 256 } && !signer.DisplayName.Any(char.IsControl)
@@ -277,7 +316,8 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
     {
         public CancellationTokenSource Stop { get; } = stop;
         public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task? Worker; public PreparedNativeHandoffStart? Prepared; public bool Finished;
+        // A prepared native start or a prepared installer run; disposal joins it when the verifier is disposed first.
+        public Task? Worker; public IDisposable? Prepared; public bool Finished;
     }
     private sealed class UnsafeExecutablePathException : IOException { }
     private sealed class ChangedExecutableException : IOException { }

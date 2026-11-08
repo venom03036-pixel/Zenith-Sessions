@@ -59,12 +59,19 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
     private static SessionProcessKey Key(int pid = 42) => new("synthetic-local", pid, SyntheticClientLogFixtures.Time.AddMinutes(-1).UtcTicks);
     private static DesktopSnapshot Desktop(params SessionProcessKey[] keys) => new(new(SyntheticClientLogFixtures.Time, 100, 50, 200, 50, 1),
         keys.Select(key => new SessionObservation(key.ProcessId, key.ProcessStartUtcTicks, "Synthetic", 0, "Synthetic", false, false, 0, 0, null, SyntheticClientLogFixtures.Time)).ToArray());
-    private static async Task<SessionLogDiscoverySnapshot> After(WindowsSessionLogCorrelator worker, long revision = 0)
+    private static async Task<SessionLogDiscoverySnapshot> After(WindowsSessionLogCorrelator worker, long revision = 0,
+        Func<SessionLogDiscoverySnapshot,bool>? ready = null)
     {
         long began = Stopwatch.GetTimestamp();
-        while (worker.Snapshot.Revision <= revision && Stopwatch.GetElapsedTime(began) < TimeSpan.FromSeconds(5)) await Task.Delay(10);
-        Assert.True(worker.Snapshot.Revision > revision, "The bounded diagnostic owner did not publish a result.");
-        return worker.Snapshot;
+        SessionLogDiscoverySnapshot observed;
+        do
+        {
+            observed=worker.Snapshot;
+            if(observed.Revision>revision && (ready is null || ready(observed))) return observed;
+            await Task.Delay(10);
+        } while(Stopwatch.GetElapsedTime(began)<TimeSpan.FromSeconds(5));
+        Assert.Fail("The bounded diagnostic owner did not publish the requested result.");
+        return observed;
     }
     private void Write(string contents) => File.WriteAllText(Log, contents, new UTF8Encoding(false));
     private ClientLogCandidate Candidate(string name, string contents = "")

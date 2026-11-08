@@ -128,8 +128,18 @@ internal sealed class TargetedMacroPlayer(TargetedInputRun input) : IInputPlayer
                         break; // A queued event is never replayed merely because Pause arrived afterward.
                     }
 
-                    if (result.SubmittedCount == 0 && result.Status is TargetedInputDispatchStatus.Inactive or TargetedInputDispatchStatus.Cancelled && result.Run.State is TargetedInputRunState.Pausing or TargetedInputRunState.Paused or TargetedInputRunState.Resuming or TargetedInputRunState.Clearing)
-                        continue; // Only the next unsent event waits at the owned transition.
+                    if (result.SubmittedCount == 0 && result.Status is TargetedInputDispatchStatus.Inactive or TargetedInputDispatchStatus.Cancelled)
+                    {
+                        // The run's own stop (its runtime cap, Stop, Panic or its companion operation's stop) cancelled this
+                        // send before anything went out, and the input owner stopped on the cancelled batch: that is the stop
+                        // arriving, not the input being rejected.
+                        ct.ThrowIfCancellationRequested();
+                        Session.Control.StopToken.ThrowIfCancellationRequested();
+                        Session.Control.PanicToken.ThrowIfCancellationRequested();
+                        if (result.Run.State is TargetedInputRunState.Pausing or TargetedInputRunState.Paused or TargetedInputRunState.Resuming or TargetedInputRunState.Clearing)
+                            continue; // Only the next unsent event waits at the owned transition.
+                    }
+
                     throw Failure();
                 }
             }

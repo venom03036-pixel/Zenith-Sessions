@@ -165,13 +165,31 @@ public sealed partial class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, (await unwired.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
     }
 
+    // O-C1-3: a check on an account that is being removed is refused before its saved sign-in is read (N-B1a-1), and the
+    // outcome says the account is being removed, not that another account operation is running.
+    [Fact]
+    public async Task ShareLinkResolutionOnAProfileBeingRemovedSaysTheProfileIsRemovedWithoutARequest()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); var resolver = new ShareLinks();
+        vault.Records[profile.Id] = Saved(profile.Id, 456);
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.ExperienceDetails);
+        using (await service.BeginProfileRemovalAsync([profile.Id], default))
+        {
+            Assert.Equal(RobloxShareLinkOutcome.ProfileRemoved, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+            Assert.Equal(0, resolver.Calls); Assert.Equal(0, vault.Reads); Assert.Equal(0, vault.Saves);
+        }
+        Assert.Equal(RobloxShareLinkOutcome.Experience, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome); Assert.Equal(1, resolver.Calls);
+    }
+
     [Fact]
     public async Task ShareLinkUnauthorizedFencesTheSavedSessionToSignInRequired()
     {
-        // Roblox answered 401 with this saved session: the account row and launch eligibility must stop calling it linked.
+        // A 401 now needs an identity confirmation; only that refusal marks the account as needing sign-in.
         using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
         vault.Records[profile.Id] = Saved(profile.Id);
-        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) }; var client = new Client(); var browser = new Browser();
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        var client = new Client { Reply = (_, _) => throw new RobloxSessionException(RobloxSessionFailure.InvalidSession, "synthetic refusal") }; var browser = new Browser();
         await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
         using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
         Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
@@ -179,7 +197,89 @@ public sealed partial class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(AuthorizationHealth.SignInRequired, fenced.Health); Assert.True(fenced.Generation > 1); Assert.Equal(1, vault.Saves);
         Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.GetSummaryAsync(profile.Id, default))!.Health); // What the account row reads.
         Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
-        Assert.Equal(1, resolver.Calls); Assert.Equal(0, client.Calls); Assert.Equal(0, browser.Calls); Assert.Equal(1, vault.Saves);
+        Assert.Equal(1, resolver.Calls); Assert.Equal(1, client.Calls); Assert.Equal(0, browser.Calls); Assert.Equal(1, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkUnauthorizedWithValidIdentityKeepsTheAccountLinkedAndReportsUnavailable()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        var client = new Client { Reply = (_, _) =>
+        {
+            Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health); // Fence BEFORE the request.
+            return Task.FromResult(new RobloxSessionValidation(Identity()));
+        } };
+        var browser = new Browser();
+        await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        using var answer = await service.ResolveShareLinkAsync(profile.Id, link, default);
+        Assert.Equal(RobloxShareLinkOutcome.Unavailable, answer.Outcome);
+        Assert.Equal(AuthorizationHealth.Linked, vault.Records[profile.Id].Health);
+        Assert.Equal(3, vault.Records[profile.Id].Generation); Assert.Equal(Secret, vault.Records[profile.Id].SessionCookie);
+        Assert.Equal(1, client.Calls); Assert.Equal(1, resolver.Calls); Assert.Equal(0, browser.Calls);
+    }
+
+    [Theory]
+    [InlineData(RobloxSessionFailure.Network)]
+    [InlineData(RobloxSessionFailure.TimedOut)]
+    [InlineData(RobloxSessionFailure.NotProcessed)]
+    public async Task ShareLinkUnauthorizedWithUnconfirmedIdentityRemainsDurablyFenced(RobloxSessionFailure failure)
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        var client = new Client { Reply = (_, _) => throw new RobloxSessionException(failure, "synthetic failure") };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        using var answer = await service.ResolveShareLinkAsync(profile.Id, link, default);
+        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, answer.Outcome);
+        Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
+        Assert.Equal(2, vault.Records[profile.Id].Generation); Assert.Equal(1, client.Calls);
+    }
+
+    [Fact]
+    public async Task ShareLinkUnauthorizedIdentityRotationIsVerifiedBeforePublication()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        var client = new Client { Reply = (call, _) => Task.FromResult(call == 1
+            ? new RobloxSessionValidation(Identity(), new RobloxSessionCredential("synthetic-confirmation-rotation"))
+            : new RobloxSessionValidation(Identity())) };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        using var answer = await service.ResolveShareLinkAsync(profile.Id, link, default);
+        Assert.Equal(RobloxShareLinkOutcome.Unavailable, answer.Outcome);
+        Assert.Equal(new[] { Secret, "synthetic-confirmation-rotation" }, client.Seen);
+        Assert.Equal("synthetic-confirmation-rotation", vault.Records[profile.Id].SessionCookie);
+        Assert.Equal(AuthorizationHealth.Linked, vault.Records[profile.Id].Health);
+    }
+
+    [Fact]
+    public async Task ShareLinkUnauthorizedCannotRelinkAnotherPlayerOrPublishAfterCancellation()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository);
+        foreach (bool cancel in new[] { false, true })
+        {
+            var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id);
+            using var stop = new CancellationTokenSource();
+            var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+            var client = new Client { Reply = (_, _) =>
+            {
+                if (cancel) stop.Cancel();
+                return Task.FromResult(new RobloxSessionValidation(Identity(cancel ? 456 : 789)));
+            } };
+            await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser(), shareLinks: resolver);
+            using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+            if (cancel) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => service.ResolveShareLinkAsync(profile.Id, link, stop.Token));
+            else using (var answer = await service.ResolveShareLinkAsync(profile.Id, link, stop.Token))
+                Assert.Equal(RobloxShareLinkOutcome.SignInRequired, answer.Outcome);
+            Assert.Equal(456, vault.Records[profile.Id].VerifiedUserId);
+            Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
+            Assert.Equal(1, vault.Saves);
+        }
     }
 
     [Fact]
@@ -235,10 +335,10 @@ public sealed partial class RobloxSessionLinkServiceTests : IDisposable
         // A 401 that came with a verified replacement keeps the replacement instead of marking the row as needing sign-in.
         var refusedResolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired, rotatedCredential: new("synthetic-share-rotation-2")) };
         await using var refusedService = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: refusedResolver);
-        Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await refusedService.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Equal(RobloxShareLinkOutcome.Unavailable, (await refusedService.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
         Assert.Equal(1, refusedResolver.Calls); Assert.Equal("synthetic-share-rotation", refusedResolver.SeenCookie);
         var replaced = vault.Records[profile.Id];
-        Assert.Equal("synthetic-share-rotation-2", replaced.SessionCookie); Assert.Equal(3, replaced.Generation); Assert.Equal(AuthorizationHealth.Linked, replaced.Health);
+        Assert.Equal("synthetic-share-rotation-2", replaced.SessionCookie); Assert.Equal(4, replaced.Generation); Assert.Equal(AuthorizationHealth.Linked, replaced.Health);
     }
 
     [Fact]

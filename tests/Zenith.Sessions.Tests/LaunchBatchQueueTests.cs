@@ -583,7 +583,7 @@ public sealed class LaunchBatchQueueTests
     }
 
     [Fact]
-    public async Task ASpreadReviewFreezesItsOwnServerForEachAccountAndThePlaceForTheRest()
+    public async Task ASpreadReviewFreezesTheServerOrderAndTheQueueHandsOneToEachRecordedRequestWhileTheyLast()
     {
         var store = new Store();
         var provider = new Provider();

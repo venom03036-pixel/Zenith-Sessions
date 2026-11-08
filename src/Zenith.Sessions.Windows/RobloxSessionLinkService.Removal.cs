@@ -26,7 +26,8 @@ public sealed partial class RobloxSessionLinkService
     /// For a caller that is about to remove these profiles. Stops the owned operation if it is working on one of them,
     /// including an Add that moved onto one to refresh its saved sign-in, and waits for it to actually finish. Until the
     /// returned lease is disposed, no saved-session operation starts on one of these profiles (it is refused with
-    /// <see cref="Zenith.Sessions.Core.AccountLinkException.ProfileRemoved"/>, before anything is read or sent), and an Add refuses to move onto
+    /// <see cref="Zenith.Sessions.Core.AccountLinkException.ProfileRemoved"/>, before anything is read or sent; a share-link check, handoff
+    /// inspection or native preparation reports that refusal as its ProfileRemoved outcome, not as Busy), and an Add refuses to move onto
     /// one. Only the caller can know which rows it removes and only this service knows which row an Add moved onto, so the
     /// check and the move share the state gate. Hold the lease until the profiles and their saved sign-ins are removed.
     /// The lease says which kind of operation was stopped, so the caller cancels its own command only when it owned that operation.

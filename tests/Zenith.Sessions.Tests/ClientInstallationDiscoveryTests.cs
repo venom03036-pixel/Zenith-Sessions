@@ -157,7 +157,8 @@ public sealed class ClientInstallationDiscoveryTests
         Assert.InRange(result.Candidates.Count,1,WindowsClientInstallationDiscovery.MaximumCandidates);Assert.InRange(source.Inspected.Count,1,WindowsClientInstallationDiscovery.MaximumFileProbes);
         Assert.InRange(result.Issues.Count,1,WindowsClientInstallationDiscovery.MaximumIssues);Assert.Contains(result.Issues,issue=>issue.Code==ClientInstallationIssueCode.LimitReached);
         Assert.All(result.Candidates,candidate=>{Assert.Null(candidate.FileVersion);Assert.DoesNotContain("..",candidate.ExecutablePath);});
-        Assert.DoesNotContain(source.Inspected,path=>path.Contains("secret-marker",StringComparison.Ordinal));Assert.Equal(5,source.RegistryCalls);
+        // Two protocol registrations and one install-location hint per bootstrapper (Bloxstrap, Fishstrap, Froststrap and, since R-launch-17, Voidstrap).
+        Assert.DoesNotContain(source.Inspected,path=>path.Contains("secret-marker",StringComparison.Ordinal));Assert.Equal(6,source.RegistryCalls);
         Assert.Throws<NotSupportedException>(()=>((IList<ClientInstallationCandidate>)result.Candidates).Add(result.Candidates[0]));
         Assert.Throws<NotSupportedException>(()=>((IList<ClientInstallationIssue>)result.Issues).Clear());
     }

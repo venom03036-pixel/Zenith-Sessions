@@ -13,7 +13,8 @@ public sealed partial class RobloxSessionLinkService
             return new(NativeHandoffPreparationStatus.RequestChanged);
         Operation operation;
         try { operation = Begin(intent.ProfileId, SavedSessionOperationKind.NativeLaunchPreparation, ct); }
-        catch (AccountLinkException) { return new(NativeHandoffPreparationStatus.Busy); }
+        // Both refusals happen before any grant is reserved; a row being removed is reported as such, not as another preparation.
+        catch (AccountLinkException refused) { return new(refused.ProfileRemoved ? NativeHandoffPreparationStatus.ProfileRemoved : NativeHandoffPreparationStatus.Busy); }
         Guid pendingOwner = Guid.NewGuid(); bool pendingIssued = false, success = false;
         CancellationTokenRegistration preparationCancellation = default;
         NativeHandoffContext? context = null; NativeHandoffCandidate? candidate = null;
@@ -93,11 +94,12 @@ public sealed partial class RobloxSessionLinkService
             // Record only closed enums before cancellation can throw; the capture itself is disposed
             // by this owner and never retained as diagnostic history.
             try
-            { if (captured is not null) browserFacts = new NativeBrowserPreparationFacts(captured.Outcome, captured.ShapeStatus, DateTimeOffset.UtcNow).Validated(); }
+            { if (captured is not null) browserFacts = new NativeBrowserPreparationFacts(captured.Outcome, captured.ShapeStatus, DateTimeOffset.UtcNow, captured.Mode).Validated(); }
             catch (Exception) { /* Diagnostic capture cannot change preparation, cleanup or grant decisions. */ }
             Ensure(operation);
             if (captured is null) return new(NativeHandoffPreparationStatus.CaptureRejected);
-            if (captured.Outcome != RobloxHandoffProbeOutcome.CapturedAndPrevented)
+            // A captured official-page request and a request built from an issued ticket (R-api-7) are prepared the same way.
+            if (captured.Outcome is not (RobloxHandoffProbeOutcome.CapturedAndPrevented or RobloxHandoffProbeOutcome.TicketIssued))
                 return new(captured.Outcome switch
                 {
                     RobloxHandoffProbeOutcome.CleanupFailed => NativeHandoffPreparationStatus.CleanupFailed,

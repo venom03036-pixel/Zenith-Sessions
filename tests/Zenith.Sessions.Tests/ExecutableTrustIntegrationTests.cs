@@ -15,7 +15,9 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),installationDiscovery:new InstallationProbe(),executableTrust:trust);
         await shell.InitializeAsync();Assert.False(shell.CanVerifyInstallationPublisher);Assert.Equal(0,trust.Calls);
         shell.RefreshInstallations.Execute(null);await shell.RefreshInstallations.Execution;
-        shell.SelectedInstallation=shell.InstallationCandidates[1];Assert.False(shell.CanVerifyInstallationPublisher);
+        // Since R-launch-17 (owner decision 2026-11-08) a bootstrapper's own executable (here Froststrap.exe) can be verified too,
+        // under its own accepted-publisher policy; the check still selects no provider (BootstrapperLaunchTests).
+        shell.SelectedInstallation=shell.InstallationCandidates[1];Assert.True(shell.CanVerifyInstallationPublisher);
         shell.SelectedInstallation=shell.InstallationCandidates[0];Assert.True(shell.CanVerifyInstallationPublisher);
         var saved=shell.SaveStatus;shell.VerifyInstallationPublisher.Execute(null);await shell.VerifyInstallationPublisher.Execution;
         Assert.Equal(1,trust.Calls);Assert.Contains("verified",shell.PublisherVerificationStatus);Assert.Contains("SHA-256",shell.PublisherVerificationStatus);

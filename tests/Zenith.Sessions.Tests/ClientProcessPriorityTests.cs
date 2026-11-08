@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using Microsoft.Win32.SafeHandles;
 using Xunit;
 using Zenith.Sessions.Core;
@@ -678,6 +679,252 @@ public sealed class ClientProcessPriorityTests
         finally { release.Set(); await operation.WaitAsync(TimeSpan.FromSeconds(5)); }
     }
 
+    [Fact]
+    public async Task CapCpuPutsTheClientInAJobThisRunHoldsAndRestoreLiftsTheCapWithoutLeavingTheJob()
+    {
+        var fixture = new Fixture(1);
+        long start = Session(1).ProcessStartUtcTicks;
+        var applied = await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        var row = Assert.Single(applied.Results);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, row.Status);
+        Assert.Equal(ClientProcessPriorityAction.CapCpu, row.Action);
+        Assert.True(row.RestorePending);
+        Assert.Contains("CPU", row.Explanation, StringComparison.Ordinal);
+        var job = Assert.Single(fixture.Native.Jobs);
+        Assert.Equal([1], job.Pids);
+        Assert.Equal(ClientJobCpuRate.Cap(2500), job.Rate); // 25% of all CPU time, in Windows' hundredths of a percent.
+        Assert.True(fixture.Ledger.Contains(1, start)); // Recorded first, so a restarted Zenith can name the client.
+        Assert.Equal(0x20u, fixture.Native.Clients[1].Priority); // The cap changes nothing else about the client.
+        Assert.Empty(fixture.Native.Sets);
+        Assert.Equal(1, applied.PendingRestoreCount);
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+        // Only a handle can reach a job, so this run keeps the one it created for as long as the client lives.
+        Assert.Single(fixture.Native.JobHandles, handle => !handle.IsClosed);
+
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, Assert.Single(restored.Results).Status);
+        Assert.Equal(0, restored.PendingRestoreCount);
+        // Windows never takes a process out of a job, so Restore clears the job's rate control and leaves the client in it.
+        Assert.Equal(ClientJobCpuRate.None, job.Rate);
+        Assert.Equal([1], job.Pids);
+        Assert.False(fixture.Ledger.Contains(1, start)); // No cap is on the client, so the next start has nothing to name.
+        Assert.Single(fixture.Native.JobHandles, handle => !handle.IsClosed);
+
+        // A later cap, with another share, reuses that job through the held handle instead of calling it one this run did not create.
+        var again = await fixture.Control.CapCpuAsync([Session(1)], 50, default);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, Assert.Single(again.Results).Status);
+        Assert.Single(fixture.Native.Jobs);
+        Assert.Equal(ClientJobCpuRate.Cap(5000), job.Rate);
+        Assert.True(fixture.Ledger.Contains(1, start));
+        // The same share again is no change and creates no new ownership.
+        var same = await fixture.Control.CapCpuAsync([Session(1)], 50, default);
+        Assert.Equal(ClientProcessPriorityStatus.Unchanged, Assert.Single(same.Results).Status);
+        Assert.Equal(1, same.PendingRestoreCount);
+
+        // Exit clears the cap, then closes the job handle; the client stays in its now inert job.
+        await fixture.DisposeAsync();
+        Assert.Equal(0, fixture.Control.PendingRestoreCount);
+        Assert.Equal(ClientJobCpuRate.None, job.Rate);
+        Assert.False(fixture.Ledger.Contains(1, start));
+        Assert.All(fixture.Native.JobHandles, handle => Assert.True(handle.IsClosed));
+    }
+
+    [Fact]
+    public async Task CapCpuIsRefusedWithoutAnyChangeForAClientAlreadyInAJobThisRunDidNotCreate()
+    {
+        await using var fixture = new Fixture(1);
+        fixture.Native.Clients[1].ForeignJob = true;
+        var result = await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientProcessPriorityStatus.AlreadyInJob, row.Status);
+        Assert.Contains("job this run of Zenith did not create", row.Explanation, StringComparison.Ordinal);
+        Assert.Empty(fixture.Native.Jobs);
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, result.PendingRestoreCount);
+        Assert.Empty(fixture.Ledger.Records);
+        // The other controls need no job, so they still work for this client, and Restore never writes the unknown cap.
+        var below = await fixture.Change(ClientProcessPriorityAction.BelowNormal, 1);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, Assert.Single(below.Results).Status);
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, Assert.Single(restored.Results).Status);
+        Assert.Empty(fixture.Native.Jobs);
+        Assert.Equal(0x20u, fixture.Native.Clients[1].Priority);
+    }
+
+    [Fact]
+    public async Task ARestartedControlNamesTheClientsAnEarlierRunLeftCappedCannotCapThemAgainAndDropsExitedClients()
+    {
+        var fixture = new Fixture(1, 2, 3);
+        var capped = await fixture.Control.CapCpuAsync([Session(1), Session(2), Session(3)], 25, default);
+        Assert.All(capped.Results, row => Assert.Equal(ClientProcessPriorityStatus.Applied, row.Status));
+        Assert.Equal(3, fixture.Ledger.Records.Count);
+        // Zenith crashes, so nothing is restored and its job handles are gone. Client 3 then exits.
+        fixture.Native.Clients[3].Running = false;
+        int writes = fixture.Native.Attempts;
+
+        var restarted = new WindowsClientProcessPriorityControl(new NativeClientProcessPriorityAdapter(fixture.Native, fixture.Ledger));
+        try
+        {
+            var leftovers = await restarted.CheckLeftoverCpuCapsAsync(default);
+            Assert.Equal(new ClientCpuCapLeftovers(2, 0, false, false), leftovers);
+            Assert.All(fixture.Native.Jobs, job => Assert.Equal(ClientJobCpuRate.Cap(2500), job.Rate)); // Nothing was changed: no run can reach those jobs.
+            Assert.Equal(2, fixture.Ledger.Records.Count); // The exited client's record is dropped; the capped ones stay named.
+            Assert.False(fixture.Ledger.Contains(3, Session(3).ProcessStartUtcTicks));
+            Assert.Equal(writes, fixture.Native.Attempts); // The check writes nothing.
+            Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+            Assert.Equal(0, restarted.PendingRestoreCount);
+            // The check changes nothing, so it finds the same clients again, and the restarted run cannot cap a client it cannot reach.
+            Assert.Equal(new ClientCpuCapLeftovers(2, 0, false, false), await restarted.CheckLeftoverCpuCapsAsync(default));
+            var again = await restarted.CapCpuAsync([Session(1)], 10, default);
+            Assert.Equal(ClientProcessPriorityStatus.AlreadyInJob, Assert.Single(again.Results).Status);
+            Assert.Equal(3, fixture.Native.Jobs.Count);
+            Assert.Equal(ClientJobCpuRate.Cap(2500), fixture.Native.Jobs.Single(job => job.Pids.Contains(1)).Rate);
+        }
+        finally { await restarted.DisposeAsync(); }
+        // Had the crashed run lived, its Exit would still reach its own jobs and clear every cap it set.
+        await fixture.DisposeAsync();
+        Assert.Equal(0, fixture.Control.PendingRestoreCount);
+        Assert.All(fixture.Native.Jobs.Where(job => !job.Pids.Contains(3)), job => Assert.Equal(ClientJobCpuRate.None, job.Rate));
+        Assert.Empty(fixture.Ledger.Records);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AForeignJobJoinedAfterAPriorityChangeDoesNotBlockItsRestoration(bool onExit)
+    {
+        await using var fixture=new Fixture(1);
+        await fixture.Change(ClientProcessPriorityAction.BelowNormal,1);
+        fixture.Native.Clients[1].ForeignJob=true;
+        if(onExit) await fixture.Control.DisposeAsync();
+        else Assert.Equal(ClientProcessPriorityStatus.Restored,Assert.Single((await fixture.Control.RestoreAllAsync(default)).Results).Status);
+        Assert.Equal(0x20u,fixture.Native.Clients[1].Priority);
+        Assert.True(fixture.Native.Clients[1].ForeignJob);Assert.Empty(fixture.Native.Jobs);
+        Assert.Equal(0,fixture.Control.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task LeftoverChecksUseOnlyQueryRightsAndDropAReusedPidWithoutReadingMutableSettings()
+    {
+        await using var fixture=new Fixture(1);
+        fixture.Ledger.Remember(new(1,Session(1).ProcessStartUtcTicks));
+        fixture.Native.OpenError=5;fixture.Native.FailRead=true;
+        fixture.Native.Clients[1].Start++;
+        Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+        Assert.Empty(fixture.Ledger.Records);Assert.Equal(1,fixture.Native.QueryOpens);Assert.Empty(fixture.Native.Reads);
+    }
+
+    [Fact]
+    public async Task AWindowsRestartForgetsOldCapsBeforeOpeningADeniedReusedPid()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"zenith-cap-boot-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path=Path.Combine(root,"caps.json");
+            new ClientCpuCapLedgerFile(path,Now.AddHours(-5)).Remember(new(1,Session(1).ProcessStartUtcTicks));
+            await using var fixture=new Fixture(new ClientCpuCapLedgerFile(path,Now),1);
+            fixture.Native.OpenError=5;fixture.Native.QueryError=5;
+            Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+            Assert.Empty(fixture.Ledger.Records);Assert.Equal(0,fixture.Native.QueryOpens);Assert.Empty(fixture.Native.Handles);
+            var sameBoot=new ClientCpuCapLedgerFile(path,Now.AddHours(-5).AddSeconds(2));
+            Assert.Single(sameBoot.Records);
+        }
+        finally { if(Directory.Exists(root)) Directory.Delete(root,true); }
+    }
+
+    [Fact]
+    public async Task AClientThatExitedReleasesItsJobHandleAndItsRecord()
+    {
+        await using var fixture = new Fixture(1);
+        await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        Assert.Single(fixture.Native.JobHandles, handle => !handle.IsClosed);
+        fixture.Native.Clients[1].Running = false;
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.InvalidClient, Assert.Single(restored.Results).Status);
+        Assert.Equal(0, restored.PendingRestoreCount);
+        Assert.Empty(fixture.Ledger.Records);
+        Assert.All(fixture.Native.JobHandles, handle => Assert.True(handle.IsClosed));
+    }
+
+    [Fact]
+    public async Task ACapThatCannotBeRecordedForTheNextStartIsRefusedBeforeAnyJobIsCreated()
+    {
+        await using var fixture = new Fixture(new RefusingLedger(), 1);
+        var result = await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        var row = Assert.Single(result.Results);
+        Assert.Equal(ClientProcessPriorityStatus.NotConfirmed, row.Status);
+        Assert.False(row.RestorePending);
+        Assert.Empty(fixture.Native.Jobs);
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, result.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task ARefusedRateAfterTheJobWasCreatedLeavesAnInertJobThatALaterCapReuses()
+    {
+        await using var fixture = new Fixture(1);
+        fixture.Native.DenyCap = true;
+        var refused = await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        Assert.Equal(ClientProcessPriorityStatus.AccessDenied, Assert.Single(refused.Results).Status);
+        Assert.Equal(0, refused.PendingRestoreCount); // Nothing the user sees changed: no cap, so nothing to restore.
+        var job = Assert.Single(fixture.Native.Jobs);
+        Assert.Equal(ClientJobCpuRate.None, job.Rate);
+        Assert.Equal([1], job.Pids); // Windows cannot undo the membership, so the job stays, with no limits, and its handle is kept.
+        Assert.False(fixture.Ledger.Contains(1, Session(1).ProcessStartUtcTicks)); // No cap is on the client, so nothing is recorded.
+        Assert.Single(fixture.Native.JobHandles, handle => !handle.IsClosed);
+
+        fixture.Native.DenyCap = false;
+        var applied = await fixture.Control.CapCpuAsync([Session(1)], 25, default);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, Assert.Single(applied.Results).Status);
+        Assert.Single(fixture.Native.Jobs);
+        Assert.Equal(ClientJobCpuRate.Cap(2500), job.Rate);
+        Assert.True(fixture.Ledger.Contains(1, Session(1).ProcessStartUtcTicks));
+    }
+
+    [Fact]
+    public async Task RestorePreservesACapChangedOutsideZenithAndReturnsTheCapAndEfficiencyTogether()
+    {
+        await using var fixture = new Fixture(1, 2);
+        await fixture.Control.CapCpuAsync([Session(1), Session(2)], 25, default);
+        await fixture.Change(ClientProcessPriorityAction.Efficiency, 1, 2);
+        Assert.Equal(2, fixture.Control.PendingRestoreCount);
+        var first = fixture.Native.Jobs.Single(job => job.Pids.Contains(1));
+        first.Rate = ClientJobCpuRate.Cap(1000); // Changed elsewhere after Zenith's cap.
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Conflict, restored.Results.Single(row => row.Session.ProcessId == 1).Status);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, restored.Results.Single(row => row.Session.ProcessId == 2).Status);
+        Assert.Equal(ClientJobCpuRate.Cap(1000), first.Rate);
+        Assert.Equal(0x4000u, fixture.Native.Clients[1].Priority); // Everything about the conflicting client was preserved.
+        Assert.Equal(ClientJobCpuRate.None, fixture.Native.Jobs.Single(job => job.Pids.Contains(2)).Rate);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 5, 0xFF), fixture.Native.Clients[2].State);
+        Assert.Equal(1, restored.PendingRestoreCount);
+        first.Rate = ClientJobCpuRate.Cap(2500); // Owned in-memory fixture cleanup so the fixture's Exit can restore it.
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(4)]
+    [InlineData(96)]
+    [InlineData(100)]
+    public async Task ACpuCapShareOutsideFiveToNinetyFivePercentIsRefusedBeforeAnyWork(int percent)
+    {
+        await using var fixture = new Fixture(1);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => fixture.Control.CapCpuAsync([Session(1)], percent, default));
+        // The share-less entry point cannot cap either.
+        await Assert.ThrowsAsync<ArgumentException>(() => fixture.Control.ChangeAsync([Session(1)], ClientProcessPriorityAction.CapCpu, default));
+        Assert.Empty(fixture.Native.Handles);
+        Assert.Empty(fixture.Native.Jobs);
+    }
+
+    private sealed class RefusingLedger : IClientCpuCapLedger
+    {
+        public bool Unreadable => false;
+        public IReadOnlyList<ClientCpuCapRecord> Records => [];
+        public bool Contains(int processId, long startUtcTicks) => false;
+        public void Remember(ClientCpuCapRecord record) => throw new IOException("SYNTHETIC_DISK_FULL");
+        public void Forget(int processId, long startUtcTicks) { }
+    }
+
     private sealed class RevokingSelection(IReadOnlyList<SessionObservation> sessions, Action revoke) : IReadOnlyList<SessionObservation>
     {
         public int Count => sessions.Count;
@@ -697,6 +944,8 @@ public sealed class ClientProcessPriorityTests
         public ClientPowerThrottling? Throttling = new(0, 0);
         public uint? MemoryPriority = 5;
         public ulong? Affinity = 0xFF, SystemAffinity = 0xFF;
+        // In a Windows job Zenith did not create (for example started from a terminal that uses one).
+        public bool ForeignJob;
         public ClientProcessSettings State => new(Priority, Throttling, MemoryPriority, Affinity);
         public void Apply(ClientProcessSettings state)
             => (Priority, Throttling, MemoryPriority, Affinity) = (state.Priority, state.Throttling, state.MemoryPriority, state.Affinity);
@@ -714,9 +963,65 @@ public sealed class ClientProcessPriorityTests
         private readonly Dictionary<SafeProcessHandle, Client> _handles = [];
         public Action<Client, int>? BeforeRead;
         public Action<Client>? BeforeSet, AfterSet;
-        public bool DenySet, FailRead, DenyThrottling;
+        public bool DenySet, FailRead, DenyThrottling, DenyCap;
         public int OpenError;
+        public int QueryError,QueryOpens;
         public int Attempts;
+        public sealed class Job
+        {
+            public readonly HashSet<int> Pids = [];
+            public ClientJobCpuRate Rate = ClientJobCpuRate.None;
+        }
+        // A job lives on in the kernel while a process is in it, whoever holds a handle; the fixture keeps every job for the same reason.
+        public readonly List<Job> Jobs = [];
+        public readonly List<SafeJobObjectHandle> JobHandles = [];
+        private readonly Dictionary<SafeJobObjectHandle, Job> _jobs = [];
+        private SafeJobObjectHandle JobHandle(Job? job)
+        {
+            var handle = new SafeJobObjectHandle(job is null ? 0 : (nint)(JobHandles.Count + 5000), ownsHandle: false);
+            JobHandles.Add(handle);
+            if (job is not null) _jobs.Add(handle, job);
+            return handle;
+        }
+        public bool IsInJob(SafeProcessHandle handle, SafeJobObjectHandle? job, out bool inJob)
+        {
+            var client = _handles[handle];
+            inJob = job is null ? client.ForeignJob || Jobs.Any(candidate => candidate.Pids.Contains(client.Pid))
+                : _jobs[job].Pids.Contains(client.Pid);
+            return true;
+        }
+        public SafeJobObjectHandle CreateJob(out int error)
+        {
+            error = 0;
+            var job = new Job();
+            Jobs.Add(job);
+            return JobHandle(job);
+        }
+        public bool AssignToJob(SafeProcessHandle handle, SafeJobObjectHandle job, out int error)
+        {
+            var client = _handles[handle];
+            Attempts++;
+            // Zenith refuses a client already in another job before this, so the fixture treats it as Windows 7 would.
+            if (client.ForeignJob || Jobs.Any(candidate => candidate.Pids.Contains(client.Pid))) { error = 5; return false; }
+            error = 0;
+            _jobs[job].Pids.Add(client.Pid);
+            return true;
+        }
+        public bool ReadCpuRate(SafeJobObjectHandle job, out ClientJobCpuRate rate)
+        {
+            rate = _jobs[job].Rate;
+            return true;
+        }
+        public bool SetCpuRate(SafeJobObjectHandle job, ClientJobCpuRate rate, out int error)
+        {
+            Attempts++;
+            error = DenySet || DenyCap ? 5 : 0;
+            if (error != 0) return false;
+            var target = _jobs[job];
+            target.Rate = rate;
+            foreach (int pid in target.Pids) OtherSets.Add((pid, $"cap {rate.ControlFlags:x}/{rate.CpuRate}"));
+            return true;
+        }
         public SafeProcessHandle Open(int pid, out int error)
         {
             error = OpenError;
@@ -725,6 +1030,14 @@ public sealed class ClientProcessPriorityTests
             if (!handle.IsInvalid) _handles.Add(handle, Clients[pid]);
             return handle;
         }
+        public SafeProcessHandle OpenForQuery(int pid,out int error)
+        {
+            QueryOpens++;error=QueryError;
+            var handle=new SafeProcessHandle(QueryError!=0?0:(nint)(Handles.Count+1000),ownsHandle:false);
+            Handles.Add(handle);if(!handle.IsInvalid)_handles.Add(handle,Clients[pid]);return handle;
+        }
+        public bool ReadInstance(SafeProcessHandle handle,out ClientPriorityInstance instance)
+        { var client=_handles[handle];instance=new(client.Start,client.Running);return true; }
         public bool Read(SafeProcessHandle handle, out ClientPriorityNativeSnapshot? snapshot)
         {
             var client = _handles[handle];
@@ -770,11 +1083,14 @@ public sealed class ClientProcessPriorityTests
     private sealed class Fixture : IAsyncDisposable
     {
         public Native Native { get; } = new();
+        public IClientCpuCapLedger Ledger { get; }
         public WindowsClientProcessPriorityControl Control { get; }
-        public Fixture(params int[] pids)
+        public Fixture(params int[] pids) : this(new InMemoryClientCpuCapLedger(), pids) { }
+        public Fixture(IClientCpuCapLedger ledger, params int[] pids)
         {
+            Ledger = ledger;
             foreach (int pid in pids) Native.Clients.Add(pid, new(pid));
-            Control = new(new NativeClientProcessPriorityAdapter(Native));
+            Control = new(new NativeClientProcessPriorityAdapter(Native, ledger));
         }
         public Task<ClientProcessPriorityBatchResult> Change(ClientProcessPriorityAction action, params int[] pids)
             => Control.ChangeAsync(pids.Select(Session).ToArray(), action, default);
@@ -784,7 +1100,7 @@ public sealed class ClientProcessPriorityTests
             Native.BeforeSet = null;
             Native.AfterSet = null;
             Native.OpenError = 0;
-            Native.DenySet = Native.FailRead = Native.DenyThrottling = false;
+            Native.DenySet = Native.FailRead = Native.DenyThrottling = Native.DenyCap = false;
             foreach (var (pid, state) in Native.LastSet)
                 if (Native.Clients.TryGetValue(pid, out var client) && client.Start == Session(pid).ProcessStartUtcTicks)
                     client.Apply(state);

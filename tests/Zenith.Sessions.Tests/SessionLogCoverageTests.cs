@@ -104,10 +104,14 @@ public sealed partial class SessionLogCorrelatorTests
         const long nextPlace = 110829983956015;
         var joining = SyntheticClientLogFixtures.Line("FLog::Output", $"! Joining game '{nextJob:D}' place {nextPlace} at synthetic-address");
         File.AppendAllText(Log, joining + SyntheticClientLogFixtures.Identity + SyntheticClientLogFixtures.Connected);
+        long replacementEnd=new FileInfo(Log).Length;
         clock.Advance(1000);
         desktop = CurrentDesktop(key, clock);
         worker.Offer(desktop);
-        var replacement = await After(worker, complete.Revision);
+        // A newer publication alone need not contain the appended replacement. Wait for the reader's
+        // completed-byte boundary before asserting what that replacement says about identity/destination.
+        var replacement = await After(worker, complete.Revision,snapshot=>snapshot.Sessions.Count==1
+            && snapshot.Sessions[0].Batch is {HasMore:false} tail && tail.CompleteLineOffset>=replacementEnd);
         var next = projection.BuildCurrentLink(key, desktop, replacement, clock.GetUtcNow());
         Assert.NotNull(next);
         Assert.Contains($"placeId={nextPlace}", next);

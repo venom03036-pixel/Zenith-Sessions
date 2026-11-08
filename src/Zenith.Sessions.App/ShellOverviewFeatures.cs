@@ -62,9 +62,11 @@ public sealed partial class ShellViewModel
         // appears only when non-zero: the footer is capped at 420 px and the usual line already uses ~372 px.
         // A Roblox-update hold also starts by itself (once no client runs), so it is counted apart, likewise only when non-zero.
         int held=snapshot.Operations.Count(LaunchDescriptions.AwaitsClientUpdate);
-        int waiting=snapshot.Operations.Count(LaunchDescriptions.AwaitsCapacity)-held;
+        // The public-network guard's hold also lifts by itself (once the network is private), so it is counted apart too.
+        int network=snapshot.Operations.Count(LaunchDescriptions.AwaitsPublicNetwork);
+        int waiting=snapshot.Operations.Count(LaunchDescriptions.AwaitsCapacity)-held-network;
         QueueStatus=$"{(EffectiveQueuePaused?"Paused":"Active")} · {snapshot.Operations.Count(row=>row.State==LaunchState.Queued)} queued"
-            +(waiting>0?$" · {waiting} waiting for capacity":"")+(held>0?$" · {held} held for a Roblox update":"")
+            +(waiting>0?$" · {waiting} waiting for capacity":"")+(held>0?$" · {held} held for a Roblox update":"")+(network>0?$" · {network} held for a public network":"")
             +$" · {snapshot.Operations.Count(row=>row.State is LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing)} preparing/dispatching"
             +$" · {snapshot.Operations.Count(row=>row.State==LaunchState.Blocked && !LaunchDescriptions.AwaitsCapacity(row))} blocked · {snapshot.Operations.Count(LaunchRow.IsReviewable)} need review";
     }

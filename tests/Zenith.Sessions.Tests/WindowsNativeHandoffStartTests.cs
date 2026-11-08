@@ -101,6 +101,26 @@ public sealed class WindowsNativeHandoffStartTests : IDisposable
     }
 
     [Fact]
+    public async Task APreexistingWritableMappingPreventsHoldingTheExecutableForDispatch()
+    {
+        CreateFile(); var starter = new Starter();
+        System.IO.MemoryMappedFiles.MemoryMappedFile mapping;
+        using (var file = new FileStream(Executable, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            mapping = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(file, null, 0,
+                System.IO.MemoryMappedFiles.MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, leaveOpen: true);
+        using (mapping)
+        using (var view = mapping.CreateViewAccessor())
+        {
+            await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+            using var prepared = await verifier.PrepareAsync(Candidate, default);
+            Assert.Null(prepared.Prepared);
+            Assert.Equal(ClientExecutableTrustReason.AccessDenied, prepared.Trust.Reason);
+            Assert.Equal(0, starter.Calls);
+        }
+        AssertFileReleased();
+    }
+
+    [Fact]
     public async Task ChangedSnapshotDuringPreparationCannotEscapeAsAPreparedStart()
     {
         CreateFile(); var expected = await Baseline(); int reads = 0; var starter = new Starter();
@@ -181,6 +201,102 @@ public sealed class WindowsNativeHandoffStartTests : IDisposable
         var result = preparation.Prepared!.Start(argument);
         Assert.Equal(exceeds ? NativeHandoffDispatchOutcome.NotStarted : NativeHandoffDispatchOutcome.StartedUnverified, result.Outcome);
         Assert.Equal(exceeds ? 0 : 1, starter.Calls); AssertFileReleased();
+    }
+
+    [Fact]
+    public async Task ExtraClientArgumentsFollowTheOfficialRequestInOrderAndAreClearedAfterTheStart()
+    {
+        CreateFile(); var starter = new Starter(start =>
+        {
+            Assert.Equal(new[] { Handoff, "--synthetic-flag", "--value=1" }, start.ArgumentList); Assert.Empty(start.Arguments);
+            Assert.Equal(Executable, start.FileName); Assert.False(start.UseShellExecute); return new FakeProcess();
+        });
+        await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+        using var preparation = await verifier.PrepareAsync(Candidate, ["--synthetic-flag", "--value=1"], default);
+        Assert.NotNull(preparation.Prepared);
+        var result = preparation.Prepared!.Start(Handoff);
+        Assert.Equal(NativeHandoffDispatchOutcome.StartedUnverified, result.Outcome); Assert.True(result.ProcessReceipt!.IsValid);
+        Assert.Equal(1, starter.Calls); Assert.Empty(starter.LastStart!.ArgumentList); AssertFileReleased();
+        string shown = preparation.ToString() + preparation.Prepared.ToString() + result + JsonSerializer.Serialize(result);
+        Assert.DoesNotContain("synthetic-flag", shown); Assert.DoesNotContain(Handoff, shown);
+    }
+
+    [Fact]
+    public async Task NoExtraArgumentsMeansExactlyTheOfficialRequest()
+    {
+        CreateFile(); var starter = new Starter(start => { Assert.Equal(Handoff, Assert.Single(start.ArgumentList)); return new FakeProcess(); });
+        await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+        using var preparation = await verifier.PrepareAsync(Candidate, [], default);
+        Assert.Equal(NativeHandoffDispatchOutcome.StartedUnverified, preparation.Prepared!.Start(Handoff).Outcome); Assert.Equal(1, starter.Calls);
+    }
+
+    [Theory]
+    [InlineData("bad%value")]
+    [InlineData("two words")]
+    [InlineData("\"quoted\"")]
+    [InlineData("a<b")]
+    [InlineData("back\\slash")]
+    [InlineData("roblox-player:1+launchmode:play")]
+    [InlineData("x.ROBLOSECURITY=y")]
+    [InlineData("")]
+    public async Task AnInvalidExtraArgumentIsRefusedBeforeAnyFileIsHeld(string argument)
+    {
+        CreateFile(); var policy = new Policy(); var starter = new Starter(); await using var verifier = new WindowsClientExecutableTrust(policy, starter: starter);
+        // The refusal is synchronous, before any worker or file handle exists.
+        Assert.Throws<ArgumentException>(() => { _ = verifier.PrepareAsync(Candidate, ["--fine", argument], default); });
+        Assert.Equal(0, policy.Calls); Assert.Equal(0, starter.Calls); AssertFileReleased();
+        // The verifier is not occupied by the refused request.
+        using var next = await verifier.PrepareAsync(Candidate, default); Assert.NotNull(next.Prepared);
+    }
+
+    [Fact]
+    public async Task TooManyExtraArgumentsAreRefusedBeforeAnyFileIsHeld()
+    {
+        CreateFile(); var starter = new Starter(); await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+        var many = Enumerable.Repeat("-a", ExtraClientArgumentPolicy.MaximumArguments + 1).ToArray();
+        Assert.Throws<ArgumentException>(() => { _ = verifier.PrepareAsync(Candidate, many, default); });
+        Assert.Equal(0, starter.Calls); AssertFileReleased();
+        using var most = await verifier.PrepareAsync(Candidate, many[..^1], default); Assert.NotNull(most.Prepared);
+    }
+
+    [Fact]
+    public async Task ExtraArgumentsCountTowardTheCommandLineBound()
+    {
+        CreateFile(); var starter = new Starter(); await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+        const string prefix = "roblox-player:1+gameinfo:";
+        // Exactly fills the bound on its own (the existing capacity test), so any extra argument must refuse the start.
+        string argument = prefix + new string('a', 32767 - Executable.Length - 6 - prefix.Length);
+        using var preparation = await verifier.PrepareAsync(Candidate, ["-x"], default);
+        var result = preparation.Prepared!.Start(argument);
+        Assert.Equal(NativeHandoffDispatchOutcome.NotStarted, result.Outcome); Assert.Null(result.ProcessReceipt);
+        Assert.Equal(0, starter.Calls); AssertFileReleased();
+    }
+
+    // Since R-launch-17 (owner decision 2026-11-08) a bootstrapper's own executable can be prepared once its publisher is
+    // accepted (BootstrapperLaunchTests covers that start, which never receives the extra arguments); without an accepted
+    // publisher it gets no start, and the launcher is still never evaluated.
+    [Theory]
+    [InlineData("bootstrapper")]
+    [InlineData("launcher")]
+    public async Task ExtraArgumentsNeverReachABootstrapperOrTheLauncher(string kind)
+    {
+        CreateFile(); var starter = new Starter(); await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+        ClientInstallationCandidate candidate; ClientExecutableTrustReason expected;
+        if (kind == "bootstrapper")
+        {
+            string bootstrapper = Path.Combine(Root, "Bloxstrap.exe"); File.WriteAllText(bootstrapper, "Synthetic bootstrapper bytes, never executed");
+            candidate = Candidate with { Product = ClientInstallationProduct.Bloxstrap, ExecutablePath = bootstrapper }; expected = ClientExecutableTrustReason.PublisherNotAccepted;
+        }
+        else
+        {
+            string launcher = Path.Combine(Root, RobloxNativePlayerFiles.LauncherName); File.WriteAllText(launcher, "Synthetic launcher bytes, never executed");
+            candidate = Candidate with { ExecutablePath = launcher }; expected = ClientExecutableTrustReason.BootstrapperNotEvaluated;
+        }
+        using var preparation = await verifier.PrepareAsync(candidate, ["--synthetic-flag"], default);
+        Assert.Null(preparation.Prepared); Assert.Equal(expected, preparation.Trust.Reason);
+        Assert.NotEqual(ClientExecutableTrustStatus.VerifiedRobloxPublisher, preparation.Trust.Status);
+        Assert.NotEqual(ClientExecutableTrustStatus.VerifiedAcceptedPublisher, preparation.Trust.Status);
+        Assert.Equal(0, starter.Calls); AssertFileReleased();
     }
 
     [Fact]

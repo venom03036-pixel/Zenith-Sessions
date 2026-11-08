@@ -64,12 +64,13 @@ public sealed partial class ShellViewModel
         }
         finally{_authorizationStop=null;_linkingProfile=null;Raise(nameof(IsAuthorizing));}
     }
-    // A closed page, another owner holding the lane, or no handoff before the deadline is inconclusive,
-    // not a failure: it stays out of the Error count. Rejections and cleanup problems remain errors.
+    // A closed page, another owner holding the lane, an account that is being removed, or no handoff before the deadline is
+    // inconclusive, not a failure: it stays out of the Error count. Rejections and cleanup problems remain errors.
     private static ManagerEventKind DiagnosticKindFor(RobloxHandoffProbeOutcome outcome)=>outcome switch
     {
         RobloxHandoffProbeOutcome.CapturedAndPrevented=>ManagerEventKind.HandoffInspected,
-        RobloxHandoffProbeOutcome.Cancelled or RobloxHandoffProbeOutcome.Busy or RobloxHandoffProbeOutcome.TimedOut=>ManagerEventKind.HandoffNotCompleted,
+        RobloxHandoffProbeOutcome.Cancelled or RobloxHandoffProbeOutcome.Busy or RobloxHandoffProbeOutcome.TimedOut
+            or RobloxHandoffProbeOutcome.ProfileRemoved=>ManagerEventKind.HandoffNotCompleted,
         _=>ManagerEventKind.OperationFailed
     };
     // A rejected or changed sign-in is a sign-in failure; every other failed outcome is in the native handoff itself.
@@ -85,6 +86,7 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser or its storage is unavailable, or its required launch-cancellation guard could not be installed. Check WebView2 Runtime, and that the Zenith data folder is on a local drive that is not redirected, with free space and write permission. No page handoff was allowed. The selected account's saved sign-in now needs renewal: sign in again once this is fixed.",
         RobloxHandoffProbeOutcome.StorageUnavailable=>"The private browser's storage could not be prepared on the last attempt, so this check was refused before it used the selected account's saved sign-in, which is still saved; no page was opened. The Zenith data folder must be on a local drive that is not redirected, with free space and write permission, and no other program may be using signin-browser-data. Fix that, then sign in to any account or restart Zenith Sessions; checks stay refused until one of those prepares the storage.",
         RobloxHandoffProbeOutcome.Busy=>"Another account operation or private browser window is still open or closing. Finish or cancel it, then retry the inspection; no page was opened.",
+        RobloxHandoffProbeOutcome.ProfileRemoved=>"The selected account is being removed from your library. The inspection was refused before its saved sign-in was used; no page was opened. Select another account to inspect.",
         RobloxHandoffProbeOutcome.ContextRejected=>"The game page changed or was not the approved game-only destination. No handoff was accepted. Renew sign-in if required, then retry with the intended game.",
         RobloxHandoffProbeOutcome.OriginRejected=>"The request did not report the expected official Roblox page origin. It was cancelled and no client was started.",
         RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"The page requested an unexpected external application. The request was cancelled and no client was started.",

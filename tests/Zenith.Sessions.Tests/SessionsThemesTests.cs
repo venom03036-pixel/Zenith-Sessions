@@ -242,6 +242,27 @@ public sealed class SessionsThemesTests : IDisposable
         Assert.Equal(SessionsThemes.Light.Colors["AppBackground"], StartupBackground(new(false, null)));
     }
 
+    [Fact]
+    public void TheWindowAppliesALiveThemeChangeThroughSessionsThemesAlone()
+    {
+        // SessionsThemes.Apply adds the High Contrast edge bars after ThemeManager.Apply, so a window that applied a live change (High
+        // Contrast switched on while the app is open) through ThemeManager.Apply would show hovered rows and buttons with no mark.
+        // App cannot be built in a test (one Application per process), so the live path is pinned in source: the Sessions app calls
+        // ThemeManager.Apply only inside SessionsThemes.Apply and in the packaged check's default-theme reset, and the window's
+        // handler for the shell's ThemeChanged applies through SessionsThemes.Apply to the application's resources.
+        string app = Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot, "src", "Zenith.Sessions.App");
+        var direct = Directory.GetFiles(app, "*.cs")
+            .SelectMany(file => File.ReadLines(file).Select((text, index) => (File: Path.GetFileName(file), Line: index + 1, Text: text.Trim())))
+            .Where(line => line.Text.Contains("ThemeManager.Apply(", StringComparison.Ordinal)).ToArray();
+        Assert.Equal(["PackagedLayoutCheck.cs", "SessionsThemes.cs"], direct.Select(line => line.File).Distinct().Order(StringComparer.Ordinal));
+        Assert.Single(direct, line => line.File == "SessionsThemes.cs");
+        Assert.All(direct.Where(line => line.File == "PackagedLayoutCheck.cs"), line => Assert.Contains("ThemeCatalog.DefaultId", line.Text, StringComparison.Ordinal));
+        string window = File.ReadAllText(Path.Combine(app, "MainWindow.xaml.cs"));
+        Assert.Contains("vm.ThemeChanged += SetTheme;", window, StringComparison.Ordinal);
+        Assert.Contains("_vm.ThemeChanged -= SetTheme;", window, StringComparison.Ordinal);
+        Assert.Matches(@"void SetTheme\(ThemePreset theme\)\s*=>\s*SessionsThemes\.Apply\(Application\.Current\.Resources,\s*theme\);", window);
+    }
+
     [Theory]
     [MemberData(nameof(PaletteNames))]
     public void ThePackagedReadabilityCheckAcceptsEveryPalette(string name) => Assert.Null(SessionsThemes.ReadabilityProblem(Palette(name)));

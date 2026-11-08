@@ -142,7 +142,8 @@ public sealed class CleanupRecoveryTests : IDisposable
         string path=Path.Combine(_root,"accounts.db");
         using(var old=new SqliteConnection($"Data Source={path};Pooling=False"))
         {
-            await old.OpenAsync(); using var command=old.CreateCommand(); command.CommandText="DROP TABLE account_groups; DROP TABLE account_group_catalog; DROP TABLE credential_cleanup; ALTER TABLE profiles DROP COLUMN notes; ALTER TABLE profiles DROP COLUMN is_favorite; ALTER TABLE profiles DROP COLUMN additional_groups; PRAGMA user_version=1;"; await command.ExecuteNonQueryAsync();
+            // Every column a later schema added is dropped too (schema 6 added extra_client_arguments), so this is a real schema 1 library.
+            await old.OpenAsync(); using var command=old.CreateCommand(); command.CommandText="DROP TABLE account_groups; DROP TABLE account_group_catalog; DROP TABLE credential_cleanup; ALTER TABLE profiles DROP COLUMN notes; ALTER TABLE profiles DROP COLUMN is_favorite; ALTER TABLE profiles DROP COLUMN additional_groups; ALTER TABLE profiles DROP COLUMN extra_client_arguments; PRAGMA user_version=1;"; await command.ExecuteNonQueryAsync();
         }
         await repository.InitializeAsync(default); Assert.Equal(profile,await repository.FindAsync(profile.Id,default));
         using var backup=new SqliteConnection($"Data Source={path}.schema1.bak;Mode=ReadOnly;Pooling=False"); await backup.OpenAsync();

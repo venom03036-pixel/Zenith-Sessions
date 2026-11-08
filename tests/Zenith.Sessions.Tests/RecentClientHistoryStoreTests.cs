@@ -166,6 +166,28 @@ public sealed class RecentClientHistoryStoreTests : IDisposable
         Assert.Equal(new[] { evidence, plain }, (await store.LoadAsync(default)).Entries);
     }
 
+    [Fact]
+    public async Task AForcedEndRoundTripsInTheEvidenceColumnAndKeepsTheOriginalRowShapeForEarlierBuilds()
+    {
+        // R-instances-12: the forced end is one more piece of end evidence. It rides in the optional evidence column, so the
+        // payload keeps its fourteen original fields and builds that predate end evidence still read and rewrite the history.
+        using var store = new RecentClientHistoryStore(_root);
+        var forced = Entry() with { ForcedEndUtc = Now.AddSeconds(1), NotRespondingUtc = Now.AddSeconds(1) };
+        var plain = Entry(456);
+        await store.SaveAsync(Snapshot(1, forced, plain), default);
+        var rows = await RowsAsync(store.Path);
+        Assert.Equal(14, FieldCount(rows[0].Payload));
+        Assert.Contains("\"Forced\"", rows[0].Evidence);
+        Assert.Null(rows[1].Evidence);
+        var read = await store.LoadAsync(default);
+        Assert.Equal(new[] { forced, plain }, read.Entries);
+        Assert.Equal(ClientEndCause.ForcedEnd, read.Entries[0].EndCause); Assert.Null(read.Entries[1].ForcedEndUtc);
+        var payloads = await EarlierBuildReadAsync(store.Path);
+        await ExecuteAsync(store.Path, "DELETE FROM history_entries; INSERT INTO history_entries(ordinal,payload) VALUES(0,$p0); INSERT INTO history_entries(ordinal,payload) VALUES(1,$p1); UPDATE history_meta SET revision=2 WHERE id=1", payloads[0], payloads[1]);
+        var rewritten = await store.LoadAsync(default);
+        Assert.Equal(new[] { forced with { ForcedEndUtc = null, NotRespondingUtc = null }, plain }, rewritten.Entries);
+    }
+
     private static int FieldCount(string json)
     {
         using var document = System.Text.Json.JsonDocument.Parse(json);

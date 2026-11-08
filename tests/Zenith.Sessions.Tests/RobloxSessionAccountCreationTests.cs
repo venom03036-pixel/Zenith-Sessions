@@ -157,7 +157,8 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
     }
 
     // N-B1a-1: the removal lease holds its rows against every saved-session operation, not only an Add moving onto one.
-    // Nothing is sent to Roblox, no sign-in window or page opens, and the saved sign-in is not written.
+    // Nothing is sent to Roblox, no sign-in window or page opens, and the saved sign-in is not written. An inspection reports
+    // the refusal as ProfileRemoved, not as Busy, so its caller can say the account is being removed (O-C1-3).
     [Fact]
     public async Task NoSavedSessionOperationStartsOnARowWhileThatRowIsBeingRemovedAndOneCanAfterTheRemovalEnds()
     {
@@ -173,7 +174,7 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
                 Assert.True(error.ProfileRemoved); Assert.False(error.OperationInProgress);
                 Assert.Contains("being removed", error.Message); Assert.DoesNotContain(Stale, error.Message);
             }
-            Assert.Equal(RobloxHandoffProbeOutcome.Busy, (await fixture.Service.InspectHandoffAsync(existing.Id, 42, probe, default)).Outcome);
+            Assert.Equal(RobloxHandoffProbeOutcome.ProfileRemoved, (await fixture.Service.InspectHandoffAsync(existing.Id, 42, probe, default)).Outcome);
             Assert.Equal(0, fixture.Client.Calls); Assert.Empty(fixture.Browser.Ids); Assert.Equal(0, probe.Calls);
             Assert.Equal(0, fixture.Vault.Commits); Assert.Equal(0, fixture.Vault.Fences); Assert.Equal(saved, await fixture.Inner.ReadAsync(existing.Id, default));
         }

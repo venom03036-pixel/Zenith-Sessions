@@ -177,19 +177,38 @@ public sealed class TargetedInputRun
     internal const string StoppedByUser = "Stopped by user.", StoppedByEmergency = "Stopped by emergency stop.";
 
     /// <summary>A stop the user asked for.</summary>
-    public Task<TargetedInputRunSnapshot> StopAsync() => StopAsync(StoppedByUser);
+    public Task<TargetedInputRunSnapshot> StopAsync() => StopAsync(TargetedInputStopReason.User);
 
-    /// <summary>A stop that says why it happened, for an owner that releases the lease when the user did not ask.</summary>
-    internal Task<TargetedInputRunSnapshot> StopAsync(string reason)
+    /// <summary>
+    /// A stop that says why it happened, for an owner that releases the lease when the user did not ask. The reason
+    /// is one of a closed set whose texts this owner keeps; a value outside it is refused before anything changes.
+    /// </summary>
+    public Task<TargetedInputRunSnapshot> StopAsync(TargetedInputStopReason reason)
     {
+        string text = Text(reason);
         lock (_owner.Sync)
         {
             // While shutdown is joining a fixed set of actual workers, reuse that finalization.
             // A failed shutdown can be explicitly retried after its result is available.
             if (_owner.DisposalInProgressLocked && !_transitionActive) return _transition ?? Task.FromResult(SnapshotLocked());
-            RequestStopLocked(reason); return EnsureTransitionLocked();
+            RequestStopLocked(text); return EnsureTransitionLocked();
         }
     }
+
+    // Only a user's Stop says the user stopped it; the other texts say what released the lease instead.
+    private static string Text(TargetedInputStopReason reason) => reason switch
+    {
+        TargetedInputStopReason.User => StoppedByUser,
+        TargetedInputStopReason.EmergencyStop => StoppedByEmergency,
+        TargetedInputStopReason.Completed => "Macro completed; input lease released.",
+        TargetedInputStopReason.RuntimeLimit => "Macro reached its runtime limit; input lease released.",
+        TargetedInputStopReason.AfterFailure => "Macro stopped after a failure; input lease released.",
+        TargetedInputStopReason.CompanionStopped => "Its companion operation stopped; input lease released.",
+        TargetedInputStopReason.RunnerClosed => "Macro runner closed; input lease released.",
+        TargetedInputStopReason.NotStarted => "Run could not start; input lease released.",
+        TargetedInputStopReason.KeepAwakeSent => "Keep-awake press sent; input lease released.",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason))
+    };
 
     /// <summary>Explicit retry; a failed cleanup never frees a target lease automatically.</summary>
     public Task<TargetedInputRunSnapshot> RetryCleanupAsync() => StopAsync();
@@ -261,7 +280,7 @@ public sealed class TargetedInputRun
                 if (outcome == TargetedInputSubmission.Queued) sent++;
                 if (outcome == TargetedInputSubmission.Uncertain) uncertain++;
                 if (ct.IsCancellationRequested)
-                { lock (_owner.Sync) RequestStopLocked("Input batch cancelled after a submitted or uncertain prefix; releasing its holds."); status = TargetedInputDispatchStatus.Cancelled; break; }
+                { lock (_owner.Sync) RequestStopLocked(CancelledText(sent, uncertain)); status = TargetedInputDispatchStatus.Cancelled; break; }
                 if (outcome == TargetedInputSubmission.Rejected && !Open(generation))
                 { status = TargetedInputDispatchStatus.Inactive; break; }
                 if (outcome != TargetedInputSubmission.Queued)
@@ -278,7 +297,7 @@ public sealed class TargetedInputRun
             }
         }
         catch (OperationCanceledException)
-        { lock (_owner.Sync) RequestStopLocked("Input batch cancelled; preserving the submitted prefix and releasing its holds."); status = TargetedInputDispatchStatus.Cancelled; }
+        { lock (_owner.Sync) RequestStopLocked(CancelledText(sent, uncertain)); status = TargetedInputDispatchStatus.Cancelled; }
         catch (Exception)
         { lock (_owner.Sync) FaultLocked("The input transport failed. Submitted or uncertain holds require cleanup.", "The input transport failed."); status = TargetedInputDispatchStatus.Faulted; }
         finally
@@ -291,6 +310,12 @@ public sealed class TargetedInputRun
         if (transition is not null) await transition.ConfigureAwait(false);
         lock (_owner.Sync) return new(status, sent, uncertain, SnapshotLocked());
     }
+
+    // A cancelled batch stops the run and releases its holds either way; only say part of the batch went out when it did
+    // (the caller's token can be cancelled while the transport still holds the first signal, which it then refuses).
+    private static string CancelledText(int sent, int uncertain) => sent + uncertain > 0
+        ? "Input batch cancelled after a submitted or uncertain prefix; releasing its holds."
+        : "Input batch cancelled before any of it was sent; releasing the run's holds.";
 
     /// <param name="summary">The part of <paramref name="reason"/> that stays true once the holds are released; omit it when that is all of it.</param>
     private void FaultLocked(string reason, string? summary = null)

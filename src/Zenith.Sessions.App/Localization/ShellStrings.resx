@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  The shell's string catalog (R-shell-16). English is the neutral language and the only one shipped; a translation is a
+  ShellStrings.<culture>.resx beside this file with the same keys, built into a satellite assembly by the SDK. Keys are
+  grouped by prefix: Page_ (sidebar and window title), Header_, Appearance_ (Settings > Appearance), Theme_ and Language_
+  (sentences the shell composes), GuideHeading_. Format placeholders ({0}) must match in every culture; a test checks it.
+-->
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms, Version=4.0.0.0, Culture=neutral, PublicKeyToken=b77a5c561934e089</value></resheader>
+
+  <data name="Page_Overview" xml:space="preserve"><value>Overview</value></data>
+  <data name="Page_Accounts" xml:space="preserve"><value>Accounts</value></data>
+  <data name="Page_Sessions" xml:space="preserve"><value>Sessions</value></data>
+  <data name="Page_Windows" xml:space="preserve"><value>Windows</value></data>
+  <data name="Page_Automation" xml:space="preserve"><value>Automation</value></data>
+  <data name="Page_Diagnostics" xml:space="preserve"><value>Diagnostics</value></data>
+  <data name="Page_Settings" xml:space="preserve"><value>Settings</value></data>
+  <data name="Page_Guide" xml:space="preserve"><value>Guide</value></data>
+  <data name="Page_JoinGame" xml:space="preserve"><value>Join a game</value></data>
+
+  <data name="Header_Personal" xml:space="preserve"><value>Personal</value></data>
+  <data name="Header_PanicShortcutTooltip" xml:space="preserve"><value>Panic stop shortcut</value></data>
+  <data name="Header_Lock" xml:space="preserve"><value>Lock</value></data>
+  <data name="Header_LockTooltip" xml:space="preserve"><value>Lock: hide account details and stop automation until you unlock</value></data>
+  <data name="Header_MoreOptions" xml:space="preserve"><value>More options</value></data>
+  <data name="Header_Minimize" xml:space="preserve"><value>Minimize</value></data>
+  <data name="Header_MaximizeOrRestore" xml:space="preserve"><value>Maximize or restore</value></data>
+
+  <data name="Appearance_Title" xml:space="preserve"><value>Appearance</value></data>
+  <data name="Appearance_TitleAutomation" xml:space="preserve"><value>Appearance settings</value></data>
+  <data name="Appearance_Language" xml:space="preserve"><value>Language</value></data>
+  <data name="Appearance_LanguageDescription" xml:space="preserve"><value>English is the only language included in this preview. Follow Windows uses your Windows display language once a translation for it is included, and mirrors the window for a right-to-left language. The two pseudo-locale choices are for testing: text from the catalog is shown marked, and anything shown plain is not translated yet. A language change applies at once and is saved, like a theme.</value></data>
+  <data name="Appearance_CloseButtonExits" xml:space="preserve"><value>Close button exits the manager</value></data>
+  <data name="Appearance_CloseButtonExitsDescription" xml:space="preserve"><value>Off by default: the close button keeps the manager running in the tray, and one click on the tray icon reopens it. When on, the close button stops this manager the same way as Exit. Save settings to apply.</value></data>
+  <data name="Appearance_LockWhenIdle" xml:space="preserve"><value>Lock when idle</value></data>
+  <data name="Appearance_LockWhenIdleDescription" xml:space="preserve"><value>Off by default. When on, the manager locks like Lock after that long without keyboard or mouse input in its windows, including while it is in the tray: account details are hidden and automation and the launch queue stop until you unlock. A sign-in or native trial in progress counts as activity. Save settings to apply.</value></data>
+  <data name="Appearance_PublicNetworkGuard" xml:space="preserve"><value>Hold launches on a public network</value></data>
+  <data name="Appearance_PublicNetworkGuardDescription" xml:space="preserve"><value>Off by default. When on, Zenith watches which network profile Windows gives the active connection. While a connected network with internet access is filed Public (café, hotel or airport Wi-Fi, for example), new launches are held with that reason and the dashboard locks like Lock, with a notice. Held requests start again on their own once the network is Private or Domain; the dashboard stays locked until you unlock it. Windows tells Zenith when the network changes, so nothing polls, and no network name is read or kept. Save settings to apply.</value></data>
+  <data name="Appearance_DiscordAlerts" xml:space="preserve"><value>Send Discord alerts</value></data>
+  <data name="Appearance_DiscordAlertsDescription" xml:space="preserve"><value>Off by default. When on, Zenith posts a short message to one Discord webhook you save below when a client crashes, stops responding or is disconnected, and when a launch batch has finished. Messages carry only the account's label, the place and counts: never log lines, links or anything from Roblox. Alerts that happen within two seconds share one message, at most 50 wait to be sent, and a failed send is reported once and not retried. Panic stops the alerts until you choose Resume alerts; Lock leaves them running. Save settings to apply.</value></data>
+  <data name="Appearance_WebhookUrl" xml:space="preserve"><value>Webhook URL</value></data>
+  <data name="Appearance_WebhookUrlAutomation" xml:space="preserve"><value>Discord webhook URL</value></data>
+  <data name="Appearance_WebhookUrlTooltip" xml:space="preserve"><value>Paste the webhook URL Discord shows for the channel. It is kept protected on this PC and never shown again.</value></data>
+  <data name="Appearance_SaveWebhook" xml:space="preserve"><value>Save webhook</value></data>
+  <data name="Appearance_SaveWebhookTooltip" xml:space="preserve"><value>Check the pasted URL and keep it protected</value></data>
+  <data name="Appearance_ClearWebhook" xml:space="preserve"><value>Clear webhook</value></data>
+  <data name="Appearance_ClearWebhookTooltip" xml:space="preserve"><value>Forget the saved webhook URL</value></data>
+  <data name="Appearance_SendTestAlert" xml:space="preserve"><value>Send test alert</value></data>
+  <data name="Appearance_SendTestAlertTooltip" xml:space="preserve"><value>Post a test message to the saved webhook</value></data>
+  <data name="Appearance_ResumeAlerts" xml:space="preserve"><value>Resume alerts</value></data>
+  <data name="Appearance_ResumeAlertsTooltip" xml:space="preserve"><value>Send alerts again after Panic or a refused webhook</value></data>
+  <data name="Appearance_ResumeAlertsAutomation" xml:space="preserve"><value>Resume Discord alerts</value></data>
+  <data name="Appearance_DiscordPresence" xml:space="preserve"><value>Show Zenith in your Discord status</value></data>
+  <data name="Appearance_DiscordPresenceDescription" xml:space="preserve"><value>Off by default. When on, Zenith tells the Discord app running on this PC, over Discord's own local connection, how many Roblox clients it sees running, and Discord shows that in your status while Zenith runs; Zenith sends nothing over the internet for this. Discord shows a status only under an application: create one at discord.com/developers/applications, give it the name you want shown, and paste its Application ID below (a public ID, not a secret). Only a change is sent; when Discord is not running nothing is sent and Zenith checks again when the count changes or once a minute. The status is cleared when the dashboard is locked, by Panic and at exit, and shown again after Unlock or Resume Discord status. Save settings to apply.</value></data>
+  <data name="Appearance_DiscordPresenceGame" xml:space="preserve"><value>Include the game in the Discord status</value></data>
+  <data name="Appearance_DiscordPresenceGameDescription" xml:space="preserve"><value>Off by default. When on, the status also names the game the running clients are in, from what Zenith already knows (a favorite's name or a recently played name; otherwise the place ID), or says how many different games they are in. Nothing is looked up for it. Save settings to apply.</value></data>
+  <data name="Appearance_DiscordApplicationId" xml:space="preserve"><value>Discord application ID</value></data>
+  <data name="Appearance_DiscordApplicationIdTooltip" xml:space="preserve"><value>The 17 to 20 digit Application ID from the Discord Developer Portal; empty shows nothing</value></data>
+  <data name="Appearance_ResumeDiscordPresence" xml:space="preserve"><value>Resume Discord status</value></data>
+  <data name="Appearance_ResumeDiscordPresenceTooltip" xml:space="preserve"><value>Show the status again after Panic or a refused application ID</value></data>
+  <data name="Appearance_PanicShortcut" xml:space="preserve"><value>Panic shortcut</value></data>
+  <data name="Appearance_PanicShortcutDescription" xml:space="preserve"><value>F12 by default. Type an F-key (F1 to F24) on its own or with Ctrl, Alt or Shift, or Ctrl with a letter or digit, such as Ctrl+Alt+Shift+P. The shortcut takes its keys from every program, so combinations that type or edit there are not accepted: Ctrl+Alt with a letter or digit but without Shift (it is AltGr on many keyboards), Alt with a letter or digit but without Ctrl, Ctrl+C, Ctrl+V and the other editing keys, F1 on its own, F10, Shift+F10, Alt+F4 and the Windows key. Save settings to register it for every program; if Windows refuses it, the shortcut that works stays registered. F12 keeps working while this window is focused, and the Panic button is always available.</value></data>
+
+  <data name="Theme_HighContrast" xml:space="preserve"><value>Windows High Contrast is on, so the manager uses your Windows contrast colours. Your theme choice returns when High Contrast is turned off.</value></data>
+  <data name="Theme_Current" xml:space="preserve"><value>Current theme: {0}.</value></data>
+  <data name="Theme_FollowingLight" xml:space="preserve"><value>Following Windows: Light, because Windows apps use light mode.</value></data>
+  <data name="Theme_FollowingDark" xml:space="preserve"><value>Following Windows: {0}, because Windows apps use dark mode.</value></data>
+  <data name="Theme_FollowingUnknown" xml:space="preserve"><value>Following Windows: {0}, because Windows did not report an app mode.</value></data>
+
+  <data name="Language_English" xml:space="preserve"><value>English</value></data>
+  <data name="Language_FollowWindows" xml:space="preserve"><value>Follow Windows</value></data>
+  <data name="Language_Pseudo" xml:space="preserve"><value>Pseudo-locale (for testing translations)</value></data>
+  <data name="Language_PseudoRightToLeft" xml:space="preserve"><value>Pseudo-locale, right-to-left (for testing the mirrored layout)</value></data>
+  <data name="Language_StatusCurrent" xml:space="preserve"><value>Current language: {0}.</value></data>
+  <data name="Language_StatusFollowing" xml:space="preserve"><value>Following Windows: {0}, your Windows display language.</value></data>
+  <data name="Language_StatusFollowingUntranslated" xml:space="preserve"><value>Following Windows: your Windows display language is {0}, which has no translation yet, so English is shown.</value></data>
+  <data name="Language_StatusPseudo" xml:space="preserve"><value>Pseudo-locale for testing: text from the catalog is shown in brackets with accented letters; anything shown plain is not translated yet.</value></data>
+  <data name="Language_StatusPseudoRightToLeft" xml:space="preserve"><value>Pseudo-locale for testing, mirrored as for a right-to-left language: text from the catalog is shown in brackets with accented letters; anything shown plain is not translated yet.</value></data>
+
+  <data name="GuideHeading_AccountLibrary" xml:space="preserve"><value>1. Build your account library</value></data>
+  <data name="GuideHeading_Identity" xml:space="preserve"><value>2. Understand profile and session identity</value></data>
+  <data name="GuideHeading_NativeSessions" xml:space="preserve"><value>3. Native game sessions</value></data>
+  <data name="GuideHeading_Headroom" xml:space="preserve"><value>4. Preserve desktop headroom</value></data>
+  <data name="GuideHeading_SettingsData" xml:space="preserve"><value>5. Settings, data, and recovery</value></data>
+  <data name="GuideHeading_Favorites" xml:space="preserve"><value>Destination favorites and links</value></data>
+  <data name="GuideHeading_Bundles" xml:space="preserve"><value>Account bundles</value></data>
+  <data name="GuideHeading_LaunchInspection" xml:space="preserve"><value>Native launch preparation inspection</value></data>
+  <data name="GuideHeading_CpuPriority" xml:space="preserve"><value>Client CPU priority</value></data>
+  <data name="GuideHeading_ClientSound" xml:space="preserve"><value>Client sound</value></data>
+  <data name="GuideHeading_NativeTrials" xml:space="preserve"><value>Explicit native account trials</value></data>
+  <data name="GuideHeading_Receipts" xml:space="preserve"><value>Client-start receipts and interrupted launches</value></data>
+  <data name="GuideHeading_ArrangeWindows" xml:space="preserve"><value>Arrange client windows</value></data>
+  <data name="GuideHeading_ResourceHistory" xml:space="preserve"><value>Resource history</value></data>
+  <data name="GuideHeading_WindowsOverview" xml:space="preserve"><value>Windows overview</value></data>
+  <data name="GuideHeading_Previews" xml:space="preserve"><value>Client previews</value></data>
+  <data name="GuideHeading_ReportedDestinations" xml:space="preserve"><value>Reported session destinations</value></data>
+  <data name="GuideHeading_RecentHistory" xml:space="preserve"><value>Recent client history</value></data>
+  <data name="GuideHeading_Linking" xml:space="preserve"><value>Official linking setup</value></data>
+  <data name="GuideHeading_LinkRecovery" xml:space="preserve"><value>Account-link recovery</value></data>
+  <data name="GuideHeading_Installations" xml:space="preserve"><value>Installed Roblox and bootstrappers</value></data>
+  <data name="GuideHeading_PerformanceProfiles" xml:space="preserve"><value>Performance profiles</value></data>
+  <data name="GuideHeading_Shortcuts" xml:space="preserve"><value>Keyboard shortcuts</value></data>
+  <data name="GuideHeading_Diagnostics" xml:space="preserve"><value>Diagnostics</value></data>
+  <data name="GuideHeading_Avatars" xml:space="preserve"><value>6. Account avatars and server destinations</value></data>
+  <data name="GuideHeading_Capabilities" xml:space="preserve"><value>7. Platform capabilities and stopping</value></data>
+  <data name="GuideHeading_SavedMacros" xml:space="preserve"><value>Saved macros from Personal Zenith</value></data>
+  <data name="GuideHeading_Assignments" xml:space="preserve"><value>Shared macro assignments</value></data>
+  <data name="GuideHeading_Recovery" xml:space="preserve"><value>8. Interrupted saves and recovery</value></data>
+  <data name="Appearance_KeepAwake" xml:space="preserve"><value>Keep clients awake</value></data>
+  <data name="Appearance_ResumeKeepAwake" xml:space="preserve"><value>Resume keeping clients awake</value></data>
+  <data name="Appearance_KeepAwakeDescription" xml:space="preserve"><value>Off by default. When on and saved, every chosen gap (5 to 19 minutes; Roblox disconnects a client after 20 idle minutes) Zenith brings each client forward, sends it one F13 press through its single input owner, and puts the window that was in front back. It waits while you have used the keyboard or mouse in the last 10 seconds. It is refused until the live input isolation trial marks background input Supported; until then this choice only shows why nothing runs. Panic and Lock stop it until you choose Resume keeping clients awake. Save settings to apply.</value></data>
+  <data name="GuideHeading_ClientGpu" xml:space="preserve"><value>Client GPU use</value></data>
+  <data name="GuideHeading_KeepAwake" xml:space="preserve"><value>Keep clients awake</value></data>
+  <data name="GuideHeading_NativeLaunchMode" xml:space="preserve"><value>Native launch mode</value></data>
+  <data name="GuideHeading_BootstrapperLaunch" xml:space="preserve"><value>Launching through a bootstrapper</value></data>
+  <data name="GuideHeading_OrdinaryLaunch" xml:space="preserve"><value>Ordinary launching after a verified trial</value></data>
+  <data name="Page_News" xml:space="preserve"><value>News</value></data>
+  <data name="News_Refresh" xml:space="preserve"><value>Refresh announcements</value></data>
+  <data name="News_OpenArticle" xml:space="preserve"><value>Open article in browser…</value></data>
+  <data name="News_Description" xml:space="preserve"><value>Public DevForum announcements, loaded only when this page opens or you press Refresh. Articles open in your browser after confirmation. Roblox Newsroom has no confirmed RSS or Atom feed configured.</value></data>
+  <data name="GuideHeading_UploadLimit" xml:space="preserve"><value>Upload limit</value></data>
+</root>

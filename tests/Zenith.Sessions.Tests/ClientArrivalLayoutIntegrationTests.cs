@@ -1,4 +1,5 @@
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -229,6 +230,57 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
 
+    // O-C5-4: a follow-up request (for a client that connected while an automatic request ran) tiles what the latest scan
+    // shows, so by then every connected client may have closed or lost its window. The report must say that, not that they are
+    // minimized or hidden, and the earlier request's placement rows must not stay on screen under a report that moved nothing.
+    [Theory]
+    [InlineData("closed")]
+    [InlineData("windowless")]
+    [InlineData("minimized")]
+    public Task AFollowUpRequestWithNothingToTileSaysWhyAndClearsTheEarlierRequestsRows(string state) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(410, minutesAgo: 2); var second = log.Client(411, minutesAgo: 1);
+        var automatic = monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        var automaticClients = monitor.Requested.ToArray();
+        try
+        {
+            Assert.Equal(1, monitor.Arrangements);
+            // The second client connects while the first request runs, then the scan changes before that request returns.
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            SessionObservation[] later = state switch
+            {
+                "closed" => [],
+                "windowless" => [first with { Window = 0 }, second with { Window = 0 }],
+                _ => [first with { Minimized = true }, second with { Minimized = true }]
+            };
+            await log.PresentAsync(later);
+            Assert.Equal(1, monitor.Arrangements);
+        }
+        finally
+        {
+            automatic.TrySetResult(new([new(automaticClients[0], new(0, 0, 320, 240), ClientWindowPlacementStatus.Applied, "Synthetic automatic result")], false, "Synthetic automatic arrangement."));
+        }
+        monitor.Pending = null;
+        await shell.ClientArrivalWork;
+        // The follow-up request found nothing to tile, so it requested no second arrangement and says why.
+        Assert.Equal(1, monitor.Arrangements);
+        Assert.StartsWith("A client connected, but ", shell.ClientWindowStatus);
+        if (state == "minimized") Assert.Contains("every connected client is minimized or hidden", shell.ClientWindowStatus);
+        else
+        {
+            Assert.DoesNotContain("minimized or hidden", shell.ClientWindowStatus);
+            Assert.Contains("no connected client still had a window", shell.ClientWindowStatus);
+        }
+        Assert.Empty(shell.ClientPlacementResults);
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+    });
+
     // N-B5a-5: reopening Zenith with Minimize saved leaves alone a client the user joined a few minutes earlier, although its
     // log still reports Connected; a client that starts afterwards is minimized when it connects.
     [Fact]
@@ -347,6 +399,70 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("automatic layout left the windows alone", shell.ClientWindowStatus);
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
+
+    // O-C5-3: a client connects during a manual window operation that then fails, for example because the provider returned no
+    // result for the pinned client. The failure report replaces the operation's status after the operation's own finally block
+    // has run, so the note that a client was left alone must be added to that final report, not to the status it replaces.
+    [Fact]
+    public Task AManualOperationThatFailsStillReportsTheClientThatConnectedDuringIt() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(475, minutesAgo: 3); var second = log.Client(476, minutesAgo: 2); var third = log.Client(477, minutesAgo: 1);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.StateChanges);
+        // The user restores the first client by hand; the provider has not answered yet when the second client connects.
+        shell.Sessions.Single(row => row.Observation.ProcessId == 475).IsChecked = true;
+        monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        shell.RestoreCheckedClients.Execute(null);
+        try
+        {
+            Assert.True(shell.IsArrangingClients);
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            Assert.Equal(2, monitor.StateChanges);
+        }
+        finally
+        {
+            // No result for the pinned client: the shell refuses to show this as a success, and the command reports a failure.
+            monitor.Pending.TrySetResult(new([], false, "Synthetic result without the pinned client"));
+        }
+        monitor.Pending = null;
+        await shell.RestoreCheckedClients.Execution; await shell.ClientArrivalWork;
+        Assert.False(shell.IsArrangingClients);
+        Assert.Contains(shell.Events, e => e.Contains("Operation failed"));
+        Assert.StartsWith("The window operation could not finish.", shell.ClientWindowStatus);
+        Assert.Contains("A client connected during this window operation, so automatic layout left the windows alone.", shell.ClientWindowStatus);
+        // The client that connected meanwhile counts as seen; the next client that connects gets the saved choice again.
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(3, monitor.StateChanges);
+        Assert.Equal(new[] { 477 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
+        Assert.DoesNotContain("during this window operation", shell.ClientWindowStatus);
+    });
+
+    // O-C5-2: the Settings help text under "When a client connects" lists every case in which a connected client is left
+    // alone and never counts again, so the N-B5a-6 rule (a client that connects during a manual window operation) is not
+    // learned only from the status line appended after that operation ends.
+    [Fact]
+    public void TheWhenAClientConnectsHelpTextNamesEveryCaseThatLeavesAConnectedClientAlone()
+    {
+        using var source = typeof(ClientWindowIntegrationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var document = XDocument.Load(source);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation", xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var choice = document.Descendants(presentation + "ComboBox").Single(element => (string?)element.Attribute(xaml + "Name") == "ClientArrivalLayoutChoice");
+        var help = choice.Parent!.Elements(presentation + "TextBlock")
+            .Select(element => (string?)element.Attribute("Text") ?? "")
+            .Single(text => text.StartsWith("Off by default.", StringComparison.Ordinal));
+        Assert.Contains("Zenith acts once per client", help);
+        Assert.Contains("Clients that were already running when Zenith started do not count", help);
+        Assert.Contains("A client that connects while you run a window operation (Arrange, Minimize, Restore or Resize) is left alone and does not count again", help);
+        Assert.Contains("Panic and Lock stop it", help);
+    }
 
     // C5 review: a PC where Windows cannot read another Windows user's client never has a complete scan. Before any scan shows
     // which clients were already running, a client that reports Connected is left alone and the window report says why, so

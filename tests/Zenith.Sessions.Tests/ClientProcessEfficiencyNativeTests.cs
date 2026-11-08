@@ -24,7 +24,7 @@ public sealed class ClientProcessEfficiencyNativeTests
         Helper[] helpers = [first, second];
         var originals = helpers.Select(helper => helper.ReadIndependently()).ToArray();
         SessionObservation[] sessions = helpers.Select(helper => helper.Session).ToArray();
-        var control = new WindowsClientProcessPriorityControl(new NativeClientProcessPriorityAdapter("cmd.exe"));
+        var control = new WindowsClientProcessPriorityControl(new NativeClientProcessPriorityAdapter(new InMemoryClientCpuCapLedger(), "cmd.exe"));
         try
         {
             var efficient = await control.ChangeAsync(sessions, ClientProcessPriorityAction.Efficiency, default);

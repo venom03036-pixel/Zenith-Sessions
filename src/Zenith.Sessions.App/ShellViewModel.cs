@@ -94,6 +94,9 @@ public sealed class SessionRow(SessionObservation observation) : Observable
 {
     private bool _checked;
     public bool IsChecked { get => _checked; set => Set(ref _checked, value); }
+    private bool _forceCloseOffered;
+    /// <summary>R-instances-12: true only after Close left this exact client open. Panic, Lock, exit, a force close and the client's exit withdraw it.</summary>
+    public bool ForceCloseOffered { get => _forceCloseOffered; internal set => Set(ref _forceCloseOffered, value); }
     private SessionLogView _log = SessionLogView.Unknown;
     public SessionLogView Log => _log;
     public void UpdateLog(SessionLogView value) { if (_log != value) { _log = value; Raise(nameof(Log)); } }
@@ -111,6 +114,12 @@ public sealed class SessionRow(SessionObservation observation) : Observable
     public string IoTransfers=>Observation.Problem is null && Observation.IoRates is { } io
         ? "R "+TelemetryDisplay.Number(io.ReadBytesPerSecond/1024,"0.0"," KiB/s")+" · W "+TelemetryDisplay.Number(io.WriteBytesPerSecond/1024,"0.0"," KiB/s")+" · other "+TelemetryDisplay.Number(io.OtherBytesPerSecond/1024,"0.0"," KiB/s") : "Unavailable / warming up";
     public string ObservedTime=>Observation.ObservedUtc.LocalDateTime.ToString("T");
+    private string _gpu=ClientGpuText.Off;
+    /// <summary>This client's busiest GPU engine and dedicated GPU memory, from the latest fresh snapshot's confirmed client row
+    /// (matched by PID and start time); "Off in Settings" until the saved option is on; never a number for an unknown value.</summary>
+    public string Gpu=>_gpu;
+    public void UpdateGpu(GpuClientTelemetry? client,bool fresh,bool enabled)
+    { string text=ClientGpuText.Format(client,fresh,enabled); if(_gpu!=text) { _gpu=text; Raise(nameof(Gpu)); } }
     public void Update(SessionObservation value)
     {
         var prior = Observation; Observation = value;
@@ -140,6 +149,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly IRobloxSessionSignIn _signIn;
     private readonly RobloxSessionLinkService _linkService;
     private readonly IRobloxShareLinkClient _shareLinkClient;
+    private readonly IRobloxLaunchTicketClient _launchTicketClient;
     private readonly IPrivateServerStore _privateServerStore;
     private readonly AccountIdentityProjection _identityProjection;
     private readonly CredentialCleanupService _credentialCleanup;
@@ -154,6 +164,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private sealed record ResourceAdmissionSnapshot(DesktopSnapshot Desktop,LaunchAdmission Admission);
     private ResourceAdmissionSnapshot? _resourceAdmission;
     private DesktopSnapshot? _latestDesktop;
+    // When the newest fresh complete process inventory was observed (UTC ticks; 0 before one). Noted by the sampler and by
+    // admission, so it is current whether or not the queue is deciding; it only moves forward.
+    private long _trustedInventoryUtcTicks;
     private string _queueStatus="Opening launch queue…";
     private bool _queueExpanded;
     public bool QueueExpanded { get=>_queueExpanded;set=>Set(ref _queueExpanded,value); }
@@ -177,6 +190,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private bool _presentationFaulted;
     private const string RefreshPresentationFailed="Refresh could not show the latest measurements, so the dashboard may be out of date. Monitoring and launch safety checks continue.";
     private readonly Dispatcher _dispatcher;
+    // The shell's monotonic clock (GetTimestamp): the idle lock and arrival muting measure elapsed time on it, so a wall-clock
+    // change neither shortens nor extends them and tests drive both without waiting. Wall-clock stamps that are compared with
+    // scans and files (DateTimeOffset.UtcNow) are not routed through it.
+    private readonly TimeProvider _clock;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
     private Task _queryTask = Task.CompletedTask, _monitorTask = Task.CompletedTask, _initializeTask = Task.CompletedTask;
@@ -236,7 +253,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public IReadOnlyList<AccountOrder> Orders { get; } = Enum.GetValues<AccountOrder>();
     public IReadOnlyList<AccountSortChoice> SortChoices { get; } = [new("Name",AccountOrder.Name),new("Priority",AccountOrder.Priority),new("Recently updated",AccountOrder.RecentlyUpdated),new("Favorites first",AccountOrder.FavoritesFirst)];
     public AccountSortChoice SortChoice { get=>SortChoices.First(c=>c.Value==Order); set { if(value is not null) Order=value.Value; } }
-    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources(opened:IsJoinGame);if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
+    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(IsNews), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources(opened:IsJoinGame);if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();News?.SetActive(IsNews);} } }
     public bool IsOverview => Tab == "Overview"; public bool IsAccounts => Tab == "Accounts"; public bool IsSessions => Tab == "Sessions";
     public bool IsAutomation => Tab == "Automation"; public bool IsSettings => Tab == "Settings"; public bool IsGuide => Tab == "Guide";
     public bool IsJoinGame=>Tab=="JoinGame";
@@ -245,9 +262,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public bool IsWindows=>Tab=="Windows";
     // The open page as the sidebar names it. The window title leads with it (taskbar, Alt-Tab) and the window announces it to
     // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
-    public string PageName=>IsJoinGame?"Join a game":Tab;
+    public string PageName=>Strings["Page_"+Tab];
     public string WindowTitle=>PageName+" · "+InstanceTitle;
-    public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
+    public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); News?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
     public bool CompactLayout { get=>_compactLayout; set=>Set(ref _compactLayout,value); }
     public string Search { get => _search; set { if (Set(ref _search, value)) ScheduleQuery(); } }
@@ -330,22 +347,25 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
-        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IRobloxAccountDataClient? accountDataClient=null,IRobloxSignedInServerClient? signedServerClient=null)
+        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null,IRobloxAccountDataClient? accountDataClient=null,IUploadLimitControl? uploadLimit=null,IRobloxSignedInServerClient? signedServerClient=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
-        _idleLock=new(idleClock);
+        _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
         _sessionClient=sessionClient??new RobloxSessionClient();
         _identityProjection=new(root,_accounts,_vault);
-        _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher);
+        _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher,()=>_savedSettings.KeepSignInBrowserData);
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
+        _launchTicketClient=launchTicketClient??new RobloxLaunchTicketClient();
         _diagnostics=new(root);
         _accountDataClient=accountDataClient??new RobloxAccountDataClient();
         _signedServerClient=signedServerClient??new RobloxSignedInServerClient();
         // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
-        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),accountData:_accountDataClient,signedServers:_signedServerClient);
+        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),
+            launchTickets:_launchTicketClient,accountData:_accountDataClient,signedServers:_signedServerClient);
         _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
@@ -353,9 +373,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RecentClients=new(historyStore??new RecentClientHistoryStore(root),CanUseDirectories,
             error=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,error.GetType()),faultProbe??(monitor is null?new WindowsClientFaultProbe():null));
         _queueStore=new(root);
-        _nativeCapture=new OwnedRobloxNativeHandoffCapture(root,dispatcher);
-        // An injected development provider transfers ownership; it must remain Unverified.
-        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault);
+        // One capture for the provider: the official page by default, or the direct ticket request once that mode is saved (R-api-7).
+        _nativeCapture=new SelectableNativeHandoffCapture(new OwnedRobloxNativeHandoffCapture(root,dispatcher),new DirectTicketNativeHandoffCapture(_launchTicketClient));
+        // An injected development provider transfers ownership. The real one reads each account's saved extra arguments (R-launch-16)
+        // and each bootstrapper's accepted publisher (R-launch-17) from saved state at preparation time. Either one reads the trial the
+        // user recorded as verified (R-launch-0) from the saved settings when its capability is read: without one it stays Unverified.
+        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this),new SavedAcceptedBootstrapperPublishers(this),new SavedNativeLaunchVerifications(this));
+        if(nativeProvider is not null)nativeProvider.TryUseVerificationSource(new SavedNativeLaunchVerifications(this));
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;
@@ -367,20 +391,33 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializePerformanceFeatures();
         InitializePerformanceTransfer(performanceTransferStore);
         InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
-        InitializeDiagnosticsFeatures();
+        InitializeClientUpdateFeatures(clientUpdateInstaller);
+        InitializeDiagnosticsFeatures(clientLogTails);
+        InitializeDataEncryption(dataEncryption);InitializeNews(newsFeed);
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
         InitializeClientSoundFeatures(clientSound);
+        InitializeSignInBrowserData();
+        InitializeClientLogCleanupFeatures(clientLogCleanup);
+        InitializeKeepAwakeFeatures(keepAwakeInput,foregroundSwitch,userIdle,capabilityGate);
+        InitializeScheduledShutdownFeatures(shutdownScheduler);
+        InitializePublicNetworkGuardFeatures(publicNetworkMonitor);
+        InitializeDiscordAlertFeatures(discordWebhookStore,discordTransport);
+        InitializeDiscordPresenceFeatures(discordPresencePipe);
+        InitializeUploadLimitFeatures(uploadLimit);
+        InitializeClientCloseFeatures();
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
-        Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
+        Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide", "News" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); LoadClientDisplaysOnce(); });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); ApplySavedClientUpdateCheck(restart:true); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        LanguageChoices=CreateLanguageChoices();
+        ApplyLanguage=new(async p=> { if(_ready && !_shuttingDown && p is string id) { _settings=_settings with { Language=ShellLanguages.Normalize(id) };ApplyEffectiveLanguage();await SaveCurrentSettingsAsync(); } },error=>Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
@@ -432,15 +469,24 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             SpareRam = limits.SparePhysicalGiB.ToString(CultureInfo.CurrentCulture); PhysicalPerClient = limits.NewClientPhysicalGiB.ToString(CultureInfo.CurrentCulture);
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
-            _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;
+            _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;_checkRobloxUpdates=_settings.CheckRobloxUpdates;
+            _keepSignInBrowserData=_settings.KeepSignInBrowserData; Raise(nameof(KeepSignInBrowserData));
+            _defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
+            LoadNativeLaunchModeDraft(); RefreshBootstrapperLaunch();
+            _showClientGpu=_settings.ShowClientGpu;ApplyClientGpu(_showClientGpu);
+            _publicNetworkGuard=_settings.PublicNetworkGuard;_discordAlerts=_settings.DiscordAlerts;
+            _discordPresence=_settings.DiscordPresence;_discordPresenceGame=_settings.DiscordPresenceGame;_discordApplicationId=_settings.DiscordApplicationId;
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
+            _keepAwakeMinutes=_settings.KeepAwakeMinutes; ApplySavedKeepAwake(0);
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients) }) Raise(field);
-            ApplyEffectiveTheme();
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin), nameof(CheckRobloxUpdates), nameof(ShowClientGpu), nameof(KeepAwakeMinutes), nameof(PublicNetworkGuard), nameof(DiscordAlerts), nameof(DiscordPresence), nameof(DiscordPresenceGame), nameof(DiscordApplicationId) }) Raise(field);
+            ApplyEffectiveLanguage();ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
+            stage=ManagerSubsystem.ClientPriority;await CheckLeftoverClientCpuCapsAsync();
+            stage=ManagerSubsystem.UploadLimit;await LoadUploadLimitRecordAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
             stage=ManagerSubsystem.Library;
             string? projectionNotice=null;
@@ -470,7 +516,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                     await Task.Run(() => _accounts.SaveAsync(AccountProfile.Create($"Sample account {i:00}") with { Group = i <= 8 ? "Card Clash" : "Bubble Gum", PreferredPlaceId = i <= 8 ? 110829983956014 : 2512643572 }, _lifetime.Token));
             }
             stage=ManagerSubsystem.Telemetry;await RecentClients.InitializeAsync();
-            stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();
+            stage=ManagerSubsystem.DiscordAlerts;await LoadDiscordWebhookSummaryAsync();
+            stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();ApplySavedClientUpdateCheck(restart:true);
             PreferencesEdited(); Notice = loaded.Notice ?? queueRecoveryNotice ?? projectionNotice ?? "Ready. Account metadata stays local; running processes require verified identity before automation.";
             AddEvent(IsSample ? "Isolated sample profile library opened; no sample session is shown as a live client." : "Local account library opened.");
             _diagnostics.Record(ManagerEventKind.Started);
@@ -482,6 +529,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
+            // Last, once everything else has opened: a saved guard on a Public network locks the dashboard at once, and nothing
+            // opened after that point would otherwise be running outside the lock.
+            ApplySavedPublicNetworkGuard();
+            ApplySavedDiscordAlerts(wasOn:false);
+            ApplySavedDiscordPresence(wasOn:false);
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
         catch (Exception ex) { _ready=false; _libraryUnavailable=true; ApplySavedPanicShortcut(); RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
@@ -690,8 +742,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
         // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
-        // A share-link check or a launch's native preparation it stopped has its own owner, which sees that stop itself: the
-        // sign-in lane may meanwhile be running a command for other rows, so it is neither cancelled nor waited for then.
+        // A share-link check it stopped belongs to the Private server panel, whose check then ends cancelled and says the account
+        // was removed (ShareLinkViewModel.RunCheckAsync); a launch's native preparation it stopped belongs to the launch queue,
+        // whose authorizations for these rows were invalidated above. The sign-in lane may meanwhile be running a command for
+        // other rows, so it is neither cancelled nor waited for then.
         using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
         if(IsSignInLaneOperation(removal.StoppedOperationKind) || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,BrowseSignedServers.Execution,NextSignedServers.Execution,RenameOwnedPrivateServer.Execution,InspectNativeHandoff.Execution); }
@@ -847,6 +901,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var memory = snapshot.Resources;var now=DateTimeOffset.UtcNow;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;
         var projection=LaunchReservationProjection.Evaluate(Volatile.Read(ref _latestQueue),snapshot,limits,now);
+        NoteTrustedInventory(snapshot,projection);
         var capacity=CapacityPolicy.Evaluate(memory,limits,projection.Reservations,projection.OccupiedForAdmission,now);
         bool previousHold=_lastPressure.Held;
         // Cached half-second calls must not reset a one-second safety sample's recovery history.
@@ -911,13 +966,18 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
         // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
         bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
+        PresentClientGpu(snapshot,now);
         // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
         var logs = _logCorrelator?.Snapshot;
         _logProjection.Update(snapshot.Sessions, logs, now);
-        // One registry snapshot per tick feeds both readers.
+        // One registry snapshot per tick feeds both readers, and the optional early release of the launch wait, which runs
+        // before the pacing status is refreshed so the status shows the shortened wait in the same tick.
         var evidence=_logProjection.EvidenceSnapshot(now);
+        ObserveJoinedClientForPacing(evidence);
         RefreshLaunchEvidenceWith(evidence);
         RecentClients.Observe(snapshot,evidence,now);
+        ObserveClientAlerts(now);
+        ObserveDiscordPresence(snapshot);
         ObserveClientArrivals(snapshot,evidence);
         // Rows retained from a failed, partial or stale scan keep their log text but not Join same / Copy.
         var logViews = _logProjection.Snapshot(now, snapshot, logs);
@@ -956,15 +1016,24 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var limits = (_savedSettings.Capacity! with { SparePhysicalGiB = spare, NewClientPhysicalGiB = physical, NewClientCommitGiB = commit, UserMaximum = maximum }).Validated();
         var performance=ReadPerformanceDraft();
         if(!PanicShortcut.TryParse(PanicShortcutText,out var panicShortcut,out string panicProblem)) throw new ArgumentException(panicProblem);
+        // The specific rule an extra argument breaks is the error shown; the saved form is the canonical single-spaced text.
+        string defaultClientArguments=ExtraClientArgumentPolicy.Validate(DefaultClientArguments);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients }).Validated();
+        if(!global::Zenith.Sessions.Core.DiscordApplicationId.TryParse(DiscordApplicationId,out string discordApplicationId,out string applicationProblem)) throw new ArgumentException(applicationProblem);
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,PublicNetworkGuard=PublicNetworkGuard,DiscordAlerts=DiscordAlerts,DiscordPresence=DiscordPresence,DiscordPresenceGame=DiscordPresenceGame,DiscordApplicationId=discordApplicationId,ShowClientGpu=ShowClientGpu,KeepAwakeMinutes=KeepAwakeMinutes,KeepSignInBrowserData=KeepSignInBrowserData,CheckRobloxUpdates=CheckRobloxUpdates,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
+            NativeLaunchMode=NativeLaunchModes.ToSettingsValue(SelectedNativeLaunchMode.Mode) }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
-        bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
+        bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;bool updateChecksWereOn=_savedSettings.CheckRobloxUpdates;bool discordAlertsWereOn=_savedSettings.DiscordAlerts,discordPresenceWasOn=_savedSettings.DiscordPresence;
         await SaveCurrentSettingsAsync(requested);
+        DefaultClientArguments=defaultClientArguments;
         ShowSavedPanicShortcut(panicShortcut);
         ArrivalMutePreferenceSaved(muteArrivalsWasOn);
+        ClientUpdateCheckPreferenceSaved(updateChecksWereOn);
+        ApplySavedPublicNetworkGuard();
+        ApplySavedDiscordAlerts(discordAlertsWereOn);
+        ApplySavedDiscordPresence(discordPresenceWasOn);
     }
     private void PreferencesEdited()
     {
@@ -974,9 +1043,18 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(PhysicalPerClient, out double physical) && physical == limits.NewClientPhysicalGiB
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
-            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
+            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme && _settings.Language == _savedSettings.Language
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && MuteArrivingClients == _savedSettings.MuteArrivingClients
+            && KeepSignInBrowserData == _savedSettings.KeepSignInBrowserData
+            && CheckRobloxUpdates == _savedSettings.CheckRobloxUpdates
+            && DefaultClientArgumentsDraftIsSaved && ShortenWaitAfterJoin == _savedSettings.ShortenWaitAfterJoin
+            && SelectedNativeLaunchMode.Mode == SavedNativeLaunchMode
+            && ShowClientGpu == _savedSettings.ShowClientGpu
+            && KeepAwakeMinutes == _savedSettings.KeepAwakeMinutes
+            && PublicNetworkGuard == _savedSettings.PublicNetworkGuard
+            && DiscordAlerts == _savedSettings.DiscordAlerts
+            && DiscordPresence == _savedSettings.DiscordPresence && DiscordPresenceGame == _savedSettings.DiscordPresenceGame && DiscordApplicationId.Trim() == _savedSettings.DiscordApplicationId
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -984,7 +1062,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
     {
-        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
+        string theme=_settings.Theme,language=_settings.Language;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
         try
         {
@@ -993,13 +1071,18 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             {
                 // Appearance and window-position autosaves merge with the latest successful explicit save,
                 // even when they waited behind it. Never persist uncommitted field drafts.
-                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
+                var snapshot=(requested??_savedSettings) with { Theme=theme,Language=language,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
+                int keepAwakeBefore=_savedSettings.KeepAwakeMinutes;
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
-                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
+                ApplySavedNativeLaunchMode();
+                _settings=snapshot with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
+                ApplyClientGpu(snapshot.ShowClientGpu);
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
+                // Only a changed choice re-arms the timer; a theme or window autosave leaves the scheduled press where it is.
+                if (snapshot.KeepAwakeMinutes != keepAwakeBefore) ApplySavedKeepAwake(keepAwakeBefore);
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
                 // Only Save settings registers the saved panic shortcut, or tries a refused one again; autosaves leave it alone.
@@ -1033,7 +1116,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             await _preferencesWriter.WaitAsync(budget.Token);
             try
             {
-                var snapshot=_savedSettings with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
+                var snapshot=_savedSettings with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot,budget.Token));
                 _savedSettings=snapshot;
             }
@@ -1049,13 +1132,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// or nothing when null). Automation, the launch queue and monitoring therefore never wait on a settings write.
     /// </summary>
     internal Task ExitAsync(ManagerWindowPlacement? placement)=>_disposeTask??=DisposeCoreAsync(placement);
-    public async Task RequestCloseAsync(SessionObservation session)
-    {
-        var requestedAt=DateTimeOffset.UtcNow;
-        bool requested=await _monitor.RequestCloseAsync(session,_lifetime.Token);
-        if(requested) RecentClients.RecordCloseRequest(new(null,session.ProcessId,session.ProcessStartUtcTicks),requestedAt);
-        Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
-    }
+    // RequestCloseAsync and ForceCloseAsync live in ShellClientCloseFeatures.cs (R-instances-12).
     public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
     private void LockControls(string reason)=>StopOperations(reason,ManagerEventKind.ControlsLocked);
     /// <summary>
@@ -1073,15 +1150,19 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(ClearPrivateAccountObservations);
         // The installation stop clears the selection first, so the trial fence below keeps the Panic/Lock reason (Z1600).
         Step(CancelInstallationWork);
-        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
+        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));
+        Step(_launchTicketClient.ForgetAllTokens); // The next direct ticket request starts with a fresh handshake (R-api-7).
+        Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
-        Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientCloseOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(()=>StopUploadLimitOperations(panic:true));Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
         if(PanicRequested is {} listeners) foreach(Action listener in listeners.GetInvocationList()) Step(listener);
+        // Every stop, the idle and Windows session locks included, clears an error already showing; one raised after a lock
+        // begins stays through Unlock. MANAGER-IMPLEMENTATION.md states this rule; keeping an existing error is an owner decision.
         Step(ClearError);Step(()=>Notice=reason);Step(()=>AddEvent(reason));_diagnostics.Record(kind);
         if(locking) { Step(()=>ClearSettingsSearch.Execute(null));Step(()=>IsLocked=true); }
         if(failed is null) return;
@@ -1150,6 +1231,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     internal bool PrepareForSessionEnd(TimeSpan flushBudget)
     {
+        // The session end may be the shutdown Zenith scheduled arriving; exit's cancel of that schedule is skipped.
+        _windowsSessionEnding=true;
         BeginShutdown();
         _diagnostics.Record(ManagerEventKind.Shutdown);
         // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
@@ -1164,15 +1247,23 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _shuttingDown=true;
         ClearPrivateAccountObservations();
         StopIdleLock();
+        StopKeepAwakeForShutdown();
         StopClientPriorityOperations();
         StopClientTrimOperations();
         StopClientSoundOperations();
+        StopSignInBrowserData();
+        StopShutdownCountdown();
+        StopPublicNetworkWatch();
+        StopDiscordAlertOutbox();
+        StopDiscordPresence();
+        StopClientCloseOperations();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
         DisposeSettingsSearch();
         RefreshClientPreviewContext();
         CancelPerformanceTransfers();
+        StopDataEncryption();News.Stop();
         CancelInstallationWork();
         RecipientBundles.CancelWork();
         _launchQueue.SignalPanic();
@@ -1200,6 +1291,16 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await DisposeClientSoundFeaturesAsync();
+        await DisposeClientLogCleanupFeaturesAsync();
+        await DisposeClientUpdateFeaturesAsync();
+        await StopOwnerAsync(()=>_keepAwakeTick);
+        await DisposeScheduledShutdownFeaturesAsync();
+        DisposePublicNetworkGuardFeatures();
+        await DisposeDiscordAlertFeaturesAsync();
+        await DisposeDiscordPresenceFeaturesAsync();
+        await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
+        await DisposeUploadLimitFeaturesAsync();
+        await DisposeClientCloseFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
@@ -1207,12 +1308,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(()=>MacroHostCatalog.DisposeAsync());
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;
+        await ForgetSignInBrowserData.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
         // A refresh and a native start both read Roblox's release over the shared anonymous public client, which
         // StopDirectoryFeaturesAsync releases below (Rule 13). Both were cancelled above; each is awaited here first.
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution, StartNativeTrial.Execution);
         await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
-        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
+        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,ApplyLanguage.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,BrowseSignedServers.Execution,NextSignedServers.Execution,RenameOwnedPrivateServer.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
         await StopOwnerAsync(DisposeRecipientBundlesAsync);
@@ -1280,6 +1382,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn,ended.GetType());
         }
+        catch(AccountLinkException refused) when(refused.ProfileRemoved)
+        {
+            // The row is being removed from the library, or already was: the service refused before anything was read or sent
+            // (N-B1a-1). A routine refusal, not a failure: it is shown as a notice and records nothing (O-C1-3).
+            if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
+            if(stop.IsCancellationRequested || _preserveStopNotice || IsLocked || _shuttingDown) return;
+            Notice=refused.Message;
+        }
         catch(Exception)
         {
             if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
@@ -1330,17 +1440,36 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             var swept=await Task.Run(()=>SignInProfileDirectory.SweepOwned(DataRoot,_lifetime.Token));
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
-            // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
-            if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
-            // Held by another owner, or a file in them was still open: nothing marks them for review, and the next sign-in or
-            // start tries them again, so this is routine. Only data SweepOwned counts as kept for review waits for someone to look at it.
+            // Held by another owner, or a file in them was still open: nothing marks them for review by itself.
             int retried=swept.Kept-swept.KeptForReview;
-            if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
-            _signInFolderNote=(swept.KeptForReview>0?$" {swept.KeptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.":"")
-                +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
-            if(swept.KeptForReview==0) return;
+            if(swept.MoreRemainThanAdmissionMayOpen)
+            {
+                // Kept for any reason or not opened, together they outnumber what the next admission may open, so the next
+                // sign-in and every saved-session check refuse them all as needing review (SweepOwned remembers exactly this for
+                // the handoff checks). The routine lines would promise a removal or a retry that refusal denies, so one line
+                // says what holds instead.
+                int remaining=swept.Kept+swept.Deferred;
+                AddEvent($"{remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in waits until they are reviewed.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +$" {remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in and saved-session checks are refused until they are reviewed. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            }
+            else
+            {
+                // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
+                if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
+                // The next sign-in or start tries held or busy folders again, so this is routine. Only data SweepOwned counts as
+                // kept for review waits for someone to look at it.
+                if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
+            }
+            // The same rule SweepOwned remembered for the handoff checks: the review note and the sign-in failure record appear
+            // exactly when the next sign-in or saved-session check would be refused as a cleanup failure.
+            if(!swept.NeedsReview) return;
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
+            static string ReviewNote(int keptForReview)
+                =>$" {keptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {
@@ -1356,27 +1485,48 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private LaunchAdmission ReadCandidateLaunchAdmission(LaunchOperation candidate,IReadOnlyList<LaunchOperation> operations)
         => candidate.ResourceBudget is { } budget?ReadLaunchAdmissionForBudget(operations,budget,LaunchDescriptions.AwaitsClientUpdate(candidate))
             :new(false,"The request has no recorded memory budget. Review it before starting.");
-    /// <param name="heldForUpdate">The candidate already waits on a Roblox update: a fresh count of at least one running client held it.</param>
+    /// <param name="heldForUpdate">The candidate already waits on a Roblox update: a fresh count of at least one running client held it.
+    /// Without a trusted count it keeps that reason only for <see cref="ClientUpdateHold.UntrustedSampleGrace"/> after the newest trusted inventory.</param>
     private LaunchAdmission ReadLaunchAdmissionForBudget(IReadOnlyList<LaunchOperation> operations,LaunchResourceBudget budget,bool heldForUpdate)
     {
+        // The public-network guard's hold comes first: it is the reason the user can act on, and it holds whether or not
+        // monitoring is ready. Taken on Windows' thread the moment the network turns Public (ShellPublicNetworkGuardFeatures).
+        if(Volatile.Read(ref _publicNetworkHeld)==1) return new(false,PublicNetworkPolicy.HoldExplanation,LaunchHoldReason.PublicNetwork);
         var observed=Volatile.Read(ref _resourceAdmission);
         if(observed is null || IsLocked || _shuttingDown) return new(false,"Monitoring is not ready or controls are locked.");
         var snapshot=observed.Desktop;var admission=observed.Admission;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;var now=DateTimeOffset.UtcNow;
         var projection=LaunchReservationProjection.Evaluate(new(true,operations),snapshot,limits,now);
+        NoteTrustedInventory(snapshot,projection);
         // Checked before headroom: it is the reason the user can act on, and it changes only when clients open or close.
         // Possible clients this queue started count as running; only a fresh complete inventory makes the count trustworthy.
-        // A stale or incomplete one refuses every start below anyway, so a row already held (on a fresh count of at least one)
-        // stays held until the next fresh sample: deciding on an untrusted count would re-save the queue and switch the row's
-        // text between two explanations on every such sample. The comparison is still re-read, so it can end the hold meanwhile.
+        // A stale, incomplete or failed one refuses every start below anyway, so a row already held (on a fresh count of at
+        // least one) stays held through a short run of them: deciding on each untrusted count would re-save the queue and
+        // switch the row's text between two explanations on every such sample. Once the newest trusted inventory is older
+        // than the grace, no count supports the claim that a client runs, so the row returns to the wait for fresh evidence
+        // (O-C9-1). The comparison is still re-read, so it can end the hold meanwhile.
         // The selected row's comparison (and its file) is read only while a client may run: with none, nothing can close.
-        int running=projection.FreshProcessInventory?projection.OccupiedForAdmission:heldForUpdate?1:0;
+        int running=projection.FreshProcessInventory?projection.OccupiedForAdmission
+            :heldForUpdate && ClientUpdateHold.KeepsHoldWithoutTrustedCount(new DateTimeOffset(Volatile.Read(ref _trustedInventoryUtcTicks),TimeSpan.Zero),now)?1:0;
         if(projection.ForecastsKnown && running>0
             && ClientUpdateHold.Evaluate(LaunchReleaseMatchForHold(),running) is {Hold:true} update)
             return new(false,update.Reason,LaunchHoldReason.ClientUpdate);
         var decision=CapacityPolicy.Evaluate(snapshot.Resources,limits,projection.Reservations,projection.OccupiedForAdmission,now,budget);
         return new(admission.Allowed && projection.ForecastsKnown && projection.FreshProcessInventory && decision.SamplesHealthy && decision.MemoryOnlySlots>0,
             !projection.ForecastsKnown||!projection.FreshProcessInventory?projection.Explanation:!decision.SamplesHealthy||decision.MemoryOnlySlots==0?decision.Explanation:admission.Explanation);
+    }
+    // Lock-free and allocation-free (it runs once per sample and once per admission): a plain compare-and-swap keeps the
+    // newest observation whichever of the sampler or the queue notes it first.
+    private void NoteTrustedInventory(DesktopSnapshot snapshot,LaunchReservationProjectionResult projection)
+    {
+        if(!projection.FreshProcessInventory || snapshot.ProcessObservedUtc is not { } observed) return;
+        long ticks=observed.UtcTicks,seen=Volatile.Read(ref _trustedInventoryUtcTicks);
+        while(ticks>seen)
+        {
+            long prior=Interlocked.CompareExchange(ref _trustedInventoryUtcTicks,ticks,seen);
+            if(prior==seen) return;
+            seen=prior;
+        }
     }
     private IReadOnlySet<Guid> ReadObservedReservations(IReadOnlyList<LaunchOperation> operations)
     {
@@ -1421,6 +1571,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 else Launches.Add(new(operation) { Label=Accounts.FirstOrDefault(a=>a.Profile.Id==operation.Intent.ProfileId)?.Label??"Saved profile · "+operation.Intent.ProfileId.ToString("N")[..6] });
             }
             RecordOverviewQueue(latest);
+            ObserveLaunchBatchAlerts(latest);
             RefreshVisibleQueueStatus();
             RefreshAccountLaunchStates();
             RefreshNativeTrialFeatures();

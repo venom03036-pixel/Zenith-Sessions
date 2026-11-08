@@ -62,7 +62,7 @@ public sealed record ManagerPerformancePolicy(ManagerPerformanceProfile Profile,
             return timing + priority + FormattableString.Invariant($" Essential RAM, commit and CPU safety sampling stays at {EssentialResourceSampleMs} ms with {ResourceSampleExpiryMs} ms expiry. Resource headroom stays configured separately.");
         }
     }
-    public string PendingCapabilities => "Native FPS, graphics, rendering, client CPU caps and automatic affinity policies, live previews, macro scheduling and per-account performance overrides require supported integration and validation. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority. Faster manager observations do not establish improved game FPS or measured capacity gains.";
+    public string PendingCapabilities => "Native FPS, graphics, rendering, automatic affinity policies, preview update rates chosen by profile, macro scheduling and per-account performance overrides require supported integration and validation. Client process priority, efficiency mode, core spreading and a per-client CPU cap are set in Sessions, under Client CPU priority. Live client previews are in Sessions, under Previews, and update at most once per second whichever profile is active. Faster manager observations do not establish improved game FPS or measured capacity gains.";
 
     public ManagerPerformancePolicy Validated()
     {

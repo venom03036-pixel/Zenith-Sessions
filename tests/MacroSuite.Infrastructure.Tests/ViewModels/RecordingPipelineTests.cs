@@ -160,8 +160,13 @@ public partial class MacroEditorViewModelTests
                 atSave = heartbeats;
                 // A briefly slow machine keeps the dispatcher busy for longer than any fixed observation
                 // window. Wait for the heartbeats themselves: only a dispatcher blocked by the save stops them.
-                _ = System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeAsync(() => Thread.Sleep(200));
-                await Task.WhenAny(responsive.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+                // The 200 ms stall stands in for that slow machine and the wait must outlast it; the body keeps
+                // the stall's handle and scopes the observation timer, so it ends with nothing still queued or
+                // armed on the shared dispatcher (Rule 12).
+                var stall = System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeAsync(() => Thread.Sleep(200));
+                using var observation = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                await Task.WhenAny(responsive.Task, Task.Delay(Timeout.InfiniteTimeSpan, observation.Token));
+                await stall.Task;
                 (heartbeats - atSave).Should().BeGreaterThan(1,"disk encryption must leave WPF's dispatcher responsive");
                 stopping.IsCompleted.Should().BeFalse("the heartbeats must arrive while the encrypted save is still blocked");
                 restoredAfter.Should().BeLessThan(2000,"100,000-action finalization must remain bounded before restoring");

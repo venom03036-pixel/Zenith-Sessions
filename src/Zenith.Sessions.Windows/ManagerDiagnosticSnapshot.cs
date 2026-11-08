@@ -33,6 +33,14 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.ControlsLocked => "Manager controls locked.",
         ManagerEventKind.ControlsUnlocked => "Manager controls unlocked.",
         ManagerEventKind.Shutdown => "Manager shutdown recorded.",
+        ManagerEventKind.ShutdownScheduled => "Windows accepted a scheduled PC shutdown asked for in Settings.",
+        ManagerEventKind.ShutdownScheduleCancelled => "Windows cancelled the scheduled PC shutdown.",
+        ManagerEventKind.PublicNetworkDetected => "A Public network connected: the guard held new launches and locked the controls.",
+        ManagerEventKind.PublicNetworkCleared => "The active network is no longer Public; held launch requests may start again.",
+        ManagerEventKind.DiscordWebhookSaved => "A Discord webhook URL was saved to protected storage.",
+        ManagerEventKind.DiscordWebhookCleared => "The saved Discord webhook was removed.",
+        ManagerEventKind.DiscordAlertSent => "Discord accepted an alert message.",
+        ManagerEventKind.DiscordPresenceConnected => "The Discord app on this PC accepted Zenith's status connection.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."
     };

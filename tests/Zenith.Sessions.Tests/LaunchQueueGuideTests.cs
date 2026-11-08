@@ -16,7 +16,7 @@ public sealed class LaunchQueueGuideTests
         var document=XDocument.Load(stream);
         var guide=Assert.Single(document.Descendants().Where(e=>e.Name.LocalName=="ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide",StringComparison.Ordinal)==true));
-        return guide.Descendants().Where(e=>e.Name.LocalName=="TextBlock").Select(e=>(string?)e.Attribute("Text")??"").ToList();
+        return guide.Descendants().Where(e=>e.Name.LocalName=="TextBlock").Select(e=>ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
     }
 
     private static string Section(List<string> texts,string title)
@@ -62,8 +62,8 @@ public sealed class LaunchQueueGuideTests
     public void TheGuideNamesTheRefusalBackoffAndThePauseAfterTwoInARow()
     {
         var texts=GuideTexts();
-        string pacing=Assert.Single(texts,text=>text.Contains("ended before any client started",StringComparison.Ordinal));
-        Assert.Contains("twice the Launch spacing",pacing,StringComparison.Ordinal);
+        string pacing=Assert.Single(texts,text=>text.Contains("twice the Launch spacing",StringComparison.Ordinal));
+        Assert.Contains("If the provider refused a start before any client started",pacing,StringComparison.Ordinal);
         Assert.Contains("doubles again for each such start in a row, up to about 1 minute",pacing,StringComparison.Ordinal);
         Assert.Contains("up to 1 second of random variation",pacing,StringComparison.Ordinal);
         Assert.Contains("Two in a row pause the queue",pacing,StringComparison.Ordinal);
@@ -77,13 +77,17 @@ public sealed class LaunchQueueGuideTests
     public void TheGuideSaysOnlyARefusedStartLengthensTheWaitNotATimeoutExpiryStopOrChangedAccount()
     {
         // N-B2-3: only the provider's own Rejected answer before any client started backs off. A timed-out,
-        // expired or stopped start, or one whose account changed first, also ends before any client starts,
-        // yet starts no longer wait, so the Guide must not promise one for every such start. A page the user
-        // closed or cancelled is answered Rejected by the native provider, so it does count.
+        // expired or stopped start, or one whose account changed first, starts no longer wait, so the Guide must
+        // not promise one for every such start. A page the user closed or cancelled is answered Rejected by the
+        // native provider, so it does count.
         string pacing=Assert.Single(GuideTexts(),text=>text.Contains("twice the Launch spacing",StringComparison.Ordinal));
         Assert.DoesNotContain("If a start ended before any client started",pacing,StringComparison.Ordinal);
         Assert.Contains("If the provider refused a start before any client started, the next one waits twice the Launch spacing",pacing,StringComparison.Ordinal);
         Assert.Contains("Closing or cancelling a request's private Roblox page counts as a refusal too.",pacing,StringComparison.Ordinal);
-        Assert.Contains("A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, also ended before any client started but does not lengthen the wait.",pacing,StringComparison.Ordinal);
+        // O-C2-1: a timeout or stop during native startup is recorded Uncertain (TimedOut or
+        // CancelledDuringStartup), whose rows say a client may exist, so the Guide may not say that every
+        // such start ended before any client started. Only the wait claim is true of all of them.
+        Assert.DoesNotContain("also ended before any client started",pacing,StringComparison.Ordinal);
+        Assert.Contains("A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, does not lengthen the wait; a start that timed out or was stopped during startup may still have left a client, so reconcile it before retrying.",pacing,StringComparison.Ordinal);
     }
 }

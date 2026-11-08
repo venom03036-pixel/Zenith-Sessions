@@ -393,7 +393,8 @@ public sealed partial class ShellViewModel
             // One review and one durable queue write for the whole frozen snapshot. The review is
             // fenced by the queue's stop generation (Panic) and the caller's token; the queue owns
             // the write to completion and cancels the accepted subset itself if a stop races it.
-            // A spread review reads the loaded server list once, here, and freezes each account's server.
+            // A spread review reads the loaded server list once, here, and freezes the shuffled server
+            // order; the queue hands servers only to the requests it records.
             LaunchBatchReview review;
             try
             {
@@ -413,6 +414,8 @@ public sealed partial class ShellViewModel
             // after the commit withdraws the rows this command created; rows the queue already
             // cancelled for a stop are left alone.
             bool withdrawn=ct.IsCancellationRequested||epoch!=_directoryGeneration;
+            // The recorded requests are one batch for Discord alerts, which announce it once every request has settled.
+            if(!withdrawn) NoteLaunchBatchRecorded(rows,target.PlaceId);
             int withServer=0;
             foreach(var row in rows)
             {

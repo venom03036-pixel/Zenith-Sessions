@@ -89,13 +89,67 @@ public sealed partial class LaunchCoordinator
     }
 
     private void BeginPacing(Guid operationId, TimeSpan duration, LaunchPacingReason reason)
+        => BeginStartupPacing(operationId, duration, reason, TimeSpan.Zero, 0, 0);
+    // The gate after a reported start (ClientStartedUnverified) also remembers the receipt it waits for and the spacing
+    // floor, so a later join report for exactly that process may shorten it (ReleasePacingEarly). Other gates carry none.
+    private void BeginStartupPacing(Guid operationId, TimeSpan duration, LaunchPacingReason reason, TimeSpan floor, int processId, long processStartUtcTicks)
     {
         long started = 0;
         try { started = _time.GetTimestamp(); }
         catch (Exception) { Interlocked.Exchange(ref _pacingClockFailed, 1); }
-        Volatile.Write(ref _pacing, new(operationId, started, duration, reason));
+        Volatile.Write(ref _pacing, new(operationId, started, duration, reason, floor, processId, processStartUtcTicks));
+    }
+
+    /// <summary>
+    /// R-launch-2 (owner decision 2026-11-08). The started client the current stabilization gate waits for has reported,
+    /// in its own log, that it joined: <paramref name="evidence"/> holds a Connected, unambiguous, fully read entry for
+    /// exactly the receipt's PID and creation time. Shortens that wait to the launch spacing measured from the start
+    /// (never below it, never beyond the full stabilization) and wakes the queue. The report is advisory: it is not an
+    /// account, arrival or admission fact, so the next start still needs a fresh exact observation of the started client
+    /// and healthy admission, and one start at a time stays. No gate, a different process, a refusal backoff, a
+    /// verified-arrival stabilization, a spacing that is already the longer wait or a failed clock changes nothing.
+    /// Returns true when the wait was shortened.
+    /// </summary>
+    public bool ReleasePacingEarly(IReadOnlyList<SessionEvidenceSnapshot> evidence)
+    {
+        ArgumentNullException.ThrowIfNull(evidence);
+        var gate = Volatile.Read(ref _pacing);
+        if (gate is not { Reason: LaunchPacingReason.StartupStabilization, ProcessId: > 0 }) return false;
+        var key = new SessionProcessKey(null, gate.ProcessId, gate.ProcessStartUtcTicks);
+        foreach (var item in evidence)
+            if (item is { Lifecycle: ObservedSessionLifecycle.Connected, Ambiguous: false, AwaitingLogTail: false, CurrentDestination: not null } && item.Process == key)
+                return ReleasePacingEarly(gate.OperationId, gate.ProcessId, gate.ProcessStartUtcTicks);
+        return false;
+    }
+
+    /// <summary>The same release for one reported process; see the evidence overload. Thread-safe against a newer gate.</summary>
+    public bool ReleasePacingEarly(Guid operationId, int processId, long processStartUtcTicks)
+    {
+        if (processId <= 0 || processStartUtcTicks <= 0) return false;
+        while (true)
+        {
+            var gate = Volatile.Read(ref _pacing);
+            if (gate is null || Volatile.Read(ref _pacingClockFailed) != 0 || gate.Reason != LaunchPacingReason.StartupStabilization
+                || gate.OperationId != operationId || gate.ProcessId != processId || gate.ProcessStartUtcTicks != processStartUtcTicks) return false;
+            TimeSpan elapsed;
+            try
+            {
+                elapsed = _time.GetElapsedTime(gate.Started, _time.GetTimestamp());
+                if (elapsed < TimeSpan.Zero) throw new InvalidOperationException("The monotonic pacing clock moved backwards.");
+            }
+            catch (Exception) { Interlocked.Exchange(ref _pacingClockFailed, 1); return false; }
+            // The spacing is the floor, the stabilization the ceiling; the gate is already over if neither applies.
+            var duration = elapsed > gate.Floor ? elapsed : gate.Floor;
+            if (duration >= gate.Duration) return false;
+            // The remaining wait is launch spacing now; the receipt is dropped so the same report cannot shorten it twice.
+            var shortened = gate with { Duration = duration, Reason = LaunchPacingReason.BetweenStarts, ProcessId = 0, ProcessStartUtcTicks = 0 };
+            if (!ReferenceEquals(Interlocked.CompareExchange(ref _pacing, shortened, gate), gate)) continue;
+            Signal(); return true;
+        }
     }
     private static LaunchPacingSnapshot Unavailable(PacingGate? gate)
         => new(gate?.OperationId, gate?.Duration ?? TimeSpan.Zero, false, LaunchPacingReason.ClockUnavailable);
-    private sealed record PacingGate(Guid OperationId, long Started, TimeSpan Duration, LaunchPacingReason Reason);
+    // Floor, ProcessId and ProcessStartUtcTicks are set only by BeginStartupPacing (a reported start); zero elsewhere.
+    private sealed record PacingGate(Guid OperationId, long Started, TimeSpan Duration, LaunchPacingReason Reason,
+        TimeSpan Floor = default, int ProcessId = 0, long ProcessStartUtcTicks = 0);
 }

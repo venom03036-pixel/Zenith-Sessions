@@ -107,6 +107,9 @@ internal static class PackagedLayoutCheck
             if (window.FindName("ClientSoundTools") is not System.Windows.Controls.Expander soundTools)
                 throw new InvalidOperationException("The packaged client sound tools are missing.");
             soundTools.IsExpanded = true;
+            if (window.FindName("UploadLimitTools") is not System.Windows.Controls.Expander uploadLimitTools)
+                throw new InvalidOperationException("The packaged upload limit tools are missing.");
+            uploadLimitTools.IsExpanded = true;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             // A never-shown Window can retain its disconnected layout. Measure the
             // production content itself to exercise the expanded panel offscreen.
@@ -138,13 +141,58 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
             if (soundTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
+            // Diagnostics > Roblox client logs: present, bound, and off in sample mode (no injected cleanup), so the sample profile
+            // never reads or deletes the real Roblox folders; nothing is checked to delete at start.
+            if (window.FindName("ClientLogCleanupTools") is not System.Windows.Controls.Expander
+                || window.FindName("SurveyClientLogsButton") is not System.Windows.Controls.Button surveyLogsButton
+                || surveyLogsButton.Command != vm.SurveyClientLogs || surveyLogsButton.IsEnabled || vm.CanSurveyClientLogs
+                || window.FindName("DeleteClientLogsButton") is not System.Windows.Controls.Button { IsEnabled: false }
+                || vm.CanDeleteClientLogs || vm.IsCleaningClientLogs || vm.ClientLogCleanupConfirmation.Length != 0)
+                throw new InvalidOperationException("The packaged Roblox client log cleanup controls lost their command binding or sample-mode boundary.");
+            // Settings > Roblox installation > Roblox updates: present, bound, the automatic check off by default and never armed in
+            // the sample profile, and no download or install offered, so the sample profile never reaches Roblox's setup host.
+            if (window.FindName("CheckRobloxUpdatesOption") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("DownloadRobloxUpdateButton") is not System.Windows.Controls.Button downloadUpdateButton
+                || downloadUpdateButton.Command != vm.DownloadRobloxUpdate || downloadUpdateButton.IsEnabled
+                || window.FindName("InstallRobloxUpdateButton") is not System.Windows.Controls.Button { IsEnabled: false }
+                || vm.CheckRobloxUpdates || vm.CanDownloadRobloxUpdate || vm.CanInstallRobloxUpdate || vm.IsRobloxUpdateBusy
+                || vm.RobloxUpdateConfirmation.Length != 0 || vm.ClientUpdateCheckDue is not null)
+                throw new InvalidOperationException("The packaged Roblox update controls lost their command binding, off default or sample-mode boundary.");
+            // Diagnostics > Include Roblox client log entries: present, off by default, and unavailable in sample mode (no injected
+            // reader), so the sample profile never reads the real Roblox logs into a report.
+            if (window.FindName("IncludeClientLogTailsOption") is not System.Windows.Controls.CheckBox { IsChecked: false } tailsOption
+                || tailsOption.IsEnabled || vm.CanIncludeClientLogTails || vm.IncludeClientLogTails)
+                throw new InvalidOperationException("The packaged client log entries option lost its binding, its off default or its sample-mode boundary.");
+            if (window.FindName("SettingsClientGpu") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.ShowClientGpu)
+                throw new InvalidOperationException("The packaged per-client GPU option lost its binding or its off default.");
+            if (window.FindName("SettingsKeepAwake") is not System.Windows.Controls.ComboBox { SelectedValue: 0 } || vm.KeepAwakeMinutes != 0 || vm.KeepAwakeDue is not null
+                || window.FindName("ResumeKeepAwakeButton") is not System.Windows.Controls.Button resumeKeepAwake || resumeKeepAwake.Command != vm.ResumeKeepAwake || resumeKeepAwake.IsEnabled || vm.CanResumeKeepAwake)
+                throw new InvalidOperationException("The packaged Keep clients awake controls lost their binding or their off default.");
+            if (window.FindName("SettingsPublicNetworkGuard") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsPublicNetworkHeld)
+                throw new InvalidOperationException("The packaged public-network guard control lost its binding or its off default.");
+            if (window.FindName("SettingsDiscordAlerts") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsDiscordAlertsActive || vm.HasDiscordWebhook
+                || window.FindName("SettingsDiscordWebhook") is not System.Windows.Controls.PasswordBox { Password.Length: 0 }
+                || window.FindName("SettingsSendTestAlert") is not System.Windows.Controls.Button { IsEnabled: false })
+                throw new InvalidOperationException("The packaged Discord alert controls lost their binding, their masked webhook field or their off default.");
+            if (window.FindName("SettingsDiscordPresence") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsDiscordPresenceActive
+                || window.FindName("SettingsDiscordPresenceGame") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("SettingsDiscordApplicationId") is not System.Windows.Controls.TextBox { Text.Length: 0 }
+                || window.FindName("SettingsResumeDiscordPresence") is not System.Windows.Controls.Button { IsEnabled: false })
+                throw new InvalidOperationException("The packaged Discord status controls lost their binding or their off default.");
+            if (window.FindName("ApplyUploadLimitButton") is not System.Windows.Controls.Button applyUploadLimit
+                || applyUploadLimit.Command != vm.ApplyUploadLimit || applyUploadLimit.IsEnabled || vm.IsChangingUploadLimit || vm.CanChangeUploadLimit
+                || window.FindName("RemoveUploadLimitButton") is not System.Windows.Controls.Button removeUploadLimit
+                || removeUploadLimit.Command != vm.RemoveUploadLimit || removeUploadLimit.IsEnabled)
+                throw new InvalidOperationException("The packaged upload limit controls lost their command binding or sample-mode boundary.");
+            if (uploadLimitTools.ActualHeight <= 0)
+                throw new InvalidOperationException("The packaged upload limit controls could not be laid out.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
         finally
         {
-            try { if (vm is not null) await vm.DisposeAsync(); }
-            catch (Exception ex) { failure ??= ex; }
+            try { if (vm is not null) await SelfCheckOwners.UseAsync(vm, _ => failure is null ? Task.CompletedTask : Task.FromException(failure)); }
+            catch (Exception ex) { failure = ex; }
             try { window?.Close(); }
             catch (Exception ex) { failure ??= ex; }
         }
