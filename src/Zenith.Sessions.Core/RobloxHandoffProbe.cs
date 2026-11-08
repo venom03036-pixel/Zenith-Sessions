@@ -20,7 +20,7 @@ public sealed record RobloxHandoffProbeContext(Guid ProfileId,long ExpectedUserI
 public enum RobloxHandoffProbeOutcome
 {
     CapturedAndPrevented,ContextRejected,OriginRejected,ExternalSchemeBlocked,MalformedHandoff,TimedOut,Cancelled,
-    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed
+    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed,StorageUnavailable
 }
 
 [Flags]
@@ -89,8 +89,8 @@ public interface IRobloxHandoffProbe : IAsyncDisposable
     // One owned capture-only browser operation. Cancellation/disposal must join actual cleanup;
     // never return or persist the emitted URI. The caller continues to own input credential.
     Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context,RobloxSessionCredential credential,CancellationToken ct);
-    // Why this probe would refuse right now without opening anything (Busy, CleanupFailed or
-    // Cancelled), or null when it could start. Callers read it before reserving the grant, so a
+    // Why this probe would refuse right now without opening anything (Busy, CleanupFailed,
+    // StorageUnavailable or Cancelled), or null when it could start. Callers read it before reserving the grant, so a
     // refused check never costs the account its saved sign-in.
     RobloxHandoffProbeOutcome? Refusal=>null;
 }

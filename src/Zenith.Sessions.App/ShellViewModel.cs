@@ -1227,8 +1227,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
         CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
             :result.RecordDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
-            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+_signInFolderNote;
+            :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+CurrentSignInFolderNote();
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.RecordFailure(ManagerSubsystem.Vault); }
+    }
+    // The startup sweep's note holds only while what it kept may still be on disk. A sign-in or handoff browser's admission
+    // removes every leftover before it opens, so after one the note would be stale on every later status.
+    private string CurrentSignInFolderNote()
+    {
+        if(_signInFolderNote.Length>0 && !SignInProfileDirectory.SweptLeftoversMayRemain(DataRoot)) _signInFolderNote="";
+        return _signInFolderNote;
     }
     // Startup only: it runs under the single-instance lock and before the library is ready, so no sign-in or handoff
     // check in this process can be using a folder. A crash otherwise left its browser data until the next sign-in.
@@ -1238,6 +1245,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             var swept=await Task.Run(()=>SignInProfileDirectory.SweepOwned(DataRoot,_lifetime.Token));
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
+            // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
+            if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
             if(swept.Kept==0) return;
             _signInFolderNote=$" {swept.Kept} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use, not recognized or could not be removed. If sign-in reports a problem with this folder, close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");

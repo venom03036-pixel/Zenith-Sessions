@@ -106,6 +106,7 @@ public sealed class RobloxSessionHandoffInspectionTests : IDisposable
     [Theory]
     [InlineData(RobloxHandoffProbeOutcome.CleanupFailed)]
     [InlineData(RobloxHandoffProbeOutcome.Busy)]
+    [InlineData(RobloxHandoffProbeOutcome.StorageUnavailable)]
     public async Task RefusedProbeLeavesTheLinkedGrantUntouched(RobloxHandoffProbeOutcome outcome)
     {
         // A probe that refuses before opening anything (cleanup latch, or another owner's folder) never

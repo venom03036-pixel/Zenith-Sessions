@@ -19,16 +19,22 @@ namespace Zenith.Sessions.App;
 public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : IRobloxSessionSignIn, IAsyncDisposable
 {
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
+    // How long a cleanup waits for its browser's exit, well past CleanupObservation. Until then the latch says the browser is
+    // still closing; past it the folder is kept for the next start, and the latch asks for a restart. Disposal (Exit) joins it.
+    internal static readonly TimeSpan BrowserExitLimit = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
-    private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
+    internal const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
+    internal const string FrameRefused = "Part of this page was blocked because it is not a secure web page. You can keep signing in on this page.";
     private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
+    private const string FolderKept = "A previous private browser's cleanup failed, and its folder in signin-browser-data is kept until Zenith Sessions closes, so no sign-in can start before then. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private const string FolderNeedsReview = "Private sign-in storage needs review: a leftover folder in signin-browser-data was not recognized or could not be removed, and it was preserved. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
+    private const string StorageUnavailable = "Private sign-in storage could not be prepared. The Zenith data folder must be on a local drive that is not redirected, with free space and write permission for your Windows account, and no other program may be using signin-browser-data. Fix that, then sign in again. Nothing was saved.";
     private readonly TimeProvider _time = TimeProvider.System;
     private readonly object _state = new();
     private int _active;
     // Guarded by _state. Set while a sign-in folder is not confirmed removed. A cleanup still waiting
     // for its browser to exit clears it when that same tracked task removes the folder; a failed
-    // cleanup keeps it, and the folder's lease, until disposal.
+    // cleanup, including an exit not reported within BrowserExitLimit, keeps it and the folder's lease until disposal.
     private bool _cleanupFailed;
     private SignInProfileDirectory? _incompleteDirectory;
     private Task _cleanup = Task.CompletedTask;
@@ -53,10 +59,14 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             {
                 SignInProfileDirectory directory;
                 // Admission refused before anything was created or opened, so nothing is latched. Fixed text only: no path or
-                // inner exception. A raw IOException reached the shell's generic "check the data folder permissions" notice.
+                // inner exception. Only leftover data kept for review names that folder; any other storage failure (remote,
+                // redirected, unwritable or full storage, or a file another program has open) asks for usable storage. A folder
+                // another owner kept after its cleanup failed is held until Zenith closes, so it asks for a restart, not a wait.
                 try { directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false); }
+                catch (SignInDirectoryInUseException ex) when (ex.KeptAfterFailedCleanup) { throw new AccountLinkException(FolderKept); }
                 catch (SignInDirectoryInUseException) { throw new AccountLinkException(FolderInUse); }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new AccountLinkException(FolderNeedsReview); }
+                catch (SignInDirectoryNeedsReviewException) { throw new AccountLinkException(FolderNeedsReview); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new AccountLinkException(StorageUnavailable); }
                 bool started = false;
                 try { return await dispatcher.InvokeAsync(() => RunAsync(directory, timeout.Token, () => started = true), DispatcherPriority.Normal, CancellationToken.None).Task.Unwrap().ConfigureAwait(false); }
                 finally
@@ -65,7 +75,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                     {
                         try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)).ConfigureAwait(false); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
-                        { lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
+                        { directory.KeepAfterFailedCleanup(); lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
                     }
                 }
             }
@@ -169,15 +179,15 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             HidePending();
             save.IsEnabled = false;
             if (saveTask is not null) await saveTask;
-            // The cleanup stays tracked past this observation: a late browser exit still removes the folder and clears the latch.
-            // Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
+            // The cleanup stays tracked past this observation: a browser exit within BrowserExitLimit still removes the folder and
+            // clears the latch. Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
             var live = core; var initialized = initializationStarted ? environment : null;
             cleaned = await SettleCleanupAsync(TeardownAsync(
                 live is null ? null : () => { live.Stop(); live.CookieManager.DeleteAllCookies(); },
                 browser.Dispose,
                 () => { closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close(); },
                 controllerReady, initialized is null ? null : () => initialized.GetProcessInfos().Count, browserExited.Task, directory,
-                () => { DetachGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
+                () => { DetachGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }, _time), directory, CleanupObservation);
             if (!cleaned) accepted?.Dispose();
             if (completion.Task.IsCompletedSuccessfully && !ReferenceEquals(accepted, completion.Task.Result)) completion.Task.Result.Dispose();
         }
@@ -206,14 +216,14 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         {
             if (!RobloxSignInNavigation.IsAllowed(e.Uri)) { e.Cancel = true; status.Text = "This window stays on Roblox’s own HTTPS pages. Use a Roblox passkey, password, or supported sign-in option on this page."; }
         }
+        // Exactly the tested bodies: the cancel runs first and unconditionally, so this window never forwards a launch.
         void ExternalScheme(object? _, CoreWebView2LaunchingExternalUriSchemeEventArgs e)
         {
-            e.Cancel = true; // First and unconditional: this window never forwards a launch to Roblox or any other app.
-            status.Text = ExternalLaunchRefused;
+            RefuseExternalLaunch(() => e.Cancel = true, text => status.Text = text);
         }
         void FrameNavigationStarting(object? _, CoreWebView2NavigationStartingEventArgs e)
         {
-            if (!RobloxSignInNavigation.IsAllowedFrame(e.Uri)) { e.Cancel = true; status.Text = ExternalLaunchRefused; }
+            GuardFrameNavigation(e.Uri, () => e.Cancel = true, text => status.Text = text);
         }
         void DetachGuards()
         {
@@ -237,10 +247,29 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         void ProcessFailed(object? _, CoreWebView2ProcessFailedEventArgs e)
         {
             // A helper or subframe process WebView2 restarts by itself keeps the sign-in, its challenge progress and its guards.
-            if (!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)) { status.Text = WebView2ProcessFailurePolicy.RecoveredNotice; return; }
-            completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved."));
+            WebView2ProcessFailurePolicy.HandleProcessFailure(e.ProcessFailedKind, text => status.Text = text,
+                () => completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved.")));
         }
     }
+    /// <summary>The body of the sign-in window's LaunchingExternalUriScheme handler, free of WebView2 event types so tests
+    /// run it. <paramref name="cancel"/> runs first and unconditionally: a status line that cannot be updated never lets a
+    /// launch through to Roblox or any other app.</summary>
+    internal static void RefuseExternalLaunch(Action cancel, Action<string> showStatus)
+    {
+        cancel();
+        showStatus(ExternalLaunchRefused);
+    }
+
+    /// <summary>The body of the FrameNavigationStarting handler. A child frame that <see cref="RobloxSignInNavigation.IsAllowedFrame"/>
+    /// refuses is cancelled first and then explained: an app's protocol, such as the hidden roblox-player: frame behind
+    /// Roblox's Play button, as a refused launch; a web page, file, browser page or script that is not allowed, as a blocked part of the page.</summary>
+    internal static void GuardFrameNavigation(string? uri, Action cancel, Action<string> showStatus)
+    {
+        if (RobloxSignInNavigation.IsAllowedFrame(uri)) return;
+        cancel();
+        showStatus(RobloxSignInNavigation.IsAppLaunch(uri) ? ExternalLaunchRefused : FrameRefused);
+    }
+
     internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
     internal Task CleanupSettled { get { lock (_state) return _cleanup; } }
     private bool CleanupFailedUntilRestart { get { lock (_state) return _cleanupFailed && _cleanup.IsCompleted; } }
@@ -248,10 +277,11 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     /// <summary>Tears one sign-in browser down in the handoff probe's order. After a browser crash the control and its
     /// closed controller can reject every native step, so each failure is recorded and the later steps still run: the
     /// window always closes and the folder's lease always reaches the tracked cleanup. Initialization that failed after
-    /// it started may have left a browser using the folder, so its exit is awaited too. The guards stay installed
-    /// until that exit is confirmed; a confirmed exit removes the folder despite an earlier problem.</summary>
+    /// it started may have left a browser using the folder, so its exit is awaited too, for at most
+    /// <see cref="BrowserExitLimit"/>. The guards stay installed until that exit is confirmed; a confirmed exit removes
+    /// the folder despite an earlier problem. <paramref name="time"/> lets tests fire that limit.</summary>
     internal static async Task TeardownAsync(Action? stopAndClearCookies, Action dispose, Action close, bool controllerReady,
-        Func<int>? runningBrowserProcesses, Task browserExited, SignInProfileDirectory directory, Action detachGuards)
+        Func<int>? runningBrowserProcesses, Task browserExited, SignInProfileDirectory directory, Action detachGuards, TimeProvider? time = null)
     {
         bool problem = false;
         try { stopAndClearCookies?.Invoke(); } catch (Exception) { problem = true; }
@@ -262,21 +292,29 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             try { awaitBrowserExit = runningBrowserProcesses() != 0; }
             // Unknown is treated as running: removing a folder a live browser still uses deletes some files and fails on others.
             catch (Exception) { awaitBrowserExit = true; problem = true; }
-        await FinishCleanupAsync(browserExited, awaitBrowserExit, problem, directory, detachGuards);
+        await FinishCleanupAsync(browserExited, awaitBrowserExit, problem, directory, detachGuards, time);
     }
 
     /// <summary>Removes the private folder after the browser's real exit, even when cookie deletion failed:
-    /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.</summary>
-    internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach)
+    /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.
+    /// A failure, even one that outlives the observation, keeps the folder and its lease until disposal, so it is marked
+    /// kept: other owners then report a cleanup that needs a restart instead of a browser that is still closing. An exit
+    /// not reported within <see cref="BrowserExitLimit"/> is such a failure, so disposal's join of this task is bounded
+    /// and, once the lease is released, the startup sweep or the next admission recovers the still-marked folder.</summary>
+    internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach, TimeProvider? time = null)
     {
+        bool exitConfirmed = !awaitBrowserExit;
         try
         {
-            if (awaitBrowserExit) await browserExited;
+            // Bounded: a browser that never reports its exit would otherwise hold this task, its latch and Exit open for good.
+            if (awaitBrowserExit) { await browserExited.WaitAsync(BrowserExitLimit, time ?? TimeProvider.System); exitConfirmed = true; }
             if (priorProblem && !awaitBrowserExit) throw new IOException("Private sign-in cleanup needs review; its files were preserved.");
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await Task.Run(() => directory.Remove(deadline.Token));
         }
-        finally { detach(); }
+        catch (Exception) { directory.KeepAfterFailedCleanup(); throw; }
+        // A browser whose exit was never confirmed may still be live, so its guards stay installed.
+        finally { if (exitConfirmed) detach(); }
     }
 
     /// <summary>Watches a tracked folder cleanup for a bounded time. A cleanup still waiting for its browser stays
@@ -307,7 +345,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     }
 
     /// <summary>Joins the tracked cleanup before releasing a retained lease. Remove disposes the lease itself, and
-    /// releasing it mid-removal would let another owner recover a folder that is still being deleted.</summary>
+    /// releasing it mid-removal would let another owner recover a folder that is still being deleted. The join is bounded:
+    /// the cleanup waits at most <see cref="BrowserExitLimit"/> for its browser, then keeps the folder, still marked, for
+    /// the startup sweep or the next admission once this releases its lease.</summary>
     public async ValueTask DisposeAsync()
     {
         Task cleanup; lock (_state) cleanup = _cleanup;

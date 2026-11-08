@@ -47,6 +47,7 @@ public sealed record NativeLaunchDiagnosticPresentation
         NativeHandoffPreparationStatus.CleanupFailed=>"cleanup could not be confirmed.",
         NativeHandoffPreparationStatus.Expired=>"the prepared handoff expired.",
         NativeHandoffPreparationStatus.Cancelled=>"the preparation was cancelled.",
+        NativeHandoffPreparationStatus.StorageUnavailable=>"private browser storage was unavailable, so it was refused before the saved sign-in was used; the saved sign-in was kept.",
         _=>"the preparation failed."
     }):"Preparation: not reached or not recorded.";
     public string Browser=>Snapshot?.BrowserOutcome is { } outcome?"Official page: "+(outcome switch
@@ -64,6 +65,7 @@ public sealed record NativeLaunchDiagnosticPresentation
         RobloxHandoffProbeOutcome.AuthorizationChanged=>"the selected authorization changed.",
         RobloxHandoffProbeOutcome.Busy=>"another page request was still owned.",
         RobloxHandoffProbeOutcome.CleanupFailed=>"private browser cleanup could not be confirmed.",
+        RobloxHandoffProbeOutcome.StorageUnavailable=>"private browser storage was unavailable.",
         _=>"the page request failed."
     }):"Official page: not reached or not recorded.";
     public string Shape=>Snapshot?.ShapeStatus is { } status?"Handoff shape: "+(status switch

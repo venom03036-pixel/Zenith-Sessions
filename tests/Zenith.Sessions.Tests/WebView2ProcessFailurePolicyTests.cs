@@ -1,4 +1,3 @@
-using System.IO;
 using Microsoft.Web.WebView2.Core;
 using Zenith.Sessions.App;
 using Xunit;
@@ -56,35 +55,44 @@ public sealed class WebView2ProcessFailurePolicyTests
         Assert.Contains("F5", WebView2ProcessFailurePolicy.RecoveredNotice);
     }
 
-    // The handlers need a real WebView2 process crash to run, so their wiring is checked in the production source.
     [Theory]
-    [InlineData("ProductionOwnedRobloxSignIn.cs")]
-    [InlineData("ProductionOwnedRobloxHandoffProbe.cs")]
-    public void ProcessFailedHandlerEndsTheWindowOnlyForTerminalFailures(string resource)
+    [InlineData(CoreWebView2ProcessFailedKind.GpuProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.UtilityProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.SandboxHelperProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.PpapiPluginProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.PpapiBrokerProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.FrameRenderProcessExited)]
+    public void RecoverableFailureOnlyShowsTheRecoveredNotice(CoreWebView2ProcessFailedKind kind)
     {
-        string body = Compact(HandlerBody(Read(resource), "void ProcessFailed("));
-        int check = body.IndexOf("if(!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)){status.Text=WebView2ProcessFailurePolicy.RecoveredNotice;return;}", StringComparison.Ordinal);
-        Assert.True(check >= 0, $"{resource}: ProcessFailed ends the window for every process kind instead of keeping it open for a restart WebView2 recovers from.");
-        int end = body.IndexOf("completion.TrySet", StringComparison.Ordinal);
-        Assert.True(end > check, $"{resource}: ProcessFailed no longer ends the window for a browser, page or unknown process failure.");
+        var calls = new List<string>();
+        WebView2ProcessFailurePolicy.HandleProcessFailure(kind, text => calls.Add(text), () => calls.Add("end"));
+        Assert.Equal(new[] { WebView2ProcessFailurePolicy.RecoveredNotice }, calls);
     }
 
-    private static string Read(string resource)
+    [Theory]
+    [InlineData(CoreWebView2ProcessFailedKind.BrowserProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.RenderProcessExited)]
+    [InlineData(CoreWebView2ProcessFailedKind.RenderProcessUnresponsive)]
+    [InlineData(CoreWebView2ProcessFailedKind.UnknownProcessExited)]
+    [InlineData((CoreWebView2ProcessFailedKind)1000)]
+    public void TerminalFailureEndsTheWindowWithoutClaimingARecovery(CoreWebView2ProcessFailedKind kind)
     {
-        using var stream = typeof(WebView2ProcessFailurePolicyTests).Assembly.GetManifestResourceStream(resource)!;
-        using var reader = new StreamReader(stream); return reader.ReadToEnd();
+        var calls = new List<string>();
+        WebView2ProcessFailurePolicy.HandleProcessFailure(kind, text => calls.Add(text), () => calls.Add("end"));
+        Assert.Equal(new[] { "end" }, calls);
     }
-    private static string HandlerBody(string source, string signature)
+
+    // The handlers need a real WebView2 process crash to run, so their body is HandleProcessFailure, run above. This
+    // supplement checks that each live handler is exactly that call, ending its own window, and is attached before the page opens.
+    [Theory]
+    [InlineData("ProductionOwnedRobloxSignIn.cs", "()=>completion.TrySetException(newAccountLinkException(\"\"))")]
+    [InlineData("ProductionOwnedRobloxHandoffProbe.cs", "()=>completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed))")]
+    public void ProcessFailedHandlerEndsTheWindowOnlyForTerminalFailures(string resource, string endsWindow)
     {
-        int start = source.IndexOf(signature, StringComparison.Ordinal);
-        Assert.True(start > 0, $"No {signature} handler found.");
-        int open = source.IndexOf('{', start), depth = 0;
-        for (int i = open; i < source.Length; i++)
-        {
-            if (source[i] == '{') depth++;
-            else if (source[i] == '}' && --depth == 0) return source[(open + 1)..i];
-        }
-        throw new InvalidOperationException($"Unbalanced braces after {signature}");
+        string code = ProductionSourceText.Code(resource);
+        Assert.Equal($"WebView2ProcessFailurePolicy.HandleProcessFailure(e.ProcessFailedKind,text=>status.Text=text,{endsWindow});",
+            ProductionSourceText.HandlerBody(code, "void ProcessFailed("));
+        ProductionSourceText.AssertRunsOnEveryPathTo(code, "core.ProcessFailed += ProcessFailed;", "core.Navigate(",
+            $"{resource}: the page can open before ProcessFailed is attached to its CoreWebView2.");
     }
-    private static string Compact(string text) => string.Concat(text.Where(c => !char.IsWhiteSpace(c)));
 }

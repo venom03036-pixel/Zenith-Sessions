@@ -1,5 +1,7 @@
 using System.Globalization;
 using System.IO;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -209,6 +211,97 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,native.Refusal);
     });
     [Fact]
+    public Task StorageFailureOutsideLeftoverDataIsRefusedAsStorageNotLatchedAsACleanupFailure()=>OnUi(async()=>
+    {
+        // Remote or unwritable storage says nothing about leftover data. It latched CleanupFailed: the status said cleanup did
+        // not finish and to restart, which cannot fix the data folder, and native launch stopped until restart. Latching
+        // nothing instead let every later check reserve its account's grant and fail the same way.
+        var denied=Directory.CreateDirectory(Path.Combine(_root,"denied"));
+        var deny=new FileSystemAccessRule(WindowsIdentity.GetCurrent().User!,FileSystemRights.CreateDirectories,AccessControlType.Deny);
+        var acl=denied.GetAccessControl();acl.AddAccessRule(deny);denied.SetAccessControl(acl);
+        const string remote=@"\\zenith-test.invalid\share\data";
+        try
+        {
+            foreach(string dataRoot in new[]{remote,denied.FullName})
+            {
+                await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(dataRoot,Dispatcher.CurrentDispatcher);
+                // Admission refuses remote storage outright, so that is known before any grant is reserved.
+                Assert.Equal(dataRoot==remote?(RobloxHandoffProbeOutcome?)RobloxHandoffProbeOutcome.StorageUnavailable:null,probe.Refusal);
+                using var credential=new RobloxSessionCredential("synthetic-only");
+                using(var result=await probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,default))
+                {
+                    Assert.Equal(RobloxHandoffProbeOutcome.BrowserUnavailable,result.Result.Outcome);
+                    string status=ShellViewModel.DescribeHandoffResult(result.Result,42);
+                    Assert.Contains("data folder",status);Assert.DoesNotContain("cleanup",status,StringComparison.OrdinalIgnoreCase);
+                    // A failure after the grant was reserved cost the account its saved sign-in, and the status must say so.
+                    Assert.Contains("sign in again",status,StringComparison.OrdinalIgnoreCase);
+                }
+                // Refused as storage, not latched as cleanup: native launch is not poisoned, and no later check reserves a grant.
+                Assert.Equal(RobloxHandoffProbeOutcome.StorageUnavailable,probe.Refusal);
+                await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(dataRoot,Dispatcher.CurrentDispatcher);
+                Assert.Equal(RobloxHandoffProbeOutcome.StorageUnavailable,native.Refusal);
+                Assert.False(SignInProfileDirectory.LeftoverNeedsReview(dataRoot),"A storage failure was remembered as leftover data to review.");
+                // A sweep that finds no sign-in folder tested no storage, so it does not lift the refusal.
+                Assert.Equal(default,SignInProfileDirectory.SweepOwned(dataRoot,default));
+                Assert.Equal(RobloxHandoffProbeOutcome.StorageUnavailable,probe.Refusal);
+            }
+            Assert.False(Directory.Exists(Path.Combine(denied.FullName,"signin-browser-data")));
+        }
+        finally{acl.RemoveAccessRuleSpecific(deny);denied.SetAccessControl(acl);}
+    });
+    [Fact]
+    public Task StorageFailureRefusesTheNextChecksBeforeTheirGrantsAreReservedWithoutStoppingNativeLaunch()=>OnUi(async()=>
+    {
+        // A file in a leftover folder that another program still has open is a storage failure, not data to review. Nothing
+        // remembered it, so each later check (or each account of a queued launch) reserved its grant, failed the same way and
+        // lost its saved sign-in, and no account could be signed in again until storage was fixed.
+        string leftover=Directory.CreateDirectory(Path.Combine(_root,"signin-browser-data",Guid.NewGuid().ToString("N")+"-"+Guid.NewGuid().ToString("N"))).FullName;
+        File.WriteAllText(Path.Combine(leftover,".zenith-private-signin"),"Zenith Sessions private sign-in profile v1");
+        string data=Path.Combine(Directory.CreateDirectory(Path.Combine(leftover,"EBWebView")).FullName,"synthetic");File.WriteAllText(data,"test only");
+        using var repository=new AccountRepository(_root);await repository.InitializeAsync(default);
+        using var vault=new ProtectedCredentialVault(_root);
+        var first=await repository.SaveAsync(AccountProfile.Create("First alias"),default);
+        var inspected=await repository.SaveAsync(AccountProfile.Create("Inspected alias"),default);
+        var prepared=await repository.SaveAsync(AccountProfile.Create("Prepared alias"),default);
+        foreach(var (profile,user) in new[]{(first,455L),(inspected,456L),(prepared,457L)})
+            await vault.SaveAsync(new(profile.Id,RobloxSessionIdentity.Provider,user,1,"","",DateTimeOffset.MaxValue,"old_player",AuthorizationHealth.Linked,
+                RobloxSessionIdentity.Issuer,user.ToString(CultureInfo.InvariantCulture),"synthetic-probe-original"),default);
+        await using var service=new RobloxSessionLinkService(repository,vault,new HandoffIdentity(),new HandoffSignIn());
+        await using IRobloxHandoffProbe probe=new OwnedRobloxHandoffProbe(_root,Dispatcher.CurrentDispatcher);
+        await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,Dispatcher.CurrentDispatcher);
+        using(new FileStream(data,FileMode.Open,FileAccess.Read,FileShare.None))
+        {
+            Assert.Null(probe.Refusal);
+            // Nothing could tell the first check in advance: it reserved its grant, so that account must sign in again.
+            var failed=await service.InspectHandoffAsync(first.Id,42,probe,default);
+            Assert.Equal(RobloxHandoffProbeOutcome.BrowserUnavailable,failed.Outcome);
+            Assert.Equal(AuthorizationHealth.SignInRequired,(await vault.ReadAsync(first.Id,default))!.Health);
+            Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root),"A file still open was remembered as data to review.");
+            // The next check is refused before its grant is reserved, and says the saved sign-in was kept.
+            var inspection=await service.InspectHandoffAsync(inspected.Id,42,probe,default);
+            Assert.Equal(RobloxHandoffProbeOutcome.StorageUnavailable,inspection.Outcome);await AssertStillLinked(inspected.Id);
+            string status=ShellViewModel.DescribeHandoffResult(inspection,42);
+            Assert.Contains("data folder",status);Assert.Contains("still saved",status);Assert.Contains("signin-browser-data",status);
+            Assert.DoesNotContain("cleanup",status,StringComparison.OrdinalIgnoreCase);
+            // Native preparation is refused the same way. It is not CleanupFailed, so the configured provider does not stop.
+            var preparation=await service.PrepareNativeHandoffAsync(
+                new(Guid.NewGuid(),prepared.Id,prepared.Revision,457,1818,0,DateTimeOffset.UtcNow,1,HasExplicitDestination:true),native,default);
+            Assert.Equal(NativeHandoffPreparationStatus.StorageUnavailable,preparation.Status);Assert.Null(preparation.BrowserFacts);
+            await AssertStillLinked(prepared.Id);
+            Assert.True(File.Exists(data),"The file another program has open was removed.");
+        }
+        // Once the other program lets go, an admission that prepares its folder (such as the sign-in the first account now
+        // needs, which reserves no saved grant) lifts the refusal.
+        SignInProfileDirectory.Create(_root,Guid.NewGuid(),default).Remove(default);
+        Assert.False(Directory.Exists(leftover),"The admission did not recover the released leftover.");
+        Assert.Null(probe.Refusal);Assert.Null(native.Refusal);
+        async Task AssertStillLinked(Guid id)
+        {
+            var saved=(await vault.ReadAsync(id,default))!;
+            Assert.Equal(AuthorizationHealth.Linked,saved.Health);Assert.Equal(1,saved.Generation);
+        }
+    });
+    [Fact]
     public Task LeftoverKeptForReviewAtStartupRefusesTheFirstChecksBeforeAnyGrantIsReserved()=>OnUi(async()=>
     {
         // An owned name holding browser data but no marker: older builds left exactly this, and it stays blocked for review.
@@ -317,6 +410,43 @@ public sealed partial class ClientWindowIntegrationTests
         var next=SignInProfileDirectory.Create(_root,Guid.NewGuid(),default);
         Assert.False(Directory.Exists(folder),"The next admission did not recover the retained folder.");
         next.Remove(default);
+    }
+    // A probe whose cleanup failed keeps its folder and lease until it is disposed, when Zenith closes, so every other
+    // owner's admission fails until then. Counted as a live owner, the native capture answered Busy ("still open or
+    // closing ... retry") and a sign-in said to finish or cancel a window that no longer existed, for the whole session.
+    [Fact]
+    public async Task ProbeFolderKeptAfterAFailedCleanupIsReportedToOtherOwnersAsCleanupFailedNotBusy()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher);
+        try
+        {
+            using var credential=new RobloxSessionCredential("synthetic-only");using var stop=new CancellationTokenSource();
+            var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,stop.Token);
+            string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+            string cache=Directory.CreateDirectory(Path.Combine(folder,"cache")).FullName;
+            using(new FileStream(Path.Combine(cache,"held"),FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None))
+            {
+                stop.Cancel();ui.Release();
+                using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
+            }
+            // The other program has let go, but the probe keeps the folder until it is disposed.
+            await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,ui.Dispatcher);
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,native.Refusal);
+            await using var signIn=new OwnedRobloxSignIn(_root,ui.Dispatcher);
+            var refused=await Assert.ThrowsAsync<AccountLinkException>(()=>signIn.SignInAsync(Guid.NewGuid(),default));
+            Assert.Contains("Close Zenith Sessions",refused.Message);Assert.Contains("signin-browser-data",refused.Message);
+            Assert.DoesNotContain("Finish or cancel",refused.Message);Assert.DoesNotContain(_root,refused.Message);
+            Assert.False(signIn.CleanupPending,"A refusal that created nothing latched the sign-in owner.");
+            Assert.True(Directory.Exists(folder),"Another owner's kept folder was opened or removed.");
+            // Released, as when Zenith closes: nothing was latched elsewhere, and the next admission recovers the folder.
+            await probe.DisposeAsync();
+            Assert.Null(native.Refusal);
+            SignInProfileDirectory.Create(_root,Guid.NewGuid(),default).Remove(default);
+            Assert.False(Directory.Exists(folder),"The next admission did not recover the released folder.");
+        }
+        finally{await probe.DisposeAsync();}
     }
     [Fact]
     public async Task ProbeDeadlineIsReportedAsTimedOutAndRemovesItsFolder()

@@ -146,6 +146,7 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
     [InlineData(NativeHandoffPreparationStatus.CleanupFailed, LaunchPreparationFailure.CleanupFailed)]
     [InlineData(NativeHandoffPreparationStatus.CaptureRejected, LaunchPreparationFailure.Rejected)]
     [InlineData(NativeHandoffPreparationStatus.IdentityMismatch, LaunchPreparationFailure.Rejected)]
+    [InlineData(NativeHandoffPreparationStatus.StorageUnavailable, LaunchPreparationFailure.Rejected)]
     public async Task FailedPreparationDisposesUnexpectedReturnedCandidatesAndTheHeldExecutable(NativeHandoffPreparationStatus status, LaunchPreparationFailure expected)
     {
         await using var f = new Fixture(_root); f.Preparer.Status = status;
