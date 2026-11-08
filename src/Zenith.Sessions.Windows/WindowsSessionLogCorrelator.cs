@@ -133,10 +133,14 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         public readonly ClientLogCandidate Candidate = candidate;
         // Launch-to-log: the last head read of this file (null before the first, or after a failed read, and then the
         // launches it could belong to stay unlinked), when a read was last attempted (it paces retries only), and the
-        // rotation order of head reads. A complete head is never read again for the same file.
+        // rotation order of head reads. A complete head is never read again for the same file, and nor is a settled one
+        // (HeadSettled): Unheld says the last holder query found no process holding the log, and HeadUnchanged counts
+        // the head checks in a row, while it was unheld, that found the same file at the same length.
         public IncrementalClientLogReader.ClientLogHead? Head;
         public long? HeadAt;
         public long LastHead;
+        public bool Unheld;
+        public int HeadUnchanged;
         public IncrementalClientLogReader? Log;
         public List<ClientLogObservation>? Facts;
         public ClientLogBatch? Batch;
@@ -162,9 +166,15 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
     // The fifth failed pass in a row ends the worker, so a persistent fault still reaches DisposeAsync.
     private const int MaximumConsecutivePassFailures = 5;
-    // At most 4 x 64 KiB of head bytes per pass, only while some log written since a launch began is unread or still
-    // growing. A head still being written is read again no sooner than HeadRecheck, and only when its length changed.
+    // At most 4 x 64 KiB of head bytes per pass, only while some log written since a launch began is unread or may still
+    // grow. An incomplete head is checked again no sooner than HeadRecheck: each check opens the file and reads its final
+    // path, identity and length, and its bytes are read again only when that length changed. Checks stop once the last
+    // holder query found no process holding the log and SettledHeadChecks checks in a row since then found it unchanged,
+    // because nothing can still be writing it (a log that ended before its first join line is never complete). They
+    // resume when a holder query finds a process holding it again or the file is replaced; the regular holder visits
+    // (at most ReadsPerPass per pass, each opening the log for its identity) see both.
     private const int HeadReadsPerPass = 4;
+    private const int SettledHeadChecks = 2;
     private static readonly TimeSpan HeadRecheck = TimeSpan.FromSeconds(2);
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
@@ -390,14 +400,18 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         {
             var before = IncrementalClientLogReader.ProbeIdentity(reader.Candidate.Path);
             // A replaced file's head is read again before it can link anything.
-            if (reader.Head is { } head && head.Identity != before) { reader.Head = null; reader.HeadAt = null; }
+            if (reader.Head is { } head && head.Identity != before) { reader.Head = null; reader.HeadAt = null; reader.HeadUnchanged = 0; }
             if (reader.Identity is { } identity && before != identity) Reset(reader, SessionLogCorrelationStatus.SourceChanged);
             bool refreshed = QueryDue(reader);
             if (refreshed)
             {
                 reader.QueryAt = _clock.GetTimestamp();
+                reader.Unheld = false;
                 var result = _probe.QueryHolders(reader.Candidate.Path, ct);
                 reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc + HolderLease;
+                // Launch-to-log: only a successful query that found no holder at all lets the head settle (HeadSettled).
+                reader.Unheld = result.Status == SessionLogCorrelationStatus.ResourceHolderObserved && result.Holders.Count == 0;
+                if (!reader.Unheld) reader.HeadUnchanged = 0;
                 if (result.Status != SessionLogCorrelationStatus.ResourceHolderObserved)
                 { Reset(reader, result.Status, keepQuery: true); return; }
                 if (result.Holders.Count != 1)
@@ -476,14 +490,22 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         || _clock.GetElapsedTime(queried) >= TimeSpan.FromSeconds(5);
 
     private bool HeadDue(Reader reader, long notBefore) => reader.Candidate.ModifiedUtc.UtcTicks >= notBefore
-        && reader.Head is not { Complete: true } && (reader.HeadAt is not { } at || _clock.GetElapsedTime(at) >= HeadRecheck);
+        && reader.Head is not { Complete: true } && !HeadSettled(reader)
+        && (reader.HeadAt is not { } at || _clock.GetElapsedTime(at) >= HeadRecheck);
+
+    // Nothing held the log at the last holder query, and at least SettledHeadChecks checks in a row since then, HeadRecheck
+    // apart, each found the same file at the same length as the check before, so it is not opened for its head again.
+    private static bool HeadSettled(Reader reader) => reader.Head is not null && reader.Unheld && reader.HeadUnchanged >= SettledHeadChecks;
 
     private static void ReadHead(Reader reader, CancellationToken ct)
     {
-        try { reader.Head = IncrementalClientLogReader.ReadHead(reader.Candidate.Path, reader.Head, ct); }
+        var previous = reader.Head;
+        try { reader.Head = IncrementalClientLogReader.ReadHead(reader.Candidate.Path, previous, ct); }
         // A head that cannot be read names nothing and is tried again later; like a failed read above, it is not a pass failure.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         { reader.Head = null; }
+        // ReadHead returns the previous head itself when the file's identity and length are unchanged.
+        reader.HeadUnchanged = reader.Unheld && previous is not null && ReferenceEquals(reader.Head, previous) ? reader.HeadUnchanged + 1 : 0;
     }
 
     /// <summary>

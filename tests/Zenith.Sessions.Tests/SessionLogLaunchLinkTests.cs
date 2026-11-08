@@ -190,6 +190,40 @@ public sealed partial class SessionLogCorrelatorTests
         Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single((await After(worker, first.Revision)).Launches));
     }
 
+    [Theory]
+    [InlineData("ended")]
+    [InlineData("still-held")]
+    [InlineData("held-again")]
+    public async Task AnIncompleteHeadIsNoLongerReopenedOnceNothingHoldsItsLogAndItsLengthSettled(string shape)
+    {
+        // A second log, written since the launch began, ended before any join line, so its short head never completes.
+        // Once a holder query finds no process holding it and two checks since then find it unchanged, it is not opened
+        // again: a later exclusive lock on it (which a reopen would fail on, leaving the launch pending) changes nothing.
+        // While any process holds it, or once one holds it again, it is still checked.
+        var client = Key(77); var clock = new Clock(); Write(TrackerLine() + SyntheticClientLogFixtures.Joining);
+        var probe = new Probe(Log, client);
+        var ended = Candidate("ended", SyntheticClientLogFixtures.Line("FLog::SyntheticStartup", "starting"));
+        probe.Files = [probe.Files[0], ended];
+        bool held = shape == "still-held";
+        probe.HolderFor = path => path == Log ? HeldBy(client) : held ? HeldBy(Key(99)) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        var launch = Launch();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        var snapshot = new SessionLogDiscoverySnapshot(0, DateTimeOffset.MinValue, [], 0, false);
+        async Task Pass(int advance)
+        {
+            clock.Advance(advance); worker.Offer(Desktop(client), client.HostId, [launch]);
+            snapshot = await After(worker, snapshot.Revision);
+            Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single(snapshot.Launches));
+        }
+        await Pass(0); await Pass(2500); await Pass(2500);
+        if (shape == "held-again") held = true;
+        await Pass(5000);
+        using var hold = new FileStream(ended.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, [launch]);
+        Assert.Equal(new LaunchLogLink(launch.OperationId, shape == "ended" ? LaunchLogLinkStatus.Linked : LaunchLogLinkStatus.NotLinked, shape == "ended" ? client : null),
+            Assert.Single((await After(worker, snapshot.Revision)).Launches));
+    }
+
     [Fact]
     public async Task NoOfferedLaunchPublishesNoLinksAndInvalidLaunchesAreDropped()
     {

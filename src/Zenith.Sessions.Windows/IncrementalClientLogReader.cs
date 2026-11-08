@@ -73,7 +73,8 @@ public sealed class IncrementalClientLogReader : IDisposable
     /// the client writes near its top ("websiteBTId is N", or "BTID is overriden to N" when it was replaced; marker
     /// shapes from the same public-text study as the facts above, so support stays Unverified). Only complete lines
     /// before the first "Joining game" line count: a game's own output cannot appear before the client joins one.
-    /// A file with the same identity and length as previous is not read again. Bytes are cleared before return.
+    /// Every call opens the file and checks its final path and identity; one with the same identity and length as
+    /// previous is not read again, and previous itself is returned. Bytes are cleared before return.
     /// </summary>
     internal static ClientLogHead ReadHead(string path, ClientLogHead? previous, CancellationToken ct)
     {
