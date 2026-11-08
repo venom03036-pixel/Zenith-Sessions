@@ -330,7 +330,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
-        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null)
+        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,
+        IDataFolderEncryption? dataEncryption=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -366,6 +367,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializePerformanceTransfer(performanceTransferStore);
         InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
         InitializeDiagnosticsFeatures();
+        InitializeDataEncryption(dataEncryption);
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
@@ -1067,7 +1069,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
-        Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
@@ -1162,6 +1164,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         DisposeSettingsSearch();
         RefreshClientPreviewContext();
         CancelPerformanceTransfers();
+        StopDataEncryption();
         CancelInstallationWork();
         RecipientBundles.CancelWork();
         _launchQueue.SignalPanic();
@@ -1189,6 +1192,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await DisposeClientSoundFeaturesAsync();
+        await StopOwnerAsync(DisposeDataEncryptionAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
