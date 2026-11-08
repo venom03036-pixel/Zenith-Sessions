@@ -450,7 +450,7 @@ public sealed class AccountGroupChangeTests : IDisposable
         Assert.Equal(member with { Group = "General", Revision = member.Revision + 2, UpdatedUtc = current.UpdatedUtc }, current);
         Assert.Equal(cleanup.ProfileIds, (await repository.ReadCredentialCleanupAsync(default)).ProfileIds);
         await using var db = await DatabaseAsync(); using var command = db.CreateCommand(); command.CommandText = "PRAGMA user_version";
-        Assert.Equal(5L, await command.ExecuteScalarAsync()); Assert.Empty(Directory.GetFiles(Root, "*.schema*.bak"));
+        Assert.Equal(6L, await command.ExecuteScalarAsync()); Assert.Empty(Directory.GetFiles(Root, "*.schema*.bak"));
     }
 
     private static (string Primary, string Additional) Groups(AccountProfile profile) => (profile.Group, profile.AdditionalGroups);

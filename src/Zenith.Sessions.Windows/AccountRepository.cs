@@ -7,8 +7,13 @@ namespace Zenith.Sessions.Windows;
 public sealed partial class AccountRepository : IAccountRepository,IAccountGroupEditor,IAccountGroupLifecycle,IAccountGroupCatalog,IAccountMetadataImport,IDisposable
 {
     private const int MaximumGroupsJsonLength = 16384;
-    private const string ProfileColumns = "id,label,username,group_name,priority,place_id,user_id,updated_utc,revision,notes,is_favorite,additional_groups";
+    // Schema 6 (2026-11-08, R-launch-16) adds extra_client_arguments: one account's own extra client arguments for Zenith's direct
+    // player start, validated by ExtraClientArgumentPolicy on every save, '' when the account has none. Schema 5 libraries are
+    // backed up as accounts.db.schema5.bak and migrated in place; the column defaults every existing row to ''.
+    private const int CurrentSchema = 6;
+    private const string ProfileColumns = "id,label,username,group_name,priority,place_id,user_id,updated_utc,revision,notes,is_favorite,additional_groups,extra_client_arguments";
     private const string GroupsColumn = "additional_groups TEXT NOT NULL DEFAULT '[]' CHECK(length(additional_groups)<=16384 AND json_valid(additional_groups) AND json_type(additional_groups)='array' AND json_array_length(additional_groups)<=31)";
+    private const string ArgumentsColumn = "extra_client_arguments TEXT NOT NULL DEFAULT '' CHECK(length(extra_client_arguments)<=512)";
     private readonly string _connection;
     private readonly string _databasePath;
     private readonly SemaphoreSlim _writer = new(1);
@@ -25,20 +30,26 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
         try
         {
             await db.OpenAsync(ct);
-            // SQLite NOCASE covers ASCII only; the domain uses ordinal Unicode case comparison.
-            db.CreateCollation("ZENITH_GROUP", (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left, right));
-            db.CreateFunction<string, string, string>("zenith_groups_json", (primary, json) =>
-            { _ = ReadAdditionalGroups(primary, json); return json; }, isDeterministic: true);
-            db.CreateFunction<string,string,long>("zenith_group_matches",(name,search)=>
-                AccountGroups.ValidateName(name).Contains(search,StringComparison.OrdinalIgnoreCase)?1L:0L,isDeterministic:true);
+            RegisterSqlExtensions(db);
             if(!allowMigration)
             {
                 using var version=db.CreateCommand();version.CommandText="PRAGMA user_version";
-                if(Convert.ToInt64(await version.ExecuteScalarAsync(ct))!=5)throw UnsupportedAccountSchema();
+                if(Convert.ToInt64(await version.ExecuteScalarAsync(ct))!=CurrentSchema)throw UnsupportedAccountSchema();
             }
             return db;
         }
         catch { await db.DisposeAsync(); throw; }
+    }
+    // Every connection that reads a schema 5 or later library needs these: account_groups orders and indexes its names with
+    // ZENITH_GROUP, so even PRAGMA integrity_check on a migration backup fails without the collation.
+    private static void RegisterSqlExtensions(SqliteConnection db)
+    {
+        // SQLite NOCASE covers ASCII only; the domain uses ordinal Unicode case comparison.
+        db.CreateCollation("ZENITH_GROUP", (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left, right));
+        db.CreateFunction<string, string, string>("zenith_groups_json", (primary, json) =>
+        { _ = ReadAdditionalGroups(primary, json); return json; }, isDeterministic: true);
+        db.CreateFunction<string,string,long>("zenith_group_matches",(name,search)=>
+            AccountGroups.ValidateName(name).Contains(search,StringComparison.OrdinalIgnoreCase)?1L:0L,isDeterministic:true);
     }
     public async Task InitializeAsync(CancellationToken ct)
     {
@@ -55,9 +66,9 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             using var tx = db.BeginTransaction();
             query.Transaction=tx;query.CommandText="PRAGMA user_version";
             int version=Convert.ToInt32(await query.ExecuteScalarAsync(ct));
-            if(version is <0 or >5)throw UnsupportedAccountSchema();
-            if(version==5){_ = await ReadCatalogRevisionAsync(db,tx,ct);tx.Commit();return;}
-            if(version is 1 or 2 or 3 or 4)
+            if(version is <0 or >CurrentSchema)throw UnsupportedAccountSchema();
+            if(version==CurrentSchema){_ = await ReadCatalogRevisionAsync(db,tx,ct);tx.Commit();return;}
+            if(version is 1 or 2 or 3 or 4 or 5)
             {
                 // The writer connection has not modified anything. A separate read-only source
                 // can copy this exact committed version while this lease blocks foreign writes.
@@ -65,14 +76,20 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
                 await source.OpenAsync(ct);await BackupSchemaAsync(source,version,ct);
             }
             using var command = db.CreateCommand(); command.Transaction = tx;
+            if(version==5)
+            {
+                command.CommandText="ALTER TABLE profiles ADD COLUMN "+ArgumentsColumn+"; PRAGMA user_version=6;";
+                await command.ExecuteNonQueryAsync(ct);ct.ThrowIfCancellationRequested();tx.Commit();return;
+            }
             if(version==4)
             {
-                await CreateGroupCatalogAsync(db,tx,ct);ct.ThrowIfCancellationRequested();tx.Commit();return;
+                // Schema 5; the next pass of this loop backs that up in turn and adds the schema 6 column.
+                await CreateGroupCatalogAsync(db,tx,ct);ct.ThrowIfCancellationRequested();tx.Commit();continue;
             }
             command.CommandText = version==0?$"""
                 CREATE TABLE profiles(id TEXT PRIMARY KEY, label TEXT NOT NULL, username TEXT NOT NULL, group_name TEXT NOT NULL,
                 priority INTEGER NOT NULL, place_id INTEGER NULL, user_id INTEGER NULL, updated_utc TEXT NOT NULL, revision INTEGER NOT NULL,
-                notes TEXT NOT NULL DEFAULT '',is_favorite INTEGER NOT NULL DEFAULT 0 CHECK(is_favorite IN (0,1)),{GroupsColumn});
+                notes TEXT NOT NULL DEFAULT '',is_favorite INTEGER NOT NULL DEFAULT 0 CHECK(is_favorite IN (0,1)),{GroupsColumn},{ArgumentsColumn});
                 CREATE INDEX profiles_group_label ON profiles(group_name, label COLLATE NOCASE);
                 CREATE TABLE credential_cleanup(profile_id TEXT PRIMARY KEY);
                 PRAGMA user_version=4;
@@ -83,7 +100,10 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             await command.ExecuteNonQueryAsync(ct); ct.ThrowIfCancellationRequested();
             if(version==0)
             {
-                await CreateGroupCatalogAsync(db,tx,ct);ct.ThrowIfCancellationRequested();tx.Commit();return;
+                // A new library already has the schema 6 column in its CREATE TABLE; the catalog step leaves it at 5.
+                await CreateGroupCatalogAsync(db,tx,ct);ct.ThrowIfCancellationRequested();
+                command.CommandText="PRAGMA user_version=6";await command.ExecuteNonQueryAsync(ct);ct.ThrowIfCancellationRequested();
+                tx.Commit();return;
             }
             tx.Commit();
             }
@@ -100,7 +120,7 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             if(File.Exists(backup))
             {
                 await using var previous=new SqliteConnection(new SqliteConnectionStringBuilder{DataSource=backup,Mode=SqliteOpenMode.ReadOnly,Pooling=false}.ToString());
-                await previous.OpenAsync(ct);using var check=previous.CreateCommand();check.CommandText="PRAGMA integrity_check";
+                await previous.OpenAsync(ct);RegisterSqlExtensions(previous);using var check=previous.CreateCommand();check.CommandText="PRAGMA integrity_check";
                 if((string?)await check.ExecuteScalarAsync(ct)!="ok")throw new InvalidDataException("The existing schema backup could not be verified. Preserve it before migrating the library.");
                 check.CommandText="PRAGMA user_version";
                 if(Convert.ToInt32(await check.ExecuteScalarAsync(ct))!=version)throw new InvalidDataException("The existing schema backup has an unsupported version. It was preserved; review it before migrating the library.");
@@ -108,7 +128,7 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             using(var owned=new FileStream(temporary,FileMode.CreateNew,FileAccess.Write,FileShare.None))ownsTemporary=true;
             await using(var destination=new SqliteConnection(new SqliteConnectionStringBuilder { DataSource=temporary,Pooling=false }.ToString()))
             {
-                await destination.OpenAsync(ct); source.BackupDatabase(destination);
+                await destination.OpenAsync(ct); RegisterSqlExtensions(destination); source.BackupDatabase(destination);
                 using var verify=destination.CreateCommand(); verify.CommandText="PRAGMA integrity_check";
                 if((string?)await verify.ExecuteScalarAsync(ct)!="ok") throw new InvalidDataException("The pre-update library backup could not be verified. Migration was cancelled.");
                 verify.CommandText="PRAGMA user_version";
@@ -166,7 +186,7 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             string primary = reader.GetString(3), additional = ReadAdditionalGroups(primary, reader.GetString(11));
             return new AccountProfile(Guid.Parse(reader.GetString(0)),reader.GetString(1),reader.GetString(2),primary,reader.GetInt32(4),
                 reader.IsDBNull(5)?null:reader.GetInt64(5),reader.IsDBNull(6)?null:reader.GetInt64(6),DateTimeOffset.Parse(reader.GetString(7),System.Globalization.CultureInfo.InvariantCulture),
-                reader.GetInt64(8),reader.GetString(9),ReadFavorite(reader),additional).Validated();
+                reader.GetInt64(8),reader.GetString(9),ReadFavorite(reader),additional,reader.GetString(12)).Validated();
         }
         catch(Exception error) when(error is ArgumentException or FormatException or InvalidCastException or OverflowException) { throw InvalidGroups(); }
     }
@@ -214,15 +234,15 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             await RequireCurrentAccountSchemaAsync(db,tx,ct);
             var saved = account with { UpdatedUtc = DateTimeOffset.UtcNow, Revision = account.Revision + 1 };
             command.CommandText = account.Revision == 0
-                ? "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,$next,$notes,$favorite,$additional WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id) ON CONFLICT(id) DO NOTHING"
-                : "UPDATE profiles SET label=$label,username=$username,group_name=$group,priority=$priority,place_id=$place,user_id=$user,updated_utc=$updated,revision=$next,notes=$notes,is_favorite=$favorite,additional_groups=$additional WHERE id=$id AND revision=$previous";
+                ? "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,$next,$notes,$favorite,$additional,$arguments WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id) ON CONFLICT(id) DO NOTHING"
+                : "UPDATE profiles SET label=$label,username=$username,group_name=$group,priority=$priority,place_id=$place,user_id=$user,updated_utc=$updated,revision=$next,notes=$notes,is_favorite=$favorite,additional_groups=$additional,extra_client_arguments=$arguments WHERE id=$id AND revision=$previous";
             command.Parameters.AddWithValue("$id", saved.Id.ToString("D")); command.Parameters.AddWithValue("$label", saved.Label);
             command.Parameters.AddWithValue("$username", saved.Username); command.Parameters.AddWithValue("$group", saved.Group);
             command.Parameters.AddWithValue("$priority", saved.Priority); command.Parameters.AddWithValue("$place", (object?)saved.PreferredPlaceId ?? DBNull.Value);
             command.Parameters.AddWithValue("$user", (object?)saved.RobloxUserId ?? DBNull.Value); command.Parameters.AddWithValue("$updated", saved.UpdatedUtc.ToString("O"));
             command.Parameters.AddWithValue("$next", saved.Revision); command.Parameters.AddWithValue("$previous", account.Revision);
             command.Parameters.AddWithValue("$notes",saved.Notes); command.Parameters.AddWithValue("$favorite",saved.IsFavorite?1:0);
-            command.Parameters.AddWithValue("$additional",GroupsJson(saved));
+            command.Parameters.AddWithValue("$additional",GroupsJson(saved)); command.Parameters.AddWithValue("$arguments",saved.ExtraClientArguments);
             if (await command.ExecuteNonQueryAsync(ct) != 1) throw new RevisionConflictException();
             if(await EnsureProfileGroupDefinitionsAsync(db,tx,saved,ct))await AdvanceCatalogAsync(db,tx,ct);
             ct.ThrowIfCancellationRequested();tx.Commit();
@@ -307,7 +327,7 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
     private static async Task<bool> InsertNewProfilesAsync(SqliteConnection db, SqliteTransaction tx, AccountProfile[] validated, CancellationToken ct)
     {
         using var command = db.CreateCommand(); command.Transaction = tx;
-        command.CommandText = "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,1,$notes,$favorite,$additional WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id)";
+        command.CommandText = "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,1,$notes,$favorite,$additional,$arguments WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id)";
         foreach (var p in validated)
         {
             ct.ThrowIfCancellationRequested(); command.Parameters.Clear();
@@ -316,7 +336,7 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
             command.Parameters.AddWithValue("$priority", p.Priority); command.Parameters.AddWithValue("$place", (object?)p.PreferredPlaceId ?? DBNull.Value);
             command.Parameters.AddWithValue("$user", (object?)p.RobloxUserId ?? DBNull.Value); command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$notes",p.Notes); command.Parameters.AddWithValue("$favorite",p.IsFavorite?1:0);
-            command.Parameters.AddWithValue("$additional",GroupsJson(p));
+            command.Parameters.AddWithValue("$additional",GroupsJson(p)); command.Parameters.AddWithValue("$arguments",p.ExtraClientArguments);
             if(await command.ExecuteNonQueryAsync(ct)!=1) throw new RevisionConflictException();
         }
         bool catalogChanged=false;

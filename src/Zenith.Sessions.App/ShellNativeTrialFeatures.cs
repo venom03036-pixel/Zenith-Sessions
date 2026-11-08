@@ -43,13 +43,17 @@ public sealed partial class ShellViewModel
         internal long Version {get;}
         public string SelectionSummary {get;}
         public string InstallationSummary {get;}
-        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version)
+        /// <summary>The extra client arguments the direct start will add after Roblox's request, as saved now: this account's own set,
+        /// else the saved default, else none (R-launch-16). Shown in the review only; never logged.</summary>
+        public string ArgumentsSummary {get;}
+        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version,string defaultClientArguments="")
         {
             Profile=row.Profile;PlayerId=row.KnownUserId!.Value;AuthorizationGeneration=row.AuthorizationGeneration!.Value;
             Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;
             SelectionSummary=$"{row.Label} · expected player {PlayerId} · place {Destination.PlaceId}"
                 +(Destination.JobId is { } job?$" · server {job}":" · any server");
             InstallationSummary=installation.ExecutablePath;
+            ArgumentsSummary=ExtraClientArgumentPolicy.Describe(row.Profile.ExtraClientArguments,defaultClientArguments);
         }
         public override string ToString()=>"Selected-account native trial review";
     }
@@ -59,7 +63,7 @@ public sealed partial class ShellViewModel
         _nativeTrialReview=null;
         if(!CanRunNativeTrial || SelectedAccount is not { } selected || !Accounts.Contains(selected)
             ||ServerBrowser.ReadyDestination is not { } destination || SelectedInstallation?.Candidate is not { } installation)return null;
-        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion));
+        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments);
     }
     public void DiscardNativeTrialReview(NativeTrialReview review)
     {Interlocked.CompareExchange(ref _nativeTrialReview,null,review);}

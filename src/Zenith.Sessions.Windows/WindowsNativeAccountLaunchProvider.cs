@@ -14,6 +14,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
     private readonly WindowsClientExecutableTrust _executableTrust;
     private readonly IRobloxNativeHandoffPreparer _preparer;
     private readonly IRobloxNativeHandoffCapture _capture;
+    private readonly IExtraClientArgumentsSource? _extraArguments;
     private readonly NativeHandoffCoordinator _coordinator;
     private readonly CancellationTokenSource _lifetime = new();
     private Owner? _active;
@@ -23,8 +24,11 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
     private Owner? _diagnosticOwner;
     private long _diagnosticRevision;
 
+    /// <param name="extraArguments">Where the account's saved extra client arguments (R-launch-16) are read at preparation time;
+    /// null passes none. They are read before the executable is held and appended after the official request by the direct start.</param>
     public WindowsNativeAccountLaunchProvider(ClientInstallationCandidate installation, WindowsClientExecutableTrust executableTrust,
-        IRobloxNativeHandoffPreparer handoffPreparer, IRobloxNativeHandoffCapture capture, IAuthorizationDispatchVault dispatchVault)
+        IRobloxNativeHandoffPreparer handoffPreparer, IRobloxNativeHandoffCapture capture, IAuthorizationDispatchVault dispatchVault,
+        IExtraClientArgumentsSource? extraArguments = null)
     {
         ArgumentNullException.ThrowIfNull(installation);
         if (installation.Evidence is null || installation.Evidence.Count > 32) throw new ArgumentException("The installation evidence is invalid.");
@@ -32,6 +36,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
         _executableTrust = executableTrust ?? throw new ArgumentNullException(nameof(executableTrust));
         _preparer = handoffPreparer ?? throw new ArgumentNullException(nameof(handoffPreparer));
         _capture = capture ?? throw new ArgumentNullException(nameof(capture));
+        _extraArguments = extraArguments;
         _coordinator = new(dispatchVault ?? throw new ArgumentNullException(nameof(dispatchVault)));
     }
 
@@ -69,7 +74,15 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
         var failure = LaunchPreparationFailure.Rejected;
         try
         {
-            executable = await _executableTrust.PrepareAsync(_installation, owner.Token).ConfigureAwait(false);
+            // Saved extra arguments are read first, from saved state only; a read failure or an invalid saved value is a
+            // Rejected preparation (no browser, account or file work follows), and no argument text is retained anywhere.
+            IReadOnlyList<string>? extra = null;
+            if (_extraArguments is not null)
+            {
+                extra = await _extraArguments.ResolveAsync(owner.Context.OriginalIntent.ProfileId, owner.Token).ConfigureAwait(false);
+                owner.Token.ThrowIfCancellationRequested();
+            }
+            executable = await _executableTrust.PrepareAsync(_installation, extra, owner.Token).ConfigureAwait(false);
             var trust = executable.Trust;
             UpdateDiagnostic(owner, value => value with { TrustStatus = trust.Status,
                 TrustReason = trust.Reason, ExecutableObservedUtc = trust.ObservedUtc });

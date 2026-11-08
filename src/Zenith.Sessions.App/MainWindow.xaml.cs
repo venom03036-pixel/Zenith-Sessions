@@ -194,7 +194,7 @@ public partial class MainWindow : Window
         if (review is null) return;
         try
         {
-            var answer = MessageBox.Show(this, review.SelectionSummary + "\n\n" + review.InstallationSummary
+            var answer = MessageBox.Show(this, review.SelectionSummary + "\n\n" + review.InstallationSummary + "\n" + review.ArgumentsSummary
                 + "\n\nContinue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.",
                 "Confirm native account trial", MessageBoxButton.OKCancel, MessageBoxImage.Information, MessageBoxResult.Cancel);
             if (answer == MessageBoxResult.OK) _vm.StartNativeTrial.Execute(review);

@@ -21,12 +21,14 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     private readonly Dictionary<Guid, DiagnosticEntry> _diagnostics = new();
     private long _diagnosticRevision, _diagnosticAttempt;
 
+    /// <param name="extraArguments">Where each account's saved extra client arguments (R-launch-16) are read at preparation time;
+    /// null passes none. Only the direct player this provider accepts ever receives them, never a bootstrapper.</param>
     public WindowsConfiguredNativeLaunchProvider(IRobloxNativeHandoffPreparer preparer, IRobloxNativeHandoffCapture capture,
-        IAuthorizationDispatchVault dispatchVault)
+        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null)
     {
         ArgumentNullException.ThrowIfNull(preparer); ArgumentNullException.ThrowIfNull(capture); ArgumentNullException.ThrowIfNull(dispatchVault);
         var trust = new WindowsClientExecutableTrust(); _trustOwner = trust;
-        _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault));
+        _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault, extraArguments));
     }
     // The injected owner is transferred to this wrapper. Factories/children must not own borrowed
     // authentication/browser/vault services. Tests use memory-only children and a tracked owner.

@@ -59,6 +59,7 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         Assert.Equal(1, validations); Assert.Equal(1, admissions); Assert.Equal(1, f.Vault.Calls); Assert.Equal(1, f.Starter.Calls);
         Assert.Same(f.Preparer.Issued!.FinalGrant, f.Vault.Seen); Assert.True(f.Capture.Candidate!.IsConsumed); Assert.True(handle.IsExpired);
         Assert.Equal(SyntheticHandoff.Uri(f.Capture.Candidate.Context, f.Capture.Clock), f.Starter.ObservedArgument);
+        Assert.Single(f.Starter.ObservedArguments!); // Without a saved extra-argument set the official request is the only argument.
         Assert.Empty(f.Starter.LastStart!.ArgumentList); f.AssertReleased();
         Assert.Equal(ProviderLaunchStatus.RejectedBeforeStart, (await handle.DispatchAsync(boundary, default)).Status);
         Assert.Equal(1, f.Starter.Calls);
@@ -118,6 +119,41 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         Assert.Equal(LaunchPreparationFailure.Rejected, result.Failure); Assert.Null(result.Prepared);
         Assert.True(f.Capture.Candidate!.IsConsumed); Assert.Equal(0, f.Starter.Calls); Assert.Equal(0, f.Vault.Calls); f.AssertReleased();
         Assert.Equal(NativeHandoffPreparationStatus.RequestChanged, f.Provider.GetDiagnostic(f.Intent.OperationId)?.PreparationStatus);
+    }
+
+    [Fact]
+    public async Task TheAccountsSavedExtraArgumentsAreReadAtPreparationAndFollowTheOfficialRequest()
+    {
+        var source = new ArgumentsSource { Arguments = ["--synthetic-flag", "--value=1"] };
+        await using var f = new Fixture(_root, arguments: source);
+        var result = await f.Provider.PrepareAsync(f.Context, default); await using var handle = result.Prepared!;
+        Assert.Equal(1, source.Calls); Assert.Equal(f.Intent.ProfileId, source.ProfileId);
+        using var boundary = Boundary(handle.DispatchIntent);
+        var launched = await handle.DispatchAsync(boundary, default);
+        Assert.Equal(ProviderLaunchStatus.ClientStartedUnverified, launched.Status); Assert.Equal(1, f.Starter.Calls);
+        Assert.Equal(new[] { SyntheticHandoff.Uri(f.Capture.Candidate!.Context, f.Capture.Clock), "--synthetic-flag", "--value=1" }, f.Starter.ObservedArguments!);
+        Assert.Empty(f.Starter.LastStart!.ArgumentList); f.AssertReleased();
+        string diagnostic = JsonSerializer.Serialize(f.Provider.GetDiagnostic(f.Intent.OperationId)) + result + handle.ToString() + f.Provider.ToString()
+            + JsonSerializer.Serialize(result) + JsonSerializer.Serialize(launched);
+        Assert.DoesNotContain("synthetic-flag", diagnostic); Assert.DoesNotContain("value=1", diagnostic);
+    }
+
+    [Theory]
+    [InlineData("throws")]
+    [InlineData("invalid")]
+    public async Task AnUnreadableOrInvalidSavedArgumentSetRefusesThePreparationBeforeAnyAccountOrBrowserWork(string failure)
+    {
+        var source = new ArgumentsSource { Throw = failure == "throws", Arguments = failure == "invalid" ? ["--fine", "bad%value"] : [] };
+        await using var f = new Fixture(_root, arguments: source);
+        var result = await f.Provider.PrepareAsync(f.Context, default);
+        Assert.Equal(LaunchPreparationFailure.Rejected, result.Failure); Assert.Null(result.Prepared);
+        Assert.Equal(1, source.Calls); Assert.Equal(0, f.Policy.Calls); Assert.Equal(0, f.Preparer.Calls); Assert.Equal(0, f.Capture.Calls);
+        Assert.Equal(0, f.Vault.Calls); Assert.Equal(0, f.Starter.Calls); f.AssertReleased();
+        Assert.DoesNotContain("bad%value", JsonSerializer.Serialize(f.Provider.GetDiagnostic(f.Intent.OperationId)));
+        // The provider slot is free again afterwards.
+        source.Throw = false; source.Arguments = [];
+        var next = await f.Provider.PrepareAsync(new(f.Intent with { OperationId = Guid.NewGuid() }), default);
+        Assert.NotNull(next.Prepared); await next.Prepared!.DisposeAsync();
     }
 
     [Fact]
@@ -359,12 +395,12 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         public readonly ClientInstallationCandidate Installation;
         public readonly LaunchIntent Intent = new(Guid.NewGuid(), Guid.NewGuid(), 5, 123, 1818, 7, DateTimeOffset.UtcNow, 4, SyntheticHandoff.Job, RobloxServerKind.Public, true);
         public LaunchPreparationContext Context { get; }
-        public Fixture(string root, NativeClientTrustOutcome outcome = NativeClientTrustOutcome.VerifiedCached)
+        public Fixture(string root, NativeClientTrustOutcome outcome = NativeClientTrustOutcome.VerifiedCached, IExtraClientArgumentsSource? arguments = null)
         {
             Directory.CreateDirectory(root); Executable = Path.Combine(root, "RobloxPlayerBeta.exe"); File.WriteAllText(Executable, "Synthetic ordinary bytes, never executed");
             Installation = new(ClientInstallationProduct.Roblox, Executable, "Synthetic", "1", ClientInstallationFileState.PresentUnverified, []);
             Policy = new(outcome); Trust = new(Policy, starter: Starter); Context = new(Intent);
-            Provider = new(Installation, Trust, Preparer, Capture, Vault);
+            Provider = new(Installation, Trust, Preparer, Capture, Vault, arguments);
         }
         public void AssertPinned() => Assert.Throws<IOException>(() => File.Open(Executable, FileMode.Open, FileAccess.Write, FileShare.None).Dispose());
         public void AssertReleased() { using var file = File.Open(Executable, FileMode.Open, FileAccess.Write, FileShare.None); }
@@ -431,10 +467,23 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
     }
     private sealed class Starter : INativeHandoffProcessStarter
     {
-        public int Calls; public string? ObservedArgument; public ProcessStartInfo? LastStart;
+        public int Calls; public string? ObservedArgument; public string[]? ObservedArguments; public ProcessStartInfo? LastStart;
         public Func<ProcessStartInfo, INativeHandoffStartedProcess?>? Run;
         public INativeHandoffStartedProcess? Start(ProcessStartInfo start)
-        { Calls++; LastStart = start; ObservedArgument = Assert.Single(start.ArgumentList); return Run is null ? new ProcessReceipt() : Run(start); }
+        {
+            Calls++; LastStart = start; ObservedArguments = [.. start.ArgumentList]; ObservedArgument = ObservedArguments[0];
+            return Run is null ? new ProcessReceipt() : Run(start);
+        }
+    }
+    private sealed class ArgumentsSource : IExtraClientArgumentsSource
+    {
+        public int Calls; public Guid ProfileId; public bool Throw; public string[] Arguments = [];
+        public Task<IReadOnlyList<string>> ResolveAsync(Guid profileId, CancellationToken ct)
+        {
+            Calls++; ProfileId = profileId; ct.ThrowIfCancellationRequested();
+            if (Throw) throw new IOException("Synthetic library read failure");
+            return Task.FromResult<IReadOnlyList<string>>(Arguments);
+        }
     }
     private sealed class ProcessReceipt : INativeHandoffStartedProcess
     {

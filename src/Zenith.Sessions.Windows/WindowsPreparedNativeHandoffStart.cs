@@ -25,9 +25,17 @@ public sealed partial class WindowsClientExecutableTrust
     /// One active or prepared operation occupies this verifier until consumed/disposed. No URI is
     /// accepted here. Callers must await actual dispatch before disposing their preparation.
     /// </summary>
-    public Task<WindowsNativeHandoffPreparation> PrepareAsync(ClientInstallationCandidate candidate, CancellationToken ct)
+    public Task<WindowsNativeHandoffPreparation> PrepareAsync(ClientInstallationCandidate candidate, CancellationToken ct) => PrepareAsync(candidate, null, ct);
+    /// <summary>
+    /// As above, with the user's extra client arguments (R-launch-16) the held start appends after the official request.
+    /// Each argument is checked with <see cref="ExtraClientArgumentPolicy.IsValidArgument"/> here, before any file is held;
+    /// an invalid set throws <see cref="ArgumentException"/>. Only a direct player ever gets a prepared start (the launcher
+    /// and bootstrappers return no start from VerifyCore), so the arguments can only reach Zenith's own direct start.
+    /// </summary>
+    public Task<WindowsNativeHandoffPreparation> PrepareAsync(ClientInstallationCandidate candidate, IReadOnlyList<string>? extraArguments, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(candidate); ct.ThrowIfCancellationRequested();
+        string[] extra = CopyExtraArguments(extraArguments);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -44,7 +52,7 @@ public sealed partial class WindowsClientExecutableTrust
                     operation.Stop.Token.ThrowIfCancellationRequested();
                     if (trust.Status != ClientExecutableTrustStatus.VerifiedRobloxPublisher || held is null)
                         return new WindowsNativeHandoffPreparation(trust);
-                    var prepared = new PreparedNativeHandoffStart(this, operation, held, _starter, operation.Stop.Token);
+                    var prepared = new PreparedNativeHandoffStart(this, operation, held, _starter, extra, operation.Stop.Token);
                     lock (_gate)
                     {
                         if (_disposed) throw new OperationCanceledException("Executable preparation was stopped.");
@@ -57,6 +65,21 @@ public sealed partial class WindowsClientExecutableTrust
             }, CancellationToken.None);
             operation.Worker = worker; return worker;
         }
+    }
+
+    private static string[] CopyExtraArguments(IReadOnlyList<string>? extraArguments)
+    {
+        if (extraArguments is null || extraArguments.Count == 0) return Array.Empty<string>();
+        if (extraArguments.Count > ExtraClientArgumentPolicy.MaximumArguments) throw new ArgumentException("Extra client arguments are invalid.");
+        string[] copy = new string[extraArguments.Count];
+        for (int index = 0; index < copy.Length; index++)
+        {
+            string argument = extraArguments[index];
+            // The value is never quoted back: an exception message is user-facing and the text is not written anywhere else.
+            if (!ExtraClientArgumentPolicy.IsValidArgument(argument)) throw new ArgumentException("Extra client arguments are invalid.");
+            copy[index] = argument;
+        }
+        return copy;
     }
 
     private sealed class VerifiedExecutableLease(FileStream file, ClientExecutableFileSnapshot expected) : IDisposable
@@ -74,12 +97,14 @@ public sealed partial class WindowsClientExecutableTrust
     }
 
     private sealed class PreparedNativeHandoffStart(WindowsClientExecutableTrust owner, Operation operation,
-        VerifiedExecutableLease held, INativeHandoffProcessStarter starter, CancellationToken stop) : IPreparedNativeHandoffStart
+        VerifiedExecutableLease held, INativeHandoffProcessStarter starter, string[] extra, CancellationToken stop) : IPreparedNativeHandoffStart
     {
         // CreateProcess includes the executable, quoting/separator and terminating NUL in this
         // 32767 UTF-16 limit. Input forbids quotes/backslashes/whitespace, so six reserved chars
         // conservatively cover quoting both arguments, their separator and NUL without guessing.
-        private const int MaximumCommandLineCharacters = 32767, CommandLineOverhead = 6;
+        // Each extra client argument (no spaces, quotes or backslashes either) adds one separator;
+        // three are reserved per argument.
+        private const int MaximumCommandLineCharacters = 32767, CommandLineOverhead = 6, ExtraArgumentOverhead = 3;
         private readonly object _state = new();
         private bool _consumed, _inFlight, _disposed;
 
@@ -94,7 +119,7 @@ public sealed partial class WindowsClientExecutableTrust
             var result = new NativeHandoffDispatchResult(NativeHandoffDispatchOutcome.NotStarted);
             try
             {
-                if (!stop.IsCancellationRequested && HasBoundedArgument(held.Expected.FullPath, officialHandoff)
+                if (!stop.IsCancellationRequested && HasBoundedArgument(held.Expected.FullPath, officialHandoff, extra)
                     && owner.RevalidateHeldFile(held, stop))
                     result = InvokeOnce(officialHandoff, ref invoked);
             }
@@ -129,7 +154,9 @@ public sealed partial class WindowsClientExecutableTrust
             var outcome = NativeHandoffDispatchOutcome.NotStarted;
             try
             {
+                // The official request is always the first argument; the user's extra arguments follow it in their saved order.
                 start.ArgumentList.Add(officialHandoff);
+                foreach (string argument in extra) start.ArgumentList.Add(argument);
                 lock (_state)
                 {
                     if (!_disposed && !stop.IsCancellationRequested)
@@ -155,11 +182,18 @@ public sealed partial class WindowsClientExecutableTrust
             return new(outcome, receipt);
         }
 
-        private static bool HasBoundedArgument(string path, string? handoff)
+        private static bool HasBoundedArgument(string path, string? handoff, string[] extra)
         {
             if (handoff is not { Length: > 0 and <= NativeRobloxHandoff.MaximumCharacters }
-                || !handoff.StartsWith("roblox-player:1+", StringComparison.Ordinal)
-                || (long)path.Length + handoff.Length + CommandLineOverhead > MaximumCommandLineCharacters) return false;
+                || !handoff.StartsWith("roblox-player:1+", StringComparison.Ordinal)) return false;
+            long total = (long)path.Length + handoff.Length + CommandLineOverhead;
+            if (extra.Length > ExtraClientArgumentPolicy.MaximumArguments) return false;
+            foreach (string argument in extra)
+            {
+                if (!ExtraClientArgumentPolicy.IsValidArgument(argument)) return false;
+                total += argument.Length + ExtraArgumentOverhead;
+            }
+            if (total > MaximumCommandLineCharacters) return false;
             foreach (char value in handoff)
                 if (value is < (char)0x21 or > (char)0x7e or '"' or '\\') return false;
             return true;
@@ -177,7 +211,7 @@ public sealed partial class WindowsClientExecutableTrust
             try { held.Dispose(); }
             finally { owner.FinishOperation(operation); }
         }
-        public override string ToString() => "PreparedNativeHandoffStart { Executable = [held], Handoff = [redacted] }";
+        public override string ToString() => "PreparedNativeHandoffStart { Executable = [held], Handoff = [redacted], ExtraArguments = [not shown] }";
     }
 }
 
