@@ -20,8 +20,10 @@ public sealed class ClientAudioMuteNativeTests
     [AudioOutputFact]
     public async Task MuteChangesOnlyTheTestOwnedHelpersOwnSoundAndRestoreAndExitUnmuteIt()
     {
-        await using var helper = await SilentHelper.StartAsync();
+        // Windows remembers the executable's previous mute. Establish this test-owned helper's baseline explicitly.
+        await using var helper = await SilentHelper.StartAsync(unmutedBaseline: true);
         var control = new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter("powershell.exe"));
+        bool[] restoredOnExit = [];
         try
         {
             Assert.All(helper.Sessions(), muted => Assert.False(muted));
@@ -50,10 +52,12 @@ public sealed class ClientAudioMuteNativeTests
         finally
         {
             await control.DisposeAsync();
+            restoredOnExit = helper.Sessions(); // Observe restoration before the fixture's last-resort cleanup can change it.
             helper.UnmuteIfLeftMuted(); // Windows may remember a mute for powershell.exe; never leave one behind.
         }
         Assert.Equal(0, control.PendingRestoreCount);
-        Assert.All(helper.Sessions(), state => Assert.False(state));
+        Assert.NotEmpty(restoredOnExit);
+        Assert.All(restoredOnExit, state => Assert.False(state));
     }
 
     /// <summary>
@@ -108,7 +112,7 @@ public sealed class ClientAudioMuteNativeTests
         }
         public SessionObservation Session { get; }
 
-        public static async Task<SilentHelper> StartAsync()
+        public static async Task<SilentHelper> StartAsync(bool unmutedBaseline = false)
         {
             // One second of 8 kHz 16-bit mono silence (all-zero samples), looped from memory until a line arrives on input.
             const string script = "$n=16000;$m=New-Object IO.MemoryStream;$w=New-Object IO.BinaryWriter($m);$a=[Text.Encoding]::ASCII;"
@@ -135,6 +139,7 @@ public sealed class ClientAudioMuteNativeTests
                         "The test-owned helper never got a Windows audio session. This test needs an active audio output device.");
                     await Task.Delay(100);
                 }
+                if (unmutedBaseline) helper.UnmuteIfLeftMuted();
                 return helper;
             }
             catch { await helper.DisposeAsync(); throw; }

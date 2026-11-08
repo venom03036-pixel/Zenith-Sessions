@@ -26,7 +26,7 @@ public sealed class SidebarTemplateTests
             var strings=new ShellStrings(ShellLanguages.Resolve(language,System.Globalization.CultureInfo.GetCultureInfo("en-US")));
             Zenith.Sessions.App.Localization.SetStrings(view,strings);view.FlowDirection=strings.FlowDirection;view.DataContext=new RailModel();
             view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
-            var buttons=Descendants(view).OfType<Button>().ToArray();Assert.Equal(8,buttons.Length);
+            var buttons=Descendants(view).OfType<Button>().ToArray();Assert.Equal(9,buttons.Length);
             foreach(var button in buttons)
             {
                 string caption=AutomationProperties.GetName(button);Assert.StartsWith("[",caption);
@@ -58,7 +58,7 @@ public sealed class SidebarTemplateTests
                 var (view,resources)=ProductionRail();ThemeManager.Apply(resources,theme);
                 view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
                 var buttons=Descendants(view).OfType<Button>().ToArray();
-                Assert.Equal(new[]{"Overview","Accounts","Sessions","Windows","Automation","Diagnostics","Settings","Guide"},buttons.Select(AutomationProperties.GetName));
+                Assert.Equal(new[]{"Overview","Accounts","Sessions","Windows","Automation","Diagnostics","Settings","Guide","News"},buttons.Select(AutomationProperties.GetName));
                 foreach(var button in buttons)
                 {
                     Assert.True(button.ActualHeight>=36);Assert.True(button.ActualWidth>=140);Assert.True(button.Focusable);
