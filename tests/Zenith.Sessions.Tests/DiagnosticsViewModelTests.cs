@@ -208,7 +208,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.DoesNotContain(vm.Events,line=>line.Contains("Operation failed",StringComparison.Ordinal));
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
         // The failure is still journaled once against Diagnostics, by its cause and not the ReportFileException wrapper.
-        if(locking) vm.Unlock.Execute(null);
+        if(locking) vm.Unlock.Execute(null); await vm.Unlock.Execution;
         vm.RefreshDiagnostics.Execute(null);
         var failure=Assert.Single(vm.DiagnosticRows,row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==ManagerSubsystem.Diagnostics);
         Assert.Equal("UnauthorizedAccessException",failure.Event.ErrorType);
@@ -458,10 +458,10 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         // A reader of the Diagnostics page, a copied report or manager.jsonl must see when the lock ended,
         // so events after it are not read as happening while the dashboard was still locked.
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         vm.LockDashboard();Assert.True(vm.IsLocked);
-        vm.Unlock.Execute(null);Assert.False(vm.IsLocked);
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;Assert.False(vm.IsLocked);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         vm.RefreshDiagnostics.Execute(null);
         var transitions=vm.DiagnosticRows.Where(r=>r.Event.Kind.ToString().StartsWith("Controls",StringComparison.Ordinal)).ToArray();
         Assert.Equal(new[]{"ControlsLocked","ControlsUnlocked"},transitions.Select(r=>r.Event.Kind.ToString()));

@@ -235,7 +235,7 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
         Assert.True(shell.CanInstallRobloxUpdate); Assert.True(installer.HasVerifiedInstaller);
         shell.LockDashboard();
         Assert.False(installer.HasVerifiedInstaller); Assert.Equal(1, installer.Discards); Assert.Null(shell.ClientUpdateCheckDue);
-        shell.Unlock.Execute(null);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution;
         Assert.False(shell.CanInstallRobloxUpdate); Assert.Equal("", shell.RobloxUpdateConfirmation);
         Assert.Equal(RobloxClientUpdate.CheckDelay, shell.ClientUpdateCheckDue);
         Assert.Contains("3 seconds", shell.RobloxUpdateCheckStatus, StringComparison.Ordinal);

@@ -58,7 +58,7 @@ public sealed partial class PerformanceIntegrationTests
         try
         {
             vm.ExportPerformanceSettings.Execute("another.json"); await vm.ExportPerformanceSettings.Execution;
-            Assert.Equal(0, store.Writes); vm.LockDashboard(); vm.Unlock.Execute(null);
+            Assert.Equal(0, store.Writes); vm.LockDashboard(); vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.True(store.Token.IsCancellationRequested); Assert.False(vm.HasPerformanceReview);
             vm.Panic.Execute(null);
         }

@@ -312,7 +312,7 @@ public sealed partial class ClientWindowIntegrationTests
         var lifetime = (CancellationTokenSource)ReportedField(shell, "_lifetime").GetValue(shell)!;
         Task ReloadAccountsAsync() => (Task)typeof(ShellViewModel).GetMethod("LoadAccountsAsync", ReportedPrivate)!.Invoke(shell, [lifetime.Token, null, null])!;
 
-        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); await ReloadAccountsAsync(); shell.Unlock.Execute(null); }
+        if (locked) { shell.Lock.Execute(null); Assert.Empty(shell.RecentlyPlayed.Chips); await ReloadAccountsAsync(); shell.Unlock.Execute(null); await shell.Unlock.Execution; }
         else { shell.Panic.Execute(null); await ReloadAccountsAsync(); }
         Assert.NotSame(selected, shell.SelectedAccount); // The reload selected a new row for the same profile.
         Assert.Equal(selected.Profile.Id, shell.SelectedAccount!.Profile.Id);

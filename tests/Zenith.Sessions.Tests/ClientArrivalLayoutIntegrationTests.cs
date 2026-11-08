@@ -138,7 +138,7 @@ public sealed partial class ClientWindowIntegrationTests
         // Locked: resuming is not offered and an attempt changes nothing.
         Assert.False(shell.CanResumeClientArrivalLayout);
         shell.ResumeClientArrivalLayout.Execute(null);
-        shell.Unlock.Execute(null);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution;
         Assert.Contains("Automation remains stopped", shell.Notice);
         Assert.True(shell.CanResumeClientArrivalLayout);
         await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));

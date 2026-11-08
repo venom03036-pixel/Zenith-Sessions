@@ -60,7 +60,7 @@ public sealed partial class ClientWindowIntegrationTests
         {
             Assert.True(shell.IsPublisherVerificationBusy);Assert.False(shell.CanRefreshInstallations);
             shell.VerifyInstallationPublisher.Execute(null);Assert.Equal(1,trust.Calls);
-            if(useLock){shell.LockDashboard();shell.Unlock.Execute(null);shell.Panic.Execute(null);}
+            if(useLock){shell.LockDashboard();shell.Unlock.Execute(null); await shell.Unlock.Execution;shell.Panic.Execute(null);}
             else shell.SelectedInstallation=shell.InstallationCandidates[1];
             Assert.True(trust.Token.IsCancellationRequested);
         }

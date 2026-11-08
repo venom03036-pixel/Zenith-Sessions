@@ -48,7 +48,7 @@ public sealed partial class DirectoryIntegrationTests
         await RefreshHistoryFrame(vm); await vm.RecentClients.ActiveSave;
         Assert.Single(vm.RecentClients.Rows); Assert.False(vm.RecentClients.CanClear);
         vm.RecentClients.Clear.Execute(null); Assert.Single(vm.RecentClients.Rows);
-        vm.Unlock.Execute(null); Assert.True(vm.RecentClients.CanClear);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution; Assert.True(vm.RecentClients.CanClear);
         vm.RecentClients.Clear.Execute(null); await vm.RecentClients.ActiveSave; Assert.Empty(vm.RecentClients.Rows);
     });
 

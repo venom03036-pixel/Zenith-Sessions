@@ -295,7 +295,7 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         vm.RefreshPublicAccount.Execute(row);await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));Assert.Equal(1,directory.Calls);vm.LockDashboard();
         directory.Pending.SetResult(directory.Profile);await vm.RefreshPublicAccount.Execution;
         Assert.True(vm.IsLocked);Assert.Equal("",row.PublicDisplayName);Assert.Null(row.Avatar);Assert.Equal("linked_name",row.Label);
-        directory.Pending=null;vm.Unlock.Execute(null);vm.RefreshPublicAccount.Execute(row);await vm.RefreshPublicAccount.Execution;
+        directory.Pending=null;vm.Unlock.Execute(null); await vm.Unlock.Execution;vm.RefreshPublicAccount.Execute(row);await vm.RefreshPublicAccount.Execution;
         Assert.Equal("Public display",row.PublicDisplayName);Assert.Equal("linked_name",row.Label);Assert.Equal("@linked_name",row.Username);Assert.Equal(123,row.KnownUserId);
         vm.Panic.Execute(null);Assert.Equal("",row.PublicDisplayName);Assert.Null(row.Avatar);
     });

@@ -24,7 +24,7 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.True(shell.CanDisableVaultPassword);
         shell.LockDashboard(); Assert.True(shell.IsLocked);
         VaultPasswordAction? prompt = null; shell.VaultPasswordPromptRequested += action => prompt = action;
-        shell.Unlock.Execute(null); Assert.True(shell.IsLocked); Assert.Equal(VaultPasswordAction.Unlock, prompt);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution; Assert.True(shell.IsLocked); Assert.Equal(VaultPasswordAction.Unlock, prompt);
         Assert.False(await shell.ApplyVaultPasswordAsync(shell.ReviewVaultPassword(VaultPasswordAction.Unlock)!, "wrong fixture password"u8.ToArray()));
         Assert.True(shell.IsLocked);
         Assert.True(await shell.ApplyVaultPasswordAsync(shell.ReviewVaultPassword(VaultPasswordAction.Unlock)!, FixtureVaultPassword));

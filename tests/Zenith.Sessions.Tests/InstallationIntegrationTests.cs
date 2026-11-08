@@ -184,7 +184,7 @@ public sealed partial class ClientWindowIntegrationTests
         try
         {
             Assert.True(vm.IsInstallationDiscoveryBusy); vm.RefreshInstallations.Execute(null); Assert.Equal(1, discovery.Calls);
-            vm.LockDashboard(); vm.Unlock.Execute(null);
+            vm.LockDashboard(); vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.True(discovery.Token.IsCancellationRequested); Assert.Empty(vm.InstallationCandidates);
             Assert.False(vm.CanRefreshInstallations); vm.Panic.Execute(null);
         }
@@ -205,7 +205,7 @@ public sealed partial class ClientWindowIntegrationTests
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
         Assert.False(vm.IsInstallationDiscoveryBusy); Assert.Equal(2, vm.InstallationCandidates.Count);
         vm.SelectedInstallation = vm.InstallationCandidates[0];
-        if (lockDashboard) { vm.LockDashboard(); vm.Unlock.Execute(null); } else vm.Panic.Execute(null);
+        if (lockDashboard) { vm.LockDashboard(); vm.Unlock.Execute(null); await vm.Unlock.Execution; } else vm.Panic.Execute(null);
         Assert.Empty(vm.InstallationCandidates); Assert.Empty(vm.InstallationIssues); Assert.Null(vm.SelectedInstallation);
         // Nothing was running, so the panel returns to its unchecked wording instead of claiming a check was stopped.
         Assert.Equal("Not checked", vm.InstallationObserved); Assert.Equal(initial, vm.InstallationStatus);
@@ -425,7 +425,7 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(1, releases.Calls); Assert.True(vm.IsInstallationDiscoveryBusy);
             vm.LockDashboard();
             Assert.True(releases.Token.IsCancellationRequested);
-            vm.Unlock.Execute(null);
+            vm.Unlock.Execute(null); await vm.Unlock.Execution;
         }
         finally { releases.Gate.TrySetResult(new(PublicDirectoryState.Success, CurrentRelease, "Public release.")); }
         await vm.RefreshInstallations.Execution;

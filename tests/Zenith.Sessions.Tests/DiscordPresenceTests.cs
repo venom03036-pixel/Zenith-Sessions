@@ -409,7 +409,7 @@ public sealed class DiscordPresenceTests : IDisposable
         Assert.False(vm.IsDiscordPresenceActive, "Lock left the Discord status running.");
         Assert.Contains("locked", vm.DiscordPresenceStatus, StringComparison.Ordinal);
         await discord.WaitUntil(() => discord.Disconnections >= 1);
-        vm.Unlock.Execute(null); Assert.False(vm.IsLocked);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution; Assert.False(vm.IsLocked);
         Assert.True(vm.IsDiscordPresenceActive, "Unlock did not show the Discord status again.");
         Assert.Equal("2 clients running", await discord.Shown(3));
         Assert.Equal(2, discord.Connections);

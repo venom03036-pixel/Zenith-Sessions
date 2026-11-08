@@ -97,7 +97,7 @@ public sealed partial class ClientPreviewPresentationTests
     {
         var directory=new SearchDirectory(new());var provider=new PreviewProvider{AutoReady=true};await using var shell=JoinShell(directory,provider);
         await shell.InitializeAsync();shell.SetPreviewWindowVisible(true);shell.Navigate.Execute("Sessions");shell.LockDashboard();shell.Navigate.Execute("JoinGame");Assert.True(shell.IsSessions);
-        shell.Unlock.Execute(null);shell.Navigate.Execute("JoinGame");shell.LockDashboard();shell.Navigate.Execute("Sessions");Assert.True(shell.IsJoinGame);Assert.True(shell.IsSessionWorkspace);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution;shell.Navigate.Execute("JoinGame");shell.LockDashboard();shell.Navigate.Execute("Sessions");Assert.True(shell.IsJoinGame);Assert.True(shell.IsSessionWorkspace);
         shell.ServerBrowser.LinkInput="Fisch";await shell.DestinationSearch.SearchOrUseAsync();Assert.Empty(directory.Queries);Assert.False(shell.DestinationSearch.CanSearch);Assert.Equal(0,provider.CaptureCalls);
     });
 

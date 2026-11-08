@@ -172,8 +172,60 @@ public sealed partial class ShellViewModel
         }
         finally { _stoppingVaultPassword = false; }
     }
-    private void RequestDashboardUnlock()
+    private Task RequestDashboardUnlockAsync(long clickedEpoch)
     {
+        // AsyncCommand notifies before invoking us. A stop in that notification must invalidate this click.
+        if (clickedEpoch != _vaultPasswordEpoch || !_ready || _shuttingDown || !IsLocked || _vaultPasswordBusy || _portableBusy)
+            return Task.CompletedTask;
+        long epoch = ++_vaultPasswordEpoch;
+        var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        _vaultPasswordStop = stop; _vaultPasswordBusy = true;
+        var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var task = RunDashboardUnlockAsync(epoch, stop, published.Task);
+        _vaultPasswordWork = task;
+        try { RaiseVaultPasswordProperties(); }
+        finally { published.TrySetResult(); }
+        return task;
+    }
+    private async Task RunDashboardUnlockAsync(long epoch, CancellationTokenSource stop, Task published)
+    {
+        await published;
+        bool refreshed = false;
+        bool Current() => epoch == _vaultPasswordEpoch && !stop.IsCancellationRequested && !_shuttingDown && IsLocked;
+        try
+        {
+            stop.Token.ThrowIfCancellationRequested();
+            // EnterAsync re-reads the protected control under the vault writer lease. A cached Disabled or
+            // Locked mode cannot decide whether another owner enabled, disabled or interrupted protection.
+            var status = await _vault.GetPasswordStatusAsync(stop.Token);
+            if (!Current()) return;
+            _vaultPasswordMode = status.Mode; _vaultPasswordUnavailable = false;
+            VaultPasswordStatusText = status.Mode switch
+            {
+                VaultPasswordMode.Disabled => "Master password is off. Saved sign-ins use Windows DPAPI.",
+                VaultPasswordMode.Locked => "Master-password vault is locked. Account metadata remains available; unlock before using saved sign-ins.",
+                VaultPasswordMode.Unlocked => "Master-password vault is unlocked. Manual, Windows and idle lock clear its in-memory key.",
+                _ => "Password encryption was interrupted. Resume with the same password; saved sign-ins cannot be used until it finishes."
+            };
+            refreshed = true;
+        }
+        catch (OperationCanceledException) { }
+        catch (Exception ex)
+        {
+            if (!Current()) return;
+            _vaultPasswordMode = null; _vaultPasswordUnavailable = true;
+            _diagnostics.RecordFailure(ManagerSubsystem.Vault, ex.GetType());
+            VaultPasswordStatusText = "Saved-sign-in protection is unavailable. Keep the vault for recovery, or explicitly forget all saved sign-ins and sign in again.";
+            refreshed = true; // Preserve the existing metadata/recovery-only route; secret reads still fail closed.
+        }
+        finally
+        {
+            _vaultPasswordStop = null; _vaultPasswordBusy = false;
+            stop.Dispose(); RaiseVaultPasswordProperties();
+        }
+        // The actual dialog synchronously requests a review token, so its admission must be released first.
+        // Notifications may reenter Lock/Panic or start another owner; none may allow this old result through.
+        if (!refreshed || !Current() || _vaultPasswordBusy) return;
         if (_vaultPasswordMode is VaultPasswordMode.Locked or VaultPasswordMode.MigrationRequired)
         { VaultPasswordPromptRequested?.Invoke(PrimaryVaultPasswordAction); return; }
         if (_vaultPasswordMode == VaultPasswordMode.Unlocked || _vaultPasswordMode == VaultPasswordMode.Disabled || _vaultPasswordUnavailable)
@@ -191,7 +243,7 @@ public sealed partial class ShellViewModel
         try { StopShutdownStep(StopVaultPasswordWork); }
         finally
         {
-            try { await _vaultPasswordWork; }
+            try { await _vaultPasswordWork; await Unlock.Execution; }
             finally { PropertyChanged -= VaultPasswordOwnerChanged; }
         }
     }

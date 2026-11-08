@@ -193,7 +193,7 @@ public sealed class IdleLockTests : IDisposable
 
             // Unlocking starts a fresh count.
             clock.Advance(TimeSpan.FromMinutes(20));
-            vm.Unlock.Execute(null);
+            vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.False(vm.IsLocked); Assert.Equal(TimeSpan.FromMinutes(5), vm.IdleLockDue);
 
             // Exit stops the timer.
@@ -246,7 +246,7 @@ public sealed class IdleLockTests : IDisposable
 
         // A failure raised after the idle lock began is still the error after Unlock.
         vm.Fail(new IOException("fixture"), ManagerSubsystem.Library);
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.False(vm.IsLocked);
         Assert.True(vm.ErrorNotice.Contains("could not finish", StringComparison.Ordinal), "A failure raised while the idle lock held was gone after Unlock.");
         Assert.Contains("unlocked", vm.Notice, StringComparison.Ordinal);

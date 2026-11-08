@@ -185,7 +185,7 @@ public sealed partial class ClientWindowIntegrationTests
         }
         finally { File.SetAttributes(destination, FileAttributes.Normal); }
         Assert.DoesNotContain("chosen folder", shell.ErrorNotice, StringComparison.Ordinal);
-        shell.Unlock.Execute(null); shell.RefreshDiagnostics.Execute(null);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution; shell.RefreshDiagnostics.Execute(null);
         var launchFailures = shell.DiagnosticRows.Where(row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.Launch)
             .Select(row => row.Event.ErrorType).ToArray();
         Assert.Contains("UnauthorizedAccessException", launchFailures);

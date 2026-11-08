@@ -97,7 +97,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain("not supported", shell.NativeTrialStatus, StringComparison.OrdinalIgnoreCase);
         await AssertBlockedTrialCommandAsync(shell); Assert.Empty(shell.Launches);
         // Unlock does not restart the trial, so the stop guidance stays until the user acts.
-        if (lockDashboard) { shell.Unlock.Execute(null); Assert.False(shell.IsLocked); }
+        if (lockDashboard) { shell.Unlock.Execute(null); await shell.Unlock.Execution; Assert.False(shell.IsLocked); }
         Assert.Contains("Panic or Lock", shell.NativeTrialStatus, StringComparison.Ordinal);
         // No check was running, so the cleared Settings list must not claim a check was stopped.
         Assert.Empty(shell.InstallationCandidates); Assert.Equal("Not checked", shell.InstallationObserved);
