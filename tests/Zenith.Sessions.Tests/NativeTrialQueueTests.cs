@@ -7,7 +7,7 @@ namespace Zenith.Sessions.Tests;
 
 // In-memory consent, queue and callback mechanics only. No browser, OS inventory, credentials
 // or native process is used; every receipt and claimed observation below is synthetic.
-public sealed class NativeTrialQueueTests
+public sealed partial class NativeTrialQueueTests
 {
     private static AccountProfile Profile(string name = "Synthetic trial") => AccountProfile.Create(name)
         with { Revision = 5, PreferredPlaceId = 1818 };

@@ -6,6 +6,25 @@ namespace Zenith.Sessions.Tests;
 
 public sealed partial class ClientWindowIntegrationTests
 {
+    [Fact]
+    public Task ThrowingSignedServerCancellationCannotRetainOtherPrivateAccountObservations()=>OnUi(async()=>
+    {
+        var servers=new ServerData{Hold=new(TaskCreationOptions.RunContinuationsAsynchronously)};
+        await using var shell=await HealthShell(new HealthSignIn(),new HealthClient(),1,accountData:new ObservationData(),signedServers:servers);
+        shell.SelectedAccount=HealthRow(shell,1);shell.ServerBrowser.UsePreferredPlace(123);
+        shell.RefreshPrivateDetails.Execute(null);await shell.RefreshPrivateDetails.Execution;
+        Assert.Contains("938572614",shell.PrivateAccountDetails);
+        shell.BrowseSignedServers.Execute("OwnedPrivate");await servers.Entered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        using var registration=servers.LastToken.Register(()=>throw new InvalidOperationException("Synthetic cancellation callback"));
+        try
+        {
+            var clear=typeof(Zenith.Sessions.App.ShellViewModel).GetMethod("ClearPrivateAccountObservations",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!;
+            Assert.Null(Record.Exception(()=>clear.Invoke(shell,null)));
+            Assert.DoesNotContain("938572614",shell.PrivateAccountDetails);
+            Assert.Empty(shell.OwnedPrivateServers);
+        }
+        finally{servers.Hold.SetResult();await shell.BrowseSignedServers.Execution;}
+    });
     private sealed class ServerData : IRobloxSignedInServerClient
     {
         public readonly TaskCompletionSource Entered=new(TaskCreationOptions.RunContinuationsAsynchronously);

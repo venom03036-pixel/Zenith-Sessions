@@ -8,7 +8,8 @@ public sealed record LaunchAccountBinding(long UserId,long AuthorizationGenerati
 // PlaceId is the frozen effective target. Explicit targets never fall back to a changed profile
 // preference; only nonsecret place/job values are persisted, never the original link or access codes.
 public sealed record LaunchIntent(Guid OperationId,Guid ProfileId,long ProfileRevision,long UserId,long PlaceId,int Priority,DateTimeOffset RequestedUtc,
-    long AuthorizationGeneration=0,string? RequestedJobId=null,RobloxServerKind RequestedServerKind=RobloxServerKind.Unknown,bool HasExplicitDestination=false);
+    long AuthorizationGeneration=0,string? RequestedJobId=null,RobloxServerKind RequestedServerKind=RobloxServerKind.Unknown,bool HasExplicitDestination=false,
+    [property:System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)] PrivateServerReference? PrivateServer=null);
 /// <summary>
 /// A provider-reported process instance only, never account, arrival or current liveness proof.
 /// RecordedUtc is when the coordinator retained the receipt, not a fresh process observation.
@@ -253,9 +254,10 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         try
         {
             RequireHealthy();
-            if(trial && (_provider is not IPreparingLaunchProvider || _provider.AccountLaunch.State!=CapabilityState.Unverified
+            if(trial && (_provider is not IPreparingLaunchProvider || (_provider.AccountLaunch.State!=CapabilityState.Unverified && !(requestedDestination?.ServerKind==RobloxServerKind.Private && _provider.AccountLaunch.State==CapabilityState.Supported))
                 || binding is not {UserId:>0,AuthorizationGeneration:>0} || requestedDestination is null))
                 throw new LaunchQueueException("A native trial needs an unverified preparing provider, a saved account binding and an explicit destination.");
+            if(!trial && requestedDestination?.ServerKind==RobloxServerKind.Private) throw new LaunchQueueException("Private servers require an explicit attended trial.");
             if(generation!=Interlocked.Read(ref _generation)) throw new LaunchQueueException("The launch queue was stopped while this request was waiting. Choose a fresh request after reviewing the stop.");
             ct.ThrowIfCancellationRequested();
             if(_operations.Any(o=>o.Intent.ProfileId==profile.Id && IsPendingOrUnresolved(o))) throw new LaunchQueueException("This account already has pending or unresolved launch work.");
@@ -263,10 +265,10 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(binding is { UserId:<=0 } or { AuthorizationGeneration:<=0 }) throw new ArgumentException("A launch binding must identify a positive verified user and authorization generation.");
             // Copy only validated nonsecret values. The original link and opaque access/share codes
             // never enter the queue; later profile edits or UI selections cannot retarget this request.
-            var destination=requestedDestination is null?null:new RobloxRequestedDestination(requestedDestination.PlaceId,requestedDestination.JobId,requestedDestination.ServerKind);
+            var destination=requestedDestination is null?null:new RobloxRequestedDestination(requestedDestination.PlaceId,requestedDestination.JobId,requestedDestination.ServerKind,requestedDestination.PrivateServer);
             var now=_time.GetUtcNow();var intent=new LaunchIntent(Guid.NewGuid(),profile.Id,profile.Revision,binding?.UserId??0,
                 destination?.PlaceId??profile.PreferredPlaceId??0,profile.Priority,now,binding?.AuthorizationGeneration??0,
-                destination?.JobId,destination?.ServerKind??RobloxServerKind.Unknown,destination is not null);
+                destination?.JobId,destination?.ServerKind??RobloxServerKind.Unknown,destination is not null,destination?.PrivateServer);
             var operation=CreateQueuedOperation(intent,trial,ct);
             if(generation!=Interlocked.Read(ref _generation)) throw new LaunchQueueException("The launch queue was stopped before this request could be committed. Choose a fresh request after reviewing the stop.");
             ct.ThrowIfCancellationRequested();
@@ -430,7 +432,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
                     +(policy is {MainAccountProfileId:{ } main} && main==o.Intent.ProfileId?policy.MainAccountPriorityBoost:0))
                 .ThenBy(o=>o.Intent.RequestedUtc).ThenBy(o=>o.Intent.OperationId).FirstOrDefault();
             if(chosen is null) return;
-            if(!ProviderPermits(chosen.Intent.OperationId)) { await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.ProviderUnavailable,ct).ConfigureAwait(false);return; }
+            if(!ProviderPermits(chosen.Intent)) { await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.ProviderUnavailable,ct).ConfigureAwait(false);return; }
             if(chosen.Intent.UserId<=0 || chosen.Intent.AuthorizationGeneration<=0) { await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.IdentityUnverified,ct).ConfigureAwait(false);return; }
             chosen=await PinLegacyResourceBudgetAsync(chosen,generation,ct).ConfigureAwait(false);
             if(chosen is null)return;
@@ -504,7 +506,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             finally {_serial.Release();}
             var activeToken=_activeStop!.Token;
             boundary=new(chosen.Intent,_validate,()=>!_paused&&!_unhealthy&&!activeToken.IsCancellationRequested
-                &&generation==Interlocked.Read(ref _generation)&&!_stop.IsCancellationRequested&&ProviderPermits(chosen.Intent.OperationId)
+                &&generation==Interlocked.Read(ref _generation)&&!_stop.IsCancellationRequested&&ProviderPermits(chosen.Intent)
                 &&ReadPacing().Ready,()=>AdmissionForStart(reserved,chosen.Intent.OperationId));
         }
         using var closeBoundary=boundary;
@@ -737,11 +739,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     {
         if(intent.PlaceId<0 || (requirePlace || intent.HasExplicitDestination) && intent.PlaceId<=0
             || !Enum.IsDefined(intent.RequestedServerKind)) return false;
+        if(intent.RequestedServerKind==RobloxServerKind.Private) return intent.HasExplicitDestination && intent.PrivateServer is {IsValid:true} && intent.RequestedJobId is null;
+        if(intent.PrivateServer is not null) return false;
         if(!intent.HasExplicitDestination) return intent.RequestedJobId is null && intent.RequestedServerKind==RobloxServerKind.Unknown;
         if(intent.RequestedJobId is null) return intent.RequestedServerKind==RobloxServerKind.Unknown;
         return RobloxRequestedDestination.TryNormalizeJobId(intent.RequestedJobId,out var normalized) && intent.RequestedJobId==normalized;
     }
     private static bool MatchesRequestedArrival(LaunchIntent intent,ProviderLaunchResult? observed) => observed is { Status:ProviderLaunchStatus.VerifiedArrival,ProcessId:>0,ProcessStartUtcTicks:>0 }
+        && intent.RequestedServerKind!=RobloxServerKind.Private
         && observed.ObservedUserId==intent.UserId && observed.ObservedPlaceId==intent.PlaceId
         && (intent.RequestedJobId is null || RobloxRequestedDestination.TryNormalizeJobId(observed.ObservedJobId,out var normalized) && normalized==intent.RequestedJobId);
     public ValueTask DisposeAsync()=>new(_dispose??=StopAsync());

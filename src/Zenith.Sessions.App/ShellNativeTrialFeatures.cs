@@ -26,9 +26,12 @@ public sealed partial class ShellViewModel
         :_nativeLaunch.Selected?candidate.ExecutablePath
         :"The selected installation is not usable for a native trial; see the trial status.";
     // While a recorded trial has turned ordinary launching on (R-launch-0) the queue refuses a trial, so none is offered.
-    public bool CanRunNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
-        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy&&!IsNativeLaunchVerified
-        &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0}&&ServerBrowser.ReadyDestination is {PlaceId:>0};
+    private bool CanPrepareNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
+        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
+        &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0};
+    public bool CanRunNativeTrial=>CanPrepareNativeTrial&&!IsNativeLaunchVerified&&ServerBrowser.ReadyDestination is {PlaceId:>0};
+    public bool CanRunPrivateNativeTrial=>CanPrepareNativeTrial&&SavedNativeLaunchMode==NativeLaunchMode.OfficialPage
+        &&ShareLink is {SelectedSaved: {Revision:>0} saved}&&ShareLink.Saved.Contains(saved);
     public AsyncCommand StartNativeTrial {get;private set;}=null!;
     public Command CancelNativeTrial {get;private set;}=null!;
 
@@ -53,12 +56,12 @@ public sealed partial class ShellViewModel
         /// <summary>What confirming does in the saved mode: open the page and wait for Play, or request a ticket and start the player.</summary>
         public string LaunchModeSummary {get;}
         internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version,string defaultClientArguments="",
-            NativeLaunchMode mode=NativeLaunchMode.OfficialPage)
+            NativeLaunchMode mode=NativeLaunchMode.OfficialPage,string? privateLabel=null)
         {
             Profile=row.Profile;PlayerId=row.KnownUserId!.Value;AuthorizationGeneration=row.AuthorizationGeneration!.Value;
-            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;Mode=mode;
+            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind,destination.PrivateServer);Installation=installation;Epoch=epoch;Version=version;Mode=mode;
             SelectionSummary=$"{row.Label} · expected player {PlayerId} · place {Destination.PlaceId}"
-                +(Destination.JobId is { } job?$" · server {job}":" · any server");
+                +(Destination.PrivateServer is not null?" · saved private server “"+privateLabel+"” · arrival remains unverified":Destination.JobId is { } job?$" · server {job}":" · any server");
             // A bootstrapper installation (R-launch-17): Zenith starts the bootstrapper, which starts the player with its own settings.
             bool bootstrapper=BootstrapperProducts.IsBootstrapper(installation.Product);
             InstallationSummary=bootstrapper
@@ -82,6 +85,22 @@ public sealed partial class ShellViewModel
         return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments,
             SavedNativeLaunchMode);
     }
+    public NativeTrialReview? CapturePrivateNativeTrialReview()
+    {
+        _nativeTrialReview=null;
+        if(!CanRunPrivateNativeTrial || SelectedAccount is not { } selected || !Accounts.Contains(selected)
+            ||ShareLink.SelectedSaved is not { } saved || SelectedInstallation?.Candidate is not { } installation)return null;
+        return _nativeTrialReview=new(selected,new(saved.PlaceId,null,RobloxServerKind.Private,new(saved.Id,saved.Revision)),
+            installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments,NativeLaunchMode.OfficialPage,saved.Name+" · …"+saved.Last4);
+    }
+    private void PrivateTrialSelectionChanged(object? sender,PropertyChangedEventArgs args)
+    { if(args.PropertyName==nameof(ShareLinkViewModel.SelectedSaved)) { InvalidateNativeTrialReview();Raise(nameof(CanRunPrivateNativeTrial)); } }
+    private void StopPrivateTrialForRemoval()
+    {
+        // Always fence before storage: a just-committed request may not have reached the UI snapshot yet.
+        try { FenceNativeTrial("Private-server trial stopped because a saved server is being removed. Review the queue before resuming."); }
+        finally { _launchQueue.SignalPanic(); }
+    }
     public void DiscardNativeTrialReview(NativeTrialReview review)
     {Interlocked.CompareExchange(ref _nativeTrialReview,null,review);}
 
@@ -89,7 +108,7 @@ public sealed partial class ShellViewModel
     {
         StartNativeTrial=new(StartNativeTrialAsync,error=>Fail(error,ManagerSubsystem.Launch));
         CancelNativeTrial=new(_=>{FenceNativeTrial(NativeTrialStoppedByUser);_launchQueue.SignalPanic();});
-        PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;
+        PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;ShareLink.PropertyChanged+=PrivateTrialSelectionChanged;
         InitializeLaunchEvidenceFeatures();InitializeNativeLaunchVerificationFeatures();
     }
     private void NativeTrialOwnerChanged(object? sender,PropertyChangedEventArgs args)
@@ -188,7 +207,7 @@ public sealed partial class ShellViewModel
     }
     private void RefreshNativeTrialFeatures()
     {
-        Raise(nameof(CanRunNativeTrial));Raise(nameof(CanRefreshInstallations));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));
+        Raise(nameof(CanRunNativeTrial));Raise(nameof(CanRunPrivateNativeTrial));Raise(nameof(CanRefreshInstallations));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));
         if(!_ready||IsLocked||_shuttingDown||_nativeLaunch.IsBusy||IsAuthorizing||!_nativeMetadataRefresh.IsCompleted
             ||Interlocked.Exchange(ref _nativeMetadataPending,0)==0)return;
         // Reopen only the nonsecret projection after an owned preparation may rotate a session.
@@ -201,13 +220,15 @@ public sealed partial class ShellViewModel
         catch(OperationCanceledException)when(_lifetime.IsCancellationRequested){}
         catch(Exception error){_diagnostics.RecordFailure(ManagerSubsystem.Library,error.GetType());NativeTrialStatus="Refresh the account list to see the latest saved sign-in state. Existing files were preserved.";}
     }
-    private bool IsNativeTrialReviewCurrent(NativeTrialReview review)=>CanRunNativeTrial
+    private bool IsNativeTrialReviewCurrent(NativeTrialReview review)=>(review.Destination.PrivateServer is not null?CanRunPrivateNativeTrial:CanRunNativeTrial)
         &&review.Epoch==Interlocked.Read(ref _nativeTrialEpoch)&&review.Version==Interlocked.Read(ref _nativeReviewVersion)
         &&SelectedAccount is { } selected && Accounts.Contains(selected) && selected.Profile==review.Profile
         &&selected.KnownUserId==review.PlayerId&&selected.AuthorizationGeneration==review.AuthorizationGeneration
         &&SelectedInstallation?.Candidate==review.Installation
-        &&ServerBrowser.ReadyDestination is { } destination&&destination.PlaceId==review.Destination.PlaceId
-        &&destination.JobId==review.Destination.JobId&&destination.ServerKind==review.Destination.ServerKind;
+        &&(review.Destination.PrivateServer is { } reference
+            ? ShareLink.SelectedSaved is { } saved&&saved.Id==reference.Id&&saved.Revision==reference.Revision&&saved.PlaceId==review.Destination.PlaceId
+            : ServerBrowser.ReadyDestination is { } destination&&destination.PlaceId==review.Destination.PlaceId
+                &&destination.JobId==review.Destination.JobId&&destination.ServerKind==review.Destination.ServerKind);
     private const string NativeTrialReviewUnavailable="This trial review changed or is no longer available. Review the selected account and destination again before starting.";
     // A review change cancelled a start that was still checking Roblox's release or the saved sign-in: the user has just read
     // that the trial is being checked, so the card must say it was not queued rather than show what it said before the start.
@@ -220,7 +241,7 @@ public sealed partial class ShellViewModel
     private async Task StartNativeTrialAsync(object? parameter)
     {
         var pending=Interlocked.Exchange(ref _nativeTrialReview,null);
-        if(!CanRunNativeTrial)return;
+        if(parameter is NativeTrialReview {Destination.PrivateServer:not null} ? !CanRunPrivateNativeTrial : !CanRunNativeTrial)return;
         if(parameter is not NativeTrialReview review||!ReferenceEquals(pending,review)||!IsNativeTrialReviewCurrent(review))
         {RejectNativeTrialReview();return;}
         using var stop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
@@ -241,7 +262,7 @@ public sealed partial class ShellViewModel
             _preserveStopNotice=false;
             request=await _launchQueue.EnqueueTrialAsync(review.Profile,stop.Token,new(review.PlayerId,review.AuthorizationGeneration),review.Destination);
             // The one request that may later be recorded as verified (R-launch-0), with the mode and installation it actually uses.
-            _lastTrialStart=(request.Intent.OperationId,review.Mode,review.Installation.Product);
+            _lastTrialStart=review.Destination.PrivateServer is null?(request.Intent.OperationId,review.Mode,review.Installation.Product):null;
             if(stop.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)
                 ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))
             {await CancelAbandonedNativeTrialAsync(request);return;}
@@ -282,7 +303,7 @@ public sealed partial class ShellViewModel
     {
         InvalidateNativeTrialReview();
         if(_nativeReviewAccount is not null)_nativeReviewAccount.PropertyChanged-=NativeTrialAccountChanged;
-        PropertyChanged-=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged-=NativeTrialDestinationChanged;
+        PropertyChanged-=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged-=NativeTrialDestinationChanged;ShareLink.PropertyChanged-=PrivateTrialSelectionChanged;
         await StartNativeTrial.Execution;await _nativeMetadataRefresh;
         _launchEvidenceExportStop?.Cancel();await ExportLaunchEvidence.Execution;
         try{await _nativeLaunch.DisposeAsync();}

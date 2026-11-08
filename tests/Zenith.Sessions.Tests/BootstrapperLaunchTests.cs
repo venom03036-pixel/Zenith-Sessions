@@ -441,6 +441,24 @@ public sealed partial class ClientWindowIntegrationTests
         []);
 
     [Fact]
+    public Task AcceptingABootstrapperPublisherCannotSelectItForNativeTrials() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = BootstrapperSnapshot() };
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(),
+            installationDiscovery: discovery, executableTrust: new BootstrapperTrustProbe());
+        await shell.InitializeAsync();
+        shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
+        shell.SelectedInstallation = Assert.Single(shell.InstallationCandidates, row => row.Candidate.Product == ClientInstallationProduct.Bloxstrap);
+        shell.VerifyInstallationPublisher.Execute(null); await shell.VerifyInstallationPublisher.Execution;
+        Assert.True(shell.CanAcceptBootstrapperPublisher);
+        shell.AcceptBootstrapperPublisher.Execute(null); await shell.AcceptBootstrapperPublisher.Execution;
+        Assert.True(shell.CanForgetBootstrapperPublisher);
+        var provider = Assert.IsType<WindowsConfiguredNativeLaunchProvider>(ReportedField(shell, "_nativeLaunch").GetValue(shell));
+        Assert.False(provider.Selected); // Actual launch eligibility, independent of deferred-status wording.
+        Assert.False(shell.CanRunNativeTrial);
+    });
+
+    [Fact]
     public Task BootstrapperPublisherAcceptanceStaysInspectionOnlyUntilExactPlayerAssociationIsImplemented() => OnUi(async () =>
     {
         var discovery = new InstallationProbe { Override = BootstrapperSnapshot() }; var trust = new BootstrapperTrustProbe();

@@ -78,7 +78,7 @@ public sealed class LaunchRow(LaunchOperation operation) : Observable
     /// <summary>A recovered request that never started a client (Blocked/Interrupted). It can only be cancelled, so it never says review.
     /// The account list uses the same words.</summary>
     internal const string NotStartedInterrupted="Not started · interrupted";
-    public string RequestedDestination=>$"Place {Operation.Intent.PlaceId}"+(Operation.Intent.RequestedJobId is { } job?$" · {job}":" · server not specified");
+    public string RequestedDestination=>$"Place {Operation.Intent.PlaceId}"+(Operation.Intent.PrivateServer is not null?" · saved private server (arrival unverified)":Operation.Intent.RequestedJobId is { } job?$" · {job}":" · server not specified");
     public string ProcessReceipt=>Operation.ProcessReceipt is{ } receipt?$"PID {receipt.ProcessId} · start {new DateTimeOffset(receipt.ProcessStartUtcTicks,TimeSpan.Zero).ToLocalTime():T} · not a liveness check":"No process-start receipt";
     public string ResourceEstimate=>Operation.ResourceBudget is { } budget
         ? $"Pinned estimate: {budget.PhysicalBytes/(double)CapacityPolicy.GiB:0.00} GiB physical / {budget.CommitBytes/(double)CapacityPolicy.GiB:0.00} GiB commit"
@@ -365,7 +365,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _signedServerClient=signedServerClient??new RobloxSignedInServerClient();
         // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
         _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),
-            launchTickets:_launchTicketClient,accountData:_accountDataClient,signedServers:_signedServerClient);
+            launchTickets:_launchTicketClient,accountData:_accountDataClient,signedServers:_signedServerClient,privateServers:_privateServerStore);
         _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);

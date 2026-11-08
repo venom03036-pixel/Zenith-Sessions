@@ -161,7 +161,9 @@ public sealed class LaunchResourceBudgetStoreTests : IDisposable
     public async Task UnknownFuturePrimaryOrBackupCannotBeOverwrittenOrSelectedAsAnOlderFallback(string location)
     {
         using var store = new LaunchQueueStore(_root); await SeedBackup(store);
-        const string future = "{\"Version\":9,\"Queue\":{\"FutureResourceCosts\":true}}";
+        // Version 9 now carries private-server intent. Keep this an actually unsupported
+        // generation so the preservation assertions continue to test the future-format fence.
+        const string future = "{\"Version\":2147483647,\"Queue\":{\"FutureResourceCosts\":true}}";
         if (location == "primary") await Write(future);
         else
         {

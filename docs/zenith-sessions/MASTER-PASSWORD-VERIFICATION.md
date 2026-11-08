@@ -27,6 +27,10 @@ Independent sensitive-code review, integration regression, packaged-build checks
 
 Portable password-protected backup remains the next independent implementation. Existing metadata export remains unchanged and excludes credentials. Its future import must issue fresh local identities/generations, verify reusable sessions, preserve newer local sign-ins, and never trust launch qualifications, executable paths, publisher approvals, automatic launch or webhook secrets.
 
+## Integrated checkpoint
+
+Integration retained all existing account observations, update, diagnostics, News and process-control owners while adding password lock/disposal. Dashboard unlock still restores the saved update-check schedule. The merged password/idle-lock/shutdown checks passed **85/85**, no skips (`artifacts/completion-integration/password-integrated.trx`). Follow-up review of legacy envelopes and the Lock/dispatch boundary remains separate from this checkpoint.
+
 ## Review follow-up
 
 The legacy v1 format is readable only as sign-in-required metadata with credential fields removed and no verified contextual identity. It cannot be promoted into a usable v3 grant. A valid legacy record now produces a typed, actionable reauthenticate/remove-first result before the migration marker is written; its bytes remain unchanged. This deliberately preserves the existing legacy trust boundary.
@@ -37,6 +41,3 @@ Dispatch acceptance is recorded under the same short key gate as Lock. A request
 
 The same new legacy and accepted-dispatch fixtures were then executed against the pre-repair `3f890d9` vault implementation: `password-review-before.trx` records both intended behavioral failures. `Run-BeforeReviewProof.ps1` restores the exact fixed source bytes in its finally block. Rebuilding the fixed implementation passes both again in `artifacts/sessions-tests-0.51-d4-portable/portable-codec-and-master-after.trx` (16/16 combined cases, including 14 independent portable-codec cases). No compile failure was counted as the failing-before proof.
 
-## Integrated checkpoint
-
-Integration retained all existing account observations, update, diagnostics, News and process-control owners while adding password lock/disposal. Dashboard unlock still restores the saved update-check schedule. The merged password/idle-lock/shutdown checks passed **85/85**, no skips (`artifacts/completion-integration/password-integrated.trx`). Follow-up review of legacy envelopes and the Lock/dispatch boundary remains separate from this checkpoint.

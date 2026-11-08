@@ -87,7 +87,8 @@ public sealed record NativeLaunchVerification(string Mode, string Product, DateT
     /// </summary>
     public static bool CanRecord(LaunchOperation? started, NativeTrialEvidenceView? evidence)
     {
-        if (started is not { State: LaunchState.ClientStartedUnverified, ProcessReceipt: { IsValid: true } receipt } || evidence is null) return false;
+        if (started is not { State: LaunchState.ClientStartedUnverified, ProcessReceipt: { IsValid: true } receipt } || evidence is null
+            || started.Intent.PrivateServer is not null) return false;
         var intent = started.Intent;
         if (intent.UserId <= 0 || intent.PlaceId <= 0 || evidence.OperationId != intent.OperationId) return false;
         if (evidence.ProcessReceipt is not { } seen || seen.ProcessId != receipt.ProcessId || seen.ProcessStartUtcTicks != receipt.ProcessStartUtcTicks) return false;

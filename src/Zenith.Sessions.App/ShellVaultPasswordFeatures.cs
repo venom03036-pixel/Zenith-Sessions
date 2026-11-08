@@ -188,8 +188,11 @@ public sealed partial class ShellViewModel
     }
     private async Task DisposeVaultPasswordAsync()
     {
-        StopShutdownStep(StopVaultPasswordWork);
-        try { await _vaultPasswordWork; }
-        finally { PropertyChanged -= VaultPasswordOwnerChanged; }
+        try { StopShutdownStep(StopVaultPasswordWork); }
+        finally
+        {
+            try { await _vaultPasswordWork; }
+            finally { PropertyChanged -= VaultPasswordOwnerChanged; }
+        }
     }
 }

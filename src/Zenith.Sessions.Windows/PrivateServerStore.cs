@@ -95,6 +95,30 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
         return new ProtectedPrivateServerCode(item.Code);
     }, ct);
 
+    public async Task<PrivateServerLaunchLease> AcquireForLaunchAsync(PrivateServerReference reference, long placeId, CancellationToken ct)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        if (!reference.IsValid || placeId <= 0) throw new PrivateServerConflictException();
+        ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+        await _writer.WaitAsync(ct).ConfigureAwait(false);
+        FileStream? ownership = null;
+        try
+        {
+            ct.ThrowIfCancellationRequested(); ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);
+            Directory.CreateDirectory(_root);
+            ownership = await AcquireFileLockAsync(ct).ConfigureAwait(false);
+            var document = await LoadAsync(ct).ConfigureAwait(false);
+            var item = Array.Find(document.Items, item => item.Id == reference.Id && item.Revision == reference.Revision && item.PlaceId == placeId)
+                ?? throw new PrivateServerConflictException();
+            ct.ThrowIfCancellationRequested();
+            var heldFile = ownership;
+            var lease = new PrivateServerLaunchLease(reference, placeId, new ProtectedPrivateServerCode(item.Code),
+                () => { try { heldFile.Dispose(); } finally { _writer.Release(); } });
+            ownership = null; return lease;
+        }
+        catch { try { ownership?.Dispose(); } finally { _writer.Release(); } throw; }
+    }
+
     private async Task<T> SerializedAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct)
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this); await _writer.WaitAsync(ct).ConfigureAwait(false);

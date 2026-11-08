@@ -26,6 +26,18 @@ public sealed class NativeTrialEvidenceTests
     { Assert.False(view.CanAuthorizeAccountAction); Assert.False(view.ArrivalVerified); Assert.False(view.CanRouteInput); }
 
     [Fact]
+    public void MatchingPlayerAndPlaceCannotQualifyPrivateServerArrivalOrOrdinaryLaunching()
+    {
+        var ordinary=Operation(null);
+        var operation=ordinary with {Intent=ordinary.Intent with{RequestedServerKind=RobloxServerKind.Private,PrivateServer=new(Guid.NewGuid(),2)}};
+        var view=Project(operation,Desktop(Row()),Facts());
+        Assert.Equal(NativeTrialReportedStatus.ReportedMatchUnverified,view.ReportedUser.Status);
+        Assert.Equal(NativeTrialEvidenceOutcome.Unknown,view.Outcome);
+        Assert.Contains("private server",view.Explanation);
+        Assert.False(NativeLaunchVerification.CanRecord(operation,view));NoAuthority(view);
+    }
+
+    [Fact]
     public void ExactObservedProcessAndMatchingReportedIdsRemainUnverifiedAndKeepOriginalTimes()
     {
         var operation = Operation(); var facts = Facts(); var view = Project(operation, Desktop(Row()), facts);

@@ -152,7 +152,11 @@ public sealed partial class ShellViewModel
         _signedServerCursor=null; _signedServerCursors.Clear(); _signedPublicServers=[]; _ownedPrivateServers=[];
         _selectedSignedServer=null; _selectedOwnedServer=null; _privateServerName="";
         _signedServerStatus="No signed-in server observations retained.";
-        if (_readingSignedServers) _authorizationStop?.Cancel();
+        // A token subscriber can throw after the stop is set. That must not skip the account
+        // details/friendship clears owned by our caller or the remaining notifications.
+        if (_readingSignedServers)
+            try { _authorizationStop?.Cancel(); }
+            catch(Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.SignIn,error.GetType()); }
         foreach(string name in new[]{nameof(SignedPublicServers),nameof(OwnedPrivateServers),nameof(SelectedSignedServer),nameof(SelectedOwnedServer),nameof(PrivateServerName),nameof(SignedServerStatus),nameof(CanNextSignedServers)})
             try { Raise(name); } catch(Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.SignIn,error.GetType()); }
     }

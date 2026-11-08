@@ -119,7 +119,7 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
         foreach(var property in document.RootElement.EnumerateObject())
             if(property.NameEquals("Version")) {versions++;version=property.Value;}
         if(versions>1 || versions==1 && version.ValueKind==JsonValueKind.Number
-            && (!version.TryGetInt32(out int found) || found is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8)))
+            && (!version.TryGetInt32(out int found) || found is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9)))
             throw new InvalidDataException("The launch queue has an unsupported format; it was preserved without replay or fallback.",new UnsupportedQueueFormatException());
         // Preparation begins at v5, explicit closure acknowledgment at v6, pinned resource budgets at v7 and a receipt's
         // browser tracker at v8 (written only when a receipt carries one, so other queues stay v7). Inspect bounded properties
@@ -132,7 +132,7 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
         ct.ThrowIfCancellationRequested();
         var envelope=document.RootElement.Deserialize<Envelope>(Json);
         ct.ThrowIfCancellationRequested();
-        if(envelope is not { Version:1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 }) throw new InvalidDataException("The saved launch queue is invalid.");
+        if(envelope is not { Version:1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9 }) throw new InvalidDataException("The saved launch queue is invalid.");
         if(envelope.Queue is null) throw new InvalidDataException("The saved launch queue is invalid.");
         LaunchCoordinator.ValidateSnapshot(envelope.Queue);
         if(envelope.Version<4)
@@ -157,7 +157,7 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
             if(reader.TokenType!=JsonTokenType.PropertyName||reader.CurrentDepth!=1||!reader.ValueTextEquals("Version"u8))continue;
             if(++versions>1)throw UnsupportedVersion();
             if(!reader.Read())return;
-            if(reader.TokenType==JsonTokenType.Number&&(!reader.TryGetInt32(out int version)||version is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8)))
+            if(reader.TokenType==JsonTokenType.Number&&(!reader.TryGetInt32(out int version)||version is not (1 or 2 or 3 or 4 or 5 or 6 or 7 or 8 or 9)))
                 throw UnsupportedVersion();
             supportedVersion=reader.TokenType==JsonTokenType.Number;
         }
@@ -165,7 +165,7 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
     }
     private static bool HasUnsupportedSemanticMarkers(JsonElement root,int format)
     {
-        if(format>=8)return false;
+        if(format>=9)return false;
         foreach(var queue in root.EnumerateObject())
         {
             if(!queue.NameEquals("Queue") || queue.Value.ValueKind!=JsonValueKind.Object) continue;
@@ -177,9 +177,13 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
                     if(operation.ValueKind!=JsonValueKind.Object) continue;
                     foreach(var field in operation.EnumerateObject())
                     {
+                        if(format<9 && field.NameEquals("Intent") && field.Value.ValueKind==JsonValueKind.Object)
+                            foreach(var intent in field.Value.EnumerateObject())
+                                if(intent.NameEquals("PrivateServer") && intent.Value.ValueKind!=JsonValueKind.Null
+                                    || intent.NameEquals("RequestedServerKind") && Marker(intent.Value,(int)RobloxServerKind.Private,nameof(RobloxServerKind.Private))) return true;
                         if(format<7 && field.NameEquals("ResourceBudget") && field.Value.ValueKind!=JsonValueKind.Null)return true;
                         // Every occurrence, like the fields above, so a duplicate cannot hide a tracker from a format before 8.
-                        if(field.NameEquals("ProcessReceipt") && field.Value.ValueKind==JsonValueKind.Object)
+                        if(format<8 && field.NameEquals("ProcessReceipt") && field.Value.ValueKind==JsonValueKind.Object)
                             foreach(var receipt in field.Value.EnumerateObject())
                                 if(receipt.NameEquals("BrowserTrackerId") && receipt.Value.ValueKind!=JsonValueKind.Null)return true;
                         if(format<5 && field.NameEquals("State") && Marker(field.Value,(int)LaunchState.Preparing,nameof(LaunchState.Preparing))) return true;
@@ -284,7 +288,7 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
                 ownsTemporary=true;
                 // Format 8 only when a receipt carries a tracker: earlier builds keep reading every other queue,
                 // and reject (and preserve) one they cannot represent instead of dropping the tracker.
-                int format=snapshot.Operations.Any(o=>o.ProcessReceipt?.BrowserTrackerId is not null)?8:7;
+                int format=snapshot.Operations.Any(o=>o.Intent.PrivateServer is not null)?9:snapshot.Operations.Any(o=>o.ProcessReceipt?.BrowserTrackerId is not null)?8:7;
                 await JsonSerializer.SerializeAsync(file,new Envelope(format,snapshot),Json,ct).ConfigureAwait(false);
                 if(file.Length>1048576) throw new InvalidDataException("The launch queue exceeds its storage limit.");
                 await file.FlushAsync(ct).ConfigureAwait(false);file.Flush(true);

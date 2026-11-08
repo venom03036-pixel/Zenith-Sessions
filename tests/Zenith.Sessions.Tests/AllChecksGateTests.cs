@@ -21,6 +21,9 @@ public sealed class AllChecksGateTests : IDisposable
         using var record=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(_root,"checks.json")));
         Assert.Equal("Planned",record.RootElement.GetProperty("Status").GetString());
         Assert.False(record.RootElement.GetProperty("ReleaseReady").GetBoolean());
+        Assert.True(record.RootElement.GetProperty("SourceStart").GetProperty("Available").GetBoolean());
+        Assert.Equal(40,record.RootElement.GetProperty("SourceStart").GetProperty("Commit").GetString()!.Length);
+        Assert.Equal(64,record.RootElement.GetProperty("SourceStart").GetProperty("ContentSha256").GetString()!.Length);
         Assert.Equal(Paid,record.RootElement.GetProperty("ExcludedTest").GetString());
         var steps=record.RootElement.GetProperty("Steps").EnumerateArray().ToArray();
         var tests=steps.Where(step=>step.GetProperty("Name").GetString()!.EndsWith(" tests",StringComparison.Ordinal)).ToArray();
@@ -46,17 +49,22 @@ public sealed class AllChecksGateTests : IDisposable
         string scripts=Path.Combine(_root,"scripts"),output=Path.Combine(_root,"results");Directory.CreateDirectory(scripts);
         File.Copy(Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot,"scripts","Run-AllChecks.ps1"),Path.Combine(scripts,"Run-AllChecks.ps1"));
         await File.WriteAllTextAsync(Path.Combine(scripts,"Get-ZenithCheckTools.ps1"),"param([switch]$AllowDownload)\nthrow 'synthetic unavailable tools'");
+        await File.WriteAllTextAsync(Path.Combine(_root,"source.txt"),"before");
         foreach(string project in Directory.GetFiles(Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot,"tests"),"*Tests.csproj",SearchOption.AllDirectories))
         {
             string name=Path.GetFileNameWithoutExtension(project),folder=Path.Combine(_root,"tests",name);Directory.CreateDirectory(folder);
             await File.WriteAllTextAsync(Path.Combine(folder,name+".csproj"),"<Project />");
         }
-        string command="function dotnet { if($args[0] -ne 'build'){throw 'stale test command ran'}; $global:LASTEXITCODE=23; 'synthetic build failure' }; "
+        string command="function git { $global:LASTEXITCODE=0; if($args -contains 'rev-parse'){ '"+new string('a',40)+"' } elseif($args -contains 'ls-files'){ 'source.txt'+[char]0 } elseif($args -contains 'status'){ '?? source.txt' } }; "
+            +"function dotnet { if($args[0] -ne 'build'){throw 'stale test command ran'}; [IO.File]::WriteAllText("+Quote(Path.Combine(_root,"source.txt"))+",'changed during gate'); $global:LASTEXITCODE=23; 'synthetic build failure' }; "
             +"try { & "+Quote(Path.Combine(scripts,"Run-AllChecks.ps1"))+" -NoRestore -OutputDirectory "+Quote(output)+"; exit 0 } catch { $_.Exception.Message; exit 17 }";
         var result=await PowerShellScriptCompatibilityTests.RunWindowsPowerShell(_root,new Dictionary<string,string>(),"-EncodedCommand",Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
         Assert.Equal(17,result.ExitCode);
         using var record=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(output,"checks.json")));
         Assert.Equal("Failed",record.RootElement.GetProperty("Status").GetString());
+        Assert.True(record.RootElement.GetProperty("SourceChanged").GetBoolean());
+        Assert.Equal(new string('a',40),record.RootElement.GetProperty("SourceStart").GetProperty("Commit").GetString());
+        Assert.NotEqual(record.RootElement.GetProperty("SourceStart").GetProperty("ContentSha256").GetString(),record.RootElement.GetProperty("SourceEnd").GetProperty("ContentSha256").GetString());
         var steps=record.RootElement.GetProperty("Steps").EnumerateArray().ToArray();
         Assert.All(steps,step=>Assert.Equal("Failed",step.GetProperty("Status").GetString()));
         Assert.Equal(6,steps.Count(step=>step.GetProperty("ExitCode").GetInt32()==23));
