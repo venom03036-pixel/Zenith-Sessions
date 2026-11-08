@@ -73,16 +73,16 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.DoesNotContain(shell.Events,row=>row.Contains("CPU cap",StringComparison.Ordinal));
     });
 
-    // A cap lives in a Windows job only the run that created it can reach, so a run that did not exit normally leaves it for
-    // the client's lifetime: the next start names those clients and says closing them is the way out, instead of pretending.
+    // A later run can confirm process identity and job membership, but cannot read the old job's cap.
+    // A retained record can also describe an unconfirmed failed apply, so neither a cap nor a crash is proven.
     [Theory]
-    [InlineData(1,0,false,"1 client still carries the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
-        +"Windows keeps a process in its job for life, so the cap lasts until that client exits; close and reopen it to lift the cap.")]
-    [InlineData(2,0,false,"2 clients still carry the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
-        +"Windows keeps a process in its job for life, so each cap lasts until that client exits; close and reopen them to lift the caps.")]
+    [InlineData(1,0,false,"1 client may still carry a CPU cap from an earlier run of Zenith. Zenith confirmed that it is still in a Windows job, but could not read the cap. "
+        +"If a cap remains, close and reopen that client to clear it.")]
+    [InlineData(2,0,false,"2 clients may still carry CPU caps from an earlier run of Zenith. Zenith confirmed that they are still in Windows jobs, but could not read the caps. "
+        +"If caps remain, close and reopen those clients to clear them.")]
     [InlineData(0,1,false,"Zenith could not check whether 1 client an earlier run capped still runs. A cap it left lasts until that client exits.")]
     [InlineData(0,0,true,"Zenith could not read its record of the CPU caps earlier runs set (client-cpu-caps.json in the data folder), so it cannot name the clients that still carry one; such a cap lasts until that client exits. The next cap replaces the record.")]
-    public Task StartupNamesTheClientsAnEarlierRunLeftCappedOrSaysWhatItCouldNotCheck(int stillCapped,int notChecked,bool unreadable,string expected)=>OnUi(async ()=>
+    public Task StartupNamesPossibleLeftoverCapsOrSaysWhatItCouldNotCheck(int stillCapped,int notChecked,bool unreadable,string expected)=>OnUi(async ()=>
     {
         var control=new PriorityControlProbe{Leftover=new(stillCapped,notChecked,unreadable,false)};
         await using var shell=await ReadyPriority(new PriorityDesktopMonitor(1),control);

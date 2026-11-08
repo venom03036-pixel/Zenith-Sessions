@@ -4,6 +4,10 @@
 
 The current 93-item dispositions, precise live trials and owner decisions are in [ROUND4-STATUS.md](ROUND4-STATUS.md) and [ROUND4-LIVE-TRIALS.md](ROUND4-LIVE-TRIALS.md). [QUALITY_STATUS.md](QUALITY_STATUS.md) defines exact-commit acceptance; [HANDOFF.md](HANDOFF.md) describes the current code and operation boundaries. Dated checkpoints below retain their historical scope and are not cumulative completion claims. In particular, the standard-player-first/exact-executable qualification repair supersedes the earlier bootstrapper launch experiment, and the Settings update controls are now wired. Full live product and release acceptance remain unproven.
 
+## Minor guidance repair checkpoint (0.75-guidance)
+
+**PROD-BOOT-02, PROD-UI-03, CAP-11-03.** Publisher-verification summaries now state that accepting a bootstrapper publisher does not enable launches or trials in this build. Leftover CPU-cap notices distinguish confirmed job membership from an unreadable cap and avoid inferring a prior crash. Three expected failing-before cases were retained; **157 affected checks passed, 0 failed/skipped** after the wording-only repair. Provider gates, resource ownership and UI geometry are unchanged. [Exact scope and evidence](GUIDANCE-MINOR-REPAIRS.md). Integrated rechecks and attended native acceptance remain separate.
+
 ## 0.60 D9 lifecycle repair — controlled evidence
 
 For PROD-QA-03, PROD-QA-04, CAP-14-01 and PROD-QA-08, the packaged self-check now preserves a stalled owner's failure and retains shared stores until process exit, routes diagnostics/layout shutdown through the bounded helper, and makes one timeout decision. The retained partial shared-store test is completed. Focused checks: 22/22 lifecycle and package-contract cases, 50/50 synthetic session-log cases; the isolated staged package passed 43/43. The log test now waits for the replacement's complete byte boundary. Full integrated suites and actual native shutdown remain pending; release readiness is false. [Exact evidence and limitations](LIFECYCLE-REPAIR-VERIFICATION.md).
