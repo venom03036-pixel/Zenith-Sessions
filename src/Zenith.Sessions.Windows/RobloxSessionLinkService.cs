@@ -445,7 +445,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
     {
         if (identity is null || identity.UserId <= 0 || identity.Issuer != RobloxSessionIdentity.Issuer
             || identity.Subject != identity.UserId.ToString(CultureInfo.InvariantCulture) || identity.Username is not { Length: > 0 and <= 20 }
-            || identity.Username.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_'))
+            || !PublicRobloxUsername.HasValidCharacters(identity.Username))
             throw new AccountLinkException("The Roblox session identity is incomplete or inconsistent. No replacement session was saved.");
     }
     private static bool SameIdentity(AuthorizationRecord record, LinkedIdentity identity) => record.Provider == RobloxSessionIdentity.Provider

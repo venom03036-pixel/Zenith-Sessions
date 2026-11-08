@@ -418,7 +418,7 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
     {
         if (user.Username is not { Length: > 0 and <= 20 } || user.DisplayName is not { Length: > 0 and <= 100 }
             || string.IsNullOrWhiteSpace(user.DisplayName)) return false;
-        foreach (char c in user.Username) if (!(char.IsAsciiLetterOrDigit(c) || c == '_')) return false;
+        if (!PublicRobloxUsername.HasValidCharacters(user.Username)) return false;
         foreach (char c in user.DisplayName) if (char.IsControl(c) || char.GetUnicodeCategory(c) == UnicodeCategory.Format) return false;
         return true;
     }

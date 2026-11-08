@@ -104,7 +104,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
             JsonElement item = data[0];
             if (ReadId(item, "targetId") != userId) throw new InvalidPublicResponseException();
             string state = ReadText(item, "state", 32);
-            if (state is "Pending" or "InReview")
+            if (MapThumbnailState(state) == PublicRobloxThumbnailState.Pending)
                 return Deferred<PublicRobloxAvatar>("The public avatar is still being prepared.", TimeSpan.FromSeconds(30));
             if (state is "Blocked" or "Error") return Unknown<PublicRobloxAvatar>("The public avatar is unavailable.");
             if (state != "Completed") return Unknown<PublicRobloxAvatar>("The public avatar state is not supported.");
@@ -169,7 +169,8 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         return requested;
     }
 
-    // Roblox's batch thumbnail states, shared by avatar batches and game pictures. A state Roblox adds later is unavailable.
+    // Roblox's thumbnail states, shared by every thumbnail reply: headshots, game icons, game pictures and gallery pictures.
+    // A state Roblox adds later is unavailable.
     private static PublicRobloxThumbnailState MapThumbnailState(string state) => state switch
     {
         "Completed" => PublicRobloxThumbnailState.Ready,

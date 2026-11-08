@@ -205,11 +205,13 @@ public sealed class ShareLinkViewModelTests
     });
 
     // Roblox's public listing answered without the link's universe (restricted or not listed): retrying cannot help, so the
-    // status says the game cannot be opened and gives no retry advice. A failed or timed-out lookup keeps the retry advice.
+    // status says the game cannot be opened and gives no retry advice. A failed or timed-out lookup keeps the retry advice,
+    // and so does a refused or not-found request (401/403/404), which says nothing about this universe and may pass.
     public static TheoryData<string,string> UniverseLookups=>new()
     {
         {"restricted","This link's game is restricted or not publicly listed, so it cannot be opened from Zenith."},
-        {"unknown","This link's game is restricted or not publicly listed, so it cannot be opened from Zenith."},
+        {"unknown","The share link could not be checked right now. Try again later."},
+        {"not found","The share link could not be checked right now. Try again later."},
         {"failure","The share link could not be checked right now. Try again later."},
         {"deferred","The share link could not be checked right now. Try again later."}
     };
@@ -223,6 +225,7 @@ public sealed class ShareLinkViewModelTests
         {
             "restricted"=>SearchTest.Ok<IReadOnlyList<PublicRobloxGame>>(Array.Empty<PublicRobloxGame>()), // Restricted universes are left out.
             "unknown"=>new(PublicDirectoryState.Unknown,null,"The requested public game information is unavailable or restricted."),
+            "not found"=>new(PublicDirectoryState.Unknown,null,"The requested public Roblox information was not found."),
             "deferred"=>new(PublicDirectoryState.Deferred,null,"The public Roblox request timed out."),
             _=>new(PublicDirectoryState.Failure,null,"The public Roblox service could not be reached.")
         });

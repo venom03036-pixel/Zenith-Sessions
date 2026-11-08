@@ -212,9 +212,11 @@ name, creator line, playing + rating, accent border and check when it is the cur
 - `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
   (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
   `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
-  request after the signed-in resolve has finished. A listing that answers without the universe (restricted universes are
-  left out) or the directory's own Unknown answer is `NotListed`, shown as "This link's game is restricted or not publicly
-  listed, so it cannot be opened from Zenith." with no retry advice; a failed or deferred lookup stays `Unavailable`.
+  request after the signed-in resolve has finished. Only a listing that answers (200) without the universe is `NotListed`
+  (Roblox returns a restricted universe as a placeholder and leaves a missing one out), shown as "This link's game is
+  restricted or not publicly listed, so it cannot be opened from Zenith." with no retry advice. The directory's Unknown
+  answer (401/403/404 for the whole request: an edge refusal or a moved route) says nothing about the universe, so it
+  stays `Unavailable` with retry advice, like a failed or deferred lookup.
 - Friend invites (`ExperienceInvite`, `NotificationExperienceInvite`) read `experienceInviteData` /
   `notificationExperienceInviteData`: `status`, a required `placeId`, an optional `universeId` and `instanceId`. Only a
   `Valid` invite whose `instanceId` is a nonempty dashed GUID becomes `ServerInstance(placeId, jobId)`, with the job ID

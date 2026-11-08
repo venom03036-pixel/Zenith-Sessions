@@ -107,12 +107,13 @@ public sealed partial class RobloxPublicDirectory
         {
             long id = ReadId(item, "targetId");
             if (!expected.Contains(id) || result.ContainsKey(id)) throw new InvalidPublicResponseException();
-            string rawState = ReadText(item, "state", 32); Uri? imageUri = null;
-            var state = rawState switch
+            Uri? imageUri = null;
+            // The shared thumbnail-state map reads Roblox's state; the gallery keeps its own state type.
+            var state = MapThumbnailState(ReadText(item, "state", 32)) switch
             {
-                "Completed" => PublicRobloxGameGalleryState.Ready,
-                "Pending" or "InReview" => PublicRobloxGameGalleryState.Pending,
-                "Blocked" => PublicRobloxGameGalleryState.Blocked,
+                PublicRobloxThumbnailState.Ready => PublicRobloxGameGalleryState.Ready,
+                PublicRobloxThumbnailState.Pending => PublicRobloxGameGalleryState.Pending,
+                PublicRobloxThumbnailState.Blocked => PublicRobloxGameGalleryState.Blocked,
                 _ => PublicRobloxGameGalleryState.Unavailable
             };
             if (state == PublicRobloxGameGalleryState.Ready && !TryValidateAvatarUri(ReadText(item, "imageUrl", 2048), out imageUri))

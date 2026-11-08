@@ -13,14 +13,38 @@ namespace Zenith.Sessions.Tests;
 public sealed class ViewModelTests : IDisposable
 {
     private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-viewmodel-tests-"+Guid.NewGuid().ToString("N"));
-    private async Task CheckAsync(Func<ShellViewModel,Task> check)
+    private Task CheckAsync(Func<ShellViewModel,Task> check)=>CheckAsync(check,TimeSpan.FromSeconds(15));
+    // A check that overruns its limit is stopped the way the app exits (DisposeAsync cancels and awaits every library
+    // operation, such as an export writing its .tmp file) and then awaited, so its own files close too. Abandoning it
+    // left that work writing on the dispatcher thread while Dispose deleted the folder, and into later tests.
+    private async Task CheckAsync(Func<ShellViewModel,Task> check,TimeSpan limit)
     {
+        var stopLimit=TimeSpan.FromSeconds(15);
         await OnDispatcherAsync(async ()=>
         {
             await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
-            await vm.InitializeAsync(); Assert.Equal("Settings saved",vm.SaveStatus);
-            await check(vm);
-        }).WaitAsync(TimeSpan.FromSeconds(15));
+            async Task RunAsync() { await vm.InitializeAsync(); Assert.Equal("Settings saved",vm.SaveStatus); await check(vm); }
+            var checking=RunAsync();
+            using(var finished=new CancellationTokenSource())
+            {
+                if(await Task.WhenAny(checking,Task.Delay(limit,finished.Token))==checking) { finished.Cancel(); await checking; return; }
+            }
+            await vm.DisposeAsync();
+            Exception? afterStop=null;
+            try { await checking.WaitAsync(stopLimit); } catch(Exception ex) { afterStop=ex; }
+            string outcome=checking.IsCompleted ? "the check then stopped" : $"the check was still running {stopLimit.TotalSeconds:0} s later";
+            throw new TimeoutException($"The check did not finish within {limit.TotalSeconds:0.###} s. Zenith Sessions was shut down and {outcome}.",afterStop);
+        }).WaitAsync(limit+stopLimit+stopLimit); // Last resort only: the dispatcher thread itself is blocked.
+    }
+    [Fact]
+    public async Task ACheckThatOverrunsItsLimitIsStoppedBeforeTheTestFolderIsDeleted()
+    {
+        // Only Zenith's shutdown ends this loop, and each export holds overrun-export.json.tmp open while it writes:
+        // the shape of the oversized-export run that overran 15 s under load and left Dispose unable to delete the folder.
+        string path=Path.Combine(_root,"overrun-export.json");
+        var overrun=await Assert.ThrowsAsync<TimeoutException>(()=>CheckAsync(async vm=> { while(true) await vm.ExportAsync(path); },TimeSpan.FromSeconds(1)));
+        Assert.Contains("Zenith Sessions was shut down and the check then stopped",overrun.Message);
+        Directory.Delete(_root,true); // Throws while any file in the folder is still open.
     }
     [Fact]
     public Task RestoringAFieldCannotHideAnUnsavedViewPreference()=>CheckAsync(async vm=>

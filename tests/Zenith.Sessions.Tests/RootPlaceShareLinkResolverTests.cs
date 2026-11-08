@@ -1,11 +1,15 @@
+using System.Net;
+using System.Net.Http;
+using System.Text;
 using Xunit;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
 // A share link whose payload names only a universe opens that universe's root place, like Roblox's own web page.
-// The root place comes from the anonymous public games listing; a restricted or unlisted universe is NotListed and a
-// failed lookup is Unavailable.
+// The root place comes from the anonymous public games listing; a listing that answered without the universe (restricted
+// or unlisted) is NotListed, and a lookup that failed or was refused as a whole is Unavailable.
 public sealed class RootPlaceShareLinkResolverTests
 {
     private static readonly Guid Profile=Guid.Parse("22222222-2222-4222-8222-222222222222");
@@ -35,11 +39,12 @@ public sealed class RootPlaceShareLinkResolverTests
         resolution.Dispose();Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{}));
     }
 
-    // Roblox answered without the universe (left out as restricted, or the directory's own Unknown answer): checking again
-    // cannot help, so it is NotListed, apart from a lookup that failed or never ran, which is Unavailable and may succeed later.
+    // Only a listing that answered without the universe (restricted universes are left out) is NotListed: checking again
+    // cannot help. The directory's Unknown answer is a 401/403/404 for the whole request, which says nothing about this
+    // universe, so it stays Unavailable with retry advice, like a lookup that failed, was deferred or never ran.
     public static TheoryData<string,RobloxShareLinkOutcome> FailedLookups=>new()
     {
-        {"restricted",RobloxShareLinkOutcome.NotListed},{"other universe",RobloxShareLinkOutcome.NotListed},{"unknown",RobloxShareLinkOutcome.NotListed},
+        {"restricted",RobloxShareLinkOutcome.NotListed},{"other universe",RobloxShareLinkOutcome.NotListed},{"unknown",RobloxShareLinkOutcome.Unavailable},
         {"deferred",RobloxShareLinkOutcome.Unavailable},{"failure",RobloxShareLinkOutcome.Unavailable},{"no directory",RobloxShareLinkOutcome.Unavailable}
     };
 
@@ -61,6 +66,27 @@ public sealed class RootPlaceShareLinkResolverTests
         using var link=Link(RobloxShareLinkType.Server);
         using var resolution=await new RootPlaceShareLinkResolver(inner,games).ResolveShareLinkAsync(Profile,link,default);
         Assert.Equal(expected,resolution.Outcome);Assert.Null(resolution.PlaceId);Assert.Null(resolution.PrivateServerCode);
+        Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{})); // Never guessed, and the unused code is zeroed.
+    }
+
+    // Through the real directory: Roblox lists a restricted universe as a placeholder and leaves a missing one out, both in a
+    // 200 answer, so only those are NotListed. A 401 or 403 from Roblox's edge, or a 404 from a moved route, refuses the
+    // whole request and may pass, so the user keeps the retry advice instead of hearing that the link can never be opened.
+    [Theory]
+    [InlineData(HttpStatusCode.Unauthorized,"",RobloxShareLinkOutcome.Unavailable)]
+    [InlineData(HttpStatusCode.Forbidden,"",RobloxShareLinkOutcome.Unavailable)]
+    [InlineData(HttpStatusCode.NotFound,"",RobloxShareLinkOutcome.Unavailable)]
+    [InlineData(HttpStatusCode.OK,"{\"data\":[]}",RobloxShareLinkOutcome.NotListed)]
+    [InlineData(HttpStatusCode.OK,"{\"data\":[{\"id\":0,\"rootPlaceId\":0,\"name\":\"\",\"creator\":{\"id\":0,\"name\":\"\",\"type\":\"User\"},\"playing\":0,\"maxPlayers\":1,\"isContentRestricted\":true}]}",RobloxShareLinkOutcome.NotListed)]
+    public async Task OnlyAListingThatAnsweredWithoutTheUniverseIsNotListed(HttpStatusCode status,string body,RobloxShareLinkOutcome expected)
+    {
+        var code=new ProtectedPrivateServerCode(LinkCode);
+        var inner=new Inner(()=>new(RobloxShareLinkOutcome.PrivateServer,null,6,7,code));
+        using var handler=new Http(()=>new HttpResponseMessage(status){Content=new StringContent(body,Encoding.UTF8,"application/json")});
+        using var http=new HttpClient(handler);
+        using var link=Link(RobloxShareLinkType.Server);
+        using var resolution=await new RootPlaceShareLinkResolver(inner,new RobloxPublicDirectory(http)).ResolveShareLinkAsync(Profile,link,default);
+        Assert.Equal(expected,resolution.Outcome);Assert.Null(resolution.PlaceId);Assert.Null(resolution.PrivateServerCode);Assert.Equal(1,handler.Calls);
         Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{})); // Never guessed, and the unused code is zeroed.
     }
 
@@ -106,6 +132,12 @@ public sealed class RootPlaceShareLinkResolverTests
         public Guid LastProfile;public RobloxShareLink? LastLink;
         public Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId,RobloxShareLink link,CancellationToken ct)
         {LastProfile=profileId;LastLink=link;return Task.FromResult(respond());}
+    }
+    private sealed class Http(Func<HttpResponseMessage> respond):HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
+        {Interlocked.Increment(ref Calls);var response=respond();response.RequestMessage=request;return Task.FromResult(response);}
     }
     private sealed class Games(Func<CancellationToken,PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>> respond):IPublicRobloxGameBatchDirectory
     {
