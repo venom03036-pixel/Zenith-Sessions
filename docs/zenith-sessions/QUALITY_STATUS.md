@@ -42,7 +42,7 @@ Material repairs and retained failing-before evidence:
 
 The final review coverage and remaining findings are recorded in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). A changed commit requires review of that delta and two new complete gate runs; focused green runs cannot substitute for them.
 
-One recorded minor: a dashboard initialized before another instance enables a vault password may use cached mode at Unlock and omit the password prompt. Credential reads still refresh on-disk control and fail closed. This is a control/presentation mismatch, not demonstrated credential access.
+The retained minors are listed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md): cached password-mode dashboard state, an overstated network-read comment and stale bootstrapper publisher guidance. Credential reads still refresh on-disk control and fail closed; deferred bootstrapper launching remains refused. No credential or launch-authority bypass was established for those presentation issues.
 
 ## Final acceptance contract
 

@@ -21,6 +21,7 @@ Important repairs and evidence are linked from [QUALITY_STATUS.md](QUALITY_STATU
 
 1. **Cached password-mode dashboard state.** A shell that cached Disabled before another store instance enabled a master password can omit the password prompt on dashboard Unlock. Actual credential reads refresh on-disk control and fail closed. This is a presentation/control mismatch; no credential-access bypass was established. Location: `ShellVaultPasswordFeatures.cs` Unlock path and `ProtectedCredentialVault.Password.cs` current-control read. Retain as follow-up under the owner's minor-only stop rule.
 2. **Network coalescing comment overstates its bound.** `WindowsPublicNetworkMonitor.ReadFolded` describes at most two reads, while its `_pending` loop drains until quiet. The comment should say that. A real continuous-notification starvation counterexample was not established; do not label this a proved important availability defect or claim a fixed two-read runtime bound.
+3. **Bootstrapper publisher guidance is stale.** `ClientExecutableTrustResult.Summary` for `PublisherNotAccepted` still suggests accepting a publisher enables launching. Bootstrapper launching is deferred in this build; the provider/trial gates still refuse it. This is misleading guidance, not a launch-authority bypass.
 
 ## Evidence to inspect before handing off
 
