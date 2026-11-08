@@ -136,7 +136,7 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
             vm.Panic.Execute(null);
             Assert.Contains("input isolation trial", vm.KeepAwakeStatus, StringComparison.Ordinal);
             Assert.False(vm.CanResumeKeepAwake);
-            vm.Lock.Execute(null); vm.Unlock.Execute(null);
+            vm.Lock.Execute(null); vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.Contains("input isolation trial", vm.KeepAwakeStatus, StringComparison.Ordinal);
             Assert.False(vm.CanResumeKeepAwake);
         }
@@ -211,7 +211,7 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
             // Lock stops it too; Unlock alone does not restart it, saving the choice on after off does.
             vm.Lock.Execute(null);
             Assert.Null(vm.KeepAwakeDue); Assert.False(vm.CanResumeKeepAwake);
-            vm.Unlock.Execute(null);
+            vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.Null(vm.KeepAwakeDue); Assert.True(vm.CanResumeKeepAwake);
             vm.KeepAwakeMinutes = 0; vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
             Assert.False(vm.CanResumeKeepAwake);

@@ -101,7 +101,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         Assert.Equal(AuthorizationHealth.Linked, retained.Health);
         Assert.Equal(Cookie, retained.SessionCookie);
 
-        if (shell.IsLocked) shell.Unlock.Execute(null);
+        if (shell.IsLocked) shell.Unlock.Execute(null); await shell.Unlock.Execution;
         shell.RefreshDiagnostics.Execute(null);
         Assert.Equal(priorLinkedDiagnostics, shell.DiagnosticRows.Count(item => IsAuthorizationSuccess(item.Event.Kind)));
         Assert.Equal(1, signIn.Calls); // Unlock does not silently restart the cancelled sign-in.
@@ -162,7 +162,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         Assert.Equal("Unchanged local alias", row.Profile.Label);
         Assert.Equal("Unchanged local notes", row.Profile.Notes);
         Assert.Equal(profile.Id, shell.SelectedAccount?.Profile.Id);
-        if (shell.IsLocked) shell.Unlock.Execute(null);
+        if (shell.IsLocked) shell.Unlock.Execute(null); await shell.Unlock.Execution;
         shell.RefreshDiagnostics.Execute(null);
         Assert.DoesNotContain(shell.DiagnosticRows, item => IsAuthorizationSuccess(item.Event.Kind));
         Assert.Equal(1, signIn.Calls); Assert.Equal(1, client.Calls);

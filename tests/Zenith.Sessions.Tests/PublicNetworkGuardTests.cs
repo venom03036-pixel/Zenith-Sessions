@@ -164,7 +164,7 @@ public sealed partial class PublicNetworkGuardTests : IDisposable
         Assert.Contains(Diagnostics(vm).Events, e => e.Kind == ManagerEventKind.ControlsLocked);
 
         // Unlock is the user's choice, as after any lock; launches stay held while the network is still Public.
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.False(vm.IsLocked); Assert.True(vm.IsPublicNetworkHeld);
         Assert.Equal(LaunchHoldReason.PublicNetwork, Admission(vm).Hold);
 
@@ -185,7 +185,7 @@ public sealed partial class PublicNetworkGuardTests : IDisposable
         Assert.Equal(events, vm.Events.Count);
 
         // Saved off: Windows is no longer watched and nothing is held, whatever the network; the lock stays until Unlock.
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         vm.PublicNetworkGuard = false; vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
         Assert.True(network.StopCalls == 1, "Saving the guard off did not stop watching the network.");
         Assert.False(vm.IsPublicNetworkHeld); Assert.NotEqual(LaunchHoldReason.PublicNetwork, Admission(vm).Hold);

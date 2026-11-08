@@ -57,7 +57,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         vm.SelectedSession = null; Assert.False(vm.CanResizeClients);
         vm.Sessions[0].IsChecked = true; Assert.True(vm.CanResizeClients);
         vm.LockDashboard(); Assert.False(vm.CanEditClientSize); Assert.False(vm.CanResizeClients);
-        vm.Unlock.Execute(null); Assert.True(vm.CanEditClientSize); Assert.True(vm.CanResizeClients);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution; Assert.True(vm.CanEditClientSize); Assert.True(vm.CanResizeClients);
         Assert.Contains(nameof(vm.CanEditClientSize), changes);
     });
 

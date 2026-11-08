@@ -118,7 +118,7 @@ public sealed class ClientLogCleanupPresentationTests : IDisposable
 
         shell.Lock.Execute(null);
         Assert.False(shell.CanSurveyClientLogs); Assert.False(shell.CanDeleteClientLogs);
-        shell.Unlock.Execute(null);
+        shell.Unlock.Execute(null); await shell.Unlock.Execution;
         Assert.True(shell.CanSurveyClientLogs);
         Assert.False(shell.CanDeleteClientLogs); // A stop drops the survey: check again before deleting.
         Assert.Equal(0, probe.Deletes); // The lock itself deletes nothing.

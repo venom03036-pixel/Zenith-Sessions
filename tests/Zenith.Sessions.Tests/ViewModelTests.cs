@@ -125,7 +125,7 @@ public sealed class ViewModelTests : IDisposable
             Assert.Equal("4",vm.SpareRam);Assert.Equal("Unsaved settings",vm.SaveStatus);Assert.True(vm.QueueExpanded);
         }
         vm.Lock.Execute(null);vm.Navigate.Execute("Accounts");Assert.Equal("Guide",vm.Tab);
-        vm.Unlock.Execute(null);vm.Navigate.Execute("Accounts");Assert.Equal("Accounts",vm.Tab);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;vm.Navigate.Execute("Accounts");Assert.Equal("Accounts",vm.Tab);
         using var store=new SettingsStore(_root);Assert.Equal(3,(await store.LoadAsync(default)).Settings.Capacity!.SparePhysicalGiB);
     });
     [Fact]

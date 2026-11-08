@@ -563,7 +563,7 @@ public sealed class DiscordAlertTests : IDisposable
 
         // Lock leaves alerts running: monitoring continues behind the lock, and the idle lock would otherwise silence them.
         vm.LockDashboard(); Assert.True(vm.IsLocked); Assert.True(vm.IsDiscordAlertsActive);
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         // Panic stops the outbox for this run; Resume alerts is the explicit start, as for automation.
         vm.Panic.Execute(null);
         Assert.False(vm.IsDiscordAlertsActive, "Panic left the alert outbox running.");

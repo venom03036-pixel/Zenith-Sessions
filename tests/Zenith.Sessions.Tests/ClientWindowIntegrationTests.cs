@@ -132,7 +132,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
             vm.LockDashboard();
             await vm.InitializeAsync(); await vm.RefreshClientDisplays.Execution;
             Assert.Empty(vm.ClientDisplays);
-            vm.Unlock.Execute(null); await vm.RefreshClientDisplays.Execution;
+            vm.Unlock.Execute(null); await vm.Unlock.Execution; await vm.RefreshClientDisplays.Execution;
             Assert.Equal(2, vm.ClientDisplays.Count);
             Assert.Equal("fixture-display-1", vm.SelectedClientDisplay?.Display.Id);
         }
@@ -171,7 +171,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         try
         {
             await store.Gated.Task.WaitAsync(TimeSpan.FromSeconds(2));
-            vm.LockDashboard(); vm.Unlock.Execute(null);
+            vm.LockDashboard(); vm.Unlock.Execute(null); await vm.Unlock.Execution;
             Assert.Empty(vm.DestinationFavorites.Favorites);
         }
         finally { store.Gate.TrySetResult(store.Snapshot); }

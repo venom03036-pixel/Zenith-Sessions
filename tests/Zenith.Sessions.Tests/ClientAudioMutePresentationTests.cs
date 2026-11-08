@@ -191,7 +191,7 @@ public sealed partial class ClientPreviewPresentationTests
         call.Reply.TrySetResult(SoundReport(call,ClientAudioMuteStatus.NoAudioSession));
         Assert.True(shell.IsArrivalMutePaused);Assert.Contains("paused",shell.ArrivalMuteStatus);
         await Until(()=>!shell.IsChangingClientSound);
-        if(stop=="lock"){Assert.False(shell.CanResumeArrivalMute);shell.Unlock.Execute(null);}
+        if(stop=="lock"){Assert.False(shell.CanResumeArrivalMute);shell.Unlock.Execute(null); await shell.Unlock.Execution;}
         control.Defer=false;
         // Neither the waiting arrival nor a client that appears after the stop is muted: no automatic restart (Rule 11).
         monitor.Count=3;await Refresh(shell);await Refresh(shell);

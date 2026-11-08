@@ -88,7 +88,7 @@ public sealed class NoticeSeverityTests : IDisposable
         Assert.False(vm.HasErrorNotice, "Lock left an error showing behind the locked dashboard.");
         Assert.Contains("locked", vm.Notice, StringComparison.OrdinalIgnoreCase);
         // Once unlocked, a later unexpected fault is shown as an error again.
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         vm.ContainUnhandled(typeof(InvalidOperationException));
         Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault after Lock and Unlock showed no error.");
     });
@@ -100,7 +100,7 @@ public sealed class NoticeSeverityTests : IDisposable
         // An ordinary failure while locked (the idle lock, for example) is still the error when the user unlocks.
         vm.Lock.Execute(null);
         vm.Fail(new IOException(Secret), Zenith.Sessions.Windows.ManagerSubsystem.Library);
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.True(vm.ErrorNotice.Contains("could not finish", StringComparison.Ordinal), "A failure while locked was gone after Unlock.");
         vm.DismissError.Execute(null);
 
@@ -108,7 +108,7 @@ public sealed class NoticeSeverityTests : IDisposable
         vm.Lock.Execute(null);
         vm.ContainUnhandled(typeof(InvalidOperationException));
         Assert.Contains(vm.Events, e => e.Contains("Unexpected error caught (InvalidOperationException)", StringComparison.Ordinal));
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault while locked showed no error after Unlock.");
         Assert.Contains("restart the app", vm.ErrorNotice);
         Assert.Contains("unlocked", vm.Notice);

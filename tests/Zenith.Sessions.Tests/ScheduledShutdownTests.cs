@@ -247,7 +247,7 @@ public sealed partial class ScheduledShutdownTests : IDisposable
         Assert.True(vm.IsShutdownScheduled, "Lock cancelled the scheduled shutdown; it must leave it in place.");
         Assert.True(vm.ShutdownCountdownArmed);
         Assert.False(vm.CanCancelShutdown); // Unlock first, like every other control.
-        vm.Unlock.Execute(null);
+        vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.True(vm.CanCancelShutdown);
 
         // Panic promises that clients remain open, so it calls the shutdown off and says so, without replacing its own notice.

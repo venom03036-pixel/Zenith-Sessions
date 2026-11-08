@@ -77,7 +77,7 @@ public sealed partial class ClientPreviewPresentationTests : IDisposable
         Assert.All(shell.ClientPreviews.Rows, row => Assert.Null(row.Image));
         Assert.False(shell.ClientPreviews.IsRunning);
         await provider.NextReleaseAsync(); int calls = provider.CaptureCalls;
-        if (shell.IsLocked) shell.Unlock.Execute(null);
+        if (shell.IsLocked) shell.Unlock.Execute(null); await shell.Unlock.Execution;
         ShowPreviews(shell); await Refresh(shell);
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         Assert.False(shell.ClientPreviews.IsRunning); Assert.Equal(calls, provider.CaptureCalls);

@@ -317,7 +317,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public Command OpenFolder { get; }
     public Command Panic { get; }
     public Command Lock { get; }
-    public Command Unlock { get; }
+    public AsyncCommand Unlock { get; }
     public AsyncCommand SaveSettings { get; }
     public AsyncCommand ApplyTheme { get; }
     public AsyncCommand NextPage { get; }
@@ -419,7 +419,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => RequestDashboardUnlock());
+        Lock = new(_ => LockDashboard());
+        Unlock = new(p => RequestDashboardUnlockAsync((long)p!), error => Fail(error, ManagerSubsystem.Vault), _ => _vaultPasswordEpoch);
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         LanguageChoices=CreateLanguageChoices();

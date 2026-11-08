@@ -126,7 +126,7 @@ public sealed partial class DirectoryIntegrationTests
         games.Pending.SetResult(new(PublicDirectoryState.Success, new(6564161046, 1, 2, "Synthetic game", 3, "Creator", PublicRobloxCreatorKind.User, 1, 20, DateTimeOffset.UtcNow), "Synthetic"));
         await vm.GameDetails.Load.Execution;
         Assert.Null(vm.GameDetails.Game); Assert.Null(vm.GameDetails.Icon); Assert.Equal(0, games.IconCalls);
-        if (!panic) vm.Unlock.Execute(null);
+        if (!panic) vm.Unlock.Execute(null); await vm.Unlock.Execution;
         Assert.Equal(1, games.Calls); Assert.Null(vm.GameDetails.Game);
         Assert.Null(Assert.Single(vm.Accounts).KnownUserId); Assert.Equal("Synthetic alias", vm.Accounts[0].Label);
         Assert.Empty(vm.Launches);

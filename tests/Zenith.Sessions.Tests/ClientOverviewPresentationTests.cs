@@ -325,7 +325,7 @@ public sealed partial class ClientPreviewPresentationTests
         switch(context) {case "hide":shell.SetPreviewWindowVisible(false);break;case "tab":shell.Navigate.Execute("Sessions");break;case "lock":shell.LockDashboard();break;default:shell.Panic.Execute(null);break;}
         Assert.All(shell.ClientPreviews.OverviewRows,row=>Assert.Null(row.Image));Assert.False(shell.ClientPreviews.IsRunning);
         await provider.NextReleaseAsync();int calls=provider.CaptureCalls;
-        if(shell.IsLocked) shell.Unlock.Execute(null);shell.ShowWindowsOverview.Execute(null);shell.SetPreviewWindowVisible(true);await Refresh(shell);
+        if(shell.IsLocked) shell.Unlock.Execute(null); await shell.Unlock.Execution;shell.ShowWindowsOverview.Execute(null);shell.SetPreviewWindowVisible(true);await Refresh(shell);
         Assert.False(shell.ClientPreviews.IsRunning);Assert.Equal(calls,provider.CaptureCalls);
     });
 
@@ -457,7 +457,7 @@ public sealed partial class ClientPreviewPresentationTests
         // Proving absence needs a bounded settle; an awake presenter reconciles within milliseconds.
         for(int i=0;i<20 && reconciled==0;i++) {await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);await Task.Delay(10);}
         Assert.Equal(0,reconciled);Assert.Equal(2,shell.ClientPreviews.OverviewRows.Count);
-        switch(context) {case "tab":shell.ShowWindowsOverview.Execute(null);break;case "hide":shell.SetPreviewWindowVisible(true);break;default:shell.Unlock.Execute(null);break;}
+        switch(context) {case "tab":shell.ShowWindowsOverview.Execute(null);break;case "hide":shell.SetPreviewWindowVisible(true);break;default:shell.Unlock.Execute(null); await shell.Unlock.Execution;break;}
         // Showing the roster again applies the newest pending inventory straight away, without another sample.
         await Until(()=>shell.ClientPreviews.OverviewRows.Count==3);Assert.Equal(0,provider.CaptureCalls);
     });

@@ -119,7 +119,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.SetPreviewWindowVisible(false);Assert.Equal(rows,shell.DestinationSearch.Results);
         if(lockDashboard)shell.LockDashboard();else shell.Navigate.Execute("Accounts");
         Assert.Empty(shell.DestinationSearch.Results);Assert.Empty(shell.DestinationSearch.VisibleResults);Assert.All(rows,row=>Assert.False(row.HasArt));
-        if(lockDashboard)shell.Unlock.Execute(null);
+        if(lockDashboard)shell.Unlock.Execute(null); await shell.Unlock.Execution;
         ShowSearch(shell);Assert.Empty(shell.DestinationSearch.Results);Assert.Single(directory.Queries);
     });
 
