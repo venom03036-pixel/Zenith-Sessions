@@ -39,10 +39,12 @@ Material repairs and retained failing-before evidence:
 | Initial public-network lock before update scheduling; Settings commands | [ROUND4-INTEGRATION-VERIFICATION.md](ROUND4-INTEGRATION-VERIFICATION.md) |
 | Pending settings and startup work cannot undo Panic; Lock retains alert monitoring | [SETTINGS-STOP-REVIEW-REPAIRS.md](SETTINGS-STOP-REVIEW-REPAIRS.md), [STARTUP-STOP-REVIEW-REPAIRS.md](STARTUP-STOP-REVIEW-REPAIRS.md) |
 | Elevated upload-limit helpers retain ownership through actual exit | [UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md) |
+| CPU cap records precede mutations and survive failed adjustments/clock changes | [CPU-CAP-OWNER-REVIEW-REPAIR.md](CPU-CAP-OWNER-REVIEW-REPAIR.md) |
+| Private account details survive WPF row publication while real identity changes clear them | [PRIVATE-DETAILS-BINDING-REPAIR.md](PRIVATE-DETAILS-BINDING-REPAIR.md) |
 
 The final review coverage and remaining findings are recorded in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). A changed commit requires review of that delta and two new complete gate runs; focused green runs cannot substitute for them.
 
-The retained minors are listed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md): cached password-mode dashboard state, an overstated network-read comment and stale bootstrapper publisher guidance. Credential reads still refresh on-disk control and fail closed; deferred bootstrapper launching remains refused. No credential or launch-authority bypass was established for those presentation issues.
+The retained minors are listed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md): cached password-mode dashboard state, an overstated network-read comment, stale bootstrapper publisher guidance and overconfident leftover CPU-cap wording. Credential reads still refresh on-disk control and fail closed; deferred bootstrapper launching remains refused. No credential or launch-authority bypass was established for those presentation issues.
 
 ## Final acceptance contract
 
