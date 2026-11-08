@@ -289,6 +289,13 @@ public partial class MainWindow : Window
         if(MessageBox.Show(this,_vm.SetAsideInterruptedQueueWriteConfirmation,"Set aside interrupted save",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
             _vm.SetAsideInterruptedQueueWrite.Execute(null);
     }
+    // The question names the exact count and size the last check showed; the command then deletes only those files, each re-checked.
+    private void DeleteOldClientLogs(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.CanDeleteClientLogs) return;
+        if (MessageBox.Show(this, _vm.ClientLogCleanupConfirmation, "Delete old Roblox client logs", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.DeleteClientLogs.Execute(null);
+    }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)
     {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex,ManagerSubsystem.Diagnostics);}}
     private void CopyDiagnosticReport(object sender,RoutedEventArgs e)

@@ -138,6 +138,14 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
             if (soundTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
+            // Diagnostics > Roblox client logs: present, bound, and off in sample mode (no injected cleanup), so the sample profile
+            // never reads or deletes the real Roblox folders; nothing is checked to delete at start.
+            if (window.FindName("ClientLogCleanupTools") is not System.Windows.Controls.Expander
+                || window.FindName("SurveyClientLogsButton") is not System.Windows.Controls.Button surveyLogsButton
+                || surveyLogsButton.Command != vm.SurveyClientLogs || surveyLogsButton.IsEnabled || vm.CanSurveyClientLogs
+                || window.FindName("DeleteClientLogsButton") is not System.Windows.Controls.Button { IsEnabled: false }
+                || vm.CanDeleteClientLogs || vm.IsCleaningClientLogs || vm.ClientLogCleanupConfirmation.Length != 0)
+                throw new InvalidOperationException("The packaged Roblox client log cleanup controls lost their command binding or sample-mode boundary.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

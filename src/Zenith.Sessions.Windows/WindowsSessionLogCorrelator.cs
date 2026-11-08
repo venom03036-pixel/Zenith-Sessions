@@ -186,6 +186,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private readonly Dictionary<string, Reader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Task _worker;
     private Input _latest = new([], false, []);
+    private string[] _watched = [];
     private SessionLogDiscoverySnapshot _snapshot = new(0, DateTimeOffset.MinValue, Array.Empty<ProcessLogDiagnostic>(), 0, false);
     private ClientLogCandidates _candidates = new(Array.Empty<ClientLogCandidate>(), false);
     private long? _lastPass, _lastDiscovery;
@@ -209,6 +210,13 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     }
 
     public SessionLogDiscoverySnapshot Snapshot => Volatile.Read(ref _snapshot);
+
+    /// <summary>
+    /// Any thread. The client logs this owner is watching as of its last discovery: every discovered candidate (written
+    /// within the last day) and every log still bound to an offered process, whether or not it is being read right now. The
+    /// log cleanup leaves each of these alone. Kept apart from <see cref="Snapshot"/>, which carries no path.
+    /// </summary>
+    public IReadOnlyList<string> WatchedLogPaths => Volatile.Read(ref _watched);
 
     public void Offer(DesktopSnapshot snapshot, string? hostId = null, IReadOnlyList<LaunchLogExpectation>? launches = null)
     {
@@ -319,6 +327,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 foreach (var candidate in candidates)
                     if (!_readers.ContainsKey(candidate.Path))
                         _readers.Add(candidate.Path, new(candidate));
+                Volatile.Write(ref _watched, _readers.Keys.ToArray());
             }
         }
 
@@ -644,7 +653,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     }
 
     private void Remove(Reader reader) { CloseReader(reader); _readers.Remove(reader.Candidate.Path); }
-    private void ClearReaders() { foreach (var reader in _readers.Values) CloseReader(reader); _readers.Clear(); }
+    private void ClearReaders() { foreach (var reader in _readers.Values) CloseReader(reader); _readers.Clear(); Volatile.Write(ref _watched, []); }
 
     public async ValueTask DisposeAsync()
     {
