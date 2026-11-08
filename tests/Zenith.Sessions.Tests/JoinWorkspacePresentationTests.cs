@@ -176,6 +176,19 @@ public sealed class JoinWorkspacePresentationTests
     }
 
     [Fact]
+    public void FindAServerWithRoomSendsTheSameRecipientCountTheCapacityAdviceUses()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var find=join.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Command")=="{Binding FindRoom}");
+        const string count="{Binding DataContext.DestinationRecipientCount, RelativeSource={RelativeSource AncestorType=Window}}";
+        Assert.Equal(count,(string?)find.Attribute("CommandParameter"));Assert.Equal(count,(string?)find.Attribute("Content"));
+        Assert.Equal("Find a server with room for {0}",(string?)find.Attribute("ContentStringFormat"));
+        Assert.Equal("Find a server with room",(string?)find.Attribute("AutomationProperties.Name"));
+        Assert.Equal("{Binding CanUseDestination}",(string?)find.Attribute("IsEnabled"));
+        Assert.Equal("{Binding ServerBrowser}",(string?)find.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext"));
+    }
+
+    [Fact]
     public Task PublicServerListDrawsEachRowsFillMeterAndReportedFps()=>SearchTest.OnUi(async()=>
     {
         var join=Page(Source(),"JoinGamePage");

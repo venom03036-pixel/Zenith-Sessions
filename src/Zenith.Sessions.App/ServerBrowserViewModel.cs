@@ -20,7 +20,8 @@ public sealed class PublicServerRow(RobloxPublicServer server)
     public string Fps=>Server.Fps is { } fps && double.IsFinite(fps) && fps>=0?fps.ToString("0.0",CultureInfo.CurrentCulture):"Unavailable";
 }
 
-/// <summary>User-initiated public browsing, one 25-row page per click. No polling, launch, vault access or raw-link persistence.</summary>
+/// <summary>User-initiated public browsing, one 25-row page per click, or one 100-row request per Find a server with room click.
+/// No polling, launch, vault access or raw-link persistence.</summary>
 public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
 {
     /// <summary>Four 25-row pages of one remote query; a later page drops the oldest rows, so memory stays bounded.</summary>
@@ -115,11 +116,13 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     public Command Cancel {get;}
     public AsyncCommand Browse {get;}
     public AsyncCommand Next {get;}
+    public AsyncCommand FindRoom {get;}
     public ServerBrowserViewModel(IRobloxPublicServerDirectory directory,Func<bool>? canUse=null,TimeProvider? clock=null)
     {
         _directory=directory;_canUse=canUse??(()=>true);_clock=clock??TimeProvider.System;
         Resolve=new(_=>ResolveInput());UseServer=new(_=>UseSelectedServer());Cancel=new(_=>CancelWork(false));
         Browse=new(_=>StartBrowseAsync(false),ReportFailure);Next=new(_=>StartBrowseAsync(true),ReportFailure);
+        FindRoom=new(recipients=>StartFindRoomAsync(recipients is int count?count:0),ReportFailure);
     }
     public void ResolveInput()
     {
@@ -191,19 +194,11 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
             if(!Current()) return;
             if(result is null || !Enum.IsDefined(result.Status) || result.Servers is null)
             {RejectPage();return;}
-            if((result.RetryAfter??(result.Status==RobloxPublicServerStatus.RateLimited?TimeSpan.FromSeconds(30):null)) is { } retry)
-            {
-                var now=_clock.GetUtcNow();var delay=retry<TimeSpan.FromSeconds(1)?TimeSpan.FromSeconds(1):retry;
-                _notBefore=delay>DateTimeOffset.MaxValue-now?DateTimeOffset.MaxValue:now+delay;
-            }
+            PauseAsRequested(result);
             if(result.Status is RobloxPublicServerStatus.Complete or RobloxPublicServerStatus.PageLimit)
             {
                 var now=_clock.GetUtcNow();
-                if(result.Servers.Count>25 || result.Servers.Any(s=>s is null || s.PlaceId!=query.PlaceId || !RobloxRequestedDestination.TryNormalizeJobId(s.JobId,out _)
-                    || s.Playing<0 || s.MaxPlayers<=0 || !IsFresh(s,now))
-                    || result.Servers.Select(s=>Guid.ParseExact(s.JobId,"D")).Distinct().Count()!=result.Servers.Count
-                    || result.NextPageCursor is { } cursor && (cursor.Length is <1 or >2048 || cursor.Any(char.IsControl)))
-                {RejectPage();return;}
+                if(!IsConsistentPage(result,query,now)) {RejectPage();return;}
                 var page=result.Servers.Select(server=>new PublicServerRow(server)).ToArray();bool dropped=false;
                 // Browse starts the list over; Load next 25 adds its page to the same query's loaded rows. The used cursor is spent either way.
                 if(next) {_cursor=null;page=AddPage(_pageRows,page,out dropped);}
@@ -231,6 +226,75 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
             stop.Dispose();IsBusy=false;Raise(nameof(CanNext));Raise(nameof(CanUseServer));
         }
     }
+    /// <summary>
+    /// One explicit request for up to 100 public servers that are not full, most full first (the anonymous list; Roblox's
+    /// Recommended order needs a signed-in account). The chosen server is stored exactly as Use selected server stores a
+    /// row: a requested destination, not a reserved seat. The loaded rows, their cursor and the list settings are untouched.
+    /// </summary>
+    private Task StartFindRoomAsync(int recipients)
+    {
+        if(_stopping || !_canUse() || _lifetime.IsCancellationRequested) return Task.CompletedTask;
+        if(IsBusy) {Status="A server request is still stopping or running. Wait for it to finish.";return Task.CompletedTask;}
+        if(ReadyDestination is not { } destination)
+        {Status=HasDestinationDraft?"Use or discard the pending destination before finding a server.":"Choose a valid place before finding a public server.";return Task.CompletedTask;}
+        if(recipients<=0)
+        {Status=RequestedServerSelection.ChooseForBatch(destination.PlaceId,[],recipients,_clock.GetUtcNow()).Explanation+" No request was sent.";return Task.CompletedTask;}
+        if(_clock.GetUtcNow()<_notBefore) {Status="Roblox asked us to wait before another server request. No request was sent.";return Task.CompletedTask;}
+        var generation=_generation;var query=new RobloxPublicServerQuery(destination.PlaceId,PageSize:FindRoomPageSize,MaxPages:1,
+            SortOrder:RobloxPublicServerSortOrder.Desc,ExcludeFullGames:true);
+        // A new server request supersedes the pinned observation, as Browse does; the requested destination stays until a server is chosen.
+        ClearRequestedObservation();
+        _requestStop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);IsBusy=true;Raise(nameof(CanNext));Raise(nameof(CanUseServer));
+        Status=$"Asking Roblox for up to {FindRoomPageSize} public servers that are not full, most full first…";
+        return _active=FindRoomAsync(query,recipients,generation,_requestStop);
+    }
+    private const int FindRoomPageSize=100;
+    private async Task FindRoomAsync(RobloxPublicServerQuery query,int recipients,long generation,CancellationTokenSource stop)
+    {
+        bool Current()=>!_stopping && !stop.IsCancellationRequested && generation==_generation && _canUse();
+        const string Inconsistent="The server provider returned inconsistent or stale results. No server was chosen.";
+        try
+        {
+            if(!Current())return;
+            var result=await _directory.BrowseAsync(query,stop.Token);
+            if(!Current())return;
+            if(result is null || !Enum.IsDefined(result.Status) || result.Servers is null) {Status=Inconsistent;return;}
+            PauseAsRequested(result);
+            if(result.Status is not (RobloxPublicServerStatus.Complete or RobloxPublicServerStatus.PageLimit)) {Status=result.Explanation;return;}
+            var now=_clock.GetUtcNow();
+            if(!IsConsistentPage(result,query,now)) {Status=Inconsistent;return;}
+            var choice=RequestedServerSelection.ChooseForBatch(query.PlaceId,result.Servers,recipients,now);
+            if(choice.Server is not { } server) {Status=choice.Explanation+" Your requested destination is unchanged.";return;}
+            // Install the whole choice before notifying a binding or a synchronous subscriber, as UseSelectedServer does.
+            var destination=server.RequestedDestination;
+            _destination=destination;
+            _requestedServerObservation=server with {JobId=destination.JobId!};
+            Status=choice.Explanation;
+            RaiseDestination();Raise(nameof(RequestedServerObservation));
+        }
+        catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
+        catch(Exception ex) {if(Current())ReportFailure(ex);}
+        finally
+        {
+            if(ReferenceEquals(_requestStop,stop)) _requestStop=null;
+            stop.Dispose();IsBusy=false;Raise(nameof(CanNext));Raise(nameof(CanUseServer));
+        }
+    }
+    // A provider's retry request pauses every later server request, Browse, Load next 25 and Find alike.
+    private void PauseAsRequested(RobloxPublicServerResult result)
+    {
+        if((result.RetryAfter??(result.Status==RobloxPublicServerStatus.RateLimited?TimeSpan.FromSeconds(30):null)) is not { } retry) return;
+        var now=_clock.GetUtcNow();var delay=retry<TimeSpan.FromSeconds(1)?TimeSpan.FromSeconds(1):retry;
+        _notBefore=delay>DateTimeOffset.MaxValue-now?DateTimeOffset.MaxValue:now+delay;
+    }
+    // A successful page is accepted only whole: within the requested size, every row fresh, well formed and for the
+    // requested place, no server listed twice, and a well-formed cursor.
+    private static bool IsConsistentPage(RobloxPublicServerResult result,RobloxPublicServerQuery query,DateTimeOffset now)
+        =>result.Servers.Count<=query.PageSize
+        && !result.Servers.Any(s=>s is null || s.PlaceId!=query.PlaceId || !RobloxRequestedDestination.TryNormalizeJobId(s.JobId,out _)
+            || s.Playing<0 || s.MaxPlayers<=0 || !IsFresh(s,now))
+        && result.Servers.Select(s=>Guid.ParseExact(s.JobId,"D")).Distinct().Count()==result.Servers.Count
+        && !(result.NextPageCursor is { } cursor && (cursor.Length is <1 or >2048 || cursor.Any(char.IsControl)));
     public void CancelWork(bool clear)
     {
         if(clear) {ReplaceDestination(null,"Destination cleared. Choose a fresh request when controls are available.");return;}
@@ -283,8 +347,7 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     private void ClearRows() {_rowsUsable=false;_pageRows=[];_cursor=null;_droppedOlderRows=false;Servers.Clear();SelectedServer=null;Raise(nameof(PageSummary));Raise(nameof(CanNext));}
     private bool IsCurrentRow(PublicServerRow row)=>_rowsUsable && _pageRows.Contains(row) && Servers.Contains(row)
         && _destination?.PlaceId==row.Server.PlaceId;
-    private static bool IsFresh(RobloxPublicServer server,DateTimeOffset now)=>server.ObservedUtc!=default
-        && server.ObservedUtc-now<=RequestedServerCapacity.MaximumFutureSkew && now-server.ObservedUtc<=RequestedServerCapacity.MaximumAge;
+    private static bool IsFresh(RobloxPublicServer server,DateTimeOffset now)=>RequestedServerCapacity.IsFresh(server.ObservedUtc,now);
     private void ClearRequestedObservation()
     {if(_requestedServerObservation is not null) {_requestedServerObservation=null;Raise(nameof(RequestedServerObservation));}}
     private void ReplaceDestination(RobloxRequestedDestination? value,string status)
