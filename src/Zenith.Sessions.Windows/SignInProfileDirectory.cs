@@ -27,6 +27,10 @@ public sealed class SignInProfileDirectory
     // under that root is refused until then. Like HeldLeases, reading them opens no lock file.
     private static readonly ConcurrentDictionary<string, int> KeptLeases = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, byte> KeptFolders = new(StringComparer.OrdinalIgnoreCase);
+    // An owner must close its lock file before it can delete it, so its emptied folder looks like a leftover until the
+    // folder is gone. That release and a recovery's inspection and lease run under this gate, so a recovery finds the
+    // folder either still held or already removed, never in between. Held only for a few file-metadata calls.
+    private static readonly object ReleaseGate = new();
     // Guards _lease and _kept together, so a folder is never marked kept after its lease is gone.
     private readonly object _leaseGate = new();
     private FileStream? _lease;
@@ -172,15 +176,21 @@ public sealed class SignInProfileDirectory
     // when its marker is incomplete or its lock is missing.
     private static void RecoverLeftover(string old, CancellationToken ct)
     {
-        // A folder another owner here kept after its cleanup failed stays held until that owner is disposed: it is not
-        // inspected, and the refusal says so instead of suggesting the owner will soon let go.
-        if (KeptFolders.ContainsKey(old)) throw new SignInDirectoryInUseException(keptAfterFailedCleanup: true);
-        if (!OwnedName(System.IO.Path.GetFileName(old))) throw new SignInDirectoryNeedsReviewException(NeedsReview);
-        if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
-        bool ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
-        if (!ownershipFilesOnly) AssertMarker(old);
-        // FileShare.None still rejects a live owner; a missing lock is recreated and held until the folder is gone.
-        var recovered = new SignInProfileDirectory(old, OpenLease(old));
+        bool ownershipFilesOnly; SignInProfileDirectory recovered;
+        lock (ReleaseGate)
+        {
+            // Its owner finished removing it after it was listed: there is nothing left to recover.
+            if (!Directory.Exists(old)) return;
+            // A folder another owner here kept after its cleanup failed stays held until that owner is disposed: it is not
+            // inspected, and the refusal says so instead of suggesting the owner will soon let go.
+            if (KeptFolders.ContainsKey(old)) throw new SignInDirectoryInUseException(keptAfterFailedCleanup: true);
+            if (!OwnedName(System.IO.Path.GetFileName(old))) throw new SignInDirectoryNeedsReviewException(NeedsReview);
+            if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
+            ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
+            if (!ownershipFilesOnly) AssertMarker(old);
+            // FileShare.None still rejects a live owner; a missing lock is recreated and held until the folder is gone.
+            recovered = new SignInProfileDirectory(old, OpenLease(old));
+        }
         try { if (ownershipFilesOnly) recovered.DeleteOwnershipFiles(); else recovered.Remove(ct); }
         finally { recovered.ReleaseOwnership(); }
     }
@@ -222,6 +232,9 @@ public sealed class SignInProfileDirectory
         DeleteOwnershipFiles();
     }
     public void ReleaseOwnership() => DropLease();
+    // Test-only seam: runs after this owner closes its lock file and before it deletes its ownership files, the window
+    // an admission's recovery can land in. Production never sets it.
+    internal Action? LeaseReleasedForTest;
 
     /// <summary>
     /// Records that this folder's cleanup failed and that its owner keeps the folder and its lease until it releases
@@ -260,12 +273,18 @@ public sealed class SignInProfileDirectory
     }
     private const int SharingViolation = unchecked((int)0x80070020);
     // The lock goes before the marker, so an interruption here leaves a marked or empty folder; Create recovers both.
+    // Under ReleaseGate, so no recovery takes the folder between its lease closing and the folder being deleted, which
+    // made these deletes fail and latched a cleanup failure although nothing was left.
     private void DeleteOwnershipFiles()
     {
-        DropLease();
-        File.Delete(System.IO.Path.Combine(Path, OwnerLock));
-        File.Delete(System.IO.Path.Combine(Path, Marker));
-        Directory.Delete(Path, false);
+        lock (ReleaseGate)
+        {
+            DropLease();
+            LeaseReleasedForTest?.Invoke();
+            File.Delete(System.IO.Path.Combine(Path, OwnerLock));
+            File.Delete(System.IO.Path.Combine(Path, Marker));
+            Directory.Delete(Path, false);
+        }
     }
     private static bool IsOwnershipFile(string entry)
     {

@@ -112,6 +112,33 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         var next = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
         Assert.False(Directory.Exists(d.Path)); next.Remove(default);
     }
+    // An owner closes its lock file before it can delete it, so for a moment its emptied folder looks like a leftover. An
+    // admission that recovered it in that moment removed it under the owner, whose own deletes then failed: the sign-in
+    // cleanup latched 'did not finish cleanup. Close Zenith Sessions' although nothing was left on disk.
+    [Fact]
+    public void AdmissionDuringAnOwnersFinalReleaseNeitherFailsThatCleanupNorFailsItself()
+    {
+        var owner = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        Directory.CreateDirectory(Path.Combine(owner.Path, "EBWebView")); File.WriteAllText(Path.Combine(owner.Path, "EBWebView", "synthetic"), "test only");
+        SignInProfileDirectory? admitted = null; Exception? admissionFailure = null;
+        var admission = new Thread(() =>
+        {
+            try { admitted = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default); }
+            catch (Exception ex) { admissionFailure = ex; }
+        });
+        owner.LeaseReleasedForTest = () =>
+        {
+            admission.Start();
+            // Let the admission run until it finishes or waits for this owner to finish releasing its folder.
+            SpinWait.SpinUntil(() => !admission.IsAlive || (admission.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0, TimeSpan.FromSeconds(10));
+        };
+        owner.Remove(default);
+        Assert.True(admission.Join(TimeSpan.FromSeconds(10)), "The admission never finished after the owner released its folder.");
+        Assert.Null(admissionFailure);
+        Assert.False(Directory.Exists(owner.Path));
+        Assert.NotNull(admitted); Assert.True(Directory.Exists(admitted!.Path));
+        admitted.Remove(default);
+    }
     [Fact]
     public void RecoveryAcceptsMarkedFolderWhoseLockIsMissing()
     {
