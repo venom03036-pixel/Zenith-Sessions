@@ -146,6 +146,15 @@ internal static class PackagedLayoutCheck
                 || window.FindName("DeleteClientLogsButton") is not System.Windows.Controls.Button { IsEnabled: false }
                 || vm.CanDeleteClientLogs || vm.IsCleaningClientLogs || vm.ClientLogCleanupConfirmation.Length != 0)
                 throw new InvalidOperationException("The packaged Roblox client log cleanup controls lost their command binding or sample-mode boundary.");
+            // Settings > Roblox installation > Roblox updates: present, bound, the automatic check off by default and never armed in
+            // the sample profile, and no download or install offered, so the sample profile never reaches Roblox's setup host.
+            if (window.FindName("CheckRobloxUpdatesOption") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("DownloadRobloxUpdateButton") is not System.Windows.Controls.Button downloadUpdateButton
+                || downloadUpdateButton.Command != vm.DownloadRobloxUpdate || downloadUpdateButton.IsEnabled
+                || window.FindName("InstallRobloxUpdateButton") is not System.Windows.Controls.Button { IsEnabled: false }
+                || vm.CheckRobloxUpdates || vm.CanDownloadRobloxUpdate || vm.CanInstallRobloxUpdate || vm.IsRobloxUpdateBusy
+                || vm.RobloxUpdateConfirmation.Length != 0 || vm.ClientUpdateCheckDue is not null)
+                throw new InvalidOperationException("The packaged Roblox update controls lost their command binding, off default or sample-mode boundary.");
             // Diagnostics > Include Roblox client log entries: present, off by default, and unavailable in sample mode (no injected
             // reader), so the sample profile never reads the real Roblox logs into a report.
             if (window.FindName("IncludeClientLogTailsOption") is not System.Windows.Controls.CheckBox { IsChecked: false } tailsOption

@@ -20,12 +20,13 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
-    bool MuteArrivingClients = false)
+    bool MuteArrivingClients = false, bool CheckRobloxUpdates = false)
 {
-    // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut and MuteArrivingClients are optional within schema 1: files
-    // without them load unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding
-    // the manager to the tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without
-    // PanicShortcut the global panic shortcut is F12; without MuteArrivingClients no client is muted when it appears. A
+    // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients and CheckRobloxUpdates are optional within
+    // schema 1: files without them load unchanged, and older builds ignore them. Without CloseButtonExits the window's close button
+    // keeps hiding the manager to the tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without
+    // PanicShortcut the global panic shortcut is F12; without MuteArrivingClients no client is muted when it appears; without
+    // CheckRobloxUpdates Roblox's current release is read only on an explicit Refresh installation or native trial start. A
     // PanicShortcut that earlier builds saved but that is no longer allowed (such as Ctrl+Alt+Q, which is AltGr+Q) is read as F12
     // with a notice by SettingsStore; any other refused value makes the settings invalid.
     public SessionsSettings Validated()

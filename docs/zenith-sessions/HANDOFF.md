@@ -83,6 +83,10 @@ dotnet vstest $assembly "--ResultsDirectory:$build" "--Logger:trx;LogFileName=ha
 
 The Luau verifier uses the official 0.745 CLI binaries stored with the isolated artifacts. Its generated fixture configures synthetic IDs and runs the same production Script against simulated services. [Runner](../../scripts/Test-ZenithOwnedExperienceBridge.ps1)
 
+### Decisions reversed by the owner (2026-11-08)
+
+- The release summary's promise that "Zenith never downloads or installs updates" is withdrawn. Round 4 (R-launch-9, covering R-shell-19) adds an opt-in automatic release check (default off) and an explicit two-step download and run of Roblox's own installer, verified by Windows with the existing trust code and started only after the user confirms; see [the design](ROBLOX-UPDATE-DESIGN.md). Still excluded: launching through a bootstrapper, writing the client's settings or FFlag files, and any unconfirmed install.
+
 ## Next work in order
 
 1. **Close the native feasibility gap.** Continue the supported Roblox-hosted sign-in to native-player handoff. Identify which real account reaches each exact process instance and which exact place/job it joins. Keep ordinary/group launch disabled until that evidence exists. Separately prove unattended reconnect of the correct still-authorized account after a confirmed game disconnect. A deliberate close should stay closed. Reconnect prefers the prior server and falls back only to another server of the exact same place when the prior server is confirmed unavailable. Existing interrupted macros stay stopped.

@@ -1,4 +1,5 @@
 using System.IO;
+using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
@@ -21,6 +22,8 @@ public static class RobloxNativePlayerFiles
     public static bool IsLauncher(string? path) => !string.IsNullOrEmpty(path) && Path.GetFileName(path).Equals(LauncherName, StringComparison.OrdinalIgnoreCase);
     /// <summary>True for any Roblox-product filename that installation discovery lists.</summary>
     public static bool IsInventoryPlayer(string? path) => Matches(path, InventoryNames);
+    /// <summary>True for RobloxPlayerInstaller.exe, the name Roblox's setup host serves its installer under and the only name the update verifier accepts.</summary>
+    public static bool IsInstaller(string? path) => !string.IsNullOrEmpty(path) && Path.GetFileName(path).Equals(RobloxClientUpdate.InstallerFileName, StringComparison.OrdinalIgnoreCase);
 
     private static bool Matches(string? path, IReadOnlyList<string> names)
     {

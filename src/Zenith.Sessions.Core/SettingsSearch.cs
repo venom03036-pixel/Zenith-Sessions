@@ -112,6 +112,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.ClientSound, "mute", "unmute", "sound", "audio", "volume", "volume mixer", "silence", "quiet", "mute when they appear", "mute new clients"),
         E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
             SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
+        E("roblox-updates", "Check for Roblox updates automatically", "Under Roblox installation: ask Roblox's public version service for its current release 3 seconds after start and every 30 minutes, and say when the installed player is behind. Off by default; save to apply. Download and Install Roblox update stay explicit.",
+            SettingsSearchTarget.Installations, "update", "updates", "roblox update", "automatic check", "version check", "installer", "install roblox", "download update", "30 minutes", "out of date", "new version", "client version"),
         E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, rendering, CPU caps and automatic affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];

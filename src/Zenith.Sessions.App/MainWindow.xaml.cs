@@ -296,6 +296,13 @@ public partial class MainWindow : Window
         if (MessageBox.Show(this, _vm.ClientLogCleanupConfirmation, "Delete old Roblox client logs", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
             _vm.DeleteClientLogs.Execute(null);
     }
+    // The question names the release, the verified publisher and the running clients the installer will close; only a Yes runs the held file.
+    private void InstallRobloxUpdate(object sender, RoutedEventArgs e)
+    {
+        if (!_vm.CanInstallRobloxUpdate) return;
+        if (MessageBox.Show(this, _vm.RobloxUpdateConfirmation, "Install Roblox update", MessageBoxButton.YesNo, MessageBoxImage.Question, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.InstallRobloxUpdate.Execute(null);
+    }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)
     {try {string text=_vm.BuildVisibleDiagnosticText();if(text.Length==0){_vm.Inform("No visible diagnostic events match the current filters.");return;}Clipboard.SetText(text);_vm.Inform("Visible diagnostic events copied.");}catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException){ClipboardUnavailable(ex,ManagerSubsystem.Diagnostics);}}
     private void CopyDiagnosticReport(object sender,RoutedEventArgs e)

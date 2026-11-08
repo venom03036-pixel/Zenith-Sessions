@@ -32,12 +32,13 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
 
     public WindowsClientExecutableTrust(TimeProvider? time = null) : this(new WindowsAuthenticodePolicy(), time, MaximumFileBytes) { }
     internal WindowsClientExecutableTrust(IClientAuthenticodePolicy policy, TimeProvider? time = null, long maximumFileBytes = MaximumFileBytes,
-        Func<SafeFileHandle, ClientExecutableFileSnapshot>? snapshot = null, INativeHandoffProcessStarter? starter = null)
+        Func<SafeFileHandle, ClientExecutableFileSnapshot>? snapshot = null, INativeHandoffProcessStarter? starter = null, IInstallerProcessStarter? installerStarter = null)
     {
         _policy = policy ?? throw new ArgumentNullException(nameof(policy)); _time = time ?? TimeProvider.System;
         if (maximumFileBytes is < 1 or > MaximumFileBytes) throw new ArgumentOutOfRangeException(nameof(maximumFileBytes));
         _maximumFileBytes = maximumFileBytes; _snapshot = snapshot ?? Snapshot;
         _starter = starter ?? new WindowsNativeHandoffProcessStarter();
+        _installerStarter = installerStarter ?? new WindowsInstallerProcessStarter();
     }
 
     public Task<ClientExecutableTrustResult> VerifyAsync(ClientInstallationCandidate candidate, CancellationToken ct)
@@ -68,7 +69,9 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
         }
     }
 
-    private ClientExecutableTrustResult VerifyCore(ClientInstallationCandidate candidate, CancellationToken ct, out VerifiedExecutableLease? held)
+    // installer: the file is Roblox's downloaded installer (PrepareInstallerAsync), accepted only under its fixed file name; the
+    // same path, size, digest, signature, publisher and re-open checks apply, so a player or launcher can never pass as one.
+    private ClientExecutableTrustResult VerifyCore(ClientInstallationCandidate candidate, CancellationToken ct, out VerifiedExecutableLease? held, bool installer = false)
     {
         held = null;
         ct.ThrowIfCancellationRequested();
@@ -78,10 +81,18 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
         if (candidate.Product != ClientInstallationProduct.Roblox)
             return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
         if (!TryPath(candidate.ExecutablePath, out string path)) return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.UnsafePath);
-        if (RobloxNativePlayerFiles.IsLauncher(path))
-            return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
-        if (!RobloxNativePlayerFiles.IsDirectPlayer(path))
-            return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        if (installer)
+        {
+            if (!RobloxNativePlayerFiles.IsInstaller(path))
+                return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        }
+        else
+        {
+            if (RobloxNativePlayerFiles.IsLauncher(path))
+                return Result(candidate, ClientExecutableTrustStatus.Unknown, ClientExecutableTrustReason.BootstrapperNotEvaluated);
+            if (!RobloxNativePlayerFiles.IsDirectPlayer(path))
+                return Result(candidate, ClientExecutableTrustStatus.Rejected, ClientExecutableTrustReason.InvalidCandidate);
+        }
         ClientExecutableFileSnapshot? before = null;
         string? hash = null;
         SafeFileHandle? handle = null; FileStream? file = null;
@@ -277,7 +288,8 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
     {
         public CancellationTokenSource Stop { get; } = stop;
         public TaskCompletionSource Completion { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
-        public Task? Worker; public PreparedNativeHandoffStart? Prepared; public bool Finished;
+        // A prepared native start or a prepared installer run; disposal joins it when the verifier is disposed first.
+        public Task? Worker; public IDisposable? Prepared; public bool Finished;
     }
     private sealed class UnsafeExecutablePathException : IOException { }
     private sealed class ChangedExecutableException : IOException { }
