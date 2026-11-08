@@ -29,11 +29,12 @@ public partial class MainWindow : Window
         // this window (nothing is registered with Windows), so the layout check builds them too.
         foreach (var binding in ShellShortcuts.CreateBindings(vm.Panic, vm.Navigate, vm.ShowWindowsOverview, new Command(_ => FindOnPage(), _ => CanFindOnPage())))
             InputBindings.Add(binding);
+        // Settings search moves only within this window (OnClosed unsubscribes), so the layout check exercises it too.
+        vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
         if (layoutCheckOnly) return;
         // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
         _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
         if (_startPlacement is not null) WindowStartupLocation = WindowStartupLocation.Manual;
-        vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
         IsVisibleChanged+=(_,_)=>UpdatePreviewVisibility();
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
@@ -206,7 +207,9 @@ public partial class MainWindow : Window
     }
     private void OpenSearchedSetting(SettingsSearchEntry entry)
     {
-        if(!_vm.IsSettings||_vm.IsLocked)return;
+        if(_vm.IsLocked)return;
+        if(SettingsSearchDestinations.For(entry.Target) is { } destination){OpenSearchedPreference(entry,destination);return;}
+        if(!_vm.IsSettings)return;
         bool fallback=entry.Target==SettingsSearchTarget.CustomTiming&&!_vm.IsCustomPerformance;
         FrameworkElement anchor=entry.Target switch
         {
@@ -247,6 +250,20 @@ public partial class MainWindow : Window
             focus=SettingsPerformanceTransferInput.IsEnabled?SettingsPerformanceTransferInput:SettingsPerformanceTransfer;
         }
         anchor.BringIntoView();focus.BringIntoView();bool focused=focus.Focus();_vm.ReportSettingSearchNavigation(entry,fallback,focused);
+    }
+    // The shell has already opened the result's page. Open its section, lay the page out so the newly shown controls have
+    // positions, then scroll to and focus the control. A disabled control leaves focus on its section. Opening a section is
+    // view state only: no preference, view mode or client changes.
+    private void OpenSearchedPreference(SettingsSearchEntry entry,SettingsSearchDestination destination)
+    {
+        if(_vm.Tab!=SettingsSearchCatalog.PageOf(entry.Target))return;
+        var section=destination.Section is null?null:FindName(destination.Section) as FrameworkElement;
+        if(section is System.Windows.Controls.Expander expander)expander.IsExpanded=true;
+        var focus=FindName(destination.Focus) as FrameworkElement??section;
+        UpdateLayout();
+        section?.BringIntoView();focus?.BringIntoView();
+        bool focused=focus?.Focus()==true||section?.Focus()==true;
+        _vm.ReportSettingSearchNavigation(entry,false,focused);
     }
     private async void ExitManager(object sender, RoutedEventArgs e) => await RequestExitAsync();
     private void OpenDataFolder(object sender, RoutedEventArgs e) => _vm.OpenFolder.Execute(null);

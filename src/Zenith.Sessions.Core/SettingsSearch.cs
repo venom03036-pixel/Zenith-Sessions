@@ -4,15 +4,20 @@ using System.Text;
 
 namespace Zenith.Sessions.Core;
 
-public enum SettingsSearchTarget { Appearance, Performance, CustomTiming, Memory, Installations, SignIn, Save, Recovery }
+// The first eight targets are sections of the Settings page; the rest are preferences on Sessions and Diagnostics.
+public enum SettingsSearchTarget
+{
+    Appearance, Performance, CustomTiming, Memory, Installations, SignIn, Save, Recovery,
+    SessionsLayout, ContentSize, ClientPriority, Previews, DiagnosticsFilters
+}
 
 /// <summary>Fixed navigation metadata. A result never changes a preference or starts an operation.</summary>
 public sealed record SettingsSearchEntry(string Id, string Title, string Description,
     SettingsSearchTarget Target, IReadOnlyList<string> Keywords);
 
 /// <summary>
-/// A small authored registry for the companion's existing Settings controls and explanations.
-/// No user settings, account data or query text is retained. Keep entries aligned with Settings UI.
+/// A small authored registry for the companion's existing Settings controls and explanations, plus the preferences that
+/// live on Sessions and Diagnostics. No user settings, account data or query text is retained. Keep entries aligned with the UI.
 /// </summary>
 public static class SettingsSearchCatalog
 {
@@ -20,7 +25,8 @@ public static class SettingsSearchCatalog
     public const int MaximumTokens = 8;
     public const int MaximumResults = 10;
 
-    // The first eight entries are useful blank-query topics, one for each navigation target.
+    // The first eight entries are useful blank-query topics, one for each Settings page section. Preferences on other
+    // pages are found by typing, which keeps the blank list within the ten-result bound.
     private static readonly SettingsSearchEntry[] Entries =
     [
         E("appearance", "Appearance", "Choose an existing theme palette. Theme changes apply immediately.",
@@ -94,15 +100,35 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.SignIn, "WebView2", "runtime", "browser", "login", "session", "private", "saved signin"),
         E("settings-folder", "Open settings folder", "Open the companion's writable user settings folder. User data stays outside the application folder.",
             SettingsSearchTarget.Save, "folder", "directory", "data location", "user data", "storage"),
+        E("sessions-layout", "Tile layout preferences", "On Sessions, under Layout preferences & results: tile columns (blank is automatic), gap, and minimum client width and height. Save all settings to keep them.",
+            SettingsSearchTarget.SessionsLayout, "tile", "tiling", "arrange", "columns", "gap", "minimum width", "minimum height", "layout preferences", "grid"),
+        E("client-window-size", "Client window size", "On Sessions, under Client window size: enter a content width and height in physical pixels, then choose Apply size for checked clients. Nothing is resized until you choose Apply size.",
+            SettingsSearchTarget.ContentSize, "resize", "content size", "window size", "width", "height", "pixels", "resolution", "tiny", "small window"),
+        E("client-priority", "Client CPU priority", "On Sessions, under Client CPU priority: set checked clients to Normal or Below normal, or restore their original priority. Nothing changes until you choose one of those buttons.",
+            SettingsSearchTarget.ClientPriority, "cpu priority", "process priority", "below normal", "restore original", "scheduling", "lower priority"),
+        E("client-previews", "Client previews", "On Sessions, choose Previews, then Preview checked clients to show live thumbnails. Previews start only when you choose them and stop when you leave the page, hide the window or lock.",
+            SettingsSearchTarget.Previews, "preview", "thumbnails", "live view", "capture", "watch clients", "stop previews"),
+        E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
+            SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
         E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority is set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];
+
+    /// <summary>The manager page that holds a target's controls: "Settings", "Sessions" or "Diagnostics". Opening a result
+    /// goes to that page first, exactly like its navigation button.</summary>
+    public static string PageOf(SettingsSearchTarget target) => target switch
+    {
+        SettingsSearchTarget.SessionsLayout or SettingsSearchTarget.ContentSize or SettingsSearchTarget.ClientPriority
+            or SettingsSearchTarget.Previews => "Sessions",
+        SettingsSearchTarget.DiagnosticsFilters => "Diagnostics",
+        _ => "Settings"
+    };
 
     private static readonly IReadOnlyList<SettingsSearchEntry> DefaultTopics = Array.AsReadOnly(Entries[..8]);
     private static readonly IndexedEntry[] Index = CreateIndex();
 
     /// <summary>
-    /// Blank/whitespace queries return eight fixed topics. Invalid UTF-16, controls/format characters,
+    /// Blank/whitespace queries return eight fixed topics, one for each Settings page section. Invalid UTF-16, controls/format characters,
     /// more than 160 UTF-16 units or more than eight folded tokens return an empty result.
     /// Tokens match word prefixes across title, description and keywords; all tokens must match.
     /// Results contain only fixed catalog metadata, at most ten items, in deterministic relevance order.

@@ -122,6 +122,7 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged memory trim controls lost their command binding or sample-mode boundary.");
             if (trimTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
+            RequireSearchReachesSessionsLayout(window, vm);
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
@@ -133,6 +134,24 @@ internal static class PackagedLayoutCheck
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    // Settings search must reach a preference on another page through the shipped window: open Sessions and the collapsed
+    // tile layout section, and change no draft. This window is never shown, so keyboard focus is expected to be refused.
+    private static void RequireSearchReachesSessionsLayout(Window window, ShellViewModel vm)
+    {
+        vm.Navigate.Execute("Settings"); window.UpdateLayout();
+        if (window.FindName("ClientLayoutPreferences") is not System.Windows.Controls.Expander { IsExpanded: false } layout)
+            throw new InvalidOperationException("The packaged tile layout section is missing or already open.");
+        string columns = vm.TileColumns, saveStatus = vm.SaveStatus;
+        vm.SettingsSearchQuery = "tile columns";
+        var result = vm.SettingsSearchResults.FirstOrDefault(entry => entry.Id == "sessions-layout")
+            ?? throw new InvalidOperationException("The packaged Settings search no longer finds the tile layout.");
+        vm.OpenSettingSearchResult.Execute(result);
+        if (!vm.IsSessions || !layout.IsExpanded || vm.TileColumns != columns || vm.SaveStatus != saveStatus
+            || !vm.Notice.Contains("did not change", StringComparison.Ordinal))
+            throw new InvalidOperationException("The packaged Settings search did not open the tile layout on Sessions without changing the draft.");
+        vm.ClearSettingsSearch.Execute(null);
     }
 
     // Loading the BAML alone does not notice a renamed or removed control or a lost DataContext. Require the
