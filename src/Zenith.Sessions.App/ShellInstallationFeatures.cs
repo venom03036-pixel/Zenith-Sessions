@@ -72,6 +72,12 @@ public sealed partial class ShellViewModel
 {
     private IClientInstallationDiscovery _installationDiscovery = null!;
     private IPublicRobloxClientReleaseDirectory? _clientReleases;
+    private PublicClientReleaseCache? _releaseCache;
+    // The native trial installation compared with the newest release Zenith has read, for the queue's admission (pool
+    // thread). NotChecked when no trial installation is selected or no valid release was ever read: nothing holds then.
+    private volatile ClientReleaseMatch _launchReleaseMatch;
+    // A start asks Roblox again only when its last answer is older than PublicClientReleaseCache.Lifetime, and waits at most this.
+    private static readonly TimeSpan LaunchReleaseReadLimit = TimeSpan.FromSeconds(5);
     private CancellationTokenSource? _installationStop;
     // Set only while the local list is shown and Roblox's answer is still awaited: Cancel check then stops that request alone.
     private CancellationTokenSource? _installationReleaseStop;
@@ -102,6 +108,7 @@ public sealed partial class ShellViewModel
         // The release check reaches the network. The app's own public directory answers it only beside the real discovery,
         // so an injected discovery (an isolated test) never reaches Roblox unless a release source is injected too.
         _clientReleases = releases ?? (discovery is null ? _publicClientReleases : null);
+        _releaseCache = _clientReleases is null ? null : new(_clientReleases);
         _installationDiscovery = discovery ?? new WindowsClientInstallationDiscovery();
         InitializePublisherVerification(verifier);
         RefreshInstallations = new(_ => RefreshInstallationsAsync(), ReportInstallationFailure);
@@ -153,6 +160,7 @@ public sealed partial class ShellViewModel
             var latest = release is { State: PublicDirectoryState.Success } && RobloxClientRelease.IsValid(release.Value) ? release.Value : null;
             foreach (var row in rows) row.Release = RobloxClientRelease.Compare(row.Candidate, latest);
             InstallationReleaseStatus = ReleaseSummary(release, latest, rows);
+            _releaseCache?.Remember(latest); PublishLaunchRelease();
         }
         catch (OperationCanceledException) when (stop.IsCancellationRequested || releaseStop.IsCancellationRequested) { }
         catch (Exception error)
@@ -179,6 +187,27 @@ public sealed partial class ShellViewModel
             _diagnostics.RecordFailure(ManagerSubsystem.Installation,error.GetType());
             return new(PublicDirectoryState.Failure, null, "The request to the public version service failed.");
         }
+    }
+    // Dispatcher only. The provider starts exactly the accepted selection, so only that file is compared. The queue is
+    // signalled so a held request re-checks at once rather than at the next monitor sample.
+    private void PublishLaunchRelease()
+    {
+        var installation = _nativeLaunch.Selected ? SelectedInstallation?.Candidate : null;
+        _launchReleaseMatch = installation is null ? ClientReleaseMatch.NotChecked : RobloxClientRelease.Compare(installation, _releaseCache?.Latest);
+        _launchQueue.Signal();
+    }
+    // Before a native start: an answer read in the last ten minutes is reused, else Roblox is asked once, for at most
+    // LaunchReleaseReadLimit, under the start's own cancellation (Panic, Lock and shutdown cancel it). A failed or slow answer
+    // keeps the last valid one, so it never holds a start (Rule 16); only its exception type is recorded, never its text.
+    private async Task ReadLaunchReleaseAsync(CancellationToken ct)
+    {
+        if (_releaseCache is null || _releaseCache.IsFresh) return;
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(LaunchReleaseReadLimit);
+        try { await _releaseCache.ReadAsync(bounded.Token); }
+        catch (OperationCanceledException) when (!ct.IsCancellationRequested) { _diagnostics.RecordFailure(ManagerSubsystem.Installation, typeof(TimeoutException)); }
+        catch (Exception error) when (error is not OperationCanceledException) { _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType()); }
+        PublishLaunchRelease();
     }
     private static string ReleaseSummary(PublicDirectoryResult<PublicRobloxClientRelease>? result, PublicRobloxClientRelease? latest, IReadOnlyList<InstallationCandidateRow> rows)
     {

@@ -60,9 +60,11 @@ public sealed partial class ShellViewModel
         if(!QueueReady || _overviewQueue is not { } snapshot) return;
         // Capacity waits start by themselves once headroom returns, so they are not "blocked". The segment
         // appears only when non-zero: the footer is capped at 420 px and the usual line already uses ~372 px.
-        int waiting=snapshot.Operations.Count(LaunchDescriptions.AwaitsCapacity);
+        // A Roblox-update hold also starts by itself (once no client runs), so it is counted apart, likewise only when non-zero.
+        int held=snapshot.Operations.Count(LaunchDescriptions.AwaitsClientUpdate);
+        int waiting=snapshot.Operations.Count(LaunchDescriptions.AwaitsCapacity)-held;
         QueueStatus=$"{(EffectiveQueuePaused?"Paused":"Active")} · {snapshot.Operations.Count(row=>row.State==LaunchState.Queued)} queued"
-            +(waiting>0?$" · {waiting} waiting for capacity":"")
+            +(waiting>0?$" · {waiting} waiting for capacity":"")+(held>0?$" · {held} held for a Roblox update":"")
             +$" · {snapshot.Operations.Count(row=>row.State is LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing)} preparing/dispatching"
             +$" · {snapshot.Operations.Count(row=>row.State==LaunchState.Blocked && !LaunchDescriptions.AwaitsCapacity(row))} blocked · {snapshot.Operations.Count(LaunchRow.IsReviewable)} need review";
     }

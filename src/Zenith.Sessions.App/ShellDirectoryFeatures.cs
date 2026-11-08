@@ -10,6 +10,7 @@ public sealed partial class AccountRow
     private PublicAccountData? _publicData;
     private LaunchState? _launchState;
     private LaunchProblem _launchProblem;
+    private string _launchDetail="";
     public ImageSource? Avatar=>_publicData?.Avatar;
     public bool HasAvatar=>Avatar is not null;
     public string PublicDisplayName=>_publicData?.DisplayName??"";
@@ -28,7 +29,7 @@ public sealed partial class AccountRow
         null=>"No verified client",_=>_launchState.ToString()!
     };
     public string PowerExplanation=>_launchState is LaunchState.Queued or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing?
-        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?LaunchDescriptions.Explain(_launchProblem):SignInStatusBusy?
+        "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?_launchDetail:SignInStatusBusy?
         "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
         "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
         "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
@@ -50,6 +51,7 @@ public sealed partial class AccountRow
     public void SetLaunchStatus(LaunchOperation? operation)
     {
         _launchState=operation?.State;_launchProblem=operation?.Problem??LaunchProblem.None;
+        _launchDetail=operation is null?"":LaunchDescriptions.Explain(operation);
         Raise(nameof(PowerLabel));Raise(nameof(LaunchStatus));Raise(nameof(PowerExplanation));
     }
 }

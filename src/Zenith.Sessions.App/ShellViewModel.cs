@@ -74,7 +74,7 @@ public sealed class LaunchRow(LaunchOperation operation) : Observable
     private string _label="Saved profile";
     public string Label { get=>_label;set=>Set(ref _label,value); }
     public string State=>Operation.State switch {LaunchState.Preparing=>"Preparing account",LaunchState.Blocked when Operation.Problem==LaunchProblem.PreparationInterrupted=>"Review preparation",LaunchState.Blocked when Operation.Problem==LaunchProblem.Interrupted=>"Review request",LaunchState.Arrived=>"Arrival verified",LaunchState.ReviewRequired=>"Review required",LaunchState.ClientStartedUnverified=>"Client started · unverified",_=>Operation.State.ToString()};
-    public string Detail=>LaunchDescriptions.Explain(Operation.Problem);
+    public string Detail=>LaunchDescriptions.Explain(Operation);
     public string RequestedDestination=>$"Place {Operation.Intent.PlaceId}"+(Operation.Intent.RequestedJobId is { } job?$" · {job}":" · server not specified");
     public string ProcessReceipt=>Operation.ProcessReceipt is{ } receipt?$"PID {receipt.ProcessId} · start {new DateTimeOffset(receipt.ProcessStartUtcTicks,TimeSpan.Zero).ToLocalTime():T} · not a liveness check":"No process-start receipt";
     public string ResourceEstimate=>Operation.ResourceBudget is { } budget
@@ -1270,6 +1270,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var snapshot=observed.Desktop;var admission=observed.Admission;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;var now=DateTimeOffset.UtcNow;
         var projection=LaunchReservationProjection.Evaluate(new(true,operations),snapshot,limits,now);
+        // Checked before headroom: it is the reason the user can act on, and it changes only when clients open or close.
+        // Possible clients this queue started count as running; the fresh complete inventory makes the count trustworthy.
+        if(projection.ForecastsKnown && projection.FreshProcessInventory
+            && ClientUpdateHold.Evaluate(_launchReleaseMatch,projection.OccupiedForAdmission) is {Hold:true} update)
+            return new(false,update.Reason,LaunchHoldReason.ClientUpdate);
         var decision=CapacityPolicy.Evaluate(snapshot.Resources,limits,projection.Reservations,projection.OccupiedForAdmission,now,budget);
         return new(admission.Allowed && projection.ForecastsKnown && projection.FreshProcessInventory && decision.SamplesHealthy && decision.MemoryOnlySlots>0,
             !projection.ForecastsKnown||!projection.FreshProcessInventory?projection.Explanation:!decision.SamplesHealthy||decision.MemoryOnlySlots==0?decision.Explanation:admission.Explanation);

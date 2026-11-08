@@ -124,6 +124,7 @@ public sealed partial class ShellViewModel
         // The fence above is intended; replace the selection text and the stale "Trial queued" banner
         // so the user knows the trial stopped. A Panic or Lock reason keeps priority.
         if(interrupted&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice)NativeTrialStatus=Notice=NativeTrialStoppedBySelection;
+        PublishLaunchRelease();
         RefreshNativeTrialFeatures();
     }
     private const string NativeTrialStoppedBySelection="Trial stopped because the installation selection changed, and the launch queue is paused. Review any process-start receipt in the queue before retrying; existing Roblox clients remain open.";
@@ -190,6 +191,8 @@ public sealed partial class ShellViewModel
         LaunchOperation request;
         try
         {
+            // The queue holds this start while a client runs if the player is older than Roblox's release (the update would close them).
+            await ReadLaunchReleaseAsync(stop.Token);
             var profile=await _accounts.FindAsync(review.Profile.Id,stop.Token);
             var grant=await _vault.GetSummaryAsync(review.Profile.Id,stop.Token);
             if(!IsNativeTrialReviewCurrent(review)||profile!=review.Profile||grant is not {Health:AuthorizationHealth.Linked}

@@ -371,6 +371,33 @@ public sealed class LaunchResourceBudgetQueueTests
         LaunchCoordinator.ValidateSnapshot(snapshot with { Operations = [invalid with { ResourceBudget = null }] });
     }
 
+    [Fact]
+    public async Task AClientUpdateHoldStaysOnItsWaitingRowIsSavedOnlyWhenItsReasonChangesAndStartsOnItsOwnOnceLifted()
+    {
+        var store = new Store(); var provider = new Provider(); var hold = LaunchHoldReason.ClientUpdate; bool allowed = false;
+        await using var queue = Queue(store, provider, _ => Budget(), (_, _) => allowed ? new(true, "Synthetic headroom") : new(false, "Synthetic hold", hold));
+        await queue.InitializeAsync(default); var row = await queue.EnqueueAsync(Profile("Held for an update"), default, Binding);
+        await queue.SetPausedAsync(false, default);
+        await Until(() => store.Row(row.Intent.OperationId) is { State: LaunchState.Blocked, HoldReason: LaunchHoldReason.ClientUpdate });
+        var held = store.Row(row.Intent.OperationId)!;
+        Assert.Equal(LaunchProblem.InsufficientCapacity, held.Problem); Assert.True(LaunchDescriptions.AwaitsClientUpdate(held));
+        Assert.Equal(ClientUpdateHold.Explanation, LaunchDescriptions.Explain(held)); Assert.Empty(provider.Started);
+        // Each monitor sample signals the runner; an unchanged hold is not saved again.
+        int saves = store.Saves; queue.Signal(); await Settle(); queue.Signal(); await Settle();
+        Assert.Equal(saves, store.Saves);
+        hold = LaunchHoldReason.ResourceHeadroom; queue.Signal();
+        await Until(() => store.Row(row.Intent.OperationId)?.HoldReason == LaunchHoldReason.ResourceHeadroom);
+        Assert.Equal(saves + 1, store.Saves);
+        Assert.Equal(LaunchDescriptions.Explain(LaunchProblem.InsufficientCapacity), LaunchDescriptions.Explain(store.Row(row.Intent.OperationId)!));
+        hold = LaunchHoldReason.ClientUpdate; queue.Signal();
+        await Until(() => store.Row(row.Intent.OperationId)?.HoldReason == LaunchHoldReason.ClientUpdate);
+        Assert.DoesNotContain(nameof(LaunchOperation.HoldReason), JsonSerializer.Serialize(store.Last));
+        allowed = true; queue.Signal();
+        await Until(() => provider.Started.Count == 1); await queue.WaitForActiveCleanupAsync(default);
+        var started = store.Row(row.Intent.OperationId)!;
+        Assert.Equal(LaunchState.ClientStartedUnverified, started.State); Assert.Equal(LaunchHoldReason.ResourceHeadroom, started.HoldReason);
+    }
+
     private static Task Settle() => Task.Delay(25);
     private static async Task Until(Func<bool> condition)
     { using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(4)); while (!condition()) await Task.Delay(5, stop.Token); }
