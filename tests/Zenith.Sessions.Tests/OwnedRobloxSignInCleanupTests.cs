@@ -89,6 +89,47 @@ public sealed class OwnedRobloxSignInCleanupTests : IDisposable
         Assert.False(Directory.Exists(directory.Path)); Assert.False(signIn.CleanupPending);
     }
 
+    // A browser that never reports its exit (for example one left without a controller while its environment lives) held
+    // the cleanup's wait open for good: the latch kept saying "still closing. Try again in a few seconds", and Exit never
+    // finished, because disposal joins that cleanup before releasing the folder's lease.
+    [Fact]
+    public async Task CleanupWhoseBrowserNeverReportsItsExitStopsWaitingSoExitFinishesAndStartupRecoversTheFolder()
+    {
+        await using var ui = await GatedUiThread.StartAsync(); ui.Release();
+        await using var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher);
+        var directory = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        var steps = new List<string>();
+        var limit = new ManualDeadline();
+        var neverReported = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var teardown = OwnedRobloxSignIn.TeardownAsync(() => steps.Add("cookies"), () => steps.Add("dispose"), () => steps.Add("close"),
+                controllerReady: true, runningBrowserProcesses: null, neverReported.Task, directory, () => steps.Add("detach"), limit);
+            Assert.False(await signIn.SettleCleanupAsync(teardown, directory, TimeSpan.Zero));
+            var pending = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+            Assert.Contains("still closing", pending.Message);
+            // The wait for the browser's exit is bounded, well past the five-second observation.
+            Assert.Equal(TimeSpan.FromSeconds(30), limit.Requested);
+            await limit.FireAsync(); await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(5));
+            // Nothing releases the folder before Zenith closes now, so sign-in and every other owner say so.
+            var refused = await Assert.ThrowsAsync<AccountLinkException>(() => signIn.SignInAsync(Guid.NewGuid(), default));
+            Assert.Contains("Close Zenith Sessions", refused.Message); Assert.DoesNotContain("few seconds", refused.Message);
+            Assert.True(SignInProfileDirectory.HasFolderKeptAfterFailedCleanup(_root));
+            Assert.True(Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default)).KeptAfterFailedCleanup);
+            // A browser whose exit was never confirmed keeps every guard, and its folder is not touched.
+            Assert.Equal(new[] { "cookies", "dispose", "close" }, steps);
+            Assert.True(Directory.Exists(directory.Path));
+            // Exit finishes: disposal releases the lease and leaves the marked folder, which the next startup sweep removes.
+            await signIn.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(SignInProfileDirectory.HasLiveOwner(_root)); Assert.False(SignInProfileDirectory.HasFolderKeptAfterFailedCleanup(_root));
+            Assert.True(File.Exists(Path.Combine(directory.Path, ".zenith-private-signin")), "The released folder lost its ownership marker.");
+            Assert.Equal(new SignInSweepResult(1, 0), SignInProfileDirectory.SweepOwned(_root, default));
+            Assert.False(Directory.Exists(directory.Path));
+        }
+        // Test hygiene only: a failed assertion must not leave the owner's disposal waiting on this exit.
+        finally { neverReported.TrySetResult(); }
+    }
+
     // A sign-in whose cleanup failed keeps its folder and lease until it is disposed, when Zenith closes, so every other
     // owner's admission fails until then. Counted as a live owner, inspection and native preparation answered Busy
     // ("still open or closing ... retry") for the rest of the session.

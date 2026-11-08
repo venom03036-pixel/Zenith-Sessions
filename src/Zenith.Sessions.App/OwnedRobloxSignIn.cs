@@ -19,6 +19,9 @@ namespace Zenith.Sessions.App;
 public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : IRobloxSessionSignIn, IAsyncDisposable
 {
     private static readonly TimeSpan CleanupObservation = TimeSpan.FromSeconds(5);
+    // How long a cleanup waits for its browser's exit, well past CleanupObservation. Until then the latch says the browser is
+    // still closing; past it the folder is kept for the next start, and the latch asks for a restart. Disposal (Exit) joins it.
+    internal static readonly TimeSpan BrowserExitLimit = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
     private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
     private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
@@ -30,7 +33,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     private int _active;
     // Guarded by _state. Set while a sign-in folder is not confirmed removed. A cleanup still waiting
     // for its browser to exit clears it when that same tracked task removes the folder; a failed
-    // cleanup keeps it, and the folder's lease, until disposal.
+    // cleanup, including an exit not reported within BrowserExitLimit, keeps it and the folder's lease until disposal.
     private bool _cleanupFailed;
     private SignInProfileDirectory? _incompleteDirectory;
     private Task _cleanup = Task.CompletedTask;
@@ -175,15 +178,15 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             HidePending();
             save.IsEnabled = false;
             if (saveTask is not null) await saveTask;
-            // The cleanup stays tracked past this observation: a late browser exit still removes the folder and clears the latch.
-            // Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
+            // The cleanup stays tracked past this observation: a browser exit within BrowserExitLimit still removes the folder and
+            // clears the latch. Every guard stays installed through stop, cookie deletion and controller shutdown, until the browser's exit.
             var live = core; var initialized = initializationStarted ? environment : null;
             cleaned = await SettleCleanupAsync(TeardownAsync(
                 live is null ? null : () => { live.Stop(); live.CookieManager.DeleteAllCookies(); },
                 browser.Dispose,
                 () => { closing = true; window.Closing -= close; save.Click -= saveClick; cancel.Click -= cancelClick; window.Close(); },
                 controllerReady, initialized is null ? null : () => initialized.GetProcessInfos().Count, browserExited.Task, directory,
-                () => { DetachGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }), directory, CleanupObservation);
+                () => { DetachGuards(); if (environment is not null) environment.BrowserProcessExited -= exited; }, _time), directory, CleanupObservation);
             if (!cleaned) accepted?.Dispose();
             if (completion.Task.IsCompletedSuccessfully && !ReferenceEquals(accepted, completion.Task.Result)) completion.Task.Result.Dispose();
         }
@@ -254,10 +257,11 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     /// <summary>Tears one sign-in browser down in the handoff probe's order. After a browser crash the control and its
     /// closed controller can reject every native step, so each failure is recorded and the later steps still run: the
     /// window always closes and the folder's lease always reaches the tracked cleanup. Initialization that failed after
-    /// it started may have left a browser using the folder, so its exit is awaited too. The guards stay installed
-    /// until that exit is confirmed; a confirmed exit removes the folder despite an earlier problem.</summary>
+    /// it started may have left a browser using the folder, so its exit is awaited too, for at most
+    /// <see cref="BrowserExitLimit"/>. The guards stay installed until that exit is confirmed; a confirmed exit removes
+    /// the folder despite an earlier problem. <paramref name="time"/> lets tests fire that limit.</summary>
     internal static async Task TeardownAsync(Action? stopAndClearCookies, Action dispose, Action close, bool controllerReady,
-        Func<int>? runningBrowserProcesses, Task browserExited, SignInProfileDirectory directory, Action detachGuards)
+        Func<int>? runningBrowserProcesses, Task browserExited, SignInProfileDirectory directory, Action detachGuards, TimeProvider? time = null)
     {
         bool problem = false;
         try { stopAndClearCookies?.Invoke(); } catch (Exception) { problem = true; }
@@ -268,24 +272,29 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             try { awaitBrowserExit = runningBrowserProcesses() != 0; }
             // Unknown is treated as running: removing a folder a live browser still uses deletes some files and fails on others.
             catch (Exception) { awaitBrowserExit = true; problem = true; }
-        await FinishCleanupAsync(browserExited, awaitBrowserExit, problem, directory, detachGuards);
+        await FinishCleanupAsync(browserExited, awaitBrowserExit, problem, directory, detachGuards, time);
     }
 
     /// <summary>Removes the private folder after the browser's real exit, even when cookie deletion failed:
     /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.
     /// A failure, even one that outlives the observation, keeps the folder and its lease until disposal, so it is marked
-    /// kept: other owners then report a cleanup that needs a restart instead of a browser that is still closing.</summary>
-    internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach)
+    /// kept: other owners then report a cleanup that needs a restart instead of a browser that is still closing. An exit
+    /// not reported within <see cref="BrowserExitLimit"/> is such a failure, so disposal's join of this task is bounded
+    /// and, once the lease is released, the startup sweep or the next admission recovers the still-marked folder.</summary>
+    internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach, TimeProvider? time = null)
     {
+        bool exitConfirmed = !awaitBrowserExit;
         try
         {
-            if (awaitBrowserExit) await browserExited;
+            // Bounded: a browser that never reports its exit would otherwise hold this task, its latch and Exit open for good.
+            if (awaitBrowserExit) { await browserExited.WaitAsync(BrowserExitLimit, time ?? TimeProvider.System); exitConfirmed = true; }
             if (priorProblem && !awaitBrowserExit) throw new IOException("Private sign-in cleanup needs review; its files were preserved.");
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await Task.Run(() => directory.Remove(deadline.Token));
         }
         catch (Exception) { directory.KeepAfterFailedCleanup(); throw; }
-        finally { detach(); }
+        // A browser whose exit was never confirmed may still be live, so its guards stay installed.
+        finally { if (exitConfirmed) detach(); }
     }
 
     /// <summary>Watches a tracked folder cleanup for a bounded time. A cleanup still waiting for its browser stays
@@ -316,7 +325,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     }
 
     /// <summary>Joins the tracked cleanup before releasing a retained lease. Remove disposes the lease itself, and
-    /// releasing it mid-removal would let another owner recover a folder that is still being deleted.</summary>
+    /// releasing it mid-removal would let another owner recover a folder that is still being deleted. The join is bounded:
+    /// the cleanup waits at most <see cref="BrowserExitLimit"/> for its browser, then keeps the folder, still marked, for
+    /// the startup sweep or the next admission once this releases its lease.</summary>
     public async ValueTask DisposeAsync()
     {
         Task cleanup; lock (_state) cleanup = _cleanup;
