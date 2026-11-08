@@ -53,7 +53,7 @@ public sealed partial class ShellViewModel
         && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
     public bool CanEditClientSize => !IsSample && _monitor is IClientWindowResizer && !IsLocked && !_shuttingDown && _ready && !_arranging;
     public bool CanResizeClients => CanEditClientSize && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
-    public bool IsArrangingClients { get => _arranging; private set { if (Set(ref _arranging, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); } } }
+    public bool IsArrangingClients { get => _arranging; private set { if (Set(ref _arranging, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); if (!value) ManualWindowOperationEnded(); } } }
     public string CheckedClientCount
     {
         get { int count=Sessions.Count(row => row.IsChecked); return $"{count} {(count == 1 ? "client" : "clients")} checked"; }

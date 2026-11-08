@@ -3,7 +3,8 @@ namespace Zenith.Sessions.Core;
 public enum ClientWindowAction { Minimize, Restore }
 /// <summary>
 /// What Zenith does with client windows when a client first reports Connected in its log. None (the default) leaves windows
-/// alone; Arrange tiles every connected client on the saved monitor; Minimize minimizes the client that connected.
+/// alone; Arrange tiles every connected client that is not minimized or hidden on the saved monitor; Minimize minimizes the
+/// client that connected.
 /// </summary>
 public enum ClientArrivalWindowAction { None, Arrange, Minimize }
 public sealed record WindowActionResult(bool Applied,string Explanation);
