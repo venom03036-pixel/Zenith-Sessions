@@ -47,6 +47,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.PublicNetwork=>"Public-network guard",
         ManagerSubsystem.DiscordAlerts=>"Discord alerts",
         ManagerSubsystem.DiscordPresence=>"Discord status",
+        ManagerSubsystem.UploadLimit=>"Upload limit",
         _=>"Unrecognized subsystem"
     };
 }

@@ -8,7 +8,7 @@ namespace Zenith.Sessions.Core;
 public enum SettingsSearchTarget
 {
     Appearance, Performance, CustomTiming, Memory, Installations, SignIn, Save, Recovery,
-    SessionsLayout, ContentSize, ClientPriority, Previews, ClientSound, DiagnosticsFilters
+    SessionsLayout, ContentSize, ClientPriority, Previews, ClientSound, DiagnosticsFilters, UploadLimit
 }
 
 /// <summary>Fixed navigation metadata. A result never changes a preference or starts an operation.</summary>
@@ -128,17 +128,19 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.SessionsLayout, "tile", "tiling", "arrange", "columns", "gap", "minimum width", "minimum height", "layout preferences", "grid"),
         E("client-window-size", "Client window size", "On Sessions, under Client window size: enter a content width and height in physical pixels, then choose Apply size for checked clients. Nothing is resized until you choose Apply size.",
             SettingsSearchTarget.ContentSize, "resize", "content size", "window size", "width", "height", "pixels", "resolution", "tiny", "small window"),
-        E("client-priority", "Client CPU priority", "On Sessions, under Client CPU priority: set checked clients to Normal or Below normal, turn on efficiency mode, spread them over cores, or restore their original settings. Nothing changes until you choose one of those buttons.",
-            SettingsSearchTarget.ClientPriority, "cpu priority", "process priority", "below normal", "restore original", "scheduling", "lower priority", "efficiency mode", "ecoqos", "affinity", "cores"),
+        E("client-priority", "Client CPU priority", "On Sessions, under Client CPU priority: set checked clients to Normal or Below normal, turn on efficiency mode, spread them over cores, cap their share of all CPU time, or restore their original settings. Nothing changes until you choose a button.",
+            SettingsSearchTarget.ClientPriority, "cpu priority", "process priority", "below normal", "restore original", "scheduling", "lower priority", "efficiency mode", "ecoqos", "affinity", "cores", "cpu cap", "cap cpu", "limit cpu", "job object", "throttle"),
         E("client-previews", "Client previews", "On Sessions, choose Previews, then Preview checked clients to show live thumbnails. Previews start only when you choose them and stop when you leave the page, hide the window or lock.",
             SettingsSearchTarget.Previews, "preview", "thumbnails", "live view", "capture", "watch clients", "stop previews"),
         E("client-sound", "Client sound", "On Sessions, under Client sound: Mute or Unmute checked clients, the same switch as Volume mixer, or turn on Mute clients when they appear and save all settings for clients that start later. Nothing changes until you choose Mute or Unmute, or save.",
             SettingsSearchTarget.ClientSound, "mute", "unmute", "sound", "audio", "volume", "volume mixer", "silence", "quiet", "mute when they appear", "mute new clients"),
+        E("upload-limit", "Upload limit", "On Sessions, under Upload limit: enter kilobits per second and choose Apply upload limit, or choose Remove. Each runs Windows PowerShell as administrator after Windows' own prompt; nothing changes until you approve it.",
+            SettingsSearchTarget.UploadLimit, "upload", "upload limit", "bandwidth", "qos", "network", "kbps", "kbit", "outbound", "send rate", "traffic", "administrator"),
         E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
             SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
         E("roblox-updates", "Check for Roblox updates automatically", "Under Roblox installation: ask Roblox's public version service for its current release 3 seconds after start and every 30 minutes, and say when the installed player is behind. Off by default; save to apply. Download and Install Roblox update stay explicit.",
             SettingsSearchTarget.Installations, "update", "updates", "roblox update", "automatic check", "version check", "installer", "install roblox", "download update", "30 minutes", "out of date", "new version", "client version"),
-        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, rendering, CPU caps and automatic affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
+        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, rendering and automatic affinity policies are not configurable here. Client process priority, efficiency mode, core spreading and a per-client CPU cap are set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];
 
@@ -147,7 +149,7 @@ public static class SettingsSearchCatalog
     public static string PageOf(SettingsSearchTarget target) => target switch
     {
         SettingsSearchTarget.SessionsLayout or SettingsSearchTarget.ContentSize or SettingsSearchTarget.ClientPriority
-            or SettingsSearchTarget.Previews or SettingsSearchTarget.ClientSound => "Sessions",
+            or SettingsSearchTarget.Previews or SettingsSearchTarget.ClientSound or SettingsSearchTarget.UploadLimit => "Sessions",
         SettingsSearchTarget.DiagnosticsFilters => "Diagnostics",
         _ => "Settings"
     };

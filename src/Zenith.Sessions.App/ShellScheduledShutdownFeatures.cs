@@ -19,7 +19,6 @@ public sealed partial class ShellViewModel
     private const string ShutdownNow = "Windows is shutting down this PC now.";
     private const int ShutdownAccessDenied = 5;
     private enum ShutdownCancelOrigin { User, Panic, Exit }
-    private readonly TimeProvider _clock;
     private IShutdownScheduler _shutdownScheduler = null!;
     private DispatcherTimer? _shutdownCountdownTimer;
     private Task _shutdownWork = Task.CompletedTask;

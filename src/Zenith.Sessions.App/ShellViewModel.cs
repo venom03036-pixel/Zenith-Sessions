@@ -94,6 +94,9 @@ public sealed class SessionRow(SessionObservation observation) : Observable
 {
     private bool _checked;
     public bool IsChecked { get => _checked; set => Set(ref _checked, value); }
+    private bool _forceCloseOffered;
+    /// <summary>R-instances-12: true only after Close left this exact client open. Panic, Lock, exit, a force close and the client's exit withdraw it.</summary>
+    public bool ForceCloseOffered { get => _forceCloseOffered; internal set => Set(ref _forceCloseOffered, value); }
     private SessionLogView _log = SessionLogView.Unknown;
     public SessionLogView Log => _log;
     public void UpdateLog(SessionLogView value) { if (_log != value) { _log = value; Raise(nameof(Log)); } }
@@ -187,6 +190,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private bool _presentationFaulted;
     private const string RefreshPresentationFailed="Refresh could not show the latest measurements, so the dashboard may be out of date. Monitoring and launch safety checks continue.";
     private readonly Dispatcher _dispatcher;
+    // The shell's monotonic clock (GetTimestamp): the idle lock and arrival muting measure elapsed time on it, so a wall-clock
+    // change neither shortens nor extends them and tests drive both without waiting. Wall-clock stamps that are compared with
+    // scans and files (DateTimeOffset.UtcNow) are not routed through it.
+    private readonly TimeProvider _clock;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
     private Task _queryTask = Task.CompletedTask, _monitorTask = Task.CompletedTask, _initializeTask = Task.CompletedTask;
@@ -341,7 +348,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null,IRobloxAccountDataClient? accountDataClient=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null,IRobloxAccountDataClient? accountDataClient=null,IUploadLimitControl? uploadLimit=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
@@ -397,6 +404,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializePublicNetworkGuardFeatures(publicNetworkMonitor);
         InitializeDiscordAlertFeatures(discordWebhookStore,discordTransport);
         InitializeDiscordPresenceFeatures(discordPresencePipe);
+        InitializeUploadLimitFeatures(uploadLimit);
+        InitializeClientCloseFeatures();
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide", "News" }.Contains(tab)) Tab = tab; });
@@ -474,6 +483,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             ApplyEffectiveLanguage();ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
+            stage=ManagerSubsystem.ClientPriority;await CheckLeftoverClientCpuCapsAsync();
+            stage=ManagerSubsystem.UploadLimit;await LoadUploadLimitRecordAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
             stage=ManagerSubsystem.Library;
             string? projectionNotice=null;
@@ -1114,13 +1125,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// or nothing when null). Automation, the launch queue and monitoring therefore never wait on a settings write.
     /// </summary>
     internal Task ExitAsync(ManagerWindowPlacement? placement)=>_disposeTask??=DisposeCoreAsync(placement);
-    public async Task RequestCloseAsync(SessionObservation session)
-    {
-        var requestedAt=DateTimeOffset.UtcNow;
-        bool requested=await _monitor.RequestCloseAsync(session,_lifetime.Token);
-        if(requested) RecentClients.RecordCloseRequest(new(null,session.ProcessId,session.ProcessStartUtcTicks),requestedAt);
-        Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
-    }
+    // RequestCloseAsync and ForceCloseAsync live in ShellClientCloseFeatures.cs (R-instances-12).
     public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
     private void LockControls(string reason)=>StopOperations(reason,ManagerEventKind.ControlsLocked);
     /// <summary>
@@ -1143,7 +1148,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientCloseOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(()=>StopUploadLimitOperations(panic:true));Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
         Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1244,6 +1249,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopPublicNetworkWatch();
         StopDiscordAlertOutbox();
         StopDiscordPresence();
+        StopClientCloseOperations();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
@@ -1286,6 +1292,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeDiscordAlertFeaturesAsync();
         await DisposeDiscordPresenceFeaturesAsync();
         await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
+        await DisposeUploadLimitFeaturesAsync();
+        await DisposeClientCloseFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.

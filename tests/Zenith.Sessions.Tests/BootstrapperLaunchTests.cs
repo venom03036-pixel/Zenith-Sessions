@@ -226,7 +226,7 @@ public sealed class BootstrapperLaunchPolicyTests : IDisposable
 
         var guide = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide", StringComparison.Ordinal) == true));
-        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => (string?)e.Attribute("Text") ?? "").ToList();
+        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text") ?? "")).ToList();
         Assert.Contains(texts, text => text == "Launching through a bootstrapper");
         string section = Assert.Single(texts, text => text.StartsWith("Settings → Roblox installation lists Bloxstrap", StringComparison.Ordinal));
         foreach (string expected in new[] { "Bloxstrap, Fishstrap, Froststrap or Voidstrap", "Verify publisher", "Accept publisher", "thumbprint", "applies its own client settings and FFlags",

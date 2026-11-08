@@ -107,6 +107,9 @@ internal static class PackagedLayoutCheck
             if (window.FindName("ClientSoundTools") is not System.Windows.Controls.Expander soundTools)
                 throw new InvalidOperationException("The packaged client sound tools are missing.");
             soundTools.IsExpanded = true;
+            if (window.FindName("UploadLimitTools") is not System.Windows.Controls.Expander uploadLimitTools)
+                throw new InvalidOperationException("The packaged upload limit tools are missing.");
+            uploadLimitTools.IsExpanded = true;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             // A never-shown Window can retain its disconnected layout. Measure the
             // production content itself to exercise the expanded panel offscreen.
@@ -176,6 +179,13 @@ internal static class PackagedLayoutCheck
                 || window.FindName("SettingsDiscordApplicationId") is not System.Windows.Controls.TextBox { Text.Length: 0 }
                 || window.FindName("SettingsResumeDiscordPresence") is not System.Windows.Controls.Button { IsEnabled: false })
                 throw new InvalidOperationException("The packaged Discord status controls lost their binding or their off default.");
+            if (window.FindName("ApplyUploadLimitButton") is not System.Windows.Controls.Button applyUploadLimit
+                || applyUploadLimit.Command != vm.ApplyUploadLimit || applyUploadLimit.IsEnabled || vm.IsChangingUploadLimit || vm.CanChangeUploadLimit
+                || window.FindName("RemoveUploadLimitButton") is not System.Windows.Controls.Button removeUploadLimit
+                || removeUploadLimit.Command != vm.RemoveUploadLimit || removeUploadLimit.IsEnabled)
+                throw new InvalidOperationException("The packaged upload limit controls lost their command binding or sample-mode boundary.");
+            if (uploadLimitTools.ActualHeight <= 0)
+                throw new InvalidOperationException("The packaged upload limit controls could not be laid out.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
