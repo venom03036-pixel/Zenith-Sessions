@@ -98,8 +98,8 @@ public sealed partial class ShellViewModel
     private void StopPrivateTrialForRemoval()
     {
         // Always fence before storage: a just-committed request may not have reached the UI snapshot yet.
-        FenceNativeTrial("Private-server trial stopped because a saved server is being removed. Review the queue before resuming.");
-        _launchQueue.SignalPanic();
+        try { FenceNativeTrial("Private-server trial stopped because a saved server is being removed. Review the queue before resuming."); }
+        finally { _launchQueue.SignalPanic(); }
     }
     public void DiscardNativeTrialReview(NativeTrialReview review)
     {Interlocked.CompareExchange(ref _nativeTrialReview,null,review);}
