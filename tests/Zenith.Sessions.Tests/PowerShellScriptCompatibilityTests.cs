@@ -68,6 +68,31 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         Assert.Equal("- **CYCLE-01 "+EmDash+" synthetic.** Review before work.",json.RootElement.GetProperty("Scope")[0].GetProperty("ReviewedClause").GetString());
     }
 
+    [Fact]
+    public async Task WindowsPowerShellUsesItsOwnStockModulesWhenTheCallerSuppliesOnlyPowerShell7Modules()
+    {
+        Directory.CreateDirectory(_root);
+        string fixture=Path.Combine(_root,"hash-fixture.txt");
+        byte[] content=Encoding.UTF8.GetBytes("synthetic stock module check");await File.WriteAllBytesAsync(fixture,content);
+        string quote(string path)=>"'"+path.Replace("'","''")+"'";
+        string command="$ErrorActionPreference='Stop'; $hash=Get-FileHash -LiteralPath "+quote(fixture)+" -Algorithm SHA256; "
+            +"[pscustomobject]@{Major=$PSVersionTable.PSVersion.Major;Minor=$PSVersionTable.PSVersion.Minor;Hash=$hash.Hash;ModulePath=$env:PSModulePath} | ConvertTo-Json -Compress";
+        // A portable stand-in for the caller's PS7-only module tree. Its Utility manifest cannot load under 5.1.
+        string ps7=Path.Combine(_root,"PowerShell7","Modules"),utility=Path.Combine(ps7,"Microsoft.PowerShell.Utility");
+        Directory.CreateDirectory(utility);
+        await File.WriteAllTextAsync(Path.Combine(utility,"Microsoft.PowerShell.Utility.psd1"),"@{ModuleVersion='7.0.0';PowerShellVersion='7.0';FunctionsToExport=@('Get-FileHash')}");
+        var inherited=new Dictionary<string,string>{["PSModulePath"]=ps7,["USERPROFILE"]=Path.Combine(_root,"profile")};
+        var run=await RunWindowsPowerShell(_root,inherited,"-EncodedCommand",Convert.ToBase64String(Encoding.Unicode.GetBytes(command)));
+        Assert.True(run.ExitCode==0,$"Exit {run.ExitCode}. Output: {run.Output} Errors: {run.Errors}");
+        using var result=JsonDocument.Parse(run.Output);
+        Assert.Equal(5,result.RootElement.GetProperty("Major").GetInt32());
+        Assert.Equal(1,result.RootElement.GetProperty("Minor").GetInt32());
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(content)),result.RootElement.GetProperty("Hash").GetString());
+        string expected=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),"System32","WindowsPowerShell","v1.0","Modules");
+        Assert.Contains(expected,result.RootElement.GetProperty("ModulePath").GetString()!.Split(Path.PathSeparator),StringComparer.OrdinalIgnoreCase);
+        Assert.DoesNotContain(ps7,result.RootElement.GetProperty("ModulePath").GetString()!,StringComparison.OrdinalIgnoreCase);
+    }
+
     [LuauBinariesFact]
     public async Task OwnedBridgeRunnerWritesBomFreeUtf8UnderWindowsPowerShell51()
     {
@@ -140,6 +165,9 @@ public sealed class PowerShellScriptCompatibilityTests : IDisposable
         {UseShellExecute=false,CreateNoWindow=true,RedirectStandardOutput=true,RedirectStandardError=true,WorkingDirectory=workingDirectory};
         foreach(string argument in new[]{"-NoProfile","-NonInteractive","-ExecutionPolicy","Bypass"}.Concat(arguments))start.ArgumentList.Add(argument);
         foreach(var pair in environment)start.Environment[pair.Key]=pair.Value;
+        // A PS7 caller can export its own incompatible Utility/Management modules. These are stock-5.1 compatibility
+        // checks, so isolate only this child's module discovery to the modules beside the exact powershell.exe we start.
+        start.Environment["PSModulePath"]=Path.Combine(Path.GetDirectoryName(start.FileName)!,"Modules");
         using var process=Process.Start(start)!;
         var output=process.StandardOutput.ReadToEndAsync();var errors=process.StandardError.ReadToEndAsync();
         using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(90));
