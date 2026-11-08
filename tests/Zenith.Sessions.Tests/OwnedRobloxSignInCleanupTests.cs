@@ -1,6 +1,7 @@
 using System.IO;
 using System.Runtime.InteropServices;
 using Zenith.Sessions.App;
+using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 using Xunit;
 
@@ -59,7 +60,9 @@ public sealed class OwnedRobloxSignInCleanupTests : IDisposable
         Assert.Equal(new[] { "cookies", "dispose", "close" }, steps);
         Assert.True(signIn.CleanupPending, "A failed dispose was not reported as a cleanup problem.");
         Assert.True(Directory.Exists(directory.Path), "The folder was removed while its browser had not exited.");
-        Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        // Still closing, not failed: it may yet let go, so other owners hear "busy", not "restart".
+        Assert.False(Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default)).KeptAfterFailedCleanup);
+        Assert.True(SignInProfileDirectory.HasLiveOwner(_root)); Assert.False(SignInProfileDirectory.HasFolderKeptAfterFailedCleanup(_root));
         exit.SetResult(); await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(new[] { "cookies", "dispose", "close", "detach" }, steps);
         Assert.False(Directory.Exists(directory.Path)); Assert.False(signIn.CleanupPending);
@@ -84,6 +87,40 @@ public sealed class OwnedRobloxSignInCleanupTests : IDisposable
         // Its confirmed exit removes the folder, overriding the earlier problem, and readmits sign-in.
         exit.SetResult(); await signIn.CleanupSettled.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(Directory.Exists(directory.Path)); Assert.False(signIn.CleanupPending);
+    }
+
+    // A sign-in whose cleanup failed keeps its folder and lease until it is disposed, when Zenith closes, so every other
+    // owner's admission fails until then. Counted as a live owner, inspection and native preparation answered Busy
+    // ("still open or closing ... retry") for the rest of the session.
+    [Fact]
+    public async Task SignInFolderKeptAfterAFailedCleanupIsReportedAsCleanupFailedNotBusyUntilDisposal()
+    {
+        await using var ui = await GatedUiThread.StartAsync(); ui.Release();
+        await using var signIn = new OwnedRobloxSignIn(_root, ui.Dispatcher);
+        var directory = SignInProfileDirectory.Create(_root, Guid.NewGuid(), default);
+        // No browser was running, but closing the window failed: the folder is preserved rather than removed.
+        var teardown = OwnedRobloxSignIn.TeardownAsync(null, () => { }, () => throw new InvalidOperationException("window already closed"),
+            controllerReady: false, runningBrowserProcesses: () => 0, Task.CompletedTask, directory, () => { });
+        Assert.False(await signIn.SettleCleanupAsync(teardown, directory, TimeSpan.FromSeconds(5)));
+        Assert.True(Directory.Exists(directory.Path));
+        await using IRobloxHandoffProbe probe = new OwnedRobloxHandoffProbe(_root, ui.Dispatcher);
+        await using IRobloxNativeHandoffCapture native = new OwnedRobloxNativeHandoffCapture(_root, ui.Dispatcher);
+        Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed, probe.Refusal);
+        Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed, native.Refusal);
+        // A check that starts anyway reaches admission, which refuses the same way instead of reporting another owner busy.
+        using var credential = new RobloxSessionCredential("synthetic-only");
+        using (var result = await probe.InspectAsync(new(Guid.NewGuid(), 456, 1, 42), credential, default))
+        {
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed, result.Result.Outcome);
+            string status = ShellViewModel.DescribeHandoffResult(result.Result, 42);
+            Assert.Contains("close Zenith", status); Assert.Contains("signin-browser-data", status);
+        }
+        Assert.True(Directory.Exists(directory.Path), "Another owner's kept folder was opened or removed.");
+        // Released, as when Zenith closes: nothing was latched elsewhere, and the next admission recovers the folder.
+        await signIn.DisposeAsync();
+        Assert.Null(probe.Refusal); Assert.Null(native.Refusal);
+        SignInProfileDirectory.Create(_root, Guid.NewGuid(), default).Remove(default);
+        Assert.False(Directory.Exists(directory.Path), "The next admission did not recover the released folder.");
     }
 
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }

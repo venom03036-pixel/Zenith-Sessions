@@ -31,9 +31,10 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     internal OwnedRobloxHandoffProbe(string dataRoot,Dispatcher dispatcher,TimeProvider time):this(dataRoot,dispatcher)=>_time=time;
 
     /// <summary>
-    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched or while
-    /// leftover sign-in data kept by the startup sweep or any admission waits for review, Busy while this or another
-    /// owner holds a private folder, Cancelled after disposal. Memory only.
+    /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched, while
+    /// leftover sign-in data kept by the startup sweep or any admission waits for review, or while another owner keeps
+    /// its folder after a failed cleanup; Busy while this or another owner holds a private folder it may yet release;
+    /// Cancelled after disposal. Memory only.
     /// </summary>
     public RobloxHandoffProbeOutcome? Refusal
     {
@@ -46,7 +47,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
                 if(_owner is not null)return RobloxHandoffProbeOutcome.Busy;
             }
             // That leftover survives restarts and stops every owner's admission, including a fresh probe's first one.
-            if(SignInProfileDirectory.LeftoverNeedsReview(dataRoot))return RobloxHandoffProbeOutcome.CleanupFailed;
+            // A folder kept after another owner's failed cleanup stops every admission until Zenith closes: retrying cannot help.
+            if(SignInProfileDirectory.LeftoverNeedsReview(dataRoot)||SignInProfileDirectory.HasFolderKeptAfterFailedCleanup(dataRoot))
+                return RobloxHandoffProbeOutcome.CleanupFailed;
             return SignInProfileDirectory.HasLiveOwner(dataRoot)?RobloxHandoffProbeOutcome.Busy:null;
         }
     }
@@ -102,15 +105,23 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         }
         catch(OperationCanceledException){result=Capture(RobloxHandoffProbeOutcome.Cancelled);}
         // Another owner's folder (for example a sign-in browser still closing) is busy, not a missing
-        // runtime. This attempt created and cleaned nothing, so it is not this probe's cleanup failure.
-        catch(SignInDirectoryInUseException){result=Capture(RobloxHandoffProbeOutcome.Busy);}
+        // runtime. This attempt created and cleaned nothing, so it is not this probe's cleanup failure and latches
+        // nothing. A folder that owner kept after its cleanup failed stays held until Zenith closes, so it is
+        // CleanupFailed for now; Refusal says the same until that owner releases it.
+        catch(SignInDirectoryInUseException ex)
+        {result=Capture(ex.KeptAfterFailedCleanup?RobloxHandoffProbeOutcome.CleanupFailed:RobloxHandoffProbeOutcome.Busy);}
         catch(Exception){result=Capture(RobloxHandoffProbeOutcome.BrowserUnavailable);}
         finally
         {
             if(directory is not null&&!browserStarted)
             {
                 try{using var cleanup=new CancellationTokenSource(TimeSpan.FromSeconds(5));await Task.Run(()=>directory.Remove(cleanup.Token)).ConfigureAwait(false);}
-                catch(Exception){lock(_state){_blocked=true;_retainedDirectory=directory;}result?.Dispose();result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);}
+                catch(Exception)
+                {
+                    // Kept with its lease until disposal, so other owners report a restart instead of a busy browser.
+                    directory.KeepAfterFailedCleanup();
+                    lock(_state){_blocked=true;_retainedDirectory=directory;}result?.Dispose();result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);
+                }
             }
             if(result?.Outcome==RobloxHandoffProbeOutcome.Cancelled&&stop.IsCancellationRequested&&!caller.IsCancellationRequested&&!_lifetime.IsCancellationRequested)
             {result.Dispose();result=Capture(RobloxHandoffProbeOutcome.TimedOut);}
@@ -335,6 +346,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await Task.Run(()=>directory.Remove(deadline.Token));
         }
+        // A failure, even one after the five-second observation, keeps the folder and its lease until disposal.
+        // A cleanup still waiting for the browser's exit is not marked: other owners see it as still closing.
+        catch(Exception){directory.KeepAfterFailedCleanup();throw;}
         finally{if(environment is not null)environment.BrowserProcessExited-=exited;}
     }
     private static OwnedCapture Capture(RobloxHandoffProbeOutcome outcome)=>new(outcome,null);

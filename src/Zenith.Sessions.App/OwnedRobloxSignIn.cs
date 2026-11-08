@@ -22,6 +22,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
     private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
     private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
+    private const string FolderKept = "A previous private browser's cleanup failed, and its folder in signin-browser-data is kept until Zenith Sessions closes, so no sign-in can start before then. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private const string FolderNeedsReview = "Private sign-in storage needs review: a leftover folder in signin-browser-data was not recognized or could not be removed, and it was preserved. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private const string StorageUnavailable = "Private sign-in storage could not be prepared. The Zenith data folder must be on a local drive that is not redirected, with free space and write permission for your Windows account, and no other program may be using signin-browser-data. Fix that, then sign in again. Nothing was saved.";
     private readonly TimeProvider _time = TimeProvider.System;
@@ -55,8 +56,10 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                 SignInProfileDirectory directory;
                 // Admission refused before anything was created or opened, so nothing is latched. Fixed text only: no path or
                 // inner exception. Only leftover data kept for review names that folder; any other storage failure (remote,
-                // redirected, unwritable or full storage, or a file another program has open) asks for usable storage.
+                // redirected, unwritable or full storage, or a file another program has open) asks for usable storage. A folder
+                // another owner kept after its cleanup failed is held until Zenith closes, so it asks for a restart, not a wait.
                 try { directory = await Task.Run(() => SignInProfileDirectory.Create(dataRoot, profileId, timeout.Token), timeout.Token).ConfigureAwait(false); }
+                catch (SignInDirectoryInUseException ex) when (ex.KeptAfterFailedCleanup) { throw new AccountLinkException(FolderKept); }
                 catch (SignInDirectoryInUseException) { throw new AccountLinkException(FolderInUse); }
                 catch (SignInDirectoryNeedsReviewException) { throw new AccountLinkException(FolderNeedsReview); }
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { throw new AccountLinkException(StorageUnavailable); }
@@ -68,7 +71,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
                     {
                         try { using var cleanup = new CancellationTokenSource(TimeSpan.FromSeconds(5)); await Task.Run(() => directory.Remove(cleanup.Token)).ConfigureAwait(false); }
                         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or OperationCanceledException)
-                        { lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
+                        { directory.KeepAfterFailedCleanup(); lock (_state) { _cleanupFailed = true; _incompleteDirectory = directory; } }
                     }
                 }
             }
@@ -269,7 +272,9 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     }
 
     /// <summary>Removes the private folder after the browser's real exit, even when cookie deletion failed:
-    /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.</summary>
+    /// removing the folder deletes those cookies too. Without an awaited exit, an earlier problem preserves it.
+    /// A failure, even one that outlives the observation, keeps the folder and its lease until disposal, so it is marked
+    /// kept: other owners then report a cleanup that needs a restart instead of a browser that is still closing.</summary>
     internal static async Task FinishCleanupAsync(Task browserExited, bool awaitBrowserExit, bool priorProblem, SignInProfileDirectory directory, Action detach)
     {
         try
@@ -279,6 +284,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
             using var deadline = new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await Task.Run(() => directory.Remove(deadline.Token));
         }
+        catch (Exception) { directory.KeepAfterFailedCleanup(); throw; }
         finally { detach(); }
     }
 

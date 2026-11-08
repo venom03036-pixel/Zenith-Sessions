@@ -22,7 +22,15 @@ public sealed class SignInProfileDirectory
     // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
     // reserved, including from the UI thread, so it is memory only; the value is unused.
     private static readonly ConcurrentDictionary<string, byte> ReviewPending = new(StringComparer.OrdinalIgnoreCase);
+    // Leases an owner keeps after its cleanup failed, per browser-data root and per folder: a subset of HeldLeases. The
+    // owner holds them until it is disposed, when Zenith closes, so nothing in this session frees them and every admission
+    // under that root is refused until then. Like HeldLeases, reading them opens no lock file.
+    private static readonly ConcurrentDictionary<string, int> KeptLeases = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly ConcurrentDictionary<string, byte> KeptFolders = new(StringComparer.OrdinalIgnoreCase);
+    // Guards _lease and _kept together, so a folder is never marked kept after its lease is gone.
+    private readonly object _leaseGate = new();
     private FileStream? _lease;
+    private bool _kept;
     public string Path { get; }
     private SignInProfileDirectory(string path, FileStream? lease = null)
     {
@@ -31,13 +39,28 @@ public sealed class SignInProfileDirectory
     }
 
     /// <summary>
-    /// True while an owner in this process still holds a sign-in folder under <paramref name="dataRoot"/>
-    /// (an open or closing sign-in, or a retained cleanup), so <see cref="Create"/> would report it in use.
+    /// True while an owner in this process still holds a sign-in folder under <paramref name="dataRoot"/> that it may yet
+    /// release (an open sign-in, or one still closing), so <see cref="Create"/> would report it in use for now. A folder
+    /// kept after a failed cleanup is not counted: see <see cref="HasFolderKeptAfterFailedCleanup"/>.
     /// </summary>
     public static bool HasLiveOwner(string dataRoot)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
-        return HeldLeases.TryGetValue(BrowserRootOf(dataRoot), out int held) && held > 0;
+        string browserRoot = BrowserRootOf(dataRoot);
+        if (!HeldLeases.TryGetValue(browserRoot, out int held)) return false;
+        return held - (KeptLeases.TryGetValue(browserRoot, out int kept) ? kept : 0) > 0;
+    }
+
+    /// <summary>
+    /// True while an owner in this process keeps a sign-in folder under <paramref name="dataRoot"/> after its cleanup
+    /// failed (<see cref="KeepAfterFailedCleanup"/>). That owner releases it only when it is disposed, when Zenith closes,
+    /// so every <see cref="Create"/> under this root is refused until then and retrying in this session cannot help.
+    /// Memory only, like <see cref="HasLiveOwner"/>; nothing is remembered once the folder is released.
+    /// </summary>
+    public static bool HasFolderKeptAfterFailedCleanup(string dataRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        return KeptLeases.TryGetValue(BrowserRootOf(dataRoot), out int kept) && kept > 0;
     }
 
     /// <summary>
@@ -149,6 +172,9 @@ public sealed class SignInProfileDirectory
     // when its marker is incomplete or its lock is missing.
     private static void RecoverLeftover(string old, CancellationToken ct)
     {
+        // A folder another owner here kept after its cleanup failed stays held until that owner is disposed: it is not
+        // inspected, and the refusal says so instead of suggesting the owner will soon let go.
+        if (KeptFolders.ContainsKey(old)) throw new SignInDirectoryInUseException(keptAfterFailedCleanup: true);
         if (!OwnedName(System.IO.Path.GetFileName(old))) throw new SignInDirectoryNeedsReviewException(NeedsReview);
         if ((File.GetAttributes(old) & FileAttributes.ReparsePoint) != 0) throw new SignInDirectoryNeedsReviewException("Private sign-in cleanup found redirected storage.");
         bool ownershipFilesOnly = HoldsOnlyOwnershipFiles(old);
@@ -196,9 +222,31 @@ public sealed class SignInProfileDirectory
         DeleteOwnershipFiles();
     }
     public void ReleaseOwnership() => DropLease();
+
+    /// <summary>
+    /// Records that this folder's cleanup failed and that its owner keeps the folder and its lease until it releases
+    /// ownership, which it does only when it is disposed. Other owners are then refused with
+    /// <see cref="SignInDirectoryInUseException.KeptAfterFailedCleanup"/> and see <see cref="HasFolderKeptAfterFailedCleanup"/>,
+    /// so they report a cleanup failure that needs a restart rather than an owner that is still busy. Repeated calls,
+    /// and calls after the lease is gone (a later removal that succeeded), change nothing.
+    /// </summary>
+    public void KeepAfterFailedCleanup()
+    {
+        lock (_leaseGate)
+        {
+            if (_lease is null || _kept) return;
+            _kept = true;
+            KeptFolders.TryAdd(Path, 0);
+            KeptLeases.AddOrUpdate(LeaseRoot(Path), 1, static (_, kept) => kept + 1);
+        }
+    }
     private void DropLease()
     {
-        if (Interlocked.Exchange(ref _lease, null) is not { } lease) return;
+        FileStream? lease; bool kept;
+        lock (_leaseGate) { lease = _lease; _lease = null; kept = _kept; _kept = false; }
+        if (lease is null) return;
+        // Forgotten before the lock file closes, so a folder being released is never reported as kept.
+        if (kept) { KeptFolders.TryRemove(Path, out _); KeptLeases.AddOrUpdate(LeaseRoot(Path), 0, static (_, count) => count - 1); }
         try { lease.Dispose(); }
         finally { HeldLeases.AddOrUpdate(LeaseRoot(Path), 0, static (_, held) => held - 1); }
     }
@@ -251,8 +299,18 @@ public sealed class SignInProfileDirectory
 /// <summary>What a startup sweep did: leftover sign-in folders removed, and folders kept untouched for review or a later run.</summary>
 public readonly record struct SignInSweepResult(int Removed, int Kept);
 
-/// <summary>Another private browser (an open sign-in, or one still closing) holds its sign-in folder. Nothing was opened or removed.</summary>
-public sealed class SignInDirectoryInUseException() : IOException("Another private browser still owns its sign-in folder. Wait for it to close, then try again.");
+/// <summary>
+/// Another private browser holds its sign-in folder. Nothing was opened or removed. Usually that owner is open or still
+/// closing and lets go by itself. With <see cref="KeptAfterFailedCleanup"/>, its cleanup failed and it keeps the folder
+/// until it is disposed, when Zenith closes, so no retry in this session can succeed. The message is fixed text: no path.
+/// </summary>
+public sealed class SignInDirectoryInUseException(bool keptAfterFailedCleanup = false) : IOException(keptAfterFailedCleanup
+    ? "A private browser's cleanup failed, and its sign-in folder is kept until Zenith Sessions closes. Close Zenith Sessions, then try again."
+    : "Another private browser still owns its sign-in folder. Wait for it to close, then try again.")
+{
+    /// <summary>The holder's cleanup failed and it keeps the folder until it is disposed; see <see cref="SignInProfileDirectory.KeepAfterFailedCleanup"/>.</summary>
+    public bool KeptAfterFailedCleanup { get; } = keptAfterFailedCleanup;
+}
 
 /// <summary>
 /// Leftover sign-in data that admission or cleanup must not open or remove: a folder that is not one of this component's,

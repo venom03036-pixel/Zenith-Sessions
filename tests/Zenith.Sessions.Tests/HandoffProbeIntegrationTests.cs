@@ -349,6 +349,43 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.False(Directory.Exists(folder),"The next admission did not recover the retained folder.");
         next.Remove(default);
     }
+    // A probe whose cleanup failed keeps its folder and lease until it is disposed, when Zenith closes, so every other
+    // owner's admission fails until then. Counted as a live owner, the native capture answered Busy ("still open or
+    // closing ... retry") and a sign-in said to finish or cancel a window that no longer existed, for the whole session.
+    [Fact]
+    public async Task ProbeFolderKeptAfterAFailedCleanupIsReportedToOtherOwnersAsCleanupFailedNotBusy()
+    {
+        await using var ui=await GatedUiThread.StartAsync();
+        var probe=new OwnedRobloxHandoffProbe(_root,ui.Dispatcher);
+        try
+        {
+            using var credential=new RobloxSessionCredential("synthetic-only");using var stop=new CancellationTokenSource();
+            var running=probe.InspectAsync(new(Guid.NewGuid(),456,1,42),credential,stop.Token);
+            string folder=await GatedUiThread.WaitForOwnedFolderAsync(_root);
+            string cache=Directory.CreateDirectory(Path.Combine(folder,"cache")).FullName;
+            using(new FileStream(Path.Combine(cache,"held"),FileMode.CreateNew,FileAccess.ReadWrite,FileShare.None))
+            {
+                stop.Cancel();ui.Release();
+                using var result=await running.WaitAsync(TimeSpan.FromSeconds(10));
+                Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,result.Result.Outcome);
+            }
+            // The other program has let go, but the probe keeps the folder until it is disposed.
+            await using IRobloxNativeHandoffCapture native=new OwnedRobloxNativeHandoffCapture(_root,ui.Dispatcher);
+            Assert.Equal(RobloxHandoffProbeOutcome.CleanupFailed,native.Refusal);
+            await using var signIn=new OwnedRobloxSignIn(_root,ui.Dispatcher);
+            var refused=await Assert.ThrowsAsync<AccountLinkException>(()=>signIn.SignInAsync(Guid.NewGuid(),default));
+            Assert.Contains("Close Zenith Sessions",refused.Message);Assert.Contains("signin-browser-data",refused.Message);
+            Assert.DoesNotContain("Finish or cancel",refused.Message);Assert.DoesNotContain(_root,refused.Message);
+            Assert.False(signIn.CleanupPending,"A refusal that created nothing latched the sign-in owner.");
+            Assert.True(Directory.Exists(folder),"Another owner's kept folder was opened or removed.");
+            // Released, as when Zenith closes: nothing was latched elsewhere, and the next admission recovers the folder.
+            await probe.DisposeAsync();
+            Assert.Null(native.Refusal);
+            SignInProfileDirectory.Create(_root,Guid.NewGuid(),default).Remove(default);
+            Assert.False(Directory.Exists(folder),"The next admission did not recover the released folder.");
+        }
+        finally{await probe.DisposeAsync();}
+    }
     [Fact]
     public async Task ProbeDeadlineIsReportedAsTimedOutAndRemovesItsFolder()
     {
