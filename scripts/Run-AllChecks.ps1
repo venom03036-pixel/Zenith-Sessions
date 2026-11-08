@@ -6,6 +6,31 @@ if([string]::IsNullOrWhiteSpace($OutputDirectory)){$OutputDirectory=Join-Path $r
 $output=(New-Item -ItemType Directory -Path $OutputDirectory -Force).FullName
 $recordPath=Join-Path $output 'checks.json'
 if(Test-Path -LiteralPath $recordPath){throw 'This result folder already contains checks.json. Choose a fresh output directory.'}
+function Get-SourceState {
+    $previousPreference=$ErrorActionPreference
+    try {
+    $ErrorActionPreference='Continue'
+    $head=& git -C $root rev-parse HEAD 2>$null
+    if($LASTEXITCODE -ne 0){return [ordered]@{Available=$false;Commit=$null;DirtyStatus=@();ContentSha256=$null;FileCount=0}}
+    $ErrorActionPreference='Stop'
+    $dirty=@(& git -C $root status --porcelain=v1 --untracked-files=all)
+    if($LASTEXITCODE -ne 0){throw 'Could not read source status.'}
+    $listing=& git -C $root -c core.quotepath=false ls-files -z --cached --others --exclude-standard
+    if($LASTEXITCODE -ne 0){throw 'Could not inventory source files.'}
+    $names=@(($listing -join "`n").Split([char]0) | Where-Object {$_} | Sort-Object -Unique)
+    $lines=New-Object 'Collections.Generic.List[string]'
+    foreach($name in $names){
+        $file=Join-Path $root $name
+        $hash=if(Test-Path -LiteralPath $file -PathType Leaf){(Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash}else{'MISSING'}
+        $lines.Add($name+':'+$hash)
+    }
+    $stream=[IO.MemoryStream]::new([Text.Encoding]::UTF8.GetBytes(($lines -join "`n")))
+    try{$fingerprint=(Get-FileHash -InputStream $stream -Algorithm SHA256).Hash}finally{$stream.Dispose()}
+    return [ordered]@{Available=$true;Commit=([string]$head).Trim();DirtyStatus=$dirty;ContentSha256=$fingerprint;FileCount=$names.Count}
+    } catch { return [ordered]@{Available=$false;Commit=$null;DirtyStatus=@();ContentSha256=$null;FileCount=0;Failure=$_.Exception.GetType().Name} }
+    finally { $ErrorActionPreference=$previousPreference }
+}
+$sourceStart=Get-SourceState
 $paid='MacroSuite.Infrastructure.Tests.AI.AIVisionLiveActionTests.AIVision_CloudProvider_ClicksGreenTargetButton_WhenKeyConfigured'
 $filter='FullyQualifiedName!='+$paid
 $projects=@('MacroSuite.Core.Tests','MacroSuite.Infrastructure.Tests','MacroSuite.SDK.Tests','MacroSuite.LicenseIssuer.Tests','Zenith.Sessions.CapabilityHarness.Tests','Zenith.Sessions.Tests')
@@ -26,7 +51,7 @@ foreach($name in $projects){
 }
 Add-Step 'Owned experience Luau verifier' 'Luau' @()
 Add-Step 'Packaged manager 43-stage self-check' 'Package' @('-SkipTests','-StageOnly','-StageFolder','sessions-manager-review')
-$record=[ordered]@{FormatVersion=1;StartedUtc=[DateTimeOffset]::UtcNow.ToString('O');CompletedUtc=$null;Status='Planned';ReleaseReady=$false;Configuration='Release';ExcludedTest=$paid;RestoreDownloads=[bool]$AllowRestoreDownloads;ToolDownloads=[bool]$AcquireLuau;NoRestore=[bool]$NoRestore;Steps=$steps}
+$record=[ordered]@{FormatVersion=1;StartedUtc=[DateTimeOffset]::UtcNow.ToString('O');CompletedUtc=$null;Status='Planned';ReleaseReady=$false;Configuration='Release';ExcludedTest=$paid;RestoreDownloads=[bool]$AllowRestoreDownloads;ToolDownloads=[bool]$AcquireLuau;NoRestore=[bool]$NoRestore;SourceStart=$sourceStart;SourceEnd=$null;SourceChanged=$false;Steps=$steps}
 function Save-Record{[IO.File]::WriteAllText($recordPath,($record|ConvertTo-Json -Depth 8),[Text.UTF8Encoding]::new($false))}
 Save-Record
 if($PlanOnly){Write-Output $recordPath;return}
@@ -66,6 +91,7 @@ foreach($step in $steps){
             'Package' {
                 if($failed){throw 'Earlier checks failed; packaged release validation cannot be accepted.'}
                 & (Join-Path $PSScriptRoot 'Check-ZenithSessionsManager.ps1') -SkipTests -StageOnly -StageFolder sessions-manager-review -AllowRestoreDownloads:$AllowRestoreDownloads *> $log
+                if(Select-String -LiteralPath $log -Pattern '\bwarning\s+[A-Z]+\d+\s*:' -Quiet){throw 'The packaged publish emitted a warning; zero-warning release evidence is required.'}
                 $report=Join-Path $root 'artifacts\sessions-distribution-check\distribution-check.json'
                 $native=Get-Content -LiteralPath $report -Raw | ConvertFrom-Json
                 if(@($native.Cases).Count -ne 43 -or @($native.Cases | Where-Object {-not $_.Passed}).Count -ne 0){throw 'Expected all 43 packaged stages to pass.'}
@@ -80,7 +106,11 @@ foreach($step in $steps){
         $ErrorActionPreference='Stop';$step.Status='Failed';$step['Failure']=$_.Exception.Message;$failed=$true
         if($null -eq $step.ExitCode){$step.ExitCode=1}
         Write-Output ($step.Name+' failed: '+$_.Exception.Message)
-    }finally{Save-Record}
+    }finally{
+        $sourceNow=Get-SourceState
+        if(-not $sourceNow.Available -or -not $sourceStart.Available -or $sourceNow.Commit -ne $sourceStart.Commit -or $sourceNow.ContentSha256 -ne $sourceStart.ContentSha256 -or ($sourceNow.DirtyStatus -join "`n") -ne ($sourceStart.DirtyStatus -join "`n")){$record.SourceChanged=$true;$failed=$true}
+        $record.SourceEnd=$sourceNow;Save-Record
+    }
 }
 $record.CompletedUtc=[DateTimeOffset]::UtcNow.ToString('O');$record.Status=if($failed){'Failed'}else{'Passed'};Save-Record
 Write-Output ('Recorded all checks: '+$recordPath)
