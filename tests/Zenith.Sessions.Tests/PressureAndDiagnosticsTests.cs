@@ -29,6 +29,7 @@ public sealed class PressureAndDiagnosticsTests : IDisposable
     public void AHealthySampleResetsTheHighCpuTimerAndRecoveryGapsCannotCountAsHealthyTime()
     {
         var tracker=new ResourcePressureTracker();
+        Assert.False(Observe(tracker,-1).Held); // Establishes CPU history; a cold start already at 90% holds (see the cold-start test).
         for(int t=0;t<14;t++) Assert.False(Observe(tracker,t,90).Held);
         Assert.False(Observe(tracker,14,20).Held); Assert.False(Observe(tracker,15,90).Held);
         Assert.True(Observe(tracker,20,90).Held); // Five seconds with no samples establishes an observation hold.
@@ -59,6 +60,26 @@ public sealed class PressureAndDiagnosticsTests : IDisposable
         Assert.True(Observe(tracker,2,null).Held);
         for(int t=3;t<=32;t++) Assert.True(Observe(tracker,t).Held);
         Assert.False(Observe(tracker,33).Held);
+    }
+    [Fact]
+    public void ColdStartAtSaturatedCpuHoldsUntilTheLoadDropsBecauseItsDurationIsUnknown()
+    {
+        // Zenith starts on a PC already at 95% CPU. With no history the tracker cannot tell a spike from load
+        // that has lasted minutes, so the first measured window holds instead of admitting for fifteen seconds.
+        var tracker=new ResourcePressureTracker();
+        Assert.True(Observe(tracker,0,null).Held);
+        for(int t=1;t<=5;t++) { var cold=Observe(tracker,t,95); Assert.True(cold.Held,cold.Explanation); Assert.Contains("below 80%",cold.Explanation); }
+        // Dropping below the threshold shows the load was not sustained: it releases at once, without the 30 s recovery.
+        var released=Observe(tracker,6); Assert.False(released.Held,released.Explanation);
+        // From then on a spike gets the normal fifteen-second window.
+        for(int t=7;t<22;t++) Assert.False(Observe(tracker,t,95).Held);
+        Assert.True(Observe(tracker,22,95).Held);
+
+        // Cold-start load that stays high for fifteen seconds is sustained pressure and needs thirty healthy seconds.
+        var sustained=new ResourcePressureTracker();
+        for(int t=0;t<=15;t++) Assert.True(Observe(sustained,t,95).Held);
+        for(int t=16;t<46;t++) Assert.True(Observe(sustained,t).Held);
+        Assert.False(Observe(sustained,46).Held);
     }
     [Fact]
     public async Task DiagnosticsAreBoundedStructuredAndAcceptNoFreeTextSecrets()

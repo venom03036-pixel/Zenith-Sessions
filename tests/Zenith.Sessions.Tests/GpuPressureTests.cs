@@ -6,18 +6,37 @@ namespace Zenith.Sessions.Tests;
 public sealed class GpuPressureTests
 {
     private static readonly DateTimeOffset Epoch=DateTimeOffset.UnixEpoch.AddDays(1);
-    private static PressureDecision Observe(ResourcePressureTracker tracker,int second,double? gpu=20,bool complete=true,int? gpuSecond=null,bool unknown=false)
+    private static PressureDecision Observe(ResourcePressureTracker tracker,int second,double? gpu=20,bool complete=true,int? gpuSecond=null,bool unknown=false,double cpu=20)
     {
         var now=Epoch.AddSeconds(second);
         var evidence=unknown?null:new GpuTelemetrySnapshot(Epoch.AddSeconds(gpuSecond??second),
             [new("00000000_00000001",0,[new(0,"3D",gpu)],gpu,null,null,complete)]);
-        var sample=new ResourceSnapshot(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20,Gpu:evidence);
+        var sample=new ResourceSnapshot(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,cpu,Gpu:evidence);
         return tracker.Observe(sample,CapacityPolicy.Evaluate(sample,new(),[],0,now),now);
+    }
+    [Fact]
+    public void ColdStartAtHighGpuHoldsUntilTheEngineDropsBecauseItsDurationIsUnknown()
+    {
+        // The first reliable GPU reading has no history, so 95% may be load that has lasted minutes.
+        var tracker=new ResourcePressureTracker();
+        for(int i=0;i<5;i++) { var cold=Observe(tracker,i,95); Assert.True(cold.Held,cold.Explanation); Assert.Contains("below 85%",cold.Explanation); }
+        var released=Observe(tracker,5,20); Assert.False(released.Held,released.Explanation);
+        for(int i=6;i<21;i++) Assert.False(Observe(tracker,i,95).Held);
+        Assert.True(Observe(tracker,21,95).Held);
+
+        // CPU history is established and its own fifteen-second window is running, but GPU evidence first
+        // arrives already high: the unknown GPU history still holds.
+        var mixed=new ResourcePressureTracker();
+        Assert.False(Observe(mixed,0,unknown:true).Held);
+        Assert.False(Observe(mixed,1,unknown:true,cpu:90).Held);
+        var gpuCold=Observe(mixed,2,95,cpu:90); Assert.True(gpuCold.Held,gpuCold.Explanation);
+        Assert.False(Observe(mixed,3,20,cpu:90).Held);
     }
     [Fact]
     public void SustainedPhysicalEnginePressureHoldsAndRequiresThirtyHealthySeconds()
     {
         var tracker=new ResourcePressureTracker();
+        Assert.False(Observe(tracker,-1).Held); // Establishes GPU history; a cold start already at 90% holds (see the cold-start test).
         for(int i=0;i<15;i++) Assert.False(Observe(tracker,i,90).Held);
         Assert.True(Observe(tracker,15,90).Held);
         for(int i=16;i<46;i++) Assert.True(Observe(tracker,i).Held);
@@ -44,6 +63,7 @@ public sealed class GpuPressureTests
     public void StaleOrRepeatedCounterEvidenceCannotAccumulateHighTime()
     {
         var tracker=new ResourcePressureTracker();
+        Assert.False(Observe(tracker,-1).Held); // Establishes GPU history so only the stale/repeated evidence rule is measured.
         for(int i=0;i<20;i++) Assert.False(Observe(tracker,i,99,gpuSecond:0).Held);
         for(int i=20;i<35;i++) Assert.False(Observe(tracker,i,99).Held);
         Assert.True(Observe(tracker,35,99).Held);
@@ -52,6 +72,7 @@ public sealed class GpuPressureTests
     public void HealthyGpuSampleResetsTheSustainedTimer()
     {
         var tracker=new ResourcePressureTracker();
+        Assert.False(Observe(tracker,-1).Held); // Establishes GPU history; a cold start already at 90% holds (see the cold-start test).
         for(int i=0;i<14;i++) Assert.False(Observe(tracker,i,90).Held);
         Assert.False(Observe(tracker,14,20).Held);
         for(int i=15;i<30;i++) Assert.False(Observe(tracker,i,90).Held);
