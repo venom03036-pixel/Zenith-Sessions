@@ -22,8 +22,9 @@ public sealed partial class ShellViewModel
     private long _clientSoundGeneration;
     private sealed record ClientSoundRequest(long Generation, SessionObservation[] Processes, string Refusal);
     private string _clientSoundStatus = "Choose clients to mute or unmute their sound in Windows.";
-    // Arrival muting, on the dispatcher only: the exact instances in the last usable scan, and the new ones still waiting for
-    // Windows to list their sound. Both hold at most one entry per client in a scan, so at most 128.
+    // Arrival muting, on the dispatcher only: the exact instances in the last usable scan (with those it could not read kept
+    // by PID), and the new ones still waiting for Windows to list their sound. Both hold at most one entry per PID in a scan,
+    // so at most 128.
     private readonly HashSet<SessionProcessKey> _soundSeenClients = [];
     private readonly Dictionary<SessionProcessKey, DateTimeOffset> _soundArrivals = [];
     private bool _soundBaseline, _arrivalMutePaused;
@@ -102,7 +103,9 @@ public sealed partial class ShellViewModel
     /// any other scan is skipped. Clients in the first such scan, and clients already running when the setting is saved on,
     /// are never arrivals. A new client is muted once Windows lists its sound, tried again on later scans for at most
     /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per scan on the sound worker. No timer or thread is added: this
-    /// rides the existing sample cadence.
+    /// rides the existing sample cadence. A row Windows could not read names a PID that is still running but not which
+    /// instance, so a client already known under that PID stays known (and a waiting arrival keeps waiting) instead of
+    /// counting as new when a later scan reads it again.
     /// </summary>
     private void ObserveClientSoundArrivals(DesktopSnapshot snapshot)
     {
@@ -111,7 +114,13 @@ public sealed partial class ShellViewModel
         bool watching = _soundBaseline && _savedSettings.MuteArrivingClients && !_arrivalMutePaused && _soundPermitted && _ready
             && !IsLocked && !_shuttingDown;
         var current = new HashSet<SessionProcessKey>();
-        foreach (var row in rows) if (row.Problem is null) current.Add(row.ProcessKey);
+        HashSet<int>? unreadable = null;
+        // Only identity-unavailable rows pass FreshClientInventory with a Problem, and every PID in it is distinct.
+        foreach (var row in rows)
+            if (row.Problem is null) current.Add(row.ProcessKey);
+            else (unreadable ??= []).Add(row.ProcessId);
+        if (unreadable is not null)
+            foreach (var key in _soundSeenClients) if (unreadable.Contains(key.ProcessId)) current.Add(key);
         if (watching) foreach (var key in current) if (!_soundSeenClients.Contains(key)) _soundArrivals.TryAdd(key, now);
         _soundSeenClients.Clear(); _soundSeenClients.UnionWith(current); _soundBaseline = true;
         foreach (var key in _soundArrivals.Keys.ToArray())

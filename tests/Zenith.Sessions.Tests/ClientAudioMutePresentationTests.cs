@@ -67,6 +67,43 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.True(File.ReadAllText(Path.Combine(_root,"settings.json")).Contains("\"MuteArrivingClients\":true"));
     });
 
+    [Fact]
+    public Task ArrivalMuteLeavesARunningClientAloneWhenOneScanCouldNotReadIt()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=2};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        await Refresh(shell);
+        // One scan cannot read client 2, which keeps running; the next scans read it again.
+        monitor.Unreadable=2;await Refresh(shell);
+        monitor.Unreadable=0;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls); // The same running client is not an arrival.
+        Assert.Empty(shell.ClientSoundResults);
+        // A client that really appears afterwards is still muted.
+        monitor.Count=3;await Refresh(shell);
+        Assert.Equal(3,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+    });
+
+    [Fact]
+    public Task ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe{NoSoundFirst=true};var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        monitor.Count=2;await Refresh(shell);
+        Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>!shell.IsChangingClientSound);
+        Assert.Empty(shell.ClientSoundResults); // No sound yet: it waits.
+        // A scan that cannot read it neither tries it nor gives up on it.
+        monitor.Unreadable=2;await Refresh(shell);
+        Assert.Equal(1,control.ChangeCalls);
+        monitor.Unreadable=0;await Refresh(shell);
+        Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>shell.ClientSoundResults.Count==1);
+        Assert.Equal(ClientAudioMuteStatus.Applied,shell.ClientSoundResults[0].Status);
+        Assert.Contains("1 of 1 new clients muted",shell.ClientSoundStatus);
+    });
+
     [Theory]
     [InlineData("panic")]
     [InlineData("lock")]
@@ -199,19 +236,25 @@ public sealed partial class ClientPreviewPresentationTests
         public Task<ClientAudioMuteBatchResult> RestoreAllAsync(CancellationToken ct)=>Task.FromResult(new ClientAudioMuteBatchResult([],false,0));
         public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
     }
-    /// <summary>A complete, fresh inventory of <see cref="Count"/> synthetic clients; raising Count makes a new client appear.</summary>
+    /// <summary>
+    /// A complete, fresh inventory of <see cref="Count"/> synthetic clients; raising Count makes a new client appear. A nonzero
+    /// <see cref="Unreadable"/> PID is reported as WindowsDesktopMonitor reports a client it could not read: a row with a Problem
+    /// and no start time, in an incomplete scan.
+    /// </summary>
     private sealed class SoundDesktopMonitor:IDesktopMonitor
     {
-        internal volatile int Count;
+        internal volatile int Count,Unreadable;
         private long _revision;
         internal static long Start(int pid)=>new DateTimeOffset(2026,1,1,0,0,pid,TimeSpan.Zero).UtcTicks;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();var now=DateTimeOffset.UtcNow;
-            var rows=Enumerable.Range(1,Count).Select(pid=>new SessionObservation(pid,Start(pid),
-                "Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
+            ct.ThrowIfCancellationRequested();var now=DateTimeOffset.UtcNow;int unreadable=Unreadable;
+            var rows=Enumerable.Range(1,Count).Select(pid=>pid==unreadable
+                ?new SessionObservation(pid,0,"Unavailable",0,"Roblox",false,false,0,0,null,now,
+                    "Process identity or access was unavailable during observation.")
+                :new SessionObservation(pid,Start(pid),"Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
             return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),
-                rows,null,now,Interlocked.Increment(ref _revision),true));
+                rows,null,now,Interlocked.Increment(ref _revision),unreadable==0));
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No window mutation expected.");
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No process action expected.");
