@@ -21,3 +21,12 @@ Existing provider-authorization, signer, diagnostics, startup-ready and event as
 All three prompt fingerprints matched in `artifacts/sessions-requirements-review/before-0.75-guidance.json`. The matching After checkpoint records both TRX files and scopes `PROD-BOOT-02`, `PROD-UI-03` and `CAP-11-03`. The reviewed clauses require explaining disabled actions and representing unknown state without inventing data. Engineering Constitution rules 13 (resource ownership) and 18, plus the agent contract's smallest-correct-change rule, were considered: no new dependencies, loops, threads, persistent state, native ownership or credential access are introduced.
 
 These focused checks do not replace the integrated full recheck, and do not qualify bootstrapper launching, native leftover-cap behavior, live readiness or release acceptance. Parent integration owns the requested repeated full-suite/package checks.
+
+## Denied-query and unreadable-record completion (0.75-guidancequery)
+
+Independent review identified the same overstatement in the denied-query and unreadable-record branches: a recorded attempt is not proof that an old cap was applied. Those notices now describe a possible cap and conditional persistence until client exit. A plural denied-query case was added alongside the existing singular and unreadable-record cases; the other assertions are unchanged.
+
+- `artifacts/sessions-tests-0.75-guidance/query-guidance-red.trx`: **3 failed, 2 passed, 0 skipped** before this follow-up's production change. Singular denied query, plural denied query and unreadable record each failed its exact corrected wording contract; both confirmed-job cases passed.
+- `artifacts/sessions-tests-0.75-guidance/query-guidance-green.trx`: **97 passed, 0 failed, 0 skipped**, including all recovery notice cases and existing synthetic priority/CPU-cap ownership cases.
+
+Before/After checkpoint `0.75-guidancequery` verifies the three prompt fingerprints and records these two artifacts under `PROD-UI-03` and `CAP-11-03`. This follow-up changes three message strings only; resource ownership, query behavior and launch gates are unchanged. No real clients, native cap mutation or paid test was used.

@@ -8,6 +8,8 @@ The current 93-item dispositions, precise live trials and owner decisions are in
 
 **PROD-BOOT-02, PROD-UI-03, CAP-11-03.** Publisher-verification summaries now state that accepting a bootstrapper publisher does not enable launches or trials in this build. Leftover CPU-cap notices distinguish confirmed job membership from an unreadable cap and avoid inferring a prior crash. Three expected failing-before cases were retained; **157 affected checks passed, 0 failed/skipped** after the wording-only repair. Provider gates, resource ownership and UI geometry are unchanged. [Exact scope and evidence](GUIDANCE-MINOR-REPAIRS.md). Integrated rechecks and attended native acceptance remain separate.
 
+Follow-up **0.75-guidancequery** extends the same uncertainty wording to denied-query and unreadable-record outcomes. Three further expected failures precede the repair; **97 affected checks passed, 0 failed/skipped**, including explicit plural denied-query coverage. No runtime ownership or query logic changed; see the same evidence document.
+
 ## 0.60 D9 lifecycle repair — controlled evidence
 
 For PROD-QA-03, PROD-QA-04, CAP-14-01 and PROD-QA-08, the packaged self-check now preserves a stalled owner's failure and retains shared stores until process exit, routes diagnostics/layout shutdown through the bounded helper, and makes one timeout decision. The retained partial shared-store test is completed. Focused checks: 22/22 lifecycle and package-contract cases, 50/50 synthetic session-log cases; the isolated staged package passed 43/43. The log test now waits for the replacement's complete byte boundary. Full integrated suites and actual native shutdown remain pending; release readiness is false. [Exact evidence and limitations](LIFECYCLE-REPAIR-VERIFICATION.md).

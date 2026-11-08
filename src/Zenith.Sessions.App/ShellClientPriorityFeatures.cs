@@ -242,15 +242,15 @@ public sealed partial class ShellViewModel
             return;
         }
         string? problem = leftovers.RecordUnreadable
-            ? "Zenith could not read its record of the CPU caps earlier runs set (" + WindowsClientProcessPriorityControl.CpuCapRecordFileName
-                + " in the data folder), so it cannot name the clients that still carry one; such a cap lasts until that client exits. The next cap replaces the record."
+            ? "Zenith could not read its record of possible CPU caps from earlier runs (" + WindowsClientProcessPriorityControl.CpuCapRecordFileName
+                + " in the data folder), so it cannot check which clients may still carry a cap. If a cap remains, it lasts until that client exits. The next cap replaces the record."
             : leftovers.StillCapped switch
             {
                 0 => leftovers.NotChecked switch
                 {
                     0 => null,
-                    1 => "Zenith could not check whether 1 client an earlier run capped still runs. A cap it left lasts until that client exits.",
-                    var count => $"Zenith could not check whether {count} clients an earlier run capped still run. A cap it left lasts until each of those clients exits."
+                    1 => "Zenith could not check whether 1 client recorded for a possible CPU cap still runs. If a cap remains, it lasts until that client exits.",
+                    var count => $"Zenith could not check whether {count} clients recorded for possible CPU caps still run. If caps remain, they last until those clients exit."
                 },
                 1 => "1 client may still carry a CPU cap from an earlier run of Zenith. Zenith confirmed that it is still in a Windows job, but could not read the cap. "
                     + "If a cap remains, close and reopen that client to clear it.",

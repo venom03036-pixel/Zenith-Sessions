@@ -80,8 +80,9 @@ public sealed partial class ClientPreviewPresentationTests
         +"If a cap remains, close and reopen that client to clear it.")]
     [InlineData(2,0,false,"2 clients may still carry CPU caps from an earlier run of Zenith. Zenith confirmed that they are still in Windows jobs, but could not read the caps. "
         +"If caps remain, close and reopen those clients to clear them.")]
-    [InlineData(0,1,false,"Zenith could not check whether 1 client an earlier run capped still runs. A cap it left lasts until that client exits.")]
-    [InlineData(0,0,true,"Zenith could not read its record of the CPU caps earlier runs set (client-cpu-caps.json in the data folder), so it cannot name the clients that still carry one; such a cap lasts until that client exits. The next cap replaces the record.")]
+    [InlineData(0,1,false,"Zenith could not check whether 1 client recorded for a possible CPU cap still runs. If a cap remains, it lasts until that client exits.")]
+    [InlineData(0,2,false,"Zenith could not check whether 2 clients recorded for possible CPU caps still run. If caps remain, they last until those clients exit.")]
+    [InlineData(0,0,true,"Zenith could not read its record of possible CPU caps from earlier runs (client-cpu-caps.json in the data folder), so it cannot check which clients may still carry a cap. If a cap remains, it lasts until that client exits. The next cap replaces the record.")]
     public Task StartupNamesPossibleLeftoverCapsOrSaysWhatItCouldNotCheck(int stillCapped,int notChecked,bool unreadable,string expected)=>OnUi(async ()=>
     {
         var control=new PriorityControlProbe{Leftover=new(stillCapped,notChecked,unreadable,false)};
