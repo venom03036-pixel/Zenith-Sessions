@@ -80,7 +80,7 @@ public sealed class RobloxShareLink(ProtectedShareCode code, RobloxShareLinkType
 }
 
 /// <summary>
-/// Unavailable means the answer could not be obtained (transport, timeout, unreadable reply): a later check may succeed.
+/// Unavailable means the answer could not be obtained (transport, timeout, refused or unreadable reply): a later check may succeed.
 /// NotListed means Roblox's public games listing answered without the link's universe (restricted or not publicly listed):
 /// the link names no place Zenith can open, and checking again will not change that.
 /// </summary>
@@ -151,9 +151,10 @@ public interface IRobloxShareLinkResolver
 /// <summary>
 /// Completes a resolution whose payload named only a universe. Roblox's web page opens such a link at the universe's
 /// root place, so the root place is read from the anonymous public games listing: one request, no saved session, after
-/// the signed-in resolve has released its credential and account operation. A listing that answers without the universe
-/// (restricted universes are left out) or the directory's own Unknown answer (not found, restricted) is NotListed; a failed,
-/// deferred or impossible lookup is Unavailable. Neither is a guess. The result stays a requested destination; nothing launches.
+/// the signed-in resolve has released its credential and account operation. Only a listing that answers without the universe
+/// (restricted universes are left out) is NotListed. A failed, deferred, refused or not-found (the directory's Unknown:
+/// 401/403/404 for the whole request) or impossible lookup is Unavailable. Neither is a guess. The result stays a requested
+/// destination; nothing launches.
 /// </summary>
 public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, IPublicRobloxGameBatchDirectory? games) : IRobloxShareLinkResolver
 {
@@ -174,8 +175,10 @@ public sealed class RootPlaceShareLinkResolver(IRobloxShareLinkResolver inner, I
                 foreach (var game in listed)
                     if (game.UniverseId == universeId && game.RootPlaceId > 0) rootPlaceId = game.RootPlaceId;
             if (rootPlaceId is not { } placeId)
-                // Roblox answered and did not list the universe: a retry cannot help. Anything else may succeed later.
-                return new(listing.State is PublicDirectoryState.Success or PublicDirectoryState.Unknown
+                // The listing answered and did not list the universe (a restricted one comes back as a placeholder, a missing one
+                // is left out): a retry cannot help. Unknown is a 401/403/404 for the whole request (an edge refusal or a moved
+                // route), which says nothing about this universe; like any other failure it may pass, so it keeps the retry advice.
+                return new(listing.State == PublicDirectoryState.Success
                     ? RobloxShareLinkOutcome.NotListed : RobloxShareLinkOutcome.Unavailable);
             owned = false; // Explicit transfer: the completed resolution now owns and disposes the code; the original is dropped.
             return new(resolution.Outcome, placeId, universeId, resolution.OwnerUserId, resolution.PrivateServerCode);
