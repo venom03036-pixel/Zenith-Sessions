@@ -113,11 +113,16 @@ public sealed class AccountsWorkspaceTests
         var menu=button.ContextMenu!;menu.PlacementTarget=button;
         BindingOperations.GetBindingExpression(menu,FrameworkElement.DataContextProperty)!.UpdateTarget();Flush();
         Assert.Same(model,menu.DataContext);
-        var items=menu.Items.OfType<MenuItem>().ToArray();Assert.Equal(3,items.Length);
+        var items=menu.Items.OfType<MenuItem>().ToArray();Assert.Equal(5,items.Length);
         foreach(var item in items) {Assert.Same(model,item.DataContext);Assert.True(item.IsEnabled);}
+        model.PortableAllowed=false;Flush();
+        Assert.All(new[]{items[0],items[1],items[4]},item=>Assert.True(item.IsEnabled));
+        Assert.All(new[]{items[2],items[3]},item=>Assert.False(item.IsEnabled));
         model.Ready=false;Flush();Assert.All(items,item=>Assert.False(item.IsEnabled));
         var source=Document();var original=source.Descendants(Ui+"Button").Single(element=>(string?)element.Attribute(X+"Name")=="AccountLibraryTools");
-        Assert.Equal(new[]{"ImportProfiles","ExportProfiles","AddProfile"},original.Descendants(Ui+"MenuItem").Select(item=>(string?)item.Attribute("Click")));
+        Assert.Equal(new[]{"ImportProfiles","ExportProfiles","ExportProtectedBackup","ImportProtectedBackup","AddProfile"},original.Descendants(Ui+"MenuItem").Select(item=>(string?)item.Attribute("Click")));
+        Assert.All(original.Descendants(Ui+"MenuItem").Where(item=>((string?)item.Attribute("Click"))?.Contains("ProtectedBackup")==true),
+            item=>Assert.Equal("{Binding CanUsePortableBackup}",(string?)item.Attribute("IsEnabled")));
         Assert.Contains(original.Descendants(Ui+"ContextMenu"),element=>(string?)element.Attribute("DataContext")=="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}");
         return Task.CompletedTask;
     });
@@ -253,8 +258,11 @@ public sealed class AccountsWorkspaceTests
         public bool IsAccountInspectorNarrow=>Narrow;
         public bool IsAccountInspectorVisible=>!Narrow||_open;
         public string AccountInspectorToggleLabel=>_open?"Hide details":"Details";
-        public bool Ready {get=>_ready;set {Set(ref _ready,value);Raise(nameof(IsReady));}}
+        public bool Ready {get=>_ready;set {Set(ref _ready,value);Raise(nameof(IsReady));Raise(nameof(CanUsePortableBackup));}}
         public bool IsReady=>Ready;
+        private bool _portableAllowed=true;
+        public bool PortableAllowed {get=>_portableAllowed;set {Set(ref _portableAllowed,value);Raise(nameof(CanUsePortableBackup));}}
+        public bool CanUsePortableBackup=>Ready&&PortableAllowed;
         public bool IsAuthorizing {get;set;}
         public bool CanAddRobloxAccount=>true;
         public bool QueueReady=>false;
