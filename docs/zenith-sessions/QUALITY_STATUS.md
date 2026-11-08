@@ -624,3 +624,9 @@ Round 3's reviews graded 3 findings important (lanes C4, C5 and C10); each was f
 | O-C10-3 | I confirmed the fixer's side note. | src/Zenith.MacroHost.Execution/TargetedMacroPlayer.cs:131-133 (pre-existing; found by the N-B9-4 fixer, not recorded) | Open |
 | O-C10-5 | Test-harness hygiene (Rule 12). | tests/MacroSuite.Infrastructure.Tests/WpfTestApplication.cs:47,53 and tests/MacroSuite.Infrastructure.Tests/ViewModels/RecordingPipelineTest | Open |
 | O-C10-6 | Subscribe_StartsLoopAndDeliversFrames failed once in my full Core run with 'Expected fakeService.LastReturnedFrame!.IsDisposed to be true, but found False.' It passed in 3 reruns of the class and in a full rerun (761/761). | tests/MacroSuite.Core.Tests/Capture/CaptureSchedulerTests.cs:129 (pre-existing; not touched by this lane) | Open |
+
+## Completion pass 0.60 — timeout regression scope (2026-11-08)
+
+O-C7-3: completed the preserved D3 test change. Shell initialization has its own 15-second deadline; the measured check starts afterwards. The export-overrun regression now asserts that an export was accepted before shutdown, and a separate immediate check with a 1 ms budget proves that startup cannot consume its deadline. The existing shutdown-and-join behavior remains intact.
+
+Executed: `dotnet test tests/Zenith.Sessions.Tests/Zenith.Sessions.Tests.csproj --no-restore -m:2 -nr:false --filter "FullyQualifiedName~Zenith.Sessions.Tests.ViewModelTests&FullyQualifiedName!~AIVision_CloudProvider_ClicksGreenTargetButton_WhenKeyConfigured"`. Result: **47 passed, 0 failed, 0 skipped**, `artifacts/completion-d3/timeout-scope.trx`. This verifies the pending test repair; it is not a full integrated-suite or live-client result. No UI or production code changed in this increment.
