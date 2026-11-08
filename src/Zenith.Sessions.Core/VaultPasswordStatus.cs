@@ -10,3 +10,7 @@ public sealed class VaultPasswordMigrationException : InvalidOperationException
 {
     public VaultPasswordMigrationException() : base("Saved-sign-in encryption is incomplete. Explicitly resume it with the same master password; original data is preserved.") { }
 }
+public sealed class VaultPasswordLegacyMigrationException : InvalidOperationException
+{
+    public VaultPasswordLegacyMigrationException() : base("An older sign-in file lacks verified identity and already requires sign-in. Reauthenticate or explicitly remove that saved sign-in before enabling a master password; its original file was preserved.") { }
+}

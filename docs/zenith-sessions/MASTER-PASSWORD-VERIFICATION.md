@@ -26,3 +26,11 @@ Artifacts are under `artifacts/sessions-tests-0.51-d4-password/`. Commands use `
 Independent sensitive-code review, integration regression, packaged-build checks and attended password-dialog accessibility/theme checks remain required. Different-Windows-user denial, crash/power-loss durability and real-library migration need controlled fixture trials. No live release readiness is claimed. Same-user malware, administrators, memory capture and restoring an entire earlier external filesystem backup remain outside the protection claim; this is not anti-rollback storage or secure media erasure.
 
 Portable password-protected backup remains the next independent implementation. Existing metadata export remains unchanged and excludes credentials. Its future import must issue fresh local identities/generations, verify reusable sessions, preserve newer local sign-ins, and never trust launch qualifications, executable paths, publisher approvals, automatic launch or webhook secrets.
+
+## Review follow-up
+
+The legacy v1 format is readable only as sign-in-required metadata with credential fields removed and no verified contextual identity. It cannot be promoted into a usable v3 grant. A valid legacy record now produces a typed, actionable reauthenticate/remove-first result before the migration marker is written; its bytes remain unchanged. This deliberately preserves the existing legacy trust boundary.
+
+Dispatch acceptance is recorded under the same short key gate as Lock. A request accepted before Lock is already owned; the native owner still handles cancellation and returns its actual receipt. A request that loses the acceptance race cannot invoke the callback. The key gate is released before native code, so Lock never waits for a blocked starter. Deterministic held-lease and blocked-callback fixtures prove both orderings, retained receipts and immediate key locking. Disposal also joins password work in a finally block even when its stop callback throws.
+
+`password-review-acceptance.trx`: 65/65 focused password, presentation and dispatch cases passed. A preceding mixed-format fixture raced a transient file-sharing denial during atomic replacement; its bounded reader retry and unconditional owner drain now preserve the original assertion outcome instead of masking it with disposal failure. No actual native process was started.

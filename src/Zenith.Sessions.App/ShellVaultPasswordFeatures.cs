@@ -115,6 +115,7 @@ public sealed partial class ShellViewModel
                 CryptographicException => "The password was not accepted or protected control data is damaged. Originals were preserved; no fallback key was used.",
                 ArgumentException => "Use a password of at least 12 UTF-8 bytes and at most 1,024 bytes when enabling protection.",
                 VaultPasswordMigrationException => "Encryption is incomplete. Resume with the same password; originals are preserved.",
+                VaultPasswordLegacyMigrationException => "An older saved sign-in already needs reauthentication. Sign in again or explicitly remove that old sign-in before enabling a master password; its original file was kept.",
                 _ => "The password operation could not finish. Keep the vault for recovery; some records may already have been converted."
             };
             return false;
@@ -186,5 +187,12 @@ public sealed partial class ShellViewModel
         RestartIdleLock(); LoadClientDisplaysOnce(); RaiseVaultPasswordProperties();
     }
     private async Task DisposeVaultPasswordAsync()
-    { StopVaultPasswordWork(); await _vaultPasswordWork; PropertyChanged -= VaultPasswordOwnerChanged; }
+    {
+        try { StopVaultPasswordWork(); }
+        finally
+        {
+            try { await _vaultPasswordWork; }
+            finally { PropertyChanged -= VaultPasswordOwnerChanged; }
+        }
+    }
 }
