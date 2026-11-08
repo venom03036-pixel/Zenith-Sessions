@@ -10,8 +10,8 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 
 // Optional automatic window layout, off by default. Each presentation step tells the pure arrival tracker the latest scan
 // and log evidence. When a client first reports Connected and the saved choice is Arrange or Minimize, one request goes to
-// the existing window lane: Arrange tiles every connected client in launch order on the saved monitor; Minimize minimizes
-// the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
+// the existing window lane: Arrange tiles every connected client that is not minimized or hidden, in launch order on the
+// saved monitor; Minimize minimizes the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
 // Clients that connect while a request runs wait for one follow-up request, never one each. Panic and Lock cancel the
 // request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
 // the user chooses Resume automatic layout. Clients that connect meanwhile count as seen, so they never arrive later. One
@@ -101,8 +101,13 @@ public sealed partial class ShellViewModel
             {
                 if (ArrivalDisplay(layout.PreferredDisplayId) is not { } display)
                 { ClientWindowStatus = "A client connected, but there is no monitor to arrange clients on. Refresh monitors."; return; }
+                // Minimized and hidden clients are left out: the move refuses them, so their cells would stay empty.
                 selected = _clientArrivals.Slots(Volatile.Read(ref _latestQueue));
-                if (selected.Length == 0) return;
+                if (selected.Length == 0)
+                {
+                    if (!_arranging) ClientWindowStatus = "A client connected, but every connected client is minimized or hidden, so Zenith left the windows alone. Restore them, and Zenith arranges them when the next client connects.";
+                    return;
+                }
                 result = await arranger.ArrangeAsync(Array.AsReadOnly(selected), display.Id, layout.Tile!, ct);
             }
             else if (action == ClientArrivalWindowAction.Minimize && _monitor is IClientWindowBatchControl batch)

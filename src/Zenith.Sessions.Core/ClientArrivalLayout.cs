@@ -69,11 +69,16 @@ public sealed class ClientArrivalTracker
         return arrived is null ? [] : arrived.AsReadOnly();
     }
 
-    /// <summary>Every client in the latest scan that has connected at least once, in slot order.</summary>
+    /// <summary>
+    /// Every client in the latest scan that has connected at least once and whose window is visible and not minimized, in
+    /// slot order. The move refuses a minimized or hidden window, so it gets no cell; restored, it takes its slot again. The
+    /// scan does not report maximized or fullscreen windows, so those still get a cell that the move refuses.
+    /// </summary>
     public SessionObservation[] Slots(LaunchQueueSnapshot? queue)
     {
         var connected = new List<SessionObservation>(_current.Count);
-        foreach (var (key, session) in _current) if (_arrived.Contains(key)) connected.Add(session);
+        foreach (var (key, session) in _current)
+            if (session is { Minimized: false, Visible: true } && _arrived.Contains(key)) connected.Add(session);
         return ClientWindowSlotOrder.Order(connected, queue);
     }
 }

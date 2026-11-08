@@ -194,6 +194,35 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(ClientWindowAction.Minimize, monitor.StateAction);
     });
 
+    // N-B5a-4: the native move refuses a minimized window, so automatic Arrange leaves it out instead of giving it a cell that
+    // stays empty and a failure row on every later arrival. Restored, it is tiled again when the next client connects.
+    [Fact]
+    public Task AutomaticArrangeLeavesMinimizedClientsOutUntilTheyAreRestored() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        var first = log.Client(400, minutesAgo: 3); var second = log.Client(401, minutesAgo: 2); var third = log.Client(402, minutesAgo: 1);
+        var minimizedFirst = first with { Minimized = true };
+        // The only connected client is minimized: there is nothing to tile, and the report says why.
+        await log.PresentAsync([minimizedFirst], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(0, monitor.Arrangements);
+        Assert.Contains("A client connected, but every connected client is minimized or hidden", shell.ClientWindowStatus);
+        await log.PresentAsync([minimizedFirst, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.Arrangements);
+        Assert.Equal(new[] { 401 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Equal("Position confirmed", Assert.Single(shell.ClientPlacementResults).Outcome);
+        // Restored, the first client takes its launch-order slot again when the next client connects.
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.Arrangements);
+        Assert.Equal(new[] { 400, 401, 402 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+    });
+
     /// <summary>
     /// Publishes one synthetic process scan and log snapshot, then runs the real forced sample and presentation. A stopped
     /// correlator ignores offers, so the 1 Hz loop presents the same snapshot; a presentation queued from an older scan is

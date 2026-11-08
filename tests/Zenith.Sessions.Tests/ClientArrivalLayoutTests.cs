@@ -87,6 +87,22 @@ public sealed class ClientArrivalLayoutTests
         Assert.Equal(new[] { 20 }, Pids(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)])));
     }
 
+    // N-B5a-4: a minimized or hidden window cannot be moved, so it gets no tile cell. It is still a connected client: once
+    // restored it takes its slot again, without arriving a second time.
+    [Fact]
+    public void SlotsLeaveOutMinimizedAndHiddenClientsUntilTheirWindowsAreRestored()
+    {
+        var tracker = new ClientArrivalTracker();
+        var normal = Client(30, 3); var minimized = Client(31, 2) with { Minimized = true }; var hidden = Client(32, 1) with { Visible = false };
+        Assert.Equal(new[] { 30, 31, 32 }, Pids(tracker.Observe(Scan(true, normal, minimized, hidden), [Log(normal, ObservedSessionLifecycle.Connected),
+            Log(minimized, ObservedSessionLifecycle.Connected), Log(hidden, ObservedSessionLifecycle.Connected)])));
+        Assert.Equal(new[] { 30 }, Pids(tracker.Slots(null)));
+        var restored = minimized with { Minimized = false }; var shown = hidden with { Visible = true };
+        Assert.Empty(tracker.Observe(Scan(true, normal, restored, shown), [Log(normal, ObservedSessionLifecycle.Connected),
+            Log(restored, ObservedSessionLifecycle.Connected), Log(shown, ObservedSessionLifecycle.Connected)]));
+        Assert.Equal(new[] { 30, 31, 32 }, Pids(tracker.Slots(null)));
+    }
+
     [Fact]
     public void SlotsFollowLaunchQueueOrderThenProcessStartTimeAndNeverProcessIdFirst()
     {
