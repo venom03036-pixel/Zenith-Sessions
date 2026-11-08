@@ -12,16 +12,19 @@ public sealed class NativeBrowserCapture : IDisposable
     private RobloxSessionCredential? _credential;
     public RobloxHandoffProbeOutcome Outcome { get; }
     public NativeHandoffCaptureStatus? ShapeStatus { get; }
+    public NativeHandoffRejectionReason? RejectionReason { get; }
     /// <summary>Which mode produced this result. This fact binds later qualification; it grants no launch authority by itself.</summary>
     public NativeLaunchMode Mode { get; }
     [JsonIgnore] public NativeHandoffCandidate? Candidate => Volatile.Read(ref _candidate);
     [JsonIgnore] public RobloxSessionCredential? CurrentCredential => Volatile.Read(ref _credential);
     public NativeBrowserCapture(RobloxHandoffProbeOutcome outcome, NativeHandoffCandidate? candidate = null,
-        RobloxSessionCredential? currentCredential = null, NativeHandoffCaptureStatus? shapeStatus = null, NativeLaunchMode mode = NativeLaunchMode.OfficialPage)
+        RobloxSessionCredential? currentCredential = null, NativeHandoffCaptureStatus? shapeStatus = null, NativeLaunchMode mode = NativeLaunchMode.OfficialPage,
+        NativeHandoffRejectionReason? rejectionReason = null)
     {
-        if (!Enum.IsDefined(outcome) || shapeStatus.HasValue && !Enum.IsDefined(shapeStatus.Value) || !Enum.IsDefined(mode))
+        if (!Enum.IsDefined(outcome) || shapeStatus.HasValue && !Enum.IsDefined(shapeStatus.Value) || !Enum.IsDefined(mode)
+            || !NativeHandoffRejectionDiagnostics.IsValid(shapeStatus, rejectionReason))
             throw new ArgumentException("The browser preparation outcome is invalid.");
-        Outcome = outcome; _candidate = candidate; _credential = currentCredential; ShapeStatus = shapeStatus; Mode = mode;
+        Outcome = outcome; _candidate = candidate; _credential = currentCredential; ShapeStatus = shapeStatus; Mode = mode; RejectionReason = rejectionReason;
     }
     public NativeHandoffCandidate? TakeCandidate() => Interlocked.Exchange(ref _candidate, null);
     public void Dispose()

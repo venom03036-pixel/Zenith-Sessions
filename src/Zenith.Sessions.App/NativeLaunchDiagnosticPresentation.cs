@@ -95,7 +95,51 @@ public sealed record NativeLaunchDiagnosticPresentation
         NativeHandoffCaptureStatus.DestinationMismatch=>"reported target did not match the pinned request.",
         NativeHandoffCaptureStatus.StaleTimestamp=>"the source timestamp was stale.",
         _=>"this operation had already captured a handoff."
-    }):"Handoff shape: not reached or not recorded.";
+    })+(Snapshot.RejectionReason is { } reason?" Rejected rule: "+RejectionRule(reason):""):"Handoff shape: not reached or not recorded.";
+    private static string RejectionRule(NativeHandoffRejectionReason reason)=>reason switch
+    {
+        NativeHandoffRejectionReason.ContextInvalid=>"preparation context.",
+        NativeHandoffRejectionReason.PageMismatch=>"expected official page.",
+        NativeHandoffRejectionReason.OriginMismatch=>"expected page origin.",
+        NativeHandoffRejectionReason.InputLength=>"request length.",
+        NativeHandoffRejectionReason.ProtocolPrefix=>"protocol prefix or version.",
+        NativeHandoffRejectionReason.InputCharacters=>"request characters.",
+        NativeHandoffRejectionReason.OuterFieldCount=>"outer field count.",
+        NativeHandoffRejectionReason.OuterFieldFormat=>"outer field structure.",
+        NativeHandoffRejectionReason.UnknownOuterField=>"unsupported outer field name.",
+        NativeHandoffRejectionReason.DuplicateOuterField=>"duplicate outer field.",
+        NativeHandoffRejectionReason.OuterEncoding=>"outer field encoding.",
+        NativeHandoffRejectionReason.MissingOuterField=>"required outer fields.",
+        NativeHandoffRejectionReason.LaunchMode=>"launch mode.",
+        NativeHandoffRejectionReason.LaunchExperience=>"launch experience.",
+        NativeHandoffRejectionReason.NonDefaultChannel=>"non-default channel.",
+        NativeHandoffRejectionReason.TicketShape=>"ticket structure.",
+        NativeHandoffRejectionReason.LocaleShape=>"locale structure.",
+        NativeHandoffRejectionReason.TrackerShape=>"outer tracker structure.",
+        NativeHandoffRejectionReason.TimestampShape=>"timestamp structure or range.",
+        NativeHandoffRejectionReason.StaleTimestamp=>"timestamp window.",
+        NativeHandoffRejectionReason.DestinationEndpoint=>"destination endpoint or characters.",
+        NativeHandoffRejectionReason.DestinationFieldCount=>"destination field count.",
+        NativeHandoffRejectionReason.DestinationFieldFormat=>"destination field structure.",
+        NativeHandoffRejectionReason.UnknownDestinationField=>"unsupported destination field name.",
+        NativeHandoffRejectionReason.DuplicateDestinationField=>"duplicate destination field.",
+        NativeHandoffRejectionReason.DestinationEncoding=>"destination field encoding.",
+        NativeHandoffRejectionReason.RequestVariant=>"destination request type.",
+        NativeHandoffRejectionReason.NestedTracker=>"matching destination tracker.",
+        NativeHandoffRejectionReason.PlaceShape=>"place structure.",
+        NativeHandoffRejectionReason.AttemptShape=>"join-attempt structure.",
+        NativeHandoffRejectionReason.MissingAttemptOrigin=>"required join-attempt origin.",
+        NativeHandoffRejectionReason.PlaceMismatch=>"pinned place match.",
+        NativeHandoffRejectionReason.PrivateTargetMismatch=>"pinned private target match.",
+        NativeHandoffRejectionReason.PlayTogetherVariant=>"play-together setting.",
+        NativeHandoffRejectionReason.GameTargetMismatch=>"pinned game target and origin.",
+        NativeHandoffRejectionReason.JobTargetMismatch=>"pinned server target and origin.",
+        NativeHandoffRejectionReason.AlreadyCaptured=>"single capture per operation.",
+        NativeHandoffRejectionReason.UnsupportedReferrerField=>"unsupported referrer field.",
+        NativeHandoffRejectionReason.UnsupportedLaunchDataField=>"unsupported launch-data field.",
+        NativeHandoffRejectionReason.UnsupportedEventField=>"unsupported event field.",
+        _=>"unavailable."
+    };
     public string Dispatch=>Snapshot?.DispatchStatus is { } status?"Native dispatch: "+(status switch
     {
         NativeHandoffAttemptStatus.Busy=>"another dispatch was still owned.",

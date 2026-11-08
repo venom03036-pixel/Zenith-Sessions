@@ -28,7 +28,8 @@ public sealed partial class ShellViewModel
     // While a recorded trial has turned ordinary launching on (R-launch-0) the queue refuses a trial, so none is offered.
     private bool CanPrepareNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
         &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
-        &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0};
+        &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0,CachedAuthorization:{Health:AuthorizationHealth.Linked} grant}
+        &&grant.ExpiresUtc>DateTimeOffset.UtcNow;
     public bool CanRunNativeTrial=>CanPrepareNativeTrial&&!IsNativeLaunchVerified&&ServerBrowser.ReadyDestination is {PlaceId:>0};
     public bool CanRunPrivateNativeTrial=>CanPrepareNativeTrial&&SavedNativeLaunchMode==NativeLaunchMode.OfficialPage
         &&ShareLink is {SelectedSaved: {Revision:>0} saved}&&ShareLink.Saved.Contains(saved);

@@ -235,7 +235,7 @@ public sealed partial class ShellViewModel
             {
                 diagnostic.OperationId,diagnostic.Available,Revision=stages?.Revision,StartedUtc=stages?.StartedUtc,UpdatedUtc=stages?.UpdatedUtc,
                 Stage=stages?.Stage,CleanupStatus=stages?.CleanupStatus,Stopped=stages?.Stopped,TrustStatus=stages?.TrustStatus,TrustReason=stages?.TrustReason,
-                PreparationStatus=stages?.PreparationStatus,BrowserOutcome=stages?.BrowserOutcome,ShapeStatus=stages?.ShapeStatus,DispatchStatus=stages?.DispatchStatus,
+                PreparationStatus=stages?.PreparationStatus,BrowserOutcome=stages?.BrowserOutcome,ShapeStatus=stages?.ShapeStatus,RejectionReason=stages?.RejectionReason,DispatchStatus=stages?.DispatchStatus,
                 ExecutableObservedUtc=stages?.ExecutableObservedUtc,PreparationObservedUtc=stages?.PreparationObservedUtc,BrowserObservedUtc=stages?.BrowserObservedUtc,
                 DispatchObservedUtc=stages?.DispatchObservedUtc,CleanupObservedUtc=stages?.CleanupObservedUtc,
                 AccountVerified=false,ArrivalVerified=false,InputAuthorized=false

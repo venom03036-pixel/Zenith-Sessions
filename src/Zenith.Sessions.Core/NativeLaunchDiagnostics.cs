@@ -6,12 +6,12 @@ public static class NativeLaunchDiagnosticLimits { public const int MaximumSnaps
 
 /// <summary>Fixed capture return facts only (the mode that produced them included); no capture, credential, candidate, URI, ticket or protected mutation ID.</summary>
 public sealed record NativeBrowserPreparationFacts(RobloxHandoffProbeOutcome Outcome, NativeHandoffCaptureStatus? ShapeStatus = null,
-    DateTimeOffset? ObservedUtc = null, NativeLaunchMode Mode = NativeLaunchMode.OfficialPage)
+    DateTimeOffset? ObservedUtc = null, NativeLaunchMode Mode = NativeLaunchMode.OfficialPage, NativeHandoffRejectionReason? RejectionReason = null)
 {
     public NativeBrowserPreparationFacts Validated()
     {
         if (!Enum.IsDefined(Outcome) || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value) || ObservedUtc is { } time && time == default
-            || !Enum.IsDefined(Mode))
+            || !Enum.IsDefined(Mode) || !NativeHandoffRejectionDiagnostics.IsValid(ShapeStatus, RejectionReason))
             throw new ArgumentException("The native browser diagnostic facts are invalid.");
         return this;
     }
@@ -29,7 +29,7 @@ public sealed record NativeLaunchDiagnosticSnapshot(Guid OperationId, long Revis
     NativeHandoffCaptureStatus? ShapeStatus = null, NativeHandoffAttemptStatus? DispatchStatus = null,
     DateTimeOffset? ExecutableObservedUtc = null, DateTimeOffset? PreparationObservedUtc = null,
     DateTimeOffset? BrowserObservedUtc = null, DateTimeOffset? DispatchObservedUtc = null, DateTimeOffset? CleanupObservedUtc = null,
-    NativeLaunchMode? LaunchMode = null)
+    NativeLaunchMode? LaunchMode = null, NativeHandoffRejectionReason? RejectionReason = null)
 {
     public NativeLaunchDiagnosticSnapshot Validated()
     {
@@ -45,6 +45,7 @@ public sealed record NativeLaunchDiagnosticSnapshot(Guid OperationId, long Revis
             || PreparationStatus.HasValue && !Enum.IsDefined(PreparationStatus.Value)
             || BrowserOutcome.HasValue && !Enum.IsDefined(BrowserOutcome.Value)
             || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value)
+            || !NativeHandoffRejectionDiagnostics.IsValid(ShapeStatus, RejectionReason)
             || DispatchStatus.HasValue && !Enum.IsDefined(DispatchStatus.Value)
             || ExecutableObservedUtc == default(DateTimeOffset) || PreparationObservedUtc == default(DateTimeOffset)
             || BrowserObservedUtc == default(DateTimeOffset) || DispatchObservedUtc == default(DateTimeOffset)

@@ -67,6 +67,22 @@ public sealed class NativeLaunchDiagnosticContractsTests
 public sealed partial class NativeAccountLaunchProviderTests
 {
     [Fact]
+    public async Task RejectedPreparationCopiesOnlyItsFixedReasonAndDoesNotDispatch()
+    {
+        await using var f = new Fixture(_root);
+        f.Preparer.Status = NativeHandoffPreparationStatus.CaptureRejected;
+        f.Preparer.BrowserFacts = new(RobloxHandoffProbeOutcome.MalformedHandoff, NativeHandoffCaptureStatus.InvalidShape,
+            RejectionReason: NativeHandoffRejectionReason.UnknownOuterField);
+        var result = await f.Provider.PrepareAsync(f.Context, default);
+        Assert.Equal(LaunchPreparationFailure.Rejected, result.Failure); Assert.Null(result.Prepared);
+        var diagnostic = f.Provider.GetDiagnostic(f.Intent.OperationId)!.Validated();
+        Assert.Equal(NativeHandoffCaptureStatus.InvalidShape, diagnostic.ShapeStatus);
+        Assert.Equal(NativeHandoffRejectionReason.UnknownOuterField, diagnostic.RejectionReason);
+        Assert.Null(diagnostic.DispatchStatus); Assert.Equal(0, f.Starter.Calls);
+        Assert.Equal(NativeLaunchCleanupStatus.Complete, diagnostic.CleanupStatus);
+    }
+
+    [Fact]
     public async Task DiagnosticTrustRefusalLeavesBrowserAndDispatchExplicitlyUnrecorded()
     {
         await using var f = new Fixture(_root, NativeClientTrustOutcome.Unsigned);
@@ -200,10 +216,12 @@ public sealed partial class NativeHandoffPreparationTests
         NativeHandoffPreparationStatus expected)
     {
         await using var f = await Fixture.Open(_root); using var browser = new Browser();
-        browser.Run = (_, _, _) => Task.FromResult(new NativeBrowserCapture(browserOutcome, shapeStatus: NativeHandoffCaptureStatus.InvalidShape));
+        browser.Run = (_, _, _) => Task.FromResult(new NativeBrowserCapture(browserOutcome, shapeStatus: NativeHandoffCaptureStatus.InvalidShape,
+            rejectionReason: NativeHandoffRejectionReason.DestinationEncoding));
         var result = await f.Service.PrepareNativeHandoffAsync(f.Intent, browser, default);
         Assert.Equal(expected, result.Status); Assert.Null(result.Preparation);
         Assert.Equal(browserOutcome, result.BrowserFacts?.Outcome); Assert.Equal(NativeHandoffCaptureStatus.InvalidShape, result.BrowserFacts?.ShapeStatus);
+        Assert.Equal(NativeHandoffRejectionReason.DestinationEncoding, result.BrowserFacts?.RejectionReason);
         Assert.NotNull(result.BrowserFacts?.ObservedUtc); Assert.Null(browser.Returned!.Candidate); Assert.Null(browser.Returned.CurrentCredential);
         string text = JsonSerializer.Serialize(result) + result;
         foreach (string secret in new[] { Original, Current, SyntheticHandoff.Ticket }) Assert.DoesNotContain(secret, text);

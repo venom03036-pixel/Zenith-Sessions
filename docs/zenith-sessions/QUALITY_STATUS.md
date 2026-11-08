@@ -2,6 +2,8 @@
 
 This is the current completion record for the Windows Personal companion. The older quality narrative is preserved in [round4/history/QUALITY_STATUS.md](round4/history/QUALITY_STATUS.md) as historical evidence only.
 
+The owner subsequently authorized the scoped November 8 live trial. [Its record](LIVE-TRIAL-20261108.md) distinguishes successful saved-session validation/private-page sign-in from failed native preparation, the resolved publisher-cache issue, the stale account-status defect and the next sign-in requirement. No native launch, multi-client or bootstrapper acceptance was obtained. Live follow-up source changes require a new complete offline gate pair and review; the original 93 item dispositions remain unchanged.
+
 The item dispositions below describe the code. Final offline acceptance is established separately by two successful `artifacts/completion-integration/final-pass-*/checks.json` records for this exact clean commit, the final completion audit, lane ancestry on main and the immutable review report. Inspect those records before calling the candidate accepted. No live Roblox, attended installer or production-release acceptance is claimed.
 
 ## Item accounting
@@ -53,4 +55,4 @@ From a clean candidate commit, run `scripts/Run-AllChecks.ps1 -NoRestore` twice 
 
 Both successful records, all lane ancestry and a fresh whole-change review must refer to the commit promoted to main. Any subsequent code/document change invalidates that pair and requires two new runs. The final risk assessment binds the immutable base/head and patch digest. No claim here substitutes for those external records.
 
-Never use real accounts/clients, paid cloud AI, weaker/deleted tests or invented failing-before evidence to obtain green results. Stop a full round with only minors and list them, or after three rounds with no item-state progress. Do not call incomplete work complete.
+Never use real accounts/clients, paid cloud AI, weaker/deleted tests or invented failing-before evidence to obtain green offline results. Owner-authorized live trials are recorded separately and cannot substitute for those gates. Stop a full round with only minors and list them, or after three rounds with no item-state progress. Do not call incomplete work complete.

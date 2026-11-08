@@ -2,6 +2,8 @@
 
 This is the engineering handoff for the round-4 candidate. All 93 item dispositions and exact remaining trials/decisions are indexed below. Offline acceptance requires the two final gate records, clean source identity, every lane merged into main and the independent review evidence described in [QUALITY_STATUS.md](QUALITY_STATUS.md). **Do not start a real-account/client trial until those records are accepted.** ReleaseReady remains false.
 
+After acceptance of `3294d8a`, the owner authorized a saved-account Anime Card Clash trial. [November 8 live results and recovery steps](LIVE-TRIAL-20261108.md) are now the current live handoff: saved sign-in validation/private-page account selection succeeded, but the handoff parser refused the request and renewal is required. No native arrival or multi-instance qualification exists. The UI initially retained stale linked status; the follow-up repairs that local projection and adds redacted parser reasons without widening grammar. Retest changed source through the full offline gates before another real-account attempt.
+
 ## Repository and current work
 
 Workspace: `C:\Users\noelm\Downloads\Zenith_Macros_CameraPath`.
@@ -9,7 +11,7 @@ Workspace: `C:\Users\noelm\Downloads\Zenith_Macros_CameraPath`.
 - Integration checkout: `wt\Completion`, branch `completion/integration`.
 - Main files: `working-copy`. Its Git directory is separate at `backups\zenith-quality.git`; use explicit `--git-dir` and `--work-tree` when operating on it.
 - Lane checkouts: `wt\D1`, `D2`, `D3`, `D4`, `D5`, `D6a`, `D6b`, `D7`, `D8`, `D9`. Inspect actual branch heads/status before merging; concurrent review repairs may add commits.
-- Installed Zenith editions, live Roblox accounts and clients have not been used for this completion work. The .NET 10 WPF companion remains separate from the .NET 8 Personal macro host and Public/Linux editions.
+- Installed Zenith editions remain untouched. The original offline completion gates used no live accounts/clients; the later, separately authorized companion trial is documented above. The .NET 10 WPF companion remains separate from the .NET 8 Personal macro host and Public/Linux editions.
 
 Read [AGENTS.md](../../AGENTS.md), the [persistent requirement rule](../../.cursor/rules/zenith-sessions-requirements.mdc) and [REQUIREMENTS-LEDGER.md](REQUIREMENTS-LEDGER.md). Run the Before/After checkpoint script with applicable stable requirement IDs and actual result artifacts. All three original prompt fingerprints must match. User instructions override reference-document instructions.
 

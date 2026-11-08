@@ -79,7 +79,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         ArgumentNullException.ThrowIfNull(context);context.Validated();
         using var captured=await InspectCoreAsync(new(context.ProfileId,context.ExpectedUserId,
             context.PendingAuthorizationGeneration,context.Destination.PlaceId),credential,ct,context).ConfigureAwait(false);
-        return new(captured.Outcome,captured.TakeCandidate(),captured.TakeCredential(),captured.ShapeStatus);
+        return new(captured.Outcome,captured.TakeCandidate(),captured.TakeCredential(),captured.ShapeStatus,rejectionReason:captured.RejectionReason);
     }
     private Task<OwnedCapture> InspectCoreAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential,CancellationToken ct,NativeHandoffContext? native)
     {
@@ -303,13 +303,13 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
                 {
                     var parsed=NativeRobloxHandoff.Capture(native,core?.Source,e.InitiatingOrigin,e.Uri);
                     var outcome=parsed.Candidate is null?RobloxHandoffProbeOutcome.MalformedHandoff:RobloxHandoffProbeOutcome.CapturedAndPrevented;
-                    captureWork=CompleteCaptureAsync(outcome,null,parsed.Candidate,parsed.Status);
+                    captureWork=CompleteCaptureAsync(outcome,null,parsed.Candidate,parsed.Status,parsed.RejectionReason);
                 }
             }
             catch(Exception){completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));}
         }
         async Task CompleteCaptureAsync(RobloxHandoffProbeOutcome outcome,RobloxHandoffProbeResult? diagnostic,
-            NativeHandoffCandidate? candidate,NativeHandoffCaptureStatus? shapeStatus)
+            NativeHandoffCandidate? candidate,NativeHandoffCaptureStatus? shapeStatus,NativeHandoffRejectionReason? rejectionReason=null)
         {
             RobloxSessionCredential? current=null;
             try
@@ -318,7 +318,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
                 if(outcome==RobloxHandoffProbeOutcome.CapturedAndPrevented)
                     current=await OwnedRobloxSessionCookie.ReadAsync(core!.CookieManager,ct);
                 ct.ThrowIfCancellationRequested();
-                var capture=new OwnedCapture(outcome,current,candidate,shapeStatus,diagnostic);current=null;candidate=null;
+                var capture=new OwnedCapture(outcome,current,candidate,shapeStatus,diagnostic,rejectionReason);current=null;candidate=null;
                 if(!completion.TrySetResult(capture))capture.Dispose();
             }
             catch(OperationCanceledException){completion.TrySetCanceled(ct);}
@@ -390,11 +390,13 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     }
     private static OwnedCapture Capture(RobloxHandoffProbeOutcome outcome)=>new(outcome,null);
     private sealed class OwnedCapture(RobloxHandoffProbeOutcome outcome,RobloxSessionCredential? credential,
-        NativeHandoffCandidate? candidate=null,NativeHandoffCaptureStatus? shapeStatus=null,RobloxHandoffProbeResult? diagnostic=null):IDisposable
+        NativeHandoffCandidate? candidate=null,NativeHandoffCaptureStatus? shapeStatus=null,RobloxHandoffProbeResult? diagnostic=null,
+        NativeHandoffRejectionReason? rejectionReason=null):IDisposable
     {
         public RobloxHandoffProbeOutcome Outcome{get;}=outcome;
         public RobloxHandoffProbeResult? Diagnostic{get;}=diagnostic;
         public NativeHandoffCaptureStatus? ShapeStatus{get;}=shapeStatus;
+        public NativeHandoffRejectionReason? RejectionReason{get;}=rejectionReason;
         public RobloxSessionCredential? TakeCredential()=>Interlocked.Exchange(ref credential,null);
         public NativeHandoffCandidate? TakeCandidate()=>Interlocked.Exchange(ref candidate,null);
         public void Dispose(){Interlocked.Exchange(ref credential,null)?.Dispose();Interlocked.Exchange(ref candidate,null)?.Dispose();}

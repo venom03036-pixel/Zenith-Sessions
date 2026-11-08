@@ -46,7 +46,26 @@ public sealed class NativeHandoffContext : IDisposable
 
 public enum NativeHandoffCaptureStatus
 { AcceptedSourceGrammar, ContextRejected, OriginRejected, InvalidShape, UnsupportedVariant, DestinationMismatch, StaleTimestamp, OperationAlreadyCaptured }
-public sealed record NativeHandoffCaptureResult(NativeHandoffCaptureStatus Status, NativeHandoffCandidate? Candidate = null);
+/// <summary>First rejecting guard only. Never carries input field names, values or launch material.</summary>
+public enum NativeHandoffRejectionReason
+{
+    ContextInvalid, PageMismatch, OriginMismatch, InputLength, ProtocolPrefix, InputCharacters,
+    OuterFieldCount, OuterFieldFormat, UnknownOuterField, DuplicateOuterField, OuterEncoding, MissingOuterField,
+    LaunchMode, LaunchExperience, NonDefaultChannel, TicketShape, LocaleShape, TrackerShape, TimestampShape, StaleTimestamp,
+    DestinationEndpoint, DestinationFieldCount, DestinationFieldFormat, UnknownDestinationField, DuplicateDestinationField,
+    DestinationEncoding, RequestVariant, NestedTracker, PlaceShape, AttemptShape, MissingAttemptOrigin,
+    PlaceMismatch, PrivateTargetMismatch, PlayTogetherVariant, GameTargetMismatch, JobTargetMismatch, AlreadyCaptured,
+    UnsupportedReferrerField, UnsupportedLaunchDataField, UnsupportedEventField
+}
+
+internal static class NativeHandoffRejectionDiagnostics
+{
+    internal static bool IsValid(NativeHandoffCaptureStatus? status, NativeHandoffRejectionReason? reason)
+        => reason is null || Enum.IsDefined(reason.Value) && status is not null and not NativeHandoffCaptureStatus.AcceptedSourceGrammar;
+}
+
+public sealed record NativeHandoffCaptureResult(NativeHandoffCaptureStatus Status, NativeHandoffCandidate? Candidate = null,
+    NativeHandoffRejectionReason? RejectionReason = null);
 
 /// <summary>
 /// Opaque, single-use original bytes from an already-cancelled official-page event. The parser
@@ -118,10 +137,11 @@ public static class NativeRobloxHandoff
         string? initiatingOrigin, string? original, TimeProvider? time = null)
     {
         try { context = context?.Validated(); }
-        catch (ArgumentException) { return new(NativeHandoffCaptureStatus.ContextRejected); }
-        if (context is null || !NativeHandoffNavigation.IsAllowedPage(context, currentPage))
-            return new(NativeHandoffCaptureStatus.ContextRejected);
-        if (!RobloxHandoffProbePolicy.IsAllowedOrigin(initiatingOrigin)) return new(NativeHandoffCaptureStatus.OriginRejected);
+        catch (ArgumentException) { return Reject(NativeHandoffCaptureStatus.ContextRejected, NativeHandoffRejectionReason.ContextInvalid); }
+        if (context is null) return Reject(NativeHandoffCaptureStatus.ContextRejected, NativeHandoffRejectionReason.ContextInvalid);
+        if (!NativeHandoffNavigation.IsAllowedPage(context, currentPage))
+            return Reject(NativeHandoffCaptureStatus.ContextRejected, NativeHandoffRejectionReason.PageMismatch);
+        if (!RobloxHandoffProbePolicy.IsAllowedOrigin(initiatingOrigin)) return Reject(NativeHandoffCaptureStatus.OriginRejected, NativeHandoffRejectionReason.OriginMismatch);
         return Accept(context, original, time ?? TimeProvider.System);
     }
 
@@ -132,84 +152,108 @@ public static class NativeRobloxHandoff
     public static NativeHandoffCaptureResult AcceptBuilt(NativeHandoffContext? context, string? original, TimeProvider? time = null)
     {
         try { context = context?.Validated(); }
-        catch (ArgumentException) { return new(NativeHandoffCaptureStatus.ContextRejected); }
-        if (context is null || context.Destination.ServerKind == RobloxServerKind.Private) return new(NativeHandoffCaptureStatus.ContextRejected);
+        catch (ArgumentException) { return Reject(NativeHandoffCaptureStatus.ContextRejected, NativeHandoffRejectionReason.ContextInvalid); }
+        if (context is null || context.Destination.ServerKind == RobloxServerKind.Private) return Reject(NativeHandoffCaptureStatus.ContextRejected, NativeHandoffRejectionReason.ContextInvalid);
         return Accept(context, original, time ?? TimeProvider.System);
     }
 
     private static NativeHandoffCaptureResult Accept(NativeHandoffContext context, string? original, TimeProvider time)
     {
-        if (original is not { Length: > 0 and <= MaximumCharacters } || !original.StartsWith(Prefix, StringComparison.Ordinal)
-            || original.Any(value => value is < '!' or > '~')) return new(NativeHandoffCaptureStatus.InvalidShape);
+        if (original is not { Length: > 0 and <= MaximumCharacters }) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.InputLength);
+        if (!original.StartsWith(Prefix, StringComparison.Ordinal)) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.ProtocolPrefix);
+        if (original.Any(value => value is < '!' or > '~')) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.InputCharacters);
+        var exceptionReason = NativeHandoffRejectionReason.MissingOuterField;
         try
         {
             string[] pieces = original[Prefix.Length..].Split('+', 10);
-            if (pieces.Length is < 8 or > 9) return new(NativeHandoffCaptureStatus.InvalidShape);
+            if (pieces.Length is < 8 or > 9) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.OuterFieldCount);
             var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
             foreach (string piece in pieces)
             {
                 int colon = piece.IndexOf(':');
-                if (colon <= 0 || !OuterNames.Contains(piece[..colon]) || !values.TryAdd(piece[..colon], Decode(piece[(colon + 1)..], false)))
-                    return new(NativeHandoffCaptureStatus.InvalidShape);
+                if (colon <= 0) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.OuterFieldFormat);
+                if (!OuterNames.Contains(piece[..colon])) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.UnknownOuterField);
+                exceptionReason = NativeHandoffRejectionReason.OuterEncoding;
+                if (!values.TryAdd(piece[..colon], Decode(piece[(colon + 1)..], false)))
+                    return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.DuplicateOuterField);
             }
-            if (values.Count - (values.ContainsKey("channel") ? 1 : 0) != 8) return new(NativeHandoffCaptureStatus.InvalidShape);
-            if (values["launchmode"] != "play" || values["LaunchExp"] is not ("InApp" or "PreferInApp")
-                || values.TryGetValue("channel", out string? channel) && channel.Length != 0)
-                return new(NativeHandoffCaptureStatus.UnsupportedVariant);
+            if (values.Count - (values.ContainsKey("channel") ? 1 : 0) != 8) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.MissingOuterField);
+            exceptionReason = NativeHandoffRejectionReason.MissingOuterField;
+            if (values["launchmode"] != "play") return Reject(NativeHandoffCaptureStatus.UnsupportedVariant, NativeHandoffRejectionReason.LaunchMode);
+            if (values["LaunchExp"] is not ("InApp" or "PreferInApp")) return Reject(NativeHandoffCaptureStatus.UnsupportedVariant, NativeHandoffRejectionReason.LaunchExperience);
+            if (values.TryGetValue("channel", out string? channel) && channel.Length != 0)
+                return Reject(NativeHandoffCaptureStatus.UnsupportedVariant, NativeHandoffRejectionReason.NonDefaultChannel);
             string ticket = values["gameinfo"];
             if (ticket.Length is < 1 or > 8192 || ticket.Contains("ROBLOSECURITY", StringComparison.OrdinalIgnoreCase)
-                || ticket.Contains("DO-NOT-SHARE", StringComparison.OrdinalIgnoreCase) || ticket.Any(character => character is < '!' or > '~')
-                || !Locale(values["robloxLocale"]) || !Locale(values["gameLocale"]) || !Positive(values["browsertrackerid"], out long tracker)
-                || tracker > LaunchProcessReceipt.MaximumBrowserTrackerId)
-                return new(NativeHandoffCaptureStatus.InvalidShape);
-            if (!Positive(values["launchtime"], out long milliseconds)) return new(NativeHandoffCaptureStatus.InvalidShape);
+                || ticket.Contains("DO-NOT-SHARE", StringComparison.OrdinalIgnoreCase) || ticket.Any(character => character is < '!' or > '~'))
+                return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.TicketShape);
+            if (!Locale(values["robloxLocale"]) || !Locale(values["gameLocale"])) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.LocaleShape);
+            if (!Positive(values["browsertrackerid"], out long tracker) || tracker > LaunchProcessReceipt.MaximumBrowserTrackerId)
+                return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.TrackerShape);
+            exceptionReason = NativeHandoffRejectionReason.TimestampShape;
+            if (!Positive(values["launchtime"], out long milliseconds)) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.TimestampShape);
             DateTimeOffset issued = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
-            if ((time.GetUtcNow() - issued).Duration() > TimeSpan.FromSeconds(30)) return new(NativeHandoffCaptureStatus.StaleTimestamp);
+            if ((time.GetUtcNow() - issued).Duration() > TimeSpan.FromSeconds(30)) return Reject(NativeHandoffCaptureStatus.StaleTimestamp, NativeHandoffRejectionReason.StaleTimestamp);
+            exceptionReason = NativeHandoffRejectionReason.DestinationEncoding;
             var destination = ParseDestination(values["placelauncherurl"], tracker, context);
-            if (destination != NativeHandoffCaptureStatus.AcceptedSourceGrammar) return new(destination);
-            if (!context.TryClaimCapture()) return new(NativeHandoffCaptureStatus.OperationAlreadyCaptured);
+            if (destination.Status != NativeHandoffCaptureStatus.AcceptedSourceGrammar) return destination;
+            if (!context.TryClaimCapture()) return Reject(NativeHandoffCaptureStatus.OperationAlreadyCaptured, NativeHandoffRejectionReason.AlreadyCaptured);
             // Retain the original opaque request. Never rebuild or normalize its ticket-bearing URI.
             // The tracker (validated above, equal in both places it appears) leaves only as its own number.
             return new(NativeHandoffCaptureStatus.AcceptedSourceGrammar, new(original, context, time, tracker));
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or FormatException or OverflowException)
-        { return new(NativeHandoffCaptureStatus.InvalidShape); }
+        { return Reject(NativeHandoffCaptureStatus.InvalidShape, exceptionReason); }
     }
 
-    private static NativeHandoffCaptureStatus ParseDestination(string address, long tracker, NativeHandoffContext context)
+    private static NativeHandoffCaptureResult Reject(NativeHandoffCaptureStatus status, NativeHandoffRejectionReason reason)
+        => new(status, RejectionReason: reason);
+
+    private static NativeHandoffCaptureResult ParseDestination(string address, long tracker, NativeHandoffContext context)
     {
         var expected = context.Destination;
         if (!address.StartsWith(Endpoint, StringComparison.Ordinal) || address.Contains('#') || address.Contains('\\')
-            || address.Any(char.IsWhiteSpace)) return NativeHandoffCaptureStatus.InvalidShape;
+            || address.Any(char.IsWhiteSpace)) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.DestinationEndpoint);
         string[] fields = address[Endpoint.Length..].Split('&', 8);
-        if (fields.Length is < 6 or > 7) return NativeHandoffCaptureStatus.UnsupportedVariant;
+        if (fields.Length is < 6 or > 7) return Reject(NativeHandoffCaptureStatus.UnsupportedVariant, NativeHandoffRejectionReason.DestinationFieldCount);
         var values = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (string field in fields)
         {
             int equals = field.IndexOf('=');
-            if (equals < 1 || !QueryNames.Contains(field[..equals]) || !values.TryAdd(field[..equals], Decode(field[(equals + 1)..], true)))
-                return NativeHandoffCaptureStatus.InvalidShape;
+            if (equals < 1) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.DestinationFieldFormat);
+            if (!QueryNames.Contains(field[..equals])) return Reject(NativeHandoffCaptureStatus.InvalidShape, field[..equals] switch
+            {
+                // Known source examples remain unsupported. Classify only these fixed names; never echo an arbitrary name or value.
+                "referredByPlayerId" => NativeHandoffRejectionReason.UnsupportedReferrerField,
+                "launchData" => NativeHandoffRejectionReason.UnsupportedLaunchDataField,
+                "eventId" => NativeHandoffRejectionReason.UnsupportedEventField,
+                _ => NativeHandoffRejectionReason.UnknownDestinationField
+            });
+            if (!values.TryAdd(field[..equals], Decode(field[(equals + 1)..], true)))
+                return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.DuplicateDestinationField);
         }
         if (!values.TryGetValue("request", out string? request) || request is not ("RequestGame" or "RequestGameJob" or "RequestPrivateGame"))
-            return NativeHandoffCaptureStatus.UnsupportedVariant;
-        if (!values.TryGetValue("browserTrackerId", out string? nestedTracker) || !Positive(nestedTracker, out long nested) || nested != tracker
-            || !values.TryGetValue("placeId", out string? place) || !Positive(place, out long placeId)
-            || !values.TryGetValue("joinAttemptId", out string? attempt) || !RobloxRequestedDestination.TryNormalizeJobId(attempt, out _)
-            || !values.TryGetValue("joinAttemptOrigin", out string? origin)) return NativeHandoffCaptureStatus.InvalidShape;
-        if (placeId != expected.PlaceId) return NativeHandoffCaptureStatus.DestinationMismatch;
+            return Reject(NativeHandoffCaptureStatus.UnsupportedVariant, NativeHandoffRejectionReason.RequestVariant);
+        if (!values.TryGetValue("browserTrackerId", out string? nestedTracker) || !Positive(nestedTracker, out long nested) || nested != tracker)
+            return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.NestedTracker);
+        if (!values.TryGetValue("placeId", out string? place) || !Positive(place, out long placeId)) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.PlaceShape);
+        if (!values.TryGetValue("joinAttemptId", out string? attempt) || !RobloxRequestedDestination.TryNormalizeJobId(attempt, out _))
+            return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.AttemptShape);
+        if (!values.TryGetValue("joinAttemptOrigin", out string? origin)) return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.MissingAttemptOrigin);
+        if (placeId != expected.PlaceId) return Reject(NativeHandoffCaptureStatus.DestinationMismatch, NativeHandoffRejectionReason.PlaceMismatch);
         if (request == "RequestPrivateGame")
             return expected.ServerKind == RobloxServerKind.Private && values.Count == 6 && origin == "PlayButton"
                 && values.TryGetValue("linkCode", out string? code) && context.PrivateLease?.MatchesCode(code) == true
-                ? NativeHandoffCaptureStatus.AcceptedSourceGrammar : NativeHandoffCaptureStatus.DestinationMismatch;
-        if (expected.ServerKind == RobloxServerKind.Private) return NativeHandoffCaptureStatus.DestinationMismatch;
-        if (!values.TryGetValue("isPlayTogetherGame", out string? together) || together != "false") return NativeHandoffCaptureStatus.InvalidShape;
+                ? new(NativeHandoffCaptureStatus.AcceptedSourceGrammar) : Reject(NativeHandoffCaptureStatus.DestinationMismatch, NativeHandoffRejectionReason.PrivateTargetMismatch);
+        if (expected.ServerKind == RobloxServerKind.Private) return Reject(NativeHandoffCaptureStatus.DestinationMismatch, NativeHandoffRejectionReason.PrivateTargetMismatch);
+        if (!values.TryGetValue("isPlayTogetherGame", out string? together) || together != "false") return Reject(NativeHandoffCaptureStatus.InvalidShape, NativeHandoffRejectionReason.PlayTogetherVariant);
         if (request == "RequestGame")
             return expected.JobId is null && !values.ContainsKey("gameId") && origin == "PlayButton" && values.Count == 6
-                ? NativeHandoffCaptureStatus.AcceptedSourceGrammar : NativeHandoffCaptureStatus.DestinationMismatch;
+                ? new(NativeHandoffCaptureStatus.AcceptedSourceGrammar) : Reject(NativeHandoffCaptureStatus.DestinationMismatch, NativeHandoffRejectionReason.GameTargetMismatch);
         return expected.JobId is not null && values.TryGetValue("gameId", out string? job)
             && RobloxRequestedDestination.TryNormalizeJobId(job, out string? normalized) && normalized == expected.JobId
             && origin == "JoinInstance" && values.Count == 7
-            ? NativeHandoffCaptureStatus.AcceptedSourceGrammar : NativeHandoffCaptureStatus.DestinationMismatch;
+            ? new(NativeHandoffCaptureStatus.AcceptedSourceGrammar) : Reject(NativeHandoffCaptureStatus.DestinationMismatch, NativeHandoffRejectionReason.JobTargetMismatch);
     }
 
     private static bool Positive(string text, out long value)

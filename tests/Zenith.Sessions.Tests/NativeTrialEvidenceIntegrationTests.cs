@@ -339,7 +339,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(2,root.GetProperty("FormatVersion").GetInt32());
         var diagnostic=root.GetProperty("NativeDiagnostics");
         Assert.Equal(new[]{"AccountVerified","ArrivalVerified","Available","BrowserObservedUtc","BrowserOutcome","CleanupObservedUtc","CleanupStatus","DispatchObservedUtc","DispatchStatus",
-            "ExecutableObservedUtc","InputAuthorized","OperationId","PreparationObservedUtc","PreparationStatus","Revision","ShapeStatus","Stage","StartedUtc","Stopped","TrustReason","TrustStatus","UpdatedUtc"},
+            "ExecutableObservedUtc","InputAuthorized","OperationId","PreparationObservedUtc","PreparationStatus","RejectionReason","Revision","ShapeStatus","Stage","StartedUtc","Stopped","TrustReason","TrustStatus","UpdatedUtc"},
             diagnostic.EnumerateObject().Select(item=>item.Name).Order(StringComparer.Ordinal));
         Assert.Equal(operationId,diagnostic.GetProperty("OperationId").GetGuid());Assert.False(diagnostic.GetProperty("AccountVerified").GetBoolean());
         Assert.False(diagnostic.GetProperty("ArrivalVerified").GetBoolean());Assert.False(diagnostic.GetProperty("InputAuthorized").GetBoolean());

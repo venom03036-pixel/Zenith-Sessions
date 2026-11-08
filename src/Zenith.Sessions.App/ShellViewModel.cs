@@ -1579,7 +1579,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         var previous=Interlocked.Exchange(ref _latestQueue,snapshot);
         var old=previous.Operations.ToDictionary(row=>row.Intent.OperationId);
-        if(snapshot.Operations.Any(row=>old.TryGetValue(row.Intent.OperationId,out var prior)&&row.Intent.AuthorizationGeneration!=prior.Intent.AuthorizationGeneration))
+        // Preparation reserves/fences a saved grant before browser capture. A rejected, cancelled or
+        // interrupted capture has no prepared intent to adopt, so its queue generation stays old even
+        // though the local saved-sign-in health changed. Reopen the nonsecret projection after that
+        // transition too; RefreshNativeTrialFeatures waits for the native owner to finish cleanup.
+        if(snapshot.Operations.Any(row=>old.TryGetValue(row.Intent.OperationId,out var prior)
+            &&(row.Intent.AuthorizationGeneration!=prior.Intent.AuthorizationGeneration
+                ||prior.State==LaunchState.Preparing&&row.State is (LaunchState.Failed or LaunchState.Cancelled
+                    or LaunchState.Blocked or LaunchState.ReviewRequired or LaunchState.Uncertain))))
             Interlocked.Exchange(ref _nativeMetadataPending,1);
         // Every snapshot passes here (only the UI step below is coalesced), so a receipt the previous one lacked is a client
         // this queue's provider just started. Receipts restored at startup arrive before any installation is selected.

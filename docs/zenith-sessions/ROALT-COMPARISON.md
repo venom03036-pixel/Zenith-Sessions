@@ -4,6 +4,8 @@ This comparison describes the current Zenith implementation and its limits. The 
 
 The user's chosen direction is Zenith branding/themes, the existing left sidebar, avatar headshots, matching game media and an evenly tiled window overview. UI work remains separate; this completion pass makes only needed corrections/wiring.
 
+[The authorized November 8 trial](LIVE-TRIAL-20261108.md) verified a saved sign-in and displayed the expected account on the private Roblox page. Publisher validation passed after normal Windows certificate-evidence retrieval, but the official-page handoff parser refused the request. No new native client or simultaneous-client behavior was verified. Local Froststrap review found no public request-bound child-player receipt; publisher inspection remains distinct from launch support. These observations supersede any implication that offline tests establish live parity.
+
 | Capability observed in the reference | Current Zenith behavior | Acceptance still required |
 |---|---|---|
 | Saved account sign-ins | Roblox-hosted sign-in with isolated WebView2 lifecycle; identity-checked encrypted sessions, no OAuth dependency | Attended real provider sign-in, rotation, cancellation and cleanup |

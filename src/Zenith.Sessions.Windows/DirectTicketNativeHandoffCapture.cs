@@ -57,7 +57,7 @@ public sealed class DirectTicketNativeHandoffCapture : IRobloxNativeHandoffCaptu
                 string request = NativeRobloxHandoffRequest.Build(context, ticket, NativeRobloxHandoffRequest.NewBrowserTrackerId(), Guid.NewGuid(), _time);
                 var accepted = NativeRobloxHandoff.AcceptBuilt(context, request, _time);
                 if (accepted.Status != NativeHandoffCaptureStatus.AcceptedSourceGrammar || accepted.Candidate is null)
-                    return new(RobloxHandoffProbeOutcome.MalformedHandoff, shapeStatus: accepted.Status, mode: NativeLaunchMode.DirectTicket);
+                    return new(RobloxHandoffProbeOutcome.MalformedHandoff, shapeStatus: accepted.Status, mode: NativeLaunchMode.DirectTicket, rejectionReason: accepted.RejectionReason);
                 var capture = new NativeBrowserCapture(RobloxHandoffProbeOutcome.TicketIssued, accepted.Candidate, current,
                     NativeHandoffCaptureStatus.AcceptedSourceGrammar, NativeLaunchMode.DirectTicket);
                 current = null; return capture;
