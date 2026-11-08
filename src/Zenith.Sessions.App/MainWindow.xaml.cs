@@ -516,6 +516,14 @@ public partial class MainWindow : Window
         var dialog = new OpenFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", CheckFileExists = true };
         if (!_vm.IsLocked && dialog.ShowDialog(this) == true) try { await _vm.ImportAsync(dialog.FileName); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.Library); }
     }
+    private void EncryptDataFolder(object sender, RoutedEventArgs e)
+    {
+        var review = _vm.ReviewDataEncryption();
+        if (review is null) return;
+        if (MessageBox.Show(this, ShellViewModel.DataEncryptionConfirmation, "Windows data-folder encryption",
+            MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
+            _vm.EncryptDataFolder.Execute(review);
+    }
     private async void ExportProfiles(object sender, RoutedEventArgs e)
     {
         var dialog = new SaveFileDialog { Filter = "Zenith profile metadata (*.json)|*.json", FileName = "Zenith-Sessions-Profiles.json", AddExtension = true };

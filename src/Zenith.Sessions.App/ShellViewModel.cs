@@ -341,7 +341,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
@@ -384,6 +384,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
         InitializeClientUpdateFeatures(clientUpdateInstaller);
         InitializeDiagnosticsFeatures(clientLogTails);
+        InitializeDataEncryption(dataEncryption);
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
@@ -1140,7 +1141,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
-        Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
@@ -1245,6 +1246,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         DisposeSettingsSearch();
         RefreshClientPreviewContext();
         CancelPerformanceTransfers();
+        StopDataEncryption();
         CancelInstallationWork();
         RecipientBundles.CancelWork();
         _launchQueue.SignalPanic();
@@ -1279,6 +1281,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         DisposePublicNetworkGuardFeatures();
         await DisposeDiscordAlertFeaturesAsync();
         await DisposeDiscordPresenceFeaturesAsync();
+        await StopOwnerAsync(DisposeDataEncryptionAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.

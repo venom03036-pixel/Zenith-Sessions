@@ -1598,6 +1598,8 @@
               <TextBlock Text="{Binding SaveStatus}" VerticalAlignment="Center" Margin="16,0,0,0" Foreground="{DynamicResource TextSecondary}" />
             </StackPanel>
             <TextBlock x:Name="SettingsRecoveryAnchor" Text="Protected-file recovery" Style="{StaticResource SectionTitle}" Margin="0,26,0,8" />
+            <TextBlock Text="{Binding DataEncryptionStatus}" Style="{StaticResource Muted}" />
+            <WrapPanel Margin="0,10,0,12"><Button Content="Encrypt data folder with Windows EFS…" Click="EncryptDataFolder" IsEnabled="{Binding CanEncryptDataFolder}" /><Button Content="Cancel encryption" Command="{Binding CancelDataEncryption}" IsEnabled="{Binding IsEncryptingDataFolder}" Margin="8,0,0,0" /></WrapPanel>
             <TextBlock Text="{Binding CredentialCleanupStatus}" Style="{StaticResource Muted}" />
             <Button x:Name="SettingsRecoveryButton" Content="Retry credential cleanup" Command="{Binding CleanupCredentials}" HorizontalAlignment="Left" Margin="0,12,0,16" />
           </StackPanel>
