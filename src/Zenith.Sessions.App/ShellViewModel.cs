@@ -1316,8 +1316,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
             // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
             if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
-            if(swept.Kept==0) return;
-            _signInFolderNote=$" {swept.Kept} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use, not recognized or could not be removed. If sign-in reports a problem with this folder, close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            // Held by another owner, or a file in them was still open: nothing marks them for review, and the next sign-in or
+            // start tries them again, so this is routine. Only data SweepOwned counts as kept for review waits for someone to look at it.
+            int retried=swept.Kept-swept.KeptForReview;
+            if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
+            _signInFolderNote=(swept.KeptForReview>0?$" {swept.KeptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.":"")
+                +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
+            if(swept.KeptForReview==0) return;
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
         }

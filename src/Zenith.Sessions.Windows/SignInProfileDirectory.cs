@@ -177,7 +177,8 @@ public sealed class SignInProfileDirectory
     /// creates nothing. Unlike admission it keeps going past a folder it must preserve: a folder that is held,
     /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. Folders past the per-run
     /// budget are not opened and are counted as deferred: the next admission or sweep removes them. Only leftover data
-    /// that needs review, which the next admission would also refuse, is reported by <see cref="LeftoverNeedsReview"/>.
+    /// that needs review, which the next admission would also refuse, is counted in
+    /// <see cref="SignInSweepResult.KeptForReview"/> and reported by <see cref="LeftoverNeedsReview"/>.
     /// A redirected or unreadable storage root is refused as a whole with an <see cref="IOException"/>; like every other
     /// storage failure it is not remembered for review but is reported by <see cref="StorageUnavailable"/> until a sweep
     /// checks the root and leaves no leftover behind or an admission prepares its folder. Until a sweep or admission finds
@@ -199,7 +200,7 @@ public sealed class SignInProfileDirectory
             if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); SweptLeftovers.TryRemove(browserRoot, out _); return default; }
             // Set first, so a root this sweep cannot check, or a sweep that stops early, is not reported as clean.
             SweptLeftovers.TryAdd(browserRoot, 0);
-            int removed = 0, kept = 0, deferred = 0; bool review = false, storage = false;
+            int removed = 0, kept = 0, deferred = 0, review = 0; bool storage = false;
             try
             {
                 AssertAncestors(browserRoot);
@@ -212,7 +213,7 @@ public sealed class SignInProfileDirectory
                     // A held folder is busy and frees itself, and only data that needs review waits for someone to look at
                     // it. A storage error (such as a file another program still has open) would stop the next admission too.
                     catch (SignInDirectoryInUseException) { kept++; }
-                    catch (SignInDirectoryNeedsReviewException) { kept++; review = true; }
+                    catch (SignInDirectoryNeedsReviewException) { kept++; review++; }
                     catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; storage = true; }
                 }
             }
@@ -220,12 +221,12 @@ public sealed class SignInProfileDirectory
             // every admission would fail on it, so the handoff checks refuse before reserving a grant.
             catch (Exception ex) when (IsStorageFailure(ex)) { StorageRefused.TryAdd(browserRoot, 0); throw; }
             // Admission also refuses when more folders remain than one admission may open.
-            if (review || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
+            if (review > 0 || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
             // Only a sweep that left nothing behind has tested every folder again: one it skipped because it was held, kept
             // for review or past the budget may still hold what stopped the last admission.
             if (storage) StorageRefused.TryAdd(browserRoot, 0); else if (kept + deferred == 0) StorageRefused.TryRemove(browserRoot, out _);
             if (kept + deferred == 0) SweptLeftovers.TryRemove(browserRoot, out _);
-            return new(removed, kept, deferred);
+            return new(removed, kept, deferred, review);
         }
         finally { Admission.Release(); }
     }
@@ -382,10 +383,12 @@ public sealed class SignInProfileDirectory
 
 /// <summary>
 /// What a startup sweep did: leftover sign-in folders removed; folders it opened but kept untouched because they were held,
-/// unrecognized, redirected or could not be removed; and folders past its budget that it did not open, which the next
-/// admission or sweep removes.
+/// unrecognized, redirected or could not be removed; folders past its budget that it did not open, which the next
+/// admission or sweep removes; and how many of the kept folders hold data that needs review
+/// (<see cref="SignInDirectoryNeedsReviewException"/>). The other kept folders were held by another owner or met a storage
+/// error such as a file still open; the next admission or sweep tries them again.
 /// </summary>
-public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0);
+public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0, int KeptForReview = 0);
 
 /// <summary>
 /// Another private browser holds its sign-in folder. Nothing was opened or removed. Usually that owner is open or still
