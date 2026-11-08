@@ -194,14 +194,41 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Equal(ClientAudioMuteAction.Mute,click.Action);Assert.Equal(1,Assert.Single(click.Targets).ProcessId);
         click.Reply.TrySetResult(SoundReport(click,ClientAudioMuteStatus.Applied));
         await shell.MuteClients.Execution;
-        // The list shows the clicked operation's own results, not mixed with the retry's.
+        // The list shows the clicked operation's own results, not mixed with the retry's, but the retry's report is kept in the
+        // status: the user is still told that a new client was muted while the click waited.
         var row=Assert.Single(shell.ClientSoundResults);
         Assert.Equal(1,row.Session.ProcessId);Assert.Equal(ClientAudioMuteStatus.Applied,row.Status);
-        Assert.Equal("1 of 1 sound outcomes confirmed. 0 muted by Zenith and not yet unmuted.",shell.ClientSoundStatus);
+        Assert.Equal("1 of 1 sound outcomes confirmed. 0 muted by Zenith and not yet unmuted. While this change waited, 1 of 1 new clients "
+            +"muted as they appeared. Unmute or Exit turns the sound Zenith muted on again.",shell.ClientSoundStatus);
         Assert.False(shell.IsChangingClientSound);Assert.True(shell.CanChangeClientSound);
         // The retry's client was muted, so it is not tried again.
         await Refresh(shell);
         Assert.Equal(2,control.ChangeCalls);
+        // The kept report is shown once: the next click's status is its own.
+        shell.MuteClients.Execute(null);
+        var again=await control.NextAsync();
+        again.Reply.TrySetResult(SoundReport(again,ClientAudioMuteStatus.Applied));
+        await shell.MuteClients.Execution;
+        Assert.Equal("1 of 1 sound outcomes confirmed. 0 muted by Zenith and not yet unmuted.",shell.ClientSoundStatus);
+    }));
+
+    [Fact]
+    public Task AClickStoppedAfterTheArrivalRetryMutedANewClientStillReportsThatMute()=>OnUi(()=>WithArrivalRetryRunning(async (shell,control,retry)=>
+    {
+        shell.MuteClients.Execute(null);
+        retry.Reply.TrySetResult(SoundReport(retry,ClientAudioMuteStatus.Applied));
+        var click=await control.NextAsync();
+        Assert.Equal(1,Assert.Single(click.Targets).ProcessId);
+        // Cancel sound work stops the click once it has reached Windows; the new client's mute, already final, is still reported.
+        shell.CancelClientSound.Execute(null);
+        Assert.True(click.Token.IsCancellationRequested);
+        click.Reply.TrySetResult(SoundReport(click,ClientAudioMuteStatus.Cancelled));
+        await shell.MuteClients.Execution;
+        var row=Assert.Single(shell.ClientSoundResults);
+        Assert.Equal(1,row.Session.ProcessId);Assert.Equal(ClientAudioMuteStatus.Cancelled,row.Status);
+        Assert.Equal("Sound work stopped. Review the individual results below. While this change waited, 1 of 1 new clients muted as they "
+            +"appeared. Unmute or Exit turns the sound Zenith muted on again.",shell.ClientSoundStatus);
+        Assert.False(shell.IsChangingClientSound);Assert.True(shell.IsArrivalMutePaused);
     }));
 
     [Fact]
