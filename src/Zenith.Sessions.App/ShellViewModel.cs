@@ -1072,6 +1072,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
         if(PanicRequested is {} listeners) foreach(Action listener in listeners.GetInvocationList()) Step(listener);
+        // Every stop, the idle and Windows session locks included, clears an error already showing; one raised after a lock
+        // begins stays through Unlock. MANAGER-IMPLEMENTATION.md states this rule; keeping an existing error is an owner decision.
         Step(ClearError);Step(()=>Notice=reason);Step(()=>AddEvent(reason));_diagnostics.Record(kind);
         if(locking) { Step(()=>ClearSettingsSearch.Execute(null));Step(()=>IsLocked=true); }
         if(failed is null) return;
