@@ -348,7 +348,9 @@ public sealed class PanicShortcutTests : IDisposable
         // The header key cap shows the registered shortcut; the focused F12 binding stays as a fallback.
         var keyCap = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "Border" && (string?)e.Attribute("ToolTip") == "Panic stop shortcut"));
         Assert.Equal("{Binding PanicKeyCap}", (string?)keyCap.Descendants().Single(e => e.Name.LocalName == "TextBlock").Attribute("Text"));
-        Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "KeyBinding" && (string?)e.Attribute("Key") == "F12" && (string?)e.Attribute("Command") == "{Binding Panic}"));
+        // MainWindow builds its bindings from ShellShortcuts (R-shell-4); F12 Panic is the table's first row.
+        var focused = ShellShortcuts.All[0];
+        Assert.Equal((System.Windows.Input.Key.F12, System.Windows.Input.ModifierKeys.None, ShellShortcutAction.Panic), (focused.Key, focused.Modifiers, focused.Action));
 
         // The Guide says where to change it.
         Assert.Single(document.Descendants().Where(e => ((string?)e.Attribute("Text"))?.Contains("Settings → Panic shortcut", StringComparison.Ordinal) == true));

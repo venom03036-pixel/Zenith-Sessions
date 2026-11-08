@@ -1,6 +1,7 @@
 using System.Windows;
 using System.Windows.Automation;
 using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Markup;
 using System.Windows.Media;
 using System.Windows.Shapes;
@@ -8,6 +9,7 @@ using System.Windows.Threading;
 using System.Xml.Linq;
 using MacroSuite.App.Themes;
 using Xunit;
+using Zenith.Sessions.App;
 
 namespace Zenith.Sessions.Tests;
 
@@ -68,15 +70,16 @@ public sealed class SidebarTemplateTests
         var document=XDocument.Load(input);XNamespace ui="http://schemas.microsoft.com/winfx/2006/xaml/presentation",x="http://schemas.microsoft.com/winfx/2006/xaml";
         var rail=document.Descendants(ui+"Border").Single(e=>(string?)e.Attribute(x+"Name")=="NavigationRail");
         var railTargets=rail.Descendants(ui+"Button").Select(Target).ToArray();
-        var digitShortcuts=document.Root!.Element(ui+"Window.InputBindings")!.Elements(ui+"KeyBinding")
-            .Where(e=>(string?)e.Attribute("Modifiers")=="Control" && (string?)e.Attribute("Key") is {Length:2} key && key[0]=='D' && key[1] is >='1' and <='9')
-            .OrderBy(e=>(string)e.Attribute("Key")!,StringComparer.Ordinal).ToArray();
+        // The window builds its key bindings from ShellShortcuts (R-shell-4), so the digit rows are read from that table.
+        var digitShortcuts=ShellShortcuts.All.Where(s=>s.Modifiers==ModifierKeys.Control && s.Key is >=Key.D1 and <=Key.D9).OrderBy(s=>s.Key)
+            .Select<ShellShortcut,(string?,string?)>(s=>s.Action==ShellShortcutAction.ShowWindowsOverview?("{Binding ShowWindowsOverview}",null):("{Binding Navigate}",s.Page)).ToArray();
         // Ctrl+N must open the Nth sidebar item through the same command (and lock/shutdown guard) the rail button uses.
-        Assert.Equal(railTargets,digitShortcuts.Select(Target));
-        Assert.Equal(("{Binding ShowWindowsOverview}",(string?)null),Target(digitShortcuts[3]));
-        char dash=(char)0x2013,arrow=(char)0x2192;
+        Assert.Equal(railTargets,digitShortcuts);
+        Assert.Equal(("{Binding ShowWindowsOverview}",(string?)null),digitShortcuts[3]);
+        char arrow=(char)0x2192;
         var texts=document.Descendants(ui+"TextBlock").Select(e=>(string?)e.Attribute("Text")).OfType<string>().ToArray();
-        Assert.Contains(texts,t=>t.Contains($"Ctrl+1{dash}{railTargets.Length} switches the "));
+        // The Guide lists that same table (ShellShortcutsTests renders it) instead of a hand-written key range.
+        Assert.Contains(document.Descendants(ui+"ItemsControl"),e=>(string?)e.Attribute("ItemsSource")=="{x:Static local:ShellShortcuts.All}");
         Assert.DoesNotContain(texts,t=>t.Contains("seven sidebar sections"));
         // The Guide names only controls that exist: result cards replaced the Use selected experience button,
         // and bundle editing lives under Who is launching > Edit bundles.

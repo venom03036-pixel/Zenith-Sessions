@@ -2,6 +2,7 @@ using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Threading;
 using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
@@ -64,6 +65,7 @@ internal static class PackagedLayoutCheck
             ThemeManager.Apply(app.Resources, ThemeCatalog.DefaultId);
             vm = new ShellViewModel(root, true, Dispatcher.CurrentDispatcher);
             window = MainWindow.CreateForLayoutCheck(vm);
+            RequireShellShortcuts(window, vm.Panic, vm.Navigate, vm.ShowWindowsOverview);
             window.Measure(new Size(1320, 840));
             window.Arrange(new Rect(0, 0, 1320, 840)); window.UpdateLayout();
             vm.Navigate.Execute("JoinGame");
@@ -145,5 +147,27 @@ internal static class PackagedLayoutCheck
             || scope.FindName("RecentlyPlayedChips") is not ItemsControl recent || !ReferenceEquals(recent.DataContext, vm.RecentlyPlayed)
             || !ReferenceEquals(recent.ItemsSource, vm.RecentlyPlayed.Chips))
             throw new InvalidOperationException("The packaged join route lost its private-server or game-source controls.");
+    }
+
+    // The window builds its key bindings from ShellShortcuts, which the Guide lists. Require exactly one binding per row, in
+    // table order, on the command its sidebar button uses, and a named search box for every tab Ctrl+F reaches.
+    internal static void RequireShellShortcuts(FrameworkElement window, ICommand panic, ICommand navigate, ICommand showWindowsOverview)
+    {
+        var rows = ShellShortcuts.All; var bindings = window.InputBindings;
+        bool matches = bindings.Count == rows.Count;
+        for (int i = 0; matches && i < rows.Count; i++)
+        {
+            var row = rows[i];
+            matches = bindings[i] is KeyBinding { Gesture: KeyGesture gesture } binding && gesture.Key == row.Key && gesture.Modifiers == row.Modifiers
+                && Equals(binding.CommandParameter, row.Page) && binding.Command is { } command && row.Action switch
+                {
+                    ShellShortcutAction.Panic => ReferenceEquals(command, panic),
+                    ShellShortcutAction.Navigate => ReferenceEquals(command, navigate),
+                    ShellShortcutAction.ShowWindowsOverview => ReferenceEquals(command, showWindowsOverview),
+                    _ => !ReferenceEquals(command, panic) && !ReferenceEquals(command, navigate) && !ReferenceEquals(command, showWindowsOverview),
+                };
+        }
+        if (!matches || ShellShortcuts.SearchBoxes.Values.Any(name => window.FindName(name) is not TextBox))
+            throw new InvalidOperationException("The packaged window's keyboard shortcuts do not match the shortcut table the Guide lists.");
     }
 }

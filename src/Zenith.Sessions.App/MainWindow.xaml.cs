@@ -25,12 +25,15 @@ public partial class MainWindow : Window
     private MainWindow(ShellViewModel vm, bool layoutCheckOnly)
     {
         _vm = vm; DataContext = vm; InitializeComponent();
+        // Every key binding comes from ShellShortcuts, the table the Guide lists, so the two always agree. They are local to
+        // this window (nothing is registered with Windows), so the layout check builds them too.
+        foreach (var binding in ShellShortcuts.CreateBindings(vm.Panic, vm.Navigate, vm.ShowWindowsOverview, new Command(_ => FindOnPage(), _ => CanFindOnPage())))
+            InputBindings.Add(binding);
         if (layoutCheckOnly) return;
         // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
         _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
         if (_startPlacement is not null) WindowStartupLocation = WindowStartupLocation.Manual;
         vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
-        PreviewKeyDown+=SettingsPagePreviewKeyDown;
         IsVisibleChanged+=(_,_)=>UpdatePreviewVisibility();
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
@@ -108,7 +111,7 @@ public partial class MainWindow : Window
     {
         _panicKey.Dispose();
         _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
-        _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;PreviewKeyDown-=SettingsPagePreviewKeyDown;
+        _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
     public async Task RequestExitAsync()
@@ -181,10 +184,13 @@ public partial class MainWindow : Window
         }
         finally { _vm.DiscardNativeTrialReview(review); }
     }
-    private void SettingsPagePreviewKeyDown(object sender,KeyEventArgs e)
+    // Ctrl+F goes to the open page's search box. While locked the boxes sit behind the lock screen, so it does nothing, and it
+    // does nothing on a page without a search box.
+    private bool CanFindOnPage()=>!_vm.IsLocked&&ShellShortcuts.SearchBoxFor(_vm.Tab) is not null;
+    private void FindOnPage()
     {
-        if(!_vm.IsSettings||_vm.IsLocked||Keyboard.Modifiers!=ModifierKeys.Control||e.Key!=Key.F)return;
-        SettingsSearchBox.Focus();SettingsSearchBox.SelectAll();e.Handled=true;
+        if(!CanFindOnPage()||FindName(ShellShortcuts.SearchBoxFor(_vm.Tab)!) is not System.Windows.Controls.TextBox box)return;
+        box.Focus();box.SelectAll();
     }
     private void SettingsSearchKeyDown(object sender,KeyEventArgs e)
     {
