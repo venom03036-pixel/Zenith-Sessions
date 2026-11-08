@@ -1,5 +1,22 @@
 # Executable-bound native-launch qualification
 
+## Follow-up: bind the actual launch mode (0.51-d1-modebinding)
+
+Review of `3cfa4c6..fa966d0` found that a trial review retained its original mode while a later settings save changed the shared capture. A release check or preparation already in progress could therefore use another mode and record its result under the reviewed mode. The repair revokes review and queue trial epochs before applying a changed saved mode, including change-then-revert. Active preparation is cancelled and the queue pauses; already running clients remain open. The review also compares its mode directly.
+
+The owned capture's mode now travels in `NativeHandoffPreparation`, independently of optional diagnostic projections, and is retained with the successful start's held executable identity. Ordinary preparation requires that actual mode to match its accepted verification. Recording requires the actual started mode to match the review and saves that actual value. A later child observation cannot relabel it. No queue/settings schema migration or UI layout change is introduced. Rules 11–13 preserve the existing cancellation, receipt and cleanup ownership.
+
+All results are under `wt/D4/artifacts/sessions-tests-0.51-d1-modebinding/`:
+
+- `mode-binding-before.trx`: seven behavioral failures against unchanged production code: stale open review and ABA, mode change during held release and ABA, mode change during held preparation and ABA, and wrong-mode qualification incorrectly enabled.
+- `mode-provider-before.trx`: two behavioral failures: an ordinary preparation with a missing or different actual mode was accepted.
+- `mode-binding-after.trx`: 70 passed, zero failed/skipped.
+- `mode-binding-affected.trx`: 592 passed, zero failed/skipped after the final source changes. Includes the same nine regressions, successful Direct-ticket qualification, preservation of the preparation's original mode, native account/handoff/queue paths, private trials and ticket fixtures.
+
+Only synthetic accounts, injected capture/native children and isolated files were used. No browser sign-in, real credential, native Roblox launch or installed application was touched. Live mode compatibility and account/arrival behavior remain unverified; **LiveTestReady=false**. The before/after `0.51-d1-modebinding` checkpoints cover CAP-02-03, VA-06-03 and PROD-CORE-03.
+
+## Original executable qualification cycle
+
 Checkpoint: `0.51-d1-executable`, 2026-11-08. Source baseline: D1 `4d0d91a1e36e9912222dcb74ad81d55c4f263ef3` plus this repair. Scope: CAP-02-03, VA-06-03, PROD-CORE-03, PROD-BOOT-02 and the owner's standard-player-first / retrial-on-executable-change decisions.
 
 ## Behavior and migration

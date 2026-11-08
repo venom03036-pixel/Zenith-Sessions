@@ -25,6 +25,8 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
     private long _diagnosticRevision;
     private NativeLaunchExecutableIdentity? _executableIdentity;
     internal NativeLaunchExecutableIdentity? ExecutableIdentity => Volatile.Read(ref _executableIdentity);
+    private int _preparedMode = -1;
+    internal NativeLaunchMode? PreparedMode => Volatile.Read(ref _preparedMode) is >= 0 and var mode ? (NativeLaunchMode)mode : null;
 
     /// <param name="extraArguments">Where the account's saved extra client arguments (R-launch-16) are read at preparation time;
     /// null passes none. They are read before the executable is held and appended after the official request by the direct start.</param>
@@ -64,6 +66,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
             var owner = new Owner(context, CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token));
             _active = owner;
             Volatile.Write(ref _executableIdentity, null);
+            Volatile.Write(ref _preparedMode, -1);
             BeginDiagnostic(owner);
             var work = Task.Run(() => PrepareOwnedAsync(owner), CancellationToken.None);
             owner.PreparationWork = work; return work;
@@ -126,6 +129,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
                     }
                     else if (MatchesOriginal(owner.Context.OriginalIntent, native!))
                     {
+                        Volatile.Write(ref _preparedMode, (int)native!.Mode);
                         var handle = new PreparedLaunch(this, owner, executable, native!);
                         lock (_gate)
                         {

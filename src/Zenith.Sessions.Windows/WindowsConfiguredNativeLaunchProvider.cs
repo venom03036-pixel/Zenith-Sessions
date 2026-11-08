@@ -116,6 +116,10 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     {
         lock (_gate) return _diagnostics.TryGetValue(operationId, out var entry) ? entry.StartedExecutable : null;
     }
+    public NativeLaunchMode? GetStartedLaunchMode(Guid operationId)
+    {
+        lock (_gate) return _diagnostics.TryGetValue(operationId, out var entry) ? entry.StartedMode : null;
+    }
     public bool MatchesSelectedExecutable(NativeLaunchExecutableIdentity identity)
     {
         ClientInstallationCandidate? selected; lock (_gate) selected = _selected;
@@ -207,6 +211,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             CopyChildDiagnostic(owner, child);
             Volatile.Write(ref owner.Prepared, result?.Prepared);
             owner.Executable = child.ExecutableIdentity;
+            owner.Mode = child.PreparedMode;
             // A cleanup failure has priority over cancellation and late configuration changes.
             if (result?.Failure == LaunchPreparationFailure.CleanupFailed) Poison(owner);
             CheckChildHealth(owner);
@@ -218,6 +223,9 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
                     Volatile.Write(ref _rejectedVerification, owner.Verification);
                     throw new InvalidOperationException("The held executable does not match the recorded trial.");
                 }
+                if (owner.Context.RequiresVerifiedExecutable && (owner.Mode is not { } mode
+                    || NativeLaunchModes.ToSettingsValue(mode) != owner.Verification!.Mode))
+                    throw new InvalidOperationException("The prepared launch mode does not match the recorded trial.");
                 if (prepared.IsExpired) failure = LaunchPreparationFailure.Expired;
                 else if (ReferenceEquals(prepared.Context, owner.Context)) lock (_gate)
                 {
@@ -497,6 +505,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public WrappedLaunch? Handle; public int Fenced, CleanupStarted; public bool CleanupFailed;
         public long DiagnosticStamp;
         public NativeLaunchExecutableIdentity? Executable;
+        public NativeLaunchMode? Mode;
         public NativeLaunchVerification? Verification;
         public CancellationTokenRegistration DiagnosticCancellation;
     }
@@ -508,6 +517,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public long ChildRevision;
         public bool Completed;
         public NativeLaunchExecutableIdentity? StartedExecutable;
+        public NativeLaunchMode? StartedMode;
     }
     private sealed class WrappedLaunch : IPreparedAccountLaunch
     {
@@ -556,7 +566,8 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
                     invoked = true; result = NativeResult(await _prepared.DispatchAsync(boundary, stop.Token).ConfigureAwait(false));
                     if (result.Status == ProviderLaunchStatus.ClientStartedUnverified && !_owner.Context.RequiresVerifiedExecutable)
                         lock (_provider._gate)
-                            if (_provider.DiagnosticEntryFor(_owner, out var entry)) entry.StartedExecutable = _owner.Executable;
+                            if (_provider.DiagnosticEntryFor(_owner, out var entry))
+                            { entry.StartedExecutable = _owner.Executable; entry.StartedMode = _owner.Mode; }
                 }
             }
             catch (Exception) { result = invoked ? new(ProviderLaunchStatus.Uncertain) : Rejected(); }
@@ -597,6 +608,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public bool CleanupHealthy => !child.CleanupBlocked;
         public INativeLaunchDiagnosticSource DiagnosticSource => child;
         public NativeLaunchExecutableIdentity? ExecutableIdentity => child.ExecutableIdentity;
+        public NativeLaunchMode? PreparedMode => child.PreparedMode;
         public Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct) => child.PrepareAsync(context, ct);
         public ValueTask DisposeAsync() => child.DisposeAsync();
     }
@@ -607,5 +619,6 @@ internal interface IConfiguredNativeLaunchChild : IAsyncDisposable
     bool CleanupHealthy { get; }
     INativeLaunchDiagnosticSource? DiagnosticSource => null;
     NativeLaunchExecutableIdentity? ExecutableIdentity => null;
+    NativeLaunchMode? PreparedMode => null;
     Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct);
 }

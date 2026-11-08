@@ -428,6 +428,7 @@ public sealed partial class ClientWindowIntegrationTests
         public NativeLaunchDiagnosticSnapshot? GetDiagnostic(Guid operationId)=>_diagnostic?.OperationId==operationId?_diagnostic:null;
         public bool CleanupHealthy => true;
         public NativeLaunchExecutableIdentity? ExecutableIdentity => NativeEvidenceIdentity;
+        public NativeLaunchMode? PreparedMode { get; set; } = NativeLaunchMode.OfficialPage;
         public async Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
         {
             Interlocked.Increment(ref Preparations); Entered.TrySetResult(context);

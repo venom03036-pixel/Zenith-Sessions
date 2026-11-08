@@ -90,9 +90,25 @@ public sealed class NativeLaunchExecutableQualificationTests
         await using var prepared = Assert.IsAssignableFrom<IPreparedAccountLaunch>(result.Prepared);
         Assert.Null(provider.GetStartedExecutableIdentity(context.OriginalIntent.OperationId));
         child.Identity = Original with { FileSha256 = new('D', 64) }; // A later observation must not replace preparation's identity.
+        child.PreparedMode = NativeLaunchMode.DirectTicket; // The mode is also frozen with this preparation.
         using var boundary = new LaunchDispatchBoundary(context.OriginalIntent, (_, _) => Task.FromResult(true), () => true, () => new(true, "Synthetic"));
         Assert.Equal(ProviderLaunchStatus.ClientStartedUnverified, (await prepared.DispatchAsync(boundary, default)).Status);
         Assert.Equal(Original, provider.GetStartedExecutableIdentity(context.OriginalIntent.OperationId));
+        Assert.Equal(NativeLaunchMode.OfficialPage, provider.GetStartedLaunchMode(context.OriginalIntent.OperationId));
+    }
+
+    [Theory]
+    [InlineData(null)]
+    [InlineData(NativeLaunchMode.DirectTicket)]
+    public async Task OrdinaryQualificationRequiresTheActuallyPreparedMode(NativeLaunchMode? mode)
+    {
+        var child = new Child { PreparedMode = mode };
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new Trust(), new Source { Saved = Entry(Original) }, (_, _) => true);
+        provider.Configure(Candidate());
+        var result = await provider.PrepareAsync(Context(), default);
+        if (result.Prepared is { } prepared) await prepared.DisposeAsync();
+        Assert.Equal(LaunchPreparationFailure.Rejected, result.Failure);
+        Assert.Equal(0, child.Starts);
     }
 
     [Fact]
@@ -144,6 +160,7 @@ public sealed class NativeLaunchExecutableQualificationTests
     {
         public NativeLaunchExecutableIdentity? Identity = Original;
         public NativeLaunchExecutableIdentity? ExecutableIdentity => Identity;
+        public NativeLaunchMode? PreparedMode { get; set; } = NativeLaunchMode.OfficialPage;
         public bool CleanupHealthy => true;
         public int Preparations, Starts; public bool Closed;
         public Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
