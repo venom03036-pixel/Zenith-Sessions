@@ -279,7 +279,7 @@ public sealed class TargetedInputRun
                 if (outcome == TargetedInputSubmission.Queued) sent++;
                 if (outcome == TargetedInputSubmission.Uncertain) uncertain++;
                 if (ct.IsCancellationRequested)
-                { lock (_owner.Sync) RequestStopLocked("Input batch cancelled after a submitted or uncertain prefix; releasing its holds."); status = TargetedInputDispatchStatus.Cancelled; break; }
+                { lock (_owner.Sync) RequestStopLocked(CancelledText(sent, uncertain)); status = TargetedInputDispatchStatus.Cancelled; break; }
                 if (outcome == TargetedInputSubmission.Rejected && !Open(generation))
                 { status = TargetedInputDispatchStatus.Inactive; break; }
                 if (outcome != TargetedInputSubmission.Queued)
@@ -296,7 +296,7 @@ public sealed class TargetedInputRun
             }
         }
         catch (OperationCanceledException)
-        { lock (_owner.Sync) RequestStopLocked("Input batch cancelled; preserving the submitted prefix and releasing its holds."); status = TargetedInputDispatchStatus.Cancelled; }
+        { lock (_owner.Sync) RequestStopLocked(CancelledText(sent, uncertain)); status = TargetedInputDispatchStatus.Cancelled; }
         catch (Exception)
         { lock (_owner.Sync) FaultLocked("The input transport failed. Submitted or uncertain holds require cleanup.", "The input transport failed."); status = TargetedInputDispatchStatus.Faulted; }
         finally
@@ -309,6 +309,12 @@ public sealed class TargetedInputRun
         if (transition is not null) await transition.ConfigureAwait(false);
         lock (_owner.Sync) return new(status, sent, uncertain, SnapshotLocked());
     }
+
+    // A cancelled batch stops the run and releases its holds either way; only say part of the batch went out when it did
+    // (the caller's token can be cancelled while the transport still holds the first signal, which it then refuses).
+    private static string CancelledText(int sent, int uncertain) => sent + uncertain > 0
+        ? "Input batch cancelled after a submitted or uncertain prefix; releasing its holds."
+        : "Input batch cancelled before any of it was sent; releasing the run's holds.";
 
     /// <param name="summary">The part of <paramref name="reason"/> that stays true once the holds are released; omit it when that is all of it.</param>
     private void FaultLocked(string reason, string? summary = null)
