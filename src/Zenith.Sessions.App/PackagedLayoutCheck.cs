@@ -2,6 +2,7 @@ using System.Runtime.ExceptionServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Threading;
 using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
@@ -64,6 +65,7 @@ internal static class PackagedLayoutCheck
             ThemeManager.Apply(app.Resources, ThemeCatalog.DefaultId);
             vm = new ShellViewModel(root, true, Dispatcher.CurrentDispatcher);
             window = MainWindow.CreateForLayoutCheck(vm);
+            RequireShellShortcuts(window, vm.Panic, vm.Navigate, vm.ShowWindowsOverview);
             window.Measure(new Size(1320, 840));
             window.Arrange(new Rect(0, 0, 1320, 840)); window.UpdateLayout();
             vm.Navigate.Execute("JoinGame");
@@ -120,6 +122,8 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged memory trim controls lost their command binding or sample-mode boundary.");
             if (trimTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
+            RequireSearchReachesSessionsLayout(window, vm);
+            RequireEveryThemeLaysOut(app.Resources, content, SessionsThemes.PackagedPalettes());
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
@@ -131,6 +135,41 @@ internal static class PackagedLayoutCheck
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    // Every palette Settings can show, and High Contrast from this computer's SystemColors, must fill every key the shipped window
+    // reads, keep its text readable and lay the window out. The default palette is restored afterwards, whatever happened.
+    internal static void RequireEveryThemeLaysOut(ResourceDictionary resources, FrameworkElement content, IEnumerable<ThemePreset> palettes)
+    {
+        try
+        {
+            foreach (var palette in palettes)
+            {
+                if (SessionsThemes.ReadabilityProblem(palette) is { } problem)
+                    throw new InvalidOperationException($"The packaged {palette.Name} theme is not readable: {problem}.");
+                ThemeManager.Apply(resources, palette);
+                content.Measure(new Size(1320, 840)); content.Arrange(new Rect(0, 0, 1320, 840)); content.UpdateLayout();
+            }
+        }
+        finally { ThemeManager.Apply(resources, ThemeCatalog.DefaultId); }
+    }
+
+    // Settings search must reach a preference on another page through the shipped window: open Sessions and the collapsed
+    // tile layout section, and change no draft. This window is never shown, so keyboard focus is expected to be refused.
+    private static void RequireSearchReachesSessionsLayout(Window window, ShellViewModel vm)
+    {
+        vm.Navigate.Execute("Settings"); window.UpdateLayout();
+        if (window.FindName("ClientLayoutPreferences") is not System.Windows.Controls.Expander { IsExpanded: false } layout)
+            throw new InvalidOperationException("The packaged tile layout section is missing or already open.");
+        string columns = vm.TileColumns, saveStatus = vm.SaveStatus;
+        vm.SettingsSearchQuery = "tile columns";
+        var result = vm.SettingsSearchResults.FirstOrDefault(entry => entry.Id == "sessions-layout")
+            ?? throw new InvalidOperationException("The packaged Settings search no longer finds the tile layout.");
+        vm.OpenSettingSearchResult.Execute(result);
+        if (!vm.IsSessions || !layout.IsExpanded || vm.TileColumns != columns || vm.SaveStatus != saveStatus
+            || !vm.Notice.Contains("did not change", StringComparison.Ordinal))
+            throw new InvalidOperationException("The packaged Settings search did not open the tile layout on Sessions without changing the draft.");
+        vm.ClearSettingsSearch.Execute(null);
     }
 
     // Loading the BAML alone does not notice a renamed or removed control or a lost DataContext. Require the
@@ -145,5 +184,27 @@ internal static class PackagedLayoutCheck
             || scope.FindName("RecentlyPlayedChips") is not ItemsControl recent || !ReferenceEquals(recent.DataContext, vm.RecentlyPlayed)
             || !ReferenceEquals(recent.ItemsSource, vm.RecentlyPlayed.Chips))
             throw new InvalidOperationException("The packaged join route lost its private-server or game-source controls.");
+    }
+
+    // The window builds its key bindings from ShellShortcuts, which the Guide lists. Require exactly one binding per row, in
+    // table order, on the command its sidebar button uses, and a named search box for every tab Ctrl+F reaches.
+    internal static void RequireShellShortcuts(FrameworkElement window, ICommand panic, ICommand navigate, ICommand showWindowsOverview)
+    {
+        var rows = ShellShortcuts.All; var bindings = window.InputBindings;
+        bool matches = bindings.Count == rows.Count;
+        for (int i = 0; matches && i < rows.Count; i++)
+        {
+            var row = rows[i];
+            matches = bindings[i] is KeyBinding { Gesture: KeyGesture gesture } binding && gesture.Key == row.Key && gesture.Modifiers == row.Modifiers
+                && Equals(binding.CommandParameter, row.Page) && binding.Command is { } command && row.Action switch
+                {
+                    ShellShortcutAction.Panic => ReferenceEquals(command, panic),
+                    ShellShortcutAction.Navigate => ReferenceEquals(command, navigate),
+                    ShellShortcutAction.ShowWindowsOverview => ReferenceEquals(command, showWindowsOverview),
+                    _ => !ReferenceEquals(command, panic) && !ReferenceEquals(command, navigate) && !ReferenceEquals(command, showWindowsOverview),
+                };
+        }
+        if (!matches || ShellShortcuts.SearchBoxes.Values.Any(name => window.FindName(name) is not TextBox))
+            throw new InvalidOperationException("The packaged window's keyboard shortcuts do not match the shortcut table the Guide lists.");
     }
 }

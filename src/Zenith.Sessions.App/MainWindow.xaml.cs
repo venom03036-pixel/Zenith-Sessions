@@ -15,7 +15,7 @@ public partial class MainWindow : Window
 {
     private readonly ShellViewModel _vm;
     private readonly Forms.NotifyIcon? _tray;
-    private bool _exiting, _exitStarted;
+    private bool _exiting, _exitStarted, _closed;
     private HwndSource? _source;
     private readonly GlobalPanicRegistration _panicKey=new();
     private readonly ManagerWindowPlacement? _startPlacement;
@@ -25,16 +25,25 @@ public partial class MainWindow : Window
     private MainWindow(ShellViewModel vm, bool layoutCheckOnly)
     {
         _vm = vm; DataContext = vm; InitializeComponent();
+        // Every key binding comes from ShellShortcuts, the table the Guide lists, so the two always agree. They are local to
+        // this window (nothing is registered with Windows), so the layout check builds them too.
+        foreach (var binding in ShellShortcuts.CreateBindings(vm.Panic, vm.Navigate, vm.ShowWindowsOverview, new Command(_ => FindOnPage(), _ => CanFindOnPage())))
+            InputBindings.Add(binding);
+        // Settings search moves only within this window (OnClosed unsubscribes), so the layout check exercises it too.
+        vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
         if (layoutCheckOnly) return;
         // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
         _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
         if (_startPlacement is not null) WindowStartupLocation = WindowStartupLocation.Manual;
-        vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
-        PreviewKeyDown+=SettingsPagePreviewKeyDown;
         IsVisibleChanged+=(_,_)=>UpdatePreviewVisibility();
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
         vm.ThemeChanged += SetTheme;
+        // Light or dark app mode and High Contrast: read once now, then only when Windows announces a change (Rule 14).
+        // Settings apply the palette when they load; OnClosed removes both static subscriptions (Rule 13).
+        vm.SetSystemAppearance(SystemAppearance.Read());
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+        SystemParameters.StaticPropertyChanged += OnSystemParameterChanged;
         vm.PropertyChanged += AnnouncePageChange;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Zenith_Macros_Teal.ico")).Stream;
         using var original = new System.Drawing.Icon(stream);
@@ -72,6 +81,16 @@ public partial class MainWindow : Window
         if(_vm.CompactLayout!=compact) _vm.CompactLayout=compact;
     }
     private void SetTheme(ThemePreset theme) => ThemeManager.Apply(Application.Current.Resources, theme);
+    // SystemEvents raises on its own thread and WPF raises StaticPropertyChanged on this one; both re-read here on the UI thread.
+    // Switching the app mode arrives as General, a contrast theme as Accessibility or Color.
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle or UserPreferenceCategory.Accessibility)
+            Dispatcher.BeginInvoke(RefreshSystemAppearance);
+    }
+    private void OnSystemParameterChanged(object? sender, PropertyChangedEventArgs e)
+    { if (e.PropertyName == nameof(SystemParameters.HighContrast)) Dispatcher.BeginInvoke(RefreshSystemAppearance); }
+    private void RefreshSystemAppearance() { if (!_closed) _vm.SetSystemAppearance(SystemAppearance.Read()); }
     private void UpdatePreviewVisibility()=>_vm.SetPreviewWindowVisible(IsVisible && WindowState!=WindowState.Minimized);
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     { if (e.Reason == SessionSwitchReason.SessionLock) Dispatcher.BeginInvoke(_vm.LockDashboard); }
@@ -106,9 +125,10 @@ public partial class MainWindow : Window
     }
     protected override void OnClosed(EventArgs e)
     {
-        _panicKey.Dispose();
+        _panicKey.Dispose(); _closed = true;
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; SystemParameters.StaticPropertyChanged -= OnSystemParameterChanged;
         _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
-        _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;PreviewKeyDown-=SettingsPagePreviewKeyDown;
+        _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
     public async Task RequestExitAsync()
@@ -116,12 +136,14 @@ public partial class MainWindow : Window
         if (_exitStarted) return; _exitStarted = true;
         try
         {
-            // Remember where the window was left while the shell can still save; this never stops the exit (type only, Rule 10).
-            try { await _vm.SaveManagerWindowAsync(CaptureManagerWindow()); }
+            // Read where the window was left before anything stops. The shell stops work first and only then saves it, within a
+            // short budget of its own, so a slow or queued settings write never keeps automation running. Neither stops the exit.
+            ManagerWindowPlacement? placement = null;
+            try { placement = CaptureManagerWindow(); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
             // and still give the priority warning and stop the instance coordinator.
-            try { await _vm.DisposeAsync(); }
+            try { await _vm.ExitAsync(placement); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             if (_vm.PendingPriorityRestoreCount > 0)
                 MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
@@ -179,10 +201,13 @@ public partial class MainWindow : Window
         }
         finally { _vm.DiscardNativeTrialReview(review); }
     }
-    private void SettingsPagePreviewKeyDown(object sender,KeyEventArgs e)
+    // Ctrl+F goes to the open page's search box. While locked the boxes sit behind the lock screen, so it does nothing, and it
+    // does nothing on a page without a search box.
+    private bool CanFindOnPage()=>!_vm.IsLocked&&ShellShortcuts.SearchBoxFor(_vm.Tab) is not null;
+    private void FindOnPage()
     {
-        if(!_vm.IsSettings||_vm.IsLocked||Keyboard.Modifiers!=ModifierKeys.Control||e.Key!=Key.F)return;
-        SettingsSearchBox.Focus();SettingsSearchBox.SelectAll();e.Handled=true;
+        if(!CanFindOnPage()||FindName(ShellShortcuts.SearchBoxFor(_vm.Tab)!) is not System.Windows.Controls.TextBox box)return;
+        box.Focus();box.SelectAll();
     }
     private void SettingsSearchKeyDown(object sender,KeyEventArgs e)
     {
@@ -198,7 +223,9 @@ public partial class MainWindow : Window
     }
     private void OpenSearchedSetting(SettingsSearchEntry entry)
     {
-        if(!_vm.IsSettings||_vm.IsLocked)return;
+        if(_vm.IsLocked)return;
+        if(SettingsSearchDestinations.For(entry.Target) is { } destination){OpenSearchedPreference(entry,destination);return;}
+        if(!_vm.IsSettings)return;
         bool fallback=entry.Target==SettingsSearchTarget.CustomTiming&&!_vm.IsCustomPerformance;
         FrameworkElement anchor=entry.Target switch
         {
@@ -239,6 +266,20 @@ public partial class MainWindow : Window
             focus=SettingsPerformanceTransferInput.IsEnabled?SettingsPerformanceTransferInput:SettingsPerformanceTransfer;
         }
         anchor.BringIntoView();focus.BringIntoView();bool focused=focus.Focus();_vm.ReportSettingSearchNavigation(entry,fallback,focused);
+    }
+    // The shell has already opened the result's page. Open its section, lay the page out so the newly shown controls have
+    // positions, then scroll to and focus the control. A disabled control leaves focus on its section. Opening a section is
+    // view state only: no preference, view mode or client changes.
+    private void OpenSearchedPreference(SettingsSearchEntry entry,SettingsSearchDestination destination)
+    {
+        if(_vm.Tab!=SettingsSearchCatalog.PageOf(entry.Target))return;
+        var section=destination.Section is null?null:FindName(destination.Section) as FrameworkElement;
+        if(section is System.Windows.Controls.Expander expander)expander.IsExpanded=true;
+        var focus=FindName(destination.Focus) as FrameworkElement??section;
+        UpdateLayout();
+        section?.BringIntoView();focus?.BringIntoView();
+        bool focused=focus?.Focus()==true||section?.Focus()==true;
+        _vm.ReportSettingSearchNavigation(entry,false,focused);
     }
     private async void ExitManager(object sender, RoutedEventArgs e) => await RequestExitAsync();
     private void OpenDataFolder(object sender, RoutedEventArgs e) => _vm.OpenFolder.Execute(null);

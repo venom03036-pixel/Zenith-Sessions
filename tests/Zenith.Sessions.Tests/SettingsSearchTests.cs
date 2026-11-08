@@ -15,7 +15,9 @@ public sealed class SettingsSearchTests
     {
         var topics = SettingsSearchCatalog.Search(query);
         Assert.Equal(8, topics.Count);
-        Assert.Equal(Enum.GetValues<SettingsSearchTarget>(), topics.Select(entry => entry.Target));
+        // One topic for each Settings page section; preferences on other pages are found by typing.
+        Assert.Equal(Enum.GetValues<SettingsSearchTarget>().Where(target => SettingsSearchCatalog.PageOf(target) == "Settings"),
+            topics.Select(entry => entry.Target));
         Assert.Same(SettingsSearchCatalog.Search(null), topics);
     }
 
@@ -64,6 +66,40 @@ public sealed class SettingsSearchTests
         Assert.Contains(SettingsSearchCatalog.Search(query), entry => entry.Id == expected && entry.Target == target);
     }
 
+    // Preferences that live on Sessions or Diagnostics rank first for their own words, and each result names its page.
+    [Theory]
+    [InlineData("tile columns", "sessions-layout", "SessionsLayout", "Sessions")]
+    [InlineData("layout preferences", "sessions-layout", "SessionsLayout", "Sessions")]
+    [InlineData("minimum height", "sessions-layout", "SessionsLayout", "Sessions")]
+    [InlineData("window size", "client-window-size", "ContentSize", "Sessions")]
+    [InlineData("resize", "client-window-size", "ContentSize", "Sessions")]
+    [InlineData("cpu priority", "client-priority", "ClientPriority", "Sessions")]
+    [InlineData("below normal", "client-priority", "ClientPriority", "Sessions")]
+    [InlineData("previews", "client-previews", "Previews", "Sessions")]
+    [InlineData("thumbnails", "client-previews", "Previews", "Sessions")]
+    [InlineData("diagnostics filter", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
+    [InlineData("warnings", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
+    public void PreferencesOnOtherPagesRankFirstForTheirOwnWords(string query, string id, string target, string page)
+    {
+        var first = SettingsSearchCatalog.Search(query).FirstOrDefault();
+        Assert.Equal(id, first?.Id);
+        Assert.Equal(target, first!.Target.ToString());
+        Assert.Equal(page, SettingsSearchCatalog.PageOf(first.Target));
+        Assert.StartsWith("On " + page, first.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void BroadQueriesAcrossEveryPageStayWithinTheTenResultBound()
+    {
+        Assert.Equal(SettingsSearchCatalog.MaximumResults, SettingsSearchCatalog.Search("c").Count);
+        var client = SettingsSearchCatalog.Search("client");
+        Assert.Equal(SettingsSearchCatalog.MaximumResults, client.Count);
+        foreach (string id in new[] { "client-window-size", "client-priority", "client-previews" })
+            Assert.Contains(client, entry => entry.Id == id);
+        Assert.All(Enum.GetValues<SettingsSearchTarget>(), target =>
+            Assert.Contains(SettingsSearchCatalog.PageOf(target), new[] { "Settings", "Sessions", "Diagnostics" }));
+    }
+
     [Fact]
     public void PerformanceTransferFindsReviewAndNeverAdvertisesCredentialExport()
     {
@@ -78,7 +114,6 @@ public sealed class SettingsSearchTests
     [InlineData("fps")]
     [InlineData("MSAA")]
     [InlineData("lowest graphics")]
-    [InlineData("client cpu")]
     public void UnavailableClientPerformanceOptionsOnlyFindThePendingExplanation(string query)
     {
         var result = Assert.Single(SettingsSearchCatalog.Search(query));
@@ -93,8 +128,14 @@ public sealed class SettingsSearchTests
     [InlineData("process priority")]
     public void ClientCpuSearchPointsToTheSessionsPriorityControl(string query)
     {
-        var result = Assert.Single(SettingsSearchCatalog.Search(query));
-        Assert.Equal("pending-client-performance", result.Id);
+        // The real Sessions control comes first; the only other result is the explanation of what is not configurable,
+        // so no CPU cap, affinity or FPS control is ever advertised.
+        var results = SettingsSearchCatalog.Search(query);
+        Assert.Equal(["client-priority", "pending-client-performance"], results.Select(entry => entry.Id));
+        Assert.Equal(SettingsSearchTarget.ClientPriority, results[0].Target);
+        Assert.Equal("Sessions", SettingsSearchCatalog.PageOf(results[0].Target));
+        var result = results[1];
+        Assert.Contains("not configurable", result.Description, StringComparison.Ordinal);
         Assert.Contains("Sessions", result.Description, StringComparison.Ordinal);
         Assert.Contains("Client CPU priority", result.Description, StringComparison.Ordinal);
         Assert.DoesNotContain("client CPU/render", result.Description, StringComparison.Ordinal);

@@ -19,7 +19,7 @@ public sealed class GroupManagerThemeTests : IDisposable
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-group-theme-ui-" + Guid.NewGuid().ToString("N"));
     public static IEnumerable<object[]> PalettesAndScales()
     {
-        foreach (string theme in new[] { "graphite-mint", "midnight", "amber-night", "ocean-blue", "violet-dusk", "custom-light" })
+        foreach (string theme in new[] { "graphite-mint", "midnight", "amber-night", "ocean-blue", "violet-dusk", "custom-light", "light", "high-contrast" })
             foreach (double scale in new[] { 1d, 1.25d, 1.5d, 2d }) yield return [theme, scale];
     }
     [Theory]
@@ -96,7 +96,10 @@ public sealed class GroupManagerThemeTests : IDisposable
     private static ResourceDictionary Palette(string theme)
     {
         var resources = Assert.IsType<ResourceDictionary>(Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml", UriKind.Relative)));
-        ThemeManager.Apply(resources, theme == "custom-light" ? "graphite-mint" : theme);
+        // "light" is the shipped Light theme; "high-contrast" is the palette Windows High Contrast (white) imposes.
+        if (theme == "light") ThemeManager.Apply(resources, SessionsThemes.Light);
+        else if (theme == "high-contrast") ThemeManager.Apply(resources, SessionsThemes.HighContrast(new(Colors.White, Colors.Black, Color.FromRgb(0x37, 0x00, 0x6E), Colors.White, Color.FromRgb(0x60, 0x00, 0x00))));
+        else ThemeManager.Apply(resources, theme == "custom-light" ? "graphite-mint" : theme);
         if (theme == "custom-light")
         {
             foreach (var pair in new Dictionary<string, string>

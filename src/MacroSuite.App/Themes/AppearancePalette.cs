@@ -81,7 +81,8 @@ public static class AppearancePalette
         return new(new ThemePreset(profile.Id, profile.Name, "Custom appearance", colors), opacity, notice);
     }
 
-    private static Color Ensure(Color color, IReadOnlyList<Color> backgrounds, double ratio, Color destination)
+    /// <summary>Moves <paramref name="color"/> toward <paramref name="destination"/> until it reaches <paramref name="ratio"/> on every background.</summary>
+    internal static Color Ensure(Color color, IReadOnlyList<Color> backgrounds, double ratio, Color destination)
     {
         if (backgrounds.All(b => Contrast(color, b) >= ratio)) return color;
         for (int n = 1; n <= 100; n++)

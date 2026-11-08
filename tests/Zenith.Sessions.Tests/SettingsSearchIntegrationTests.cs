@@ -38,6 +38,32 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ClearSettingsSearch.Execute(null);Assert.Empty(shell.SettingsSearchResults);Assert.False(shell.HasSettingsSearchQuery);
         Assert.Equal("unfinished draft",shell.SpareRam);Assert.Equal(originalStatus,shell.SaveStatus);
     });
+    [Theory]
+    [InlineData("tile columns","sessions-layout","Sessions")]
+    [InlineData("window size","client-window-size","Sessions")]
+    [InlineData("cpu priority","client-priority","Sessions")]
+    [InlineData("previews","client-previews","Sessions")]
+    [InlineData("diagnostics filter","diagnostics-filters","Diagnostics")]
+    public Task SettingsSearchOpensThePageOfAPreferenceElsewhereAndLeavesTheDraftUnchanged(string query,string id,string page)=>OnUi(async()=>
+    {
+        await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor());
+        await shell.InitializeAsync();shell.Navigate.Execute("Settings");
+        shell.SpareRam="unfinished draft";shell.TileColumns="7";
+        string saveStatus=shell.SaveStatus,width=shell.ClientContentWidth,filter=shell.DiagnosticFilter;
+        bool previews=shell.IsClientPreviewMode,warnings=shell.ShowWarnings;
+        string? pageWhenAsked=null;shell.SettingsSearchNavigationRequested+=_=>pageWhenAsked=shell.Tab;
+        shell.SettingsSearchQuery=query;
+        var entry=Assert.Single(shell.SettingsSearchResults.Where(e=>e.Id==id));
+        shell.OpenSettingSearchResult.Execute(entry);
+        // The page is already open when the window is asked to open the section and focus the control.
+        Assert.Equal(page,pageWhenAsked);Assert.Equal(page,shell.Tab);
+        shell.ReportSettingSearchNavigation(entry,false);
+        Assert.Contains(entry.Title,shell.Notice);Assert.Contains("did not change",shell.Notice);
+        Assert.Equal("unfinished draft",shell.SpareRam);Assert.Equal("7",shell.TileColumns);Assert.Equal(saveStatus,shell.SaveStatus);
+        Assert.Equal(width,shell.ClientContentWidth);Assert.Equal(filter,shell.DiagnosticFilter);Assert.Equal(warnings,shell.ShowWarnings);
+        Assert.Equal(previews,shell.IsClientPreviewMode);Assert.False(shell.IsChangingClientPriority);Assert.Equal(0,shell.PendingPriorityRestoreCount);
+        Assert.Empty(shell.Launches);Assert.False(shell.IsAuthorizing);
+    });
     [Fact]
     public Task SettingsSearchRejectsForeignRowsAndDoesNotRouteWhileLockedOrOnAnotherPage()=>OnUi(async()=>
     {
@@ -66,5 +92,30 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal("260",(string?)list.Attribute("MaxHeight"));
         var installation=document.Descendants().Single(e=>(string?)e.Attribute(x+"Name")=="SettingsInstallationsAnchor");
         Assert.Equal("True",(string?)installation.Attribute("Focusable"));
+    }
+    [Fact]
+    public void EveryPreferenceOutsideSettingsHasAProductionSectionAndControlOnItsPage()
+    {
+        using var source=Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml");Assert.NotNull(source);
+        var document=XDocument.Load(source!);XNamespace x="http://schemas.microsoft.com/winfx/2006/xaml";
+        XElement Named(string name)=>Assert.Single(document.Descendants().Where(e=>(string?)e.Attribute(x+"Name")==name));
+        var pages=new Dictionary<string,XElement>{["Sessions"]=Named("SessionsPage"),["Diagnostics"]=Named("DiagnosticsPage")};
+        foreach(var target in Enum.GetValues<SettingsSearchTarget>())
+        {
+            string page=SettingsSearchCatalog.PageOf(target);
+            var destination=SettingsSearchDestinations.For(target);
+            if(page=="Settings"){Assert.Null(destination);continue;}
+            Assert.NotNull(destination);
+            var focus=Named(destination!.Focus);
+            Assert.Contains(pages[page],focus.AncestorsAndSelf());
+            if(destination.Section is { } sectionName)
+            {
+                var section=Named(sectionName);Assert.Equal("Expander",section.Name.LocalName);
+                Assert.Contains(section,focus.AncestorsAndSelf());
+            }
+            // Search lands on a field, a section or the view-mode button, never on a button that starts work.
+            if(focus.Name.LocalName=="Button")Assert.Equal("{Binding ShowClientPreviewMode}",(string?)focus.Attribute("Command"));
+        }
+        Assert.Equal("Expander",Named(SettingsSearchDestinations.For(SettingsSearchTarget.ClientPriority)!.Focus).Name.LocalName);
     }
 }

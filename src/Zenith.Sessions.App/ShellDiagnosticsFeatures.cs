@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
@@ -39,6 +38,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientPriority=>"Client priority",
         ManagerSubsystem.Lifecycle=>"Startup and shutdown",
         ManagerSubsystem.ClientMemory=>"Client memory",
+        ManagerSubsystem.RepeatLaunch=>"Repeat launch",
         _=>"Unrecognized subsystem"
     };
 }
@@ -115,6 +115,25 @@ public sealed partial class ShellViewModel
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
     private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
+    internal const string RepeatLaunchStoppedStatus="a new launch cannot bring this window forward until you exit from the tray and start Zenith Sessions again";
+    // UI thread only: set by the dispatcher step below, read by RefreshDiagnosticsStatus.
+    private bool _repeatLaunchListenerStopped;
+    /// <summary>
+    /// The single-instance restore listener's fault reporter, called on the listener's own task. The type alone is recorded
+    /// (Rule 10). Once the listener has stopped, Diagnostics says that a new launch cannot show this window, because that
+    /// launch can only say "already starting". The status and visible rows update now, not on the next monitor tick.
+    /// </summary>
+    internal void RestoreListenerFaulted(Type errorType,bool stopped)
+    {
+        _diagnostics.RecordFailure(ManagerSubsystem.RepeatLaunch,errorType);
+        if(_dispatcher.HasShutdownStarted) return;
+        _dispatcher.BeginInvoke(new Action(()=>
+        {
+            if(_shuttingDown) return;
+            if(stopped) _repeatLaunchListenerStopped=true;
+            RefreshDiagnosticsView();
+        }));
+    }
     private void RefreshDiagnosticsStatus()
     {
         bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
@@ -122,10 +141,12 @@ public sealed partial class ShellViewModel
         // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
         // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
         string? unwritten=dropped<=0?null:dropped==1?"1 event was not written to the disk log":$"{dropped} events were not written to the disk log";
-        DiagnosticsStatus=_diagnostics.Failure??(stopped is not null
+        string status=_diagnostics.Failure??(stopped is not null
             ? $"Diagnostics recording · {(unwritten is null?"":unwritten+" · ")}{stopped} · view updates when refreshed"
             : !live?"Diagnostics starting"
             : unwritten is not null?$"Diagnostics active · {unwritten}.":"Diagnostics active · bounded to three log files");
+        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
+        DiagnosticsStatus=_repeatLaunchListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
         // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
         if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
     }
@@ -186,7 +207,7 @@ public sealed partial class ShellViewModel
             Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
                 performance.ProcessSampleMs,performance.PresentationMs,performance.StaggerMs,performance.StabilizationMs},
             // The catalog id, never the stored text, so an edited settings file cannot carry free text into a report.
-            Theme=ThemeCatalog.Resolve(_settings.Theme).Id,
+            Theme=SessionsThemes.Normalize(_settings.Theme),
             Capacity=new {limits.SparePhysicalPercent,limits.SparePhysicalGiB,limits.SpareCommitPercent,limits.SpareCommitGiB,
                 limits.NewClientPhysicalGiB,limits.NewClientCommitGiB,limits.UserMaximum},
             SessionTotals=new {snapshot.TotalEvents,snapshot.InfoCount,snapshot.WarningCount,snapshot.ErrorCount},

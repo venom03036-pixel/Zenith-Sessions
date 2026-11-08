@@ -328,6 +328,24 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.False(vm.HasErrorNotice);
     });
     [Fact]
+    public Task ARestoreListenerThatStoppedIsRecordedByTypeAndShownOnDiagnostics()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        vm.Navigate.Execute("Diagnostics");
+        // The listener reports from its own task, never the UI thread: first when a run of faults begins.
+        await Task.Run(()=>vm.RestoreListenerFaulted(typeof(IOException),stopped:false));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Contains(vm.DiagnosticRows,r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch && r.ErrorType=="IOException" && r.Subsystem=="Repeat launch");
+        Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+        // Then again when the run stops the listener: from here on a new launch only says "already starting".
+        await Task.Run(()=>vm.RestoreListenerFaulted(typeof(IOException),stopped:true));
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2,vm.DiagnosticRows.Count(r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch));
+        Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+        // A later status refresh keeps saying so.
+        vm.RefreshDiagnostics.Execute(null);Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+    });
+    [Fact]
     public Task AHealthyMonitorKeepsTheLiveDiagnosticsWording()=>OnUi(async ()=>
     {
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();

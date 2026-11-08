@@ -5,16 +5,17 @@ namespace Zenith.Sessions.App;
 // The global panic shortcut: F12 unless Settings saves another allowed combination. The window lends a registrar bound to its
 // own handle; the shell asks it to register the saved shortcut once settings have loaded (so a different saved choice never
 // takes F12 first) and again after each Save settings. The registrar takes a new combination before it releases the old one,
-// and a combination Windows refuses leaves the working one registered, so Panic never loses its global key (Rule 11). The
+// and a combination Windows refuses leaves the working one registered, so Panic never loses its global key (Rule 11). When
+// nothing is registered yet and Windows refuses the saved choice (another program holds it at startup), F12 stands in. The
 // focused F12 binding and the Panic button never depend on this. Nothing here runs in the background.
 public sealed partial class ShellViewModel
 {
     private Func<PanicShortcut, bool>? _registerPanicShortcut;
-    private bool _panicShortcutKnown, _panicShortcutTried;
+    private bool _panicShortcutKnown, _panicShortcutTried, _panicShortcutStandsIn;
     private PanicShortcut? _activePanicShortcut;
     private string _panicShortcutText = PanicShortcut.Default.ToString();
 
-    /// <summary>Settings draft for the global panic shortcut, such as F12 or Ctrl+Alt+P. Applies after Save settings.</summary>
+    /// <summary>Settings draft for the global panic shortcut, such as F12 or Ctrl+Alt+Shift+P. Applies after Save settings.</summary>
     public string PanicShortcutText { get => _panicShortcutText; set { if (Set(ref _panicShortcutText, value ?? "")) PreferencesEdited(); } }
     public string PanicLabel => _activePanicShortcut is { } active ? "Panic stop · " + active : "Panic stop";
     /// <summary>The header key cap: the registered global shortcut, otherwise F12, which works while this window is focused.</summary>
@@ -28,6 +29,8 @@ public sealed partial class ShellViewModel
             if (!_panicShortcutTried) return $"{saved} is not registered globally yet. The Panic button and F12 while this window is focused are available.";
             if (_activePanicShortcut == saved)
                 return saved == PanicShortcut.Default ? "F12 is registered globally for this manager." : $"{saved} is registered globally for this manager. F12 also works while this window is focused.";
+            if (_panicShortcutStandsIn && _activePanicShortcut == PanicShortcut.Default)
+                return $"{saved} is unavailable as a global shortcut, usually because another program or Zenith already uses it, so F12 is registered globally in its place. Choose another shortcut, or close that program and save settings again.";
             if (_activePanicShortcut is { } kept)
                 return $"{saved} is unavailable as a global shortcut, usually because another program or Zenith already uses it. {kept} stays registered globally. Choose another shortcut, or close that program and save settings again.";
             return $"Global {saved} is unavailable, usually because Zenith or another program already uses it. The Panic button and focused F12 remain available; existing shortcuts are preserved.";
@@ -56,7 +59,15 @@ public sealed partial class ShellViewModel
         _panicShortcutKnown = true;
         if (_registerPanicShortcut is not { } register || _shuttingDown) return true;
         var wanted = SavedPanicShortcut;
-        if (wanted != _activePanicShortcut && register(wanted)) _activePanicShortcut = wanted;
+        if (wanted != _activePanicShortcut)
+        {
+            if (register(wanted)) _activePanicShortcut = wanted;
+            // Nothing global is registered yet (Windows refused the saved choice at startup), so F12 stands in for it and Panic
+            // keeps a global key (Rule 11). The saved choice stays saved, and the next Save settings tries it again.
+            else if (_activePanicShortcut is null && wanted != PanicShortcut.Default && register(PanicShortcut.Default))
+            { _activePanicShortcut = PanicShortcut.Default; _panicShortcutStandsIn = true; }
+        }
+        if (_activePanicShortcut == wanted) _panicShortcutStandsIn = false;
         _panicShortcutTried = true;
         Raise(nameof(PanicLabel)); Raise(nameof(PanicKeyCap)); Raise(nameof(PanicShortcutStatus));
         return _activePanicShortcut == wanted;

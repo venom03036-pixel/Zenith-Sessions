@@ -39,9 +39,15 @@ public partial class App : Application
             ApplyStartupTheme(Resources, Options.DataRoot);
             _shell = new ShellViewModel(Options.DataRoot, Options.SampleProfiles, Dispatcher,enableAutomaticPublicImages:!Options.SampleProfiles);
             MainWindow = new MainWindow(_shell); MainWindow.Show();
-            Coordinator?.Listen(ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
+            ListenForRepeatLaunches(Coordinator,_shell,ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
         },()=>_shell,guard.Record,text=>MessageBox.Show(text,"Zenith Sessions"),Shutdown);
     }
+    /// <summary>
+    /// Starts the owner's restore listener, so a later launch shows this window. A fault it survives or stops on reaches the
+    /// shell's Diagnostics by type only (Rule 10) instead of leaving every later "already starting" message unexplained.
+    /// </summary>
+    internal static void ListenForRepeatLaunches(Zenith.Sessions.Windows.SingleInstanceCoordinator? coordinator,ShellViewModel shell,Func<CancellationToken,Task> restore)=>
+        coordinator?.Listen(restore,shell.RestoreListenerFaulted);
     /// <summary>
     /// The visible startup and its failure path, apart from the Application object (one per process) so tests can run both.
     /// <paramref name="open"/> builds the workspace and shows its window; <paramref name="workspace"/> returns whatever part of
@@ -66,12 +72,14 @@ public partial class App : Application
         static async Task StopAsync(IAsyncDisposable started)=>await started.DisposeAsync();
     }
     /// <summary>
-    /// UI thread, before the manager window is created: the theme saved in <paramref name="root"/>, so the first frame does not
-    /// flash the default palette. A missing, damaged or unreadable file keeps the default without delay; the settings load that
-    /// follows the window's Loaded event applies the theme it reads (for example from the backup) and reports any problem.
+    /// UI thread, before the manager window is created: the theme saved in <paramref name="root"/>, as Windows currently shows it
+    /// (Follow Windows and High Contrast), so the first frame does not flash the default palette. A missing, damaged or unreadable
+    /// file keeps the default without delay; the settings load that follows the window's Loaded event applies the theme it reads
+    /// (for example from the backup) and reports any problem.
     /// </summary>
-    internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>
-        ThemeManager.Apply(resources,Zenith.Sessions.Windows.SettingsStore.ReadTheme(root)??ThemeCatalog.DefaultId);
+    internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>ApplyStartupTheme(resources,root,SystemAppearance.Read());
+    internal static void ApplyStartupTheme(ResourceDictionary resources,string root,SystemAppearance system)=>
+        ThemeManager.Apply(resources,SessionsThemes.Effective(Zenith.Sessions.Windows.SettingsStore.ReadTheme(root),system));
     internal static string StartupFailureMessage(Type error)=>
         $"Zenith Sessions could not open its local workspace ({error.Name}). Existing files were preserved. Check the app files and data-folder access, then retry.";
 }

@@ -145,6 +145,48 @@ public sealed class ManagerWindowPlacementTests : IDisposable
         Assert.False(File.Exists(Primary + ".damaged"));
     });
 
+    [Fact]
+    public Task ExitStopsWorkBeforeItWaitsToKeepThePlacement() => OnDispatcherAsync(async () =>
+    {
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor());
+        await vm.InitializeAsync();
+        // A theme autosave still holds the settings writer when Exit starts.
+        vm.ApplyTheme.Execute("ocean-blue");
+        var placement = new ManagerWindowPlacement(-2400, 60, 1600, 1000, true);
+        var exit = vm.ExitAsync(placement);
+        Assert.True(vm.IsShuttingDown, "Exit waited to save the window placement before it stopped automation, the launch queue and monitoring.");
+        await exit.WaitAsync(TimeSpan.FromSeconds(15));
+        // The shutdown fence cancelled the shell's lifetime, yet the placement was still kept, with the latest theme.
+        using var store = new SettingsStore(_root); var saved = (await store.LoadAsync(default)).Settings;
+        Assert.Equal(placement, saved.ManagerWindow); Assert.Equal("ocean-blue", saved.Theme);
+    });
+
+    [Fact]
+    public Task ExitKeepsThePlacementWithoutASavedNoticeOrSettingsSavedEvent() => OnDispatcherAsync(async () =>
+    {
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor());
+        await vm.InitializeAsync();
+        vm.Inform("Ready.");
+        var placement = new ManagerWindowPlacement(100, 80, 1400, 900);
+        await vm.ExitAsync(placement).WaitAsync(TimeSpan.FromSeconds(15));
+        using var store = new SettingsStore(_root);
+        Assert.Equal(placement, (await store.LoadAsync(default)).Settings.ManagerWindow);
+        Assert.Equal("Ready.", vm.Notice);
+        string[] kinds = ReadKinds();
+        Assert.DoesNotContain("SettingsSaved", kinds);
+        Assert.Equal("Shutdown", kinds[^1]);
+    });
+
+    private string[] ReadKinds()
+    {
+        string path = Path.Combine(_root, "diagnostics", "manager.jsonl");
+        if (!File.Exists(path)) return [];
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete);
+        using var reader = new StreamReader(file);
+        return reader.ReadToEnd().Split('\n').Select(l => l.Trim()).Where(l => l.Length > 0)
+            .Select(l => { using var line = JsonDocument.Parse(l); return line.RootElement.GetProperty("Kind").GetString()!; }).ToArray();
+    }
+
     private sealed class SyntheticMonitor : IDesktopMonitor
     {
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)

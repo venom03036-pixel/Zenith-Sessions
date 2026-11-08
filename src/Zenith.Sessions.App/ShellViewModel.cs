@@ -216,7 +216,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     // Several managers can run at once (one per data folder), so the tray, window and taskbar say which one this is.
     public string InstanceTitle { get; }
     public bool IsReady=>_ready;
-    public string ProductLabel => IsSample ? "ISOLATED SAMPLE LIBRARY" : "PERSONAL · LOCAL STORAGE";
+    // The sidebar's library label; it names the same library as InstanceTitle, so another folder never reads as the personal one.
+    public string ProductLabel { get; }
     public ObservableCollection<AccountRow> Accounts { get; } = [];
     public ObservableCollection<SessionRow> Sessions { get; } = [];
     private SessionRow? _selectedSession;
@@ -225,7 +226,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public ObservableCollection<LaunchRow> Launches { get; }=[];
     public IReadOnlyList<GroupFilter> Groups { get; private set; } = [GroupFilter.All];
     public ObservableCollection<string> Events { get; } = [];
-    public IReadOnlyList<ThemePreset> Themes => ThemeCatalog.Presets;
+    public IReadOnlyList<ThemePreset> Themes => SessionsThemes.Choices;
     public RecentClientHistoryViewModel RecentClients { get; }
     private string _processInventoryStatus="Process inventory freshness has not been established.";
     public string ProcessInventoryStatus {get=>_processInventoryStatus;private set=>Set(ref _processInventoryStatus,value);}
@@ -289,7 +290,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     internal bool CloseButtonExitsNow => _savedSettings.CloseButtonExits && !_shuttingDown;
     public bool IsAuthorizing => _authorizationStop is not null;
-    public string ThemeName => ThemeCatalog.Resolve(_settings.Theme).Name;
+    public string ThemeName => SessionsThemes.Choice(_settings.Theme).Name;
     public Command Navigate { get; }
     public Command OpenFolder { get; }
     public Command Panic { get; }
@@ -329,7 +330,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null)
     {
-        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
@@ -374,7 +375,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
         Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
-        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
@@ -427,7 +428,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
             foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText) }) Raise(field);
-            ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
+            ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
@@ -985,19 +986,43 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     /// <summary>UI thread, before the window is first shown: where it was left last time, or null. Read-only; see SettingsStore.ReadManagerWindow.</summary>
     internal ManagerWindowPlacement? ReadSavedManagerWindow()=>_settingsStore.ReadManagerWindow();
+    // An ordinary local settings write takes milliseconds. Exit gives the window placement this long, waiting behind another
+    // settings write included, so a slow or network data root delays only the window closing, never the stop before it.
+    private static readonly TimeSpan ManagerWindowSaveBudget=TimeSpan.FromSeconds(2);
     /// <summary>
-    /// UI thread, at exit before <see cref="DisposeAsync"/>: keeps where the window was left through the same merge as the theme
-    /// autosave, so unsaved setting edits are never written. Skipped when nothing changed, when startup did not finish, and while
-    /// recovered settings wait for review, because an exit must not repair them silently. A failed save is recorded by type only
-    /// (Rule 10) and never stops the exit.
+    /// UI thread. Keeps where the window was left through the same merge as the theme autosave, so unsaved setting edits are
+    /// never written. Exit calls it after the shutdown fence (see <see cref="ExitAsync"/>), so it waits on its own short budget,
+    /// never the shell's lifetime, and it is quiet: no notice, no save status and no SettingsSaved event. Skipped when nothing
+    /// changed, when startup did not finish, and while recovered settings wait for review, because an exit must not repair them
+    /// silently. A failed or timed-out save is recorded by type only (Rule 10) and never stops the exit. Windows cannot cancel
+    /// a file open or replace already under way, so only those can run past the budget.
     /// </summary>
     internal async Task SaveManagerWindowAsync(ManagerWindowPlacement? placement)
     {
-        if(placement is null || !placement.IsValid || !_ready || _shuttingDown || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
+        if(placement is null || !placement.IsValid || !_ready || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
         _settings=_settings with { ManagerWindow=placement };
-        try { await SaveCurrentSettingsAsync(); }
+        using var budget=new CancellationTokenSource(ManagerWindowSaveBudget);
+        try
+        {
+            await _preferencesWriter.WaitAsync(budget.Token);
+            try
+            {
+                var snapshot=_savedSettings with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
+                await Task.Run(() => _settingsStore.SaveAsync(snapshot,budget.Token));
+                _savedSettings=snapshot;
+            }
+            finally { _preferencesWriter.Release(); }
+        }
+        // Running out of budget is a failed write, not a shutdown cancellation, so it is kept as a timeout.
+        catch(OperationCanceledException) when(budget.IsCancellationRequested) { _diagnostics.RecordFailure(ManagerSubsystem.Settings,typeof(TimeoutException)); }
         catch(Exception ex) { _diagnostics.RecordFailure(ManagerSubsystem.Settings,ex.GetType()); }
     }
+    /// <summary>
+    /// UI thread: tray Exit, the window's Exit and the close button when it exits. Runs <see cref="DisposeAsync"/>, which
+    /// stops work first and then, before any owner is awaited, keeps where the window was left (<paramref name="placement"/>,
+    /// or nothing when null). Automation, the launch queue and monitoring therefore never wait on a settings write.
+    /// </summary>
+    internal Task ExitAsync(ManagerWindowPlacement? placement)=>_disposeTask??=DisposeCoreAsync(placement);
     public async Task RequestCloseAsync(SessionObservation session)
     {
         var requestedAt=DateTimeOffset.UtcNow;
@@ -1064,10 +1089,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     // Last-chance seam for UnhandledExceptionGuard. Only a Type crosses it: exception messages can carry
     // links, share codes or account names (Rule 10), so it never goes through Fail(), which echoes some messages.
     internal bool IsShuttingDown=>_shuttingDown;
-    /// <summary>UI thread only. Shows a fixed error for a fault that escaped every handler; Panic and Lock notices stay.</summary>
+    /// <summary>
+    /// UI thread only. Shows a fixed error for a fault that escaped every handler, as <see cref="Fail(Exception,ManagerSubsystem)"/> does,
+    /// also after Panic or Lock: the error has its own line, so the stop notice stays. While locked the lock screen covers the footer,
+    /// so the fault goes to Events and Diagnostics only and no error is left behind it.
+    /// </summary>
     internal void ContainUnhandled(Type errorType)
     {
-        if(!IsLocked && !_preserveStopNotice)
+        if(!IsLocked)
             ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
         AddEvent($"Unexpected error caught ({errorType.Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);
@@ -1097,7 +1126,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
         return _diagnostics.DisposeAsync().AsTask().Wait(flushBudget);
     }
-    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync(null));
     // First, synchronous stage of every exit (tray Exit and Windows session end), once: nothing new may start
     // and every in-flight operation is cancelled, in this order, before any owner is awaited.
     private void BeginShutdown()
@@ -1120,9 +1149,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
     // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
-    private async Task DisposeCoreAsync()
+    private async Task DisposeCoreAsync(ManagerWindowPlacement? exitWindow)
     {
-        try { await DisposeOwnersAsync(); }
+        try { await DisposeOwnersAsync(exitWindow); }
         catch(Exception ex) when(RecordShutdownFault(ex)) { } // Never entered: the filter records and the fault keeps propagating.
         finally { _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); }
         _lifetime.Dispose();
@@ -1132,9 +1161,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(ex is not OperationCanceledException) _diagnostics.RecordFailure(ManagerSubsystem.Lifecycle,ex.GetType());
         return false;
     }
-    private async Task DisposeOwnersAsync()
+    private async Task DisposeOwnersAsync(ManagerWindowPlacement? exitWindow)
     {
         BeginShutdown();
+        // Exit only. Work is already fenced and cancelled, so this write, bounded on its own, only delays waiting for owners that are stopping.
+        await SaveManagerWindowAsync(exitWindow);
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await _initializeTask;
