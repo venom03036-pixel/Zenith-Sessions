@@ -114,6 +114,39 @@ public sealed class ClientAudioMuteTests
     }
 
     [Fact]
+    public async Task AMuteOfAPartlyMutedClientSaysUnmuteThenMuteMutesAllOfIt()
+    {
+        // Unmute turns every session of a partly muted client on (N-B5b-5), so a user who wants it fully muted is told that path.
+        var native = new Native(); native.Add(1, true, false);
+        await using var control = Control(native);
+        var row = Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Mute, default)).Results);
+        Assert.Equal(ClientAudioMuteStatus.Conflict, row.Status);
+        Assert.Null(row.Previous);
+        Assert.Contains("Only part of this client's sound is muted", row.Explanation);
+        Assert.Contains("Unmute", row.Explanation);
+        Assert.Contains("then Mute", row.Explanation);
+        Assert.DoesNotContain("changed outside Zenith", row.Explanation);
+        Assert.Equal(new[] { true, false }, native.Clients[1].Sessions);
+        Assert.Equal(0, native.SetCalls);
+    }
+
+    [Fact]
+    public void AConflictThatIsNotAPartlyMutedClientKeepsTheGenericText()
+    {
+        // Unmute and Restore turn a partly muted client fully on, so their Conflict can only be a change made outside Zenith.
+        foreach (var action in new[] { ClientAudioMuteAction.Unmute, ClientAudioMuteAction.RestoreOriginal })
+        {
+            var row = new ClientAudioMuteResult(Session(1), action, ClientAudioMuteStatus.Conflict, null, null, false);
+            Assert.Contains("changed outside Zenith", row.Explanation);
+            Assert.DoesNotContain("part of", row.Explanation);
+        }
+        // A whole client that changed between Zenith's check and its mute reports the state Zenith read, so it is not the partly muted case.
+        var mute = new ClientAudioMuteResult(Session(1), ClientAudioMuteAction.Mute, ClientAudioMuteStatus.Conflict, false, true, false);
+        Assert.Contains("changed outside Zenith", mute.Explanation);
+        Assert.DoesNotContain("part of", mute.Explanation);
+    }
+
+    [Fact]
     public async Task SoundTurnedOnOutsideZenithEndsOwnershipWithoutAnotherWrite()
     {
         var native = new Native(); native.Add(1, false);
@@ -211,6 +244,9 @@ public sealed class ClientAudioMuteTests
         await using var control = Control(native);
         var row = Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Mute, default)).Results);
         Assert.Equal(ClientAudioMuteStatus.Conflict, row.Status);
+        Assert.Equal(false, row.Previous); // The whole client read as on, so this is not the partly muted refusal.
+        Assert.Contains("changed outside Zenith", row.Explanation);
+        Assert.DoesNotContain("part of", row.Explanation);
         Assert.Equal(new[] { false, true }, native.Clients[1].Sessions);
         Assert.Equal(0, control.PendingRestoreCount);
     }
