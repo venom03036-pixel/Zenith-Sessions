@@ -3,9 +3,9 @@ namespace Zenith.Sessions.Core;
 /// <summary>
 /// Why a launch request that is waiting to start (Blocked, InsufficientCapacity) waits. Memory-only, like
 /// <see cref="LaunchQueueSnapshot.PauseReason"/>: never written to the queue file, and a restart turns every waiting row
-/// into a review anyway.
+/// into a review anyway. PublicNetwork is the public-network guard's hold (<see cref="PublicNetworkPolicy"/>).
 /// </summary>
-public enum LaunchHoldReason { ResourceHeadroom, ClientUpdate }
+public enum LaunchHoldReason { ResourceHeadroom, ClientUpdate, PublicNetwork }
 
 public sealed record ClientUpdateHoldDecision(bool Hold, string Reason);
 

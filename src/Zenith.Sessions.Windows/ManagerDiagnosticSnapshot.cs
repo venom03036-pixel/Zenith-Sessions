@@ -35,6 +35,8 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.Shutdown => "Manager shutdown recorded.",
         ManagerEventKind.ShutdownScheduled => "Windows accepted a scheduled PC shutdown asked for in Settings.",
         ManagerEventKind.ShutdownScheduleCancelled => "Windows cancelled the scheduled PC shutdown.",
+        ManagerEventKind.PublicNetworkDetected => "A Public network connected: the guard held new launches and locked the controls.",
+        ManagerEventKind.PublicNetworkCleared => "The active network is no longer Public; held launch requests may start again.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."
     };

@@ -41,6 +41,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.RepeatLaunch=>"Repeat launch",
         ManagerSubsystem.ClientSound=>"Client sound",
         ManagerSubsystem.ScheduledShutdown=>"Scheduled shutdown",
+        ManagerSubsystem.PublicNetwork=>"Public-network guard",
         _=>"Unrecognized subsystem"
     };
 }

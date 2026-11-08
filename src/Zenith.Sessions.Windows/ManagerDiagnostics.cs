@@ -6,14 +6,15 @@ namespace Zenith.Sessions.Windows;
 public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImported,MetadataExported,SettingsSaved,AuthorizationLinked,
     AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents,
     // Appended so earlier numeric values keep their meaning; the disk log and export store names.
-    AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked,ShutdownScheduled,ShutdownScheduleCancelled }
+    AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked,ShutdownScheduled,ShutdownScheduleCancelled,
+    PublicNetworkDetected,PublicNetworkCleared }
 
 /// <summary>
 /// The closed set of manager areas a failure can be attributed to, so a record says which subsystem failed
 /// without any free text. Append new members only; the live journal and the report carry the name.
 /// </summary>
 public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
-    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ScheduledShutdown }
+    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ScheduledShutdown,PublicNetwork }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable

@@ -257,6 +257,8 @@ public partial class MainWindow : Window
                 "maximum-clients"=>SettingsMaximumClients,
                 "close-button"=>SettingsCloseButtonExits,
                 "idle-lock"=>SettingsIdleLock,
+                // The saved choice only edits the draft until Save settings; focusing it never ticks it.
+                "public-network-guard"=>SettingsPublicNetworkGuard,
                 "panic-shortcut"=>SettingsPanicShortcut,
                 // The delay choice, never Schedule shutdown: search lands on a field, not on a button that starts work.
                 "scheduled-shutdown"=>SettingsShutdownDelay,

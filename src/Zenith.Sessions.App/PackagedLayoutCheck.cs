@@ -138,6 +138,8 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
             if (soundTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
+            if (window.FindName("SettingsPublicNetworkGuard") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsPublicNetworkHeld)
+                throw new InvalidOperationException("The packaged public-network guard control lost its binding or its off default.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

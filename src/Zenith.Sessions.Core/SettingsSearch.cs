@@ -64,6 +64,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "panic", "hotkey", "hot key", "keyboard shortcut", "global shortcut", "emergency stop", "F12", "key combination"),
         E("scheduled-shutdown", "Scheduled shutdown", "Ask Windows to shut down this PC after a chosen time, with a countdown and Cancel shutdown. Nothing is scheduled unless you ask; Panic and Exit cancel it.",
             SettingsSearchTarget.Appearance, "shutdown", "shut down", "power off", "turn off", "switch off", "timer", "countdown", "sleep timer", "schedule", "auto shutdown"),
+        E("public-network-guard", "Hold launches on a public network", "Choose whether new launches are held and the dashboard locks while Windows files the active connection as Public (café, hotel or airport Wi-Fi). Off by default; held requests start again once the network is private. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "public network", "public wifi", "wifi", "wi-fi", "hotspot", "café", "cafe", "hotel", "airport", "network profile", "untrusted network", "guard", "security", "privacy"),
 
         E("profile-maximum-efficiency", "Maximum Efficiency", "Choose the manager profile with less frequent process observations and wider eligible-start spacing.",
             SettingsSearchTarget.Performance, "performance preset", "monitoring", "cadence", "sampling"),
