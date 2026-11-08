@@ -42,7 +42,7 @@ public sealed class TargetedInputCoordinator : IAsyncDisposable
 
     /// <summary>Closes admission without awaiting UI, native work, credentials or saving. Finalization remains tracked.</summary>
     public void SignalStopAll()
-    { lock (Sync) foreach (var run in _runs.Values) run.RequestStopLocked("Stopped by emergency stop."); }
+    { lock (Sync) foreach (var run in _runs.Values) run.RequestStopLocked(TargetedInputRun.StoppedByEmergency); }
 
     internal void ReleaseLocked(TargetedInputRun run)
     { if (_runs.TryGetValue(run.Target.Window, out var current) && ReferenceEquals(run, current)) _runs.Remove(run.Target.Window); }
@@ -174,14 +174,20 @@ public sealed class TargetedInputRun
             return EnsureTransitionLocked();
         }
     }
-    public Task<TargetedInputRunSnapshot> StopAsync()
+    internal const string StoppedByUser = "Stopped by user.", StoppedByEmergency = "Stopped by emergency stop.";
+
+    /// <summary>A stop the user asked for.</summary>
+    public Task<TargetedInputRunSnapshot> StopAsync() => StopAsync(StoppedByUser);
+
+    /// <summary>A stop that says why it happened, for an owner that releases the lease when the user did not ask.</summary>
+    internal Task<TargetedInputRunSnapshot> StopAsync(string reason)
     {
         lock (_owner.Sync)
         {
             // While shutdown is joining a fixed set of actual workers, reuse that finalization.
             // A failed shutdown can be explicitly retried after its result is available.
             if (_owner.DisposalInProgressLocked && !_transitionActive) return _transition ?? Task.FromResult(SnapshotLocked());
-            RequestStopLocked("Stopped by user."); return EnsureTransitionLocked();
+            RequestStopLocked(reason); return EnsureTransitionLocked();
         }
     }
 
