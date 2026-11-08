@@ -117,6 +117,31 @@ public sealed class DistributionIdentityTests : IDisposable
         Assert.Equal(DistributionSelfCheck.CombinedIdentity(hashes),root.GetProperty("FirstPartyIdentitySha256").GetString());
     }
 
+    // N-B10-1: a person may read or copy only the first console line, so a run that exits 1 because the build cannot be
+    // identified must not print the success line, even when every planned stage passed.
+    [Fact]
+    public async Task FirstConsoleLineIsTheSuccessLineOnlyWhenTheRunPasses()
+    {
+        WriteSyntheticAssemblies();
+        string report=Path.Combine(_root,"distribution-check.json");
+        var cases=Enumerable.Range(1,DistributionSelfCheck.PlannedStageCount).Select(i=>new DistributionSelfCheck.Case($"Stage {i}",true)).ToArray();
+        string success=DistributionSelfCheck.Summary(DistributionSelfCheck.PlannedStageCount,DistributionSelfCheck.PlannedStageCount,null);
+
+        var passing=new StringWriter();
+        Assert.Equal(0,await DistributionSelfCheck.WriteReportAsync(report,cases,new(),_root,[],passing));
+        Assert.Equal(success,FirstLine(passing));
+
+        File.Delete(Path.Combine(_root,MacroHostWindows));
+        var unidentified=new StringWriter();
+        Assert.Equal(1,await DistributionSelfCheck.WriteReportAsync(report,cases,new(),_root,[],unidentified));
+        Assert.Equal("Distribution self-check: 43/43 (build not identified: InvalidDataException); release readiness remains false.",FirstLine(unidentified));
+        Assert.NotEqual(success,FirstLine(unidentified));
+        // Rule 10: the console names the failure type only, never the folder or the missing file.
+        Assert.DoesNotContain(_root,unidentified.ToString());Assert.DoesNotContain(MacroHostWindows,unidentified.ToString());
+
+        static string FirstLine(StringWriter output)=>output.ToString().Split(Environment.NewLine)[0];
+    }
+
     [Fact]
     public void ManagerScriptComparesEveryFirstPartyHashWithTheStagedFiles()
     {

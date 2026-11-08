@@ -803,8 +803,11 @@ internal static class DistributionSelfCheck
     // Once ownership is established the report is always written. A build that cannot be identified (a missing or redirected
     // first-party dll, or one loaded from another folder) keeps the stage results, leaves every hash null, names the failure
     // type in IdentityError and fails the run.
-    internal static async Task<int> WriteReportAsync(string report,IReadOnlyList<Case> cases,RunFacts facts,string baseDirectory,IEnumerable<Assembly> loaded)
+    // output is the console unless a test captures it; tests never redirect the process-wide Console.
+    internal static async Task<int> WriteReportAsync(string report,IReadOnlyList<Case> cases,RunFacts facts,string baseDirectory,IEnumerable<Assembly> loaded,
+        TextWriter? output=null)
     {
+        output??=Console.Out;
         BuildIdentity? identity=null;string? identityError=null;
         // Not the stage deadline: the report must still be written after a stage times out. Six local reads are bounded.
         try { identity=await IdentifyBuildAsync(baseDirectory,loaded,CancellationToken.None); }
@@ -819,8 +822,8 @@ internal static class DistributionSelfCheck
         string temporary=report+".tmp";
         try { await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(result,new JsonSerializerOptions { WriteIndented=true })); File.Move(temporary,report,true); }
         finally { if(File.Exists(temporary)) File.Delete(temporary); }
-        Console.WriteLine(Summary(cases.Count(c=>c.Passed),PlannedStageCount,cases.FirstOrDefault(c=>!c.Passed)?.Name));
-        if(identityError is not null) Console.WriteLine($"Distribution self-check could not identify the checked build ({identityError}); the report has no build hashes.");
+        output.WriteLine(Summary(cases.Count(c=>c.Passed),PlannedStageCount,cases.FirstOrDefault(c=>!c.Passed)?.Name,identityError));
+        if(identityError is not null) output.WriteLine($"Distribution self-check could not identify the checked build ({identityError}); the report has no build hashes.");
         return identityError is null && cases.All(c=>c.Passed)?0:1;
     }
 
@@ -828,11 +831,17 @@ internal static class DistributionSelfCheck
     internal const int PlannedStageCount=43;
     // The run stops at the first failing stage, so the console line counts against every planned stage and names the
     // failed one: "3/42 (failed at ...)" instead of "3/4". Stage names are static literals (no paths or secrets).
-    // The success line is unchanged so stored "42/42" evidence still matches.
-    internal static string Summary(int passed,int planned,string? failedStage)
-        =>failedStage is null
+    // The success line is unchanged so stored "42/42" evidence still matches, and it is printed only for a passing run:
+    // a build that cannot be identified fails the run, so "43/43 (build not identified: ...)" names it on the same line.
+    // identityError is an exception type name only (Rule 10).
+    internal static string Summary(int passed,int planned,string? failedStage,string? identityError=null)
+    {
+        string? problem=failedStage is null?null:$"failed at {failedStage}";
+        if(identityError is not null) problem=(problem is null?"":problem+"; ")+$"build not identified: {identityError}";
+        return problem is null
             ?$"Distribution self-check: {passed}/{planned}; release readiness remains false."
-            :$"Distribution self-check: {passed}/{planned} (failed at {failedStage}); release readiness remains false.";
+            :$"Distribution self-check: {passed}/{planned} ({problem}); release readiness remains false.";
+    }
 
     // Builds are deterministic, so a Core- or Windows-only change leaves Zenith.Sessions.App.dll byte-identical and an
     // App-only hash cannot tell an old report from the fixed build. The report identifies every first-party assembly the
