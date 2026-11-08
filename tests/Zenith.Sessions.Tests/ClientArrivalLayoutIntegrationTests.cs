@@ -19,6 +19,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ClientArrivalAction = action; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         Assert.Equal("Settings saved", shell.SaveStatus);
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         // The second client has the lower PID but started later, so its slot comes second.
         var first = log.Client(600, minutesAgo: 3); var second = log.Client(500, minutesAgo: 2);
         await log.PresentAsync([first], (first, [ClientLogFact.Joining]));
@@ -53,6 +54,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(ClientArrivalWindowAction.None, shell.ClientArrivalAction);
         Assert.Equal(3, shell.ClientArrivalChoices.Count);
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         var first = log.Client(700, minutesAgo: 3); var second = log.Client(701, minutesAgo: 2);
         await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
         shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; // An unsaved draft changes nothing.
@@ -72,6 +74,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         Assert.False(shell.CanResumeClientArrivalLayout);
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         var first = log.Client(800, minutesAgo: 4); var second = log.Client(801, minutesAgo: 3);
         var third = log.Client(802, minutesAgo: 2); var fourth = log.Client(803, minutesAgo: 1);
         monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -122,6 +125,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = await Ready(monitor);
         shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         var first = log.Client(900, minutesAgo: 4); var second = log.Client(901, minutesAgo: 3);
         var third = log.Client(902, minutesAgo: 2); var fourth = log.Client(903, minutesAgo: 1);
         await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
@@ -159,6 +163,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = await Ready(monitor);
         shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         var first = log.Client(950, minutesAgo: 3); var second = log.Client(951, minutesAgo: 2); var third = log.Client(952, minutesAgo: 1);
         monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
@@ -203,6 +208,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = await Ready(monitor);
         shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
         var first = log.Client(400, minutesAgo: 3); var second = log.Client(401, minutesAgo: 2); var third = log.Client(402, minutesAgo: 1);
         var minimizedFirst = first with { Minimized = true };
         // The only connected client is minimized: there is nothing to tile, and the report says why.
@@ -223,6 +229,31 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
 
+    // N-B5a-5: reopening Zenith with Minimize saved leaves alone a client the user joined a few minutes earlier, although its
+    // log still reports Connected; a client that starts afterwards is minimized when it connects.
+    [Fact]
+    public Task ReopeningZenithLeavesClientsThatWereAlreadyRunningAloneAndActsOnLaterOnes() => OnUi(async () =>
+    {
+        await using (var first = await Ready(new Monitor()))
+        {
+            first.ClientArrivalAction = ClientArrivalWindowAction.Minimize; first.SaveSettings.Execute(null); await first.SaveSettings.Execution;
+            Assert.Equal("Settings saved", first.SaveStatus);
+        }
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        Assert.Equal(ClientArrivalWindowAction.Minimize, shell.ClientArrivalAction);
+        var log = new ArrivalLog(shell, monitor);
+        var joinedEarlier = log.Client(460, minutesAgo: 4); var startedLater = log.Client(461, minutesAgo: 1);
+        await log.PresentAsync([joinedEarlier], (joinedEarlier, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(0, monitor.StateChanges);
+        await log.PresentAsync([joinedEarlier, startedLater], (startedLater, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.StateChanges);
+        Assert.Equal(new[] { 461 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
+    });
+
     /// <summary>
     /// Publishes one synthetic process scan and log snapshot, then runs the real forced sample and presentation. A stopped
     /// correlator ignores offers, so the 1 Hz loop presents the same snapshot; a presentation queued from an older scan is
@@ -234,6 +265,8 @@ public sealed partial class ClientWindowIntegrationTests
         private readonly WindowsSessionLogCorrelator _correlator = new(new ReportedProbe());
         private long _revision;
         private bool _attached;
+        /// <summary>Zenith started with no client running: its first complete scan lists none, so every later client can arrive.</summary>
+        public Task StartedWithNoClientsAsync() => PresentAsync([]);
         public SessionObservation Client(int pid, int minutesAgo) => new(pid, DateTimeOffset.UtcNow.AddMinutes(-minutesAgo).UtcTicks,
             "Synthetic", (nint)(9000 + pid), "Synthetic client", false, true, 1, 1, null, DateTimeOffset.UtcNow);
         public async Task PresentAsync(SessionObservation[] clients, params (SessionObservation Client, ClientLogFact[] Facts)[] lines)

@@ -30,6 +30,9 @@ public static class ClientWindowSlotOrder
 /// when a complete scan no longer lists its process at all: one that is still listed without a window, or that could not
 /// be read this time, is still running and does not arrive twice when its window returns. A failed or partial scan, or
 /// one that lists more clients than the tracker holds, forgets nothing, so a client it missed does not arrive twice.
+/// Clients already running when Zenith starts never arrive: the evidence registry keeps a Connected line for five minutes,
+/// so a client joined just before reports Connected on the first scans. Nothing arrives until a complete scan, and every
+/// client that scan lists counts as already arrived, so automatic Arrange still tiles it when a later client connects.
 /// Bounded and allocation-light: one caller thread (the dispatcher's presentation step), no timers, no native calls.
 /// </summary>
 public sealed class ClientArrivalTracker
@@ -39,6 +42,7 @@ public sealed class ClientArrivalTracker
     private readonly Dictionary<SessionProcessKey, SessionObservation> _current = [];
     private readonly HashSet<SessionProcessKey> _listed = [];
     private readonly Predicate<SessionProcessKey> _departed;
+    private bool _seeded;
 
     public ClientArrivalTracker() => _departed = key => !_listed.Contains(key);
 
@@ -59,9 +63,11 @@ public sealed class ClientArrivalTracker
                 _listed.Add(key);
                 if (session is { Problem: null } && session.Window != 0) _current.TryAdd(key, session);
             }
+        bool complete = desktop is { Problem: null, ProcessInventoryComplete: true } && listedAll;
+        // Only a complete scan shows which clients were already running; the first one marks them all as arrived.
+        if (!_seeded) { if (!complete) return []; _arrived.UnionWith(_listed); _seeded = true; }
         // Keys only ever belong to listed clients, so pruning to the current scan keeps the set within twice the client cap.
-        if ((desktop is { Problem: null, ProcessInventoryComplete: true } && listedAll) || _arrived.Count >= MaximumClients * 2)
-            _arrived.RemoveWhere(_departed);
+        if (complete || _arrived.Count >= MaximumClients * 2) _arrived.RemoveWhere(_departed);
         List<SessionObservation>? arrived = null;
         foreach (var item in evidence)
             if (item is { Lifecycle: ObservedSessionLifecycle.Connected, Ambiguous: false } && _current.TryGetValue(item.Process, out var session)
@@ -70,9 +76,10 @@ public sealed class ClientArrivalTracker
     }
 
     /// <summary>
-    /// Every client in the latest scan that has connected at least once and whose window is visible and not minimized, in
-    /// slot order. The move refuses a minimized or hidden window, so it gets no cell; restored, it takes its slot again. The
-    /// scan does not report maximized or fullscreen windows, so those still get a cell that the move refuses.
+    /// Every client in the latest scan that has connected at least once, or was already running at the first complete scan,
+    /// and whose window is visible and not minimized, in slot order. The move refuses a minimized or hidden window, so it gets
+    /// no cell; restored, it takes its slot again. The scan does not report maximized or fullscreen windows, so those still
+    /// get a cell that the move refuses.
     /// </summary>
     public SessionObservation[] Slots(LaunchQueueSnapshot? queue)
     {

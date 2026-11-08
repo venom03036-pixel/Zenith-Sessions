@@ -21,11 +21,18 @@ public sealed class ClientArrivalLayoutTests
     private static int[] Pids(IEnumerable<SessionObservation> clients) => clients.Select(client => client.ProcessId).ToArray();
     private static LaunchOperation Launched(SessionObservation client) => new(new(Guid.NewGuid(), Guid.NewGuid(), 1, 123, 456, 0, Now),
         LaunchState.ClientStartedUnverified, LaunchProblem.None, Now, new(client.ProcessId, client.ProcessStartUtcTicks, Now));
+    // Zenith started with no client running: its first complete scan lists none, so every client listed later can arrive.
+    private static ClientArrivalTracker StartedWithNoClients()
+    {
+        var tracker = new ClientArrivalTracker();
+        Assert.Empty(tracker.Observe(Scan(true), []));
+        return tracker;
+    }
 
     [Fact]
     public void ASyntheticEvidenceSequenceReportsEachClientOnceWhenItFirstConnects()
     {
-        var tracker = new ClientArrivalTracker();
+        var tracker = StartedWithNoClients();
         // The second client has the lower PID but started later, so a PID order would put it first.
         var first = Client(900, 5); var second = Client(100, 2);
         Assert.Empty(tracker.Observe(Scan(true, first), [Log(first, ObservedSessionLifecycle.Joining)]));
@@ -52,7 +59,7 @@ public sealed class ClientArrivalLayoutTests
     [Fact]
     public void AmbiguousWindowlessFaultedAndUnscannedClientsDoNotArriveUntilTheyCanBeArranged()
     {
-        var tracker = new ClientArrivalTracker();
+        var tracker = StartedWithNoClients();
         var windowless = Client(10, 3) with { Window = 0 };
         Assert.Empty(tracker.Observe(Scan(true, windowless), [Log(windowless, ObservedSessionLifecycle.Connected)]));
         var windowed = windowless with { Window = 777 };
@@ -67,7 +74,7 @@ public sealed class ClientArrivalLayoutTests
     [Fact]
     public void AClientStillListedWithoutAWindowOrWithAProblemDoesNotArriveAgainWhenItsWindowReturns()
     {
-        var tracker = new ClientArrivalTracker();
+        var tracker = StartedWithNoClients();
         var client = Client(20, 3);
         Assert.Equal(new[] { 20 }, Pids(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)])));
         // Still running but without a main window for one complete scan, for example while the client recreates it.
@@ -92,7 +99,7 @@ public sealed class ClientArrivalLayoutTests
     [Fact]
     public void SlotsLeaveOutMinimizedAndHiddenClientsUntilTheirWindowsAreRestored()
     {
-        var tracker = new ClientArrivalTracker();
+        var tracker = StartedWithNoClients();
         var normal = Client(30, 3); var minimized = Client(31, 2) with { Minimized = true }; var hidden = Client(32, 1) with { Visible = false };
         Assert.Equal(new[] { 30, 31, 32 }, Pids(tracker.Observe(Scan(true, normal, minimized, hidden), [Log(normal, ObservedSessionLifecycle.Connected),
             Log(minimized, ObservedSessionLifecycle.Connected), Log(hidden, ObservedSessionLifecycle.Connected)])));
@@ -101,6 +108,29 @@ public sealed class ClientArrivalLayoutTests
         Assert.Empty(tracker.Observe(Scan(true, normal, restored, shown), [Log(normal, ObservedSessionLifecycle.Connected),
             Log(restored, ObservedSessionLifecycle.Connected), Log(shown, ObservedSessionLifecycle.Connected)]));
         Assert.Equal(new[] { 30, 31, 32 }, Pids(tracker.Slots(null)));
+    }
+
+    // N-B5a-5: the evidence registry keeps a Connected line for five minutes, so a client the user joined a few minutes before
+    // Zenith started reports Connected on Zenith's first scans. Every client in the first complete scan was already running:
+    // it never arrives, even when its log reports Connected only later, and Arrange still tiles it with the clients that arrive.
+    [Fact]
+    public void ClientsAlreadyRunningAtTheFirstCompleteScanNeverArriveButStillTakeTheirSlots()
+    {
+        var tracker = new ClientArrivalTracker();
+        var joinedEarlier = Client(40, 4); var stillLoading = Client(41, 1) with { Window = 0 }; var startedLater = Client(42, 0.5);
+        // A failed or partial scan cannot show which clients were already running, so nothing arrives before a complete scan.
+        Assert.Empty(tracker.Observe(Scan(false, joinedEarlier), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Observe(Scan(true, joinedEarlier, stillLoading), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        // A client still loading at that scan gets its window and connects afterwards: it was running already, so no arrival.
+        var loaded = stillLoading with { Window = 777 };
+        Assert.Empty(tracker.Observe(Scan(true, joinedEarlier, loaded), [Log(joinedEarlier, ObservedSessionLifecycle.Connected),
+            Log(loaded, ObservedSessionLifecycle.Connected)]));
+        Assert.Equal(new[] { 40, 41 }, Pids(tracker.Slots(null)));
+        // A client that starts after that scan arrives once, when it first connects, and takes the slot after them.
+        Assert.Empty(tracker.Observe(Scan(true, joinedEarlier, loaded, startedLater), [Log(startedLater, ObservedSessionLifecycle.Joining)]));
+        Assert.Equal(new[] { 42 }, Pids(tracker.Observe(Scan(true, joinedEarlier, loaded, startedLater),
+            [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(loaded, ObservedSessionLifecycle.Connected), Log(startedLater, ObservedSessionLifecycle.Connected)])));
+        Assert.Equal(new[] { 40, 41, 42 }, Pids(tracker.Slots(null)));
     }
 
     [Fact]

@@ -12,6 +12,7 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // and log evidence. When a client first reports Connected and the saved choice is Arrange or Minimize, one request goes to
 // the existing window lane: Arrange tiles every connected client that is not minimized or hidden, in launch order on the
 // saved monitor; Minimize minimizes the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
+// Clients already running at the first complete scan after Zenith starts never arrive, though their Connected line can be minutes old.
 // Clients that connect while a request runs wait for one follow-up request, never one each. Panic and Lock cancel the
 // request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
 // the user chooses Resume automatic layout. Clients that connect meanwhile count as seen, so they never arrive later. One
