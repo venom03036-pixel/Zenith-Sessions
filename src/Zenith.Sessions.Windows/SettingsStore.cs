@@ -20,7 +20,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
-    bool MuteArrivingClients = false)
+    bool MuteArrivingClients = false, bool KeepSignInBrowserData = false)
 {
     // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut and MuteArrivingClients are optional within schema 1: files
     // without them load unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding

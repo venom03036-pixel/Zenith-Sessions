@@ -26,10 +26,27 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     [InlineData("file:///C:/Windows/test.html", false)]
     [InlineData("javascript:alert(1)", false)]
     [InlineData("roblox-player:launch", false)]
-    [InlineData("https://accounts.google.com/", false)]
+    [InlineData("https://accounts.google.com/", true)]
+    [InlineData("https://appleid.apple.com/", true)]
+    [InlineData("https://accounts.google.com.evil.invalid/", false)]
+    [InlineData("https://appleid.apple.com.evil.invalid/", false)]
+    [InlineData("https://google.com/", false)]
+    [InlineData("https://apple.com/", false)]
+    [InlineData("https://evil.accounts.google.com/", false)]
+    [InlineData("https://accounts.google.com:444/", false)]
+    [InlineData("https://user@appleid.apple.com/", false)]
     [InlineData(null, false)]
     public void TopLevelSignInNavigationCannotDispatchExternalPages(string? value, bool expected)
         => Assert.Equal(expected, RobloxSignInNavigation.IsAllowed(value));
+
+    [Theory]
+    [InlineData("https://www.roblox.com/home", true)]
+    [InlineData("https://accounts.google.com/", false)]
+    [InlineData("https://appleid.apple.com/", false)]
+    [InlineData("https://roblox.com.evil.invalid/", false)]
+    [InlineData("http://www.roblox.com/", false)]
+    public void SavingRemainsLimitedToRobloxAfterProviderNavigation(string value, bool expected)
+        => Assert.Equal(expected, RobloxSignInNavigation.CanSave(value));
 
     // Roblox's Play button delivers roblox-player: through a hidden child frame, which NavigationStarting never sees.
     // Frames stay scheme-based: Roblox's sign-in challenges may load third-party HTTPS frames.
@@ -854,6 +871,27 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.DoesNotContain("Binding OAuthClientId", xaml); Assert.DoesNotContain("Binding CallbackPort", xaml);
         Assert.Contains("Saved Roblox sign-ins", xaml); Assert.Contains("Check saved sign-in", xaml);
     }
+
+    [Fact]
+    public Task KeptBrowserPreferenceNeedsExplicitSaveAndForgetPreservesAccounts() => OnUi(async () =>
+    {
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        Assert.False(shell.KeepSignInBrowserData);
+        shell.KeepSignInBrowserData = true;
+        shell.ApplyTheme.Execute("ocean-blue"); await shell.ApplyTheme.Execution;
+        using var settings = new SettingsStore(_root);
+        Assert.False((await settings.LoadAsync(default)).Settings.KeepSignInBrowserData);
+        Assert.Equal("Unsaved settings", shell.SaveStatus);
+        shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        Assert.True((await settings.LoadAsync(default)).Settings.KeepSignInBrowserData);
+        var profile = AccountProfile.Create("Synthetic metadata"); await shell.SaveAccountAsync(profile);
+        var kept = SignInProfileDirectory.Create(_root, profile.Id, true, default); kept.CompleteAfterBrowserExit(false, default);
+        shell.ForgetSignInBrowserData.Execute(null); await shell.ForgetSignInBrowserData.Execution;
+        Assert.False(Directory.Exists(kept.Path)); Assert.Single(shell.Accounts);
+        Assert.Equal("Synthetic metadata", shell.Accounts[0].Label);
+        Assert.Contains("Saved accounts", shell.Notice);
+    });
     private sealed class SignIn : IRobloxSessionSignIn
     {
         public int Calls;

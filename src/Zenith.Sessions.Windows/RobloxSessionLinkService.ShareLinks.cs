@@ -10,9 +10,9 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
     /// One owned operation: read the saved session, resolve, dispose the credential. No sign-in window opens and no
     /// client is launched. The vault is written in two cases only. When Roblox replaced the session while answering, the
     /// replacement is kept the way a sign-in is: only after it verifies as the same player, at the next generation, and
-    /// only if the record that was sent is still the saved one. When Roblox refuses the saved session (SignInRequired)
-    /// and no verified replacement was kept, that exact record is marked as needing sign-in, like an interrupted
-    /// saved-session check, so the account row and launch eligibility agree with this answer. Provider failures become
+    /// only if the record that was sent is still the saved one. A resolve-route 401 triggers one owned identity confirmation
+    /// after durably fencing that exact record. Valid same-player identity restores Linked and reports the route Unavailable;
+    /// refusal or uncertainty keeps SignInRequired, like an interrupted saved-session check. Provider failures become
     /// outcomes, never forwarded text, and the replacement never leaves this service.
     /// </summary>
     public async Task<RobloxShareLinkResolution> ResolveShareLinkAsync(Guid profileId, RobloxShareLink link, CancellationToken ct)
@@ -46,10 +46,15 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
             if (resolution is null) return new(RobloxShareLinkOutcome.Unavailable);
             try
             {
-                using (var rotated = resolution.TakeRotatedCredential())
-                    if (rotated is not null) await KeepRotatedSessionAsync(operation, record, rotated).ConfigureAwait(false);
-                // A kept replacement changed the record, so this conditional fence then writes nothing.
-                if (resolution.Outcome == RobloxShareLinkOutcome.SignInRequired) await FenceRejectedSessionAsync(operation, record).ConfigureAwait(false);
+                using var rotated = resolution.TakeRotatedCredential();
+                if (resolution.Outcome == RobloxShareLinkOutcome.SignInRequired)
+                {
+                    // This observed endpoint's 401 alone cannot distinguish a refused route from an expired session.
+                    // Confirm the identity under this same owner, fencing before a response could rotate the cookie.
+                    bool confirmed = await ConfirmRejectedSessionAsync(operation, record, rotated).ConfigureAwait(false);
+                    if (confirmed) { resolution.Dispose(); return new(RobloxShareLinkOutcome.Unavailable); }
+                }
+                else if (rotated is not null) await KeepRotatedSessionAsync(operation, record, rotated).ConfigureAwait(false);
             }
             catch { resolution.Dispose(); throw; } // Cancellation or a defect: the answer's codes are zeroed with it.
             return resolution;
@@ -88,27 +93,41 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
     }
 
     /// <summary>
-    /// Roblox refused the saved session that was sent. Mark exactly that record as needing sign-in, keeping its protected
-    /// bytes as CheckSavedAsync does. A newer grant or reservation from another operation is never overwritten: if the
-    /// record changed or the conditional write is refused, nothing is written. After a storage failure only its type is
-    /// reported, never its text (it could quote protected paths); the SignInRequired answer stands, and launch preparation
-    /// still fences an unchanged record before any use, so no client can start with the refused session. Any other
-    /// exception is a defect and is not absorbed.
+    /// The resolve endpoint returned 401. Fence the exact sent record before checking authenticated identity, since that
+    /// response may rotate it. Verify-and-save accepts only the same player and independently checks a rotation. A newer
+    /// grant/reservation is never overwritten. Refusal, network uncertainty or storage failure keeps SignInRequired and
+    /// reports only a failure type; unexpected defects propagate. No nested operation or browser is opened.
     /// </summary>
-    private async Task FenceRejectedSessionAsync(Operation operation, AuthorizationRecord sent)
+    private async Task<bool> ConfirmRejectedSessionAsync(Operation operation, AuthorizationRecord sent, RobloxSessionCredential? rotated)
     {
+        bool kept = false;
         try
         {
             var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
             if (snapshot.Record != sent || snapshot.HighestAllocated != sent.Generation || snapshot.LastCommitted != sent.Generation
-                || snapshot.NextGeneration >= long.MaxValue - 1) return;
+                || snapshot.NextGeneration >= long.MaxValue - 1) return false;
+            var fenceId = Guid.NewGuid();
             var fenced = sent with { Generation = snapshot.NextGeneration, Health = AuthorizationHealth.SignInRequired };
-            await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(snapshot, fenced, Guid.NewGuid(), operation.Token).ConfigureAwait(false);
-            Ensure(operation);
+            var receipt = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(snapshot, fenced, fenceId, operation.Token).ConfigureAwait(false);
+            Ensure(operation); RequireMutation(receipt, fenced.Generation);
+            var pending = await ReadSnapshotAsync(operation).ConfigureAwait(false);
+            if (pending.Record != fenced || pending.HighestAllocated != fenced.Generation || pending.LastCommitted != fenced.Generation
+                || pending.HighestMutationId != fenceId) throw AuthorizationChanged();
+            using var original = rotated is null ? new RobloxSessionCredential(sent.SessionCookie, sent.ExpiresUtc) : null;
+            await VerifyAndSave(operation, rotated ?? original!, fenced, writeSnapshot: pending).ConfigureAwait(false);
+            kept = true;
+            return true;
         }
         catch (OperationCanceledException) { Ensure(operation); }
-        // Storage or a changed record: keep the outcome; nothing else to undo, the write is conditional.
+        // After the resolve endpoint already refused this session, an identity check that cannot confirm it does not
+        // undo the fence (including NotProcessed). A newer grant is never replaced. Only failure types leave this service.
         catch (Exception error) when (IsExpectedSessionFailure(error)) { failed?.Invoke(error.GetType()); }
+        finally
+        {
+            if (!kept && operation.FinalMutationIssued)
+                await FenceFailedSessionMutationAsync(operation.ProfileId, operation.FinalMutationId, failed).ConfigureAwait(false);
+        }
+        return false;
     }
 
     /// <summary>
