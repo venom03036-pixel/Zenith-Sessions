@@ -1318,17 +1318,36 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             var swept=await Task.Run(()=>SignInProfileDirectory.SweepOwned(DataRoot,_lifetime.Token));
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
-            // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
-            if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
-            // Held by another owner, or a file in them was still open: nothing marks them for review, and the next sign-in or
-            // start tries them again, so this is routine. Only data SweepOwned counts as kept for review waits for someone to look at it.
+            // Held by another owner, or a file in them was still open: nothing marks them for review by itself.
             int retried=swept.Kept-swept.KeptForReview;
-            if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
-            _signInFolderNote=(swept.KeptForReview>0?$" {swept.KeptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.":"")
-                +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
-            if(swept.KeptForReview==0) return;
+            if(swept.MoreRemainThanAdmissionMayOpen)
+            {
+                // Kept for any reason or not opened, together they outnumber what the next admission may open, so the next
+                // sign-in and every saved-session check refuse them all as needing review (SweepOwned remembers exactly this for
+                // the handoff checks). The routine lines would promise a removal or a retry that refusal denies, so one line
+                // says what holds instead.
+                int remaining=swept.Kept+swept.Deferred;
+                AddEvent($"{remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in waits until they are reviewed.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +$" {remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in and saved-session checks are refused until they are reviewed. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            }
+            else
+            {
+                // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
+                if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
+                // The next sign-in or start tries held or busy folders again, so this is routine. Only data SweepOwned counts as
+                // kept for review waits for someone to look at it.
+                if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
+            }
+            // The same rule SweepOwned remembered for the handoff checks: the review note and the sign-in failure record appear
+            // exactly when the next sign-in or saved-session check would be refused as a cleanup failure.
+            if(!swept.NeedsReview) return;
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
+            static string ReviewNote(int keptForReview)
+                =>$" {keptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {

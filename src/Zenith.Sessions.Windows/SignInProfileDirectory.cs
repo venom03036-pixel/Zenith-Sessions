@@ -16,8 +16,9 @@ public sealed class SignInProfileDirectory
     // Serializes admission and the startup sweep in this process. A folder Create has made but not yet marked and
     // locked holds only ownership files, which recovery deletes, so a sweep must never see it mid-creation.
     private static readonly SemaphoreSlim Admission = new(1, 1);
-    // Leftover folders one admission or sweep may open; each removal is itself bounded by Remove's file budget.
-    private const int RecoveryBudget = 8;
+    // Leftover folders one admission or sweep may open; each removal is itself bounded by Remove's file budget. Internal so
+    // the sweep's result can tell whether the folders it left behind already exceed it (SignInSweepResult.NeedsReview).
+    internal const int RecoveryBudget = 8;
     private const string NeedsReview = "Private sign-in cleanup needs review before another browser can open.";
     // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
     // reserved, including from the UI thread, so it is memory only; the value is unused.
@@ -220,13 +221,15 @@ public sealed class SignInProfileDirectory
             // A redirected or unreadable root is a storage problem, not leftover data: it is not remembered for review, but
             // every admission would fail on it, so the handoff checks refuse before reserving a grant.
             catch (Exception ex) when (IsStorageFailure(ex)) { StorageRefused.TryAdd(browserRoot, 0); throw; }
-            // Admission also refuses when more folders remain than one admission may open.
-            if (review > 0 || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
+            var result = new SignInSweepResult(removed, kept, deferred, review);
+            // The result's own rule decides, so what the caller reports and what the handoff checks refuse cannot disagree:
+            // admission also refuses when more folders remain than one admission may open, whatever kept each one.
+            if (result.NeedsReview) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
             // Only a sweep that left nothing behind has tested every folder again: one it skipped because it was held, kept
             // for review or past the budget may still hold what stopped the last admission.
             if (storage) StorageRefused.TryAdd(browserRoot, 0); else if (kept + deferred == 0) StorageRefused.TryRemove(browserRoot, out _);
             if (kept + deferred == 0) SweptLeftovers.TryRemove(browserRoot, out _);
-            return new(removed, kept, deferred, review);
+            return result;
         }
         finally { Admission.Release(); }
     }
@@ -386,9 +389,25 @@ public sealed class SignInProfileDirectory
 /// unrecognized, redirected or could not be removed; folders past its budget that it did not open, which the next
 /// admission or sweep removes; and how many of the kept folders hold data that needs review
 /// (<see cref="SignInDirectoryNeedsReviewException"/>). The other kept folders were held by another owner or met a storage
-/// error such as a file still open; the next admission or sweep tries them again.
+/// error such as a file still open; the next admission or sweep tries them again, unless <see cref="NeedsReview"/> says
+/// that together with the deferred ones they already outnumber what the next admission may open.
 /// </summary>
-public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0, int KeptForReview = 0);
+public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0, int KeptForReview = 0)
+{
+    /// <summary>
+    /// True when the folders this sweep left behind, kept for any reason or not opened, outnumber what one admission may
+    /// open, so the next admission refuses them all as needing review (<see cref="SignInDirectoryNeedsReviewException"/>)
+    /// whatever kept each one. Saying they are retried or removed next time would be wrong: they wait for a review.
+    /// </summary>
+    public bool MoreRemainThanAdmissionMayOpen => Kept + Deferred > SignInProfileDirectory.RecoveryBudget;
+    /// <summary>
+    /// True when the next admission under the swept root would refuse with <see cref="SignInDirectoryNeedsReviewException"/>:
+    /// data kept for review, or <see cref="MoreRemainThanAdmissionMayOpen"/>. <see cref="SignInProfileDirectory.SweepOwned"/>
+    /// remembers exactly this for <see cref="SignInProfileDirectory.LeftoverNeedsReview"/>, which the handoff checks read, so
+    /// a caller that reports review from this never disagrees with them.
+    /// </summary>
+    public bool NeedsReview => KeptForReview > 0 || MoreRemainThanAdmissionMayOpen;
+}
 
 /// <summary>
 /// Another private browser holds its sign-in folder. Nothing was opened or removed. Usually that owner is open or still
