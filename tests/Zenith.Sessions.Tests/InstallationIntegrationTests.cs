@@ -552,6 +552,21 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task SuggestedPreselectionExplainsWhyTheRunningQueueWasPaused() => OnUi(async () =>
+    {
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot("version-9ac8595712b447a7") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery);
+        await vm.InitializeAsync();
+        await ResumeQueueForInstallationTestAsync(vm);
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        await WaitForQueuePauseLabelAsync(vm, "Resume queue");
+        Assert.NotNull(vm.SelectedInstallation); Assert.True(vm.SelectedInstallation.IsSuggested);
+        Assert.Contains("launch queue was paused", vm.Notice, StringComparison.Ordinal);
+        Assert.Contains("Resume queue", vm.Notice, StringComparison.Ordinal);
+        Assert.Empty(vm.Launches);
+    });
+
+    [Fact]
     public Task NoRowIsSuggestedWhenTheRegistrationsConflictOrNoNativePlayerIsPresent() => OnUi(async () =>
     {
         // The default probe carries a conflicting-protocols issue beside a present player.

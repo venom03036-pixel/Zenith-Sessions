@@ -151,7 +151,7 @@ public sealed partial class WindowsClientExecutableTrust : IClientExecutableTrus
             var result = Result(candidate, status, reason, before, hash, signer);
             if (status is ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher)
             {
-                held = new(file, before); file = null; handle = null;
+                held = new(file, before, hash); file = null; handle = null;
             }
             return result;
         }

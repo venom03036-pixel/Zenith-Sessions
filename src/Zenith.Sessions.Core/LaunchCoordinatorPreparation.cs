@@ -5,7 +5,7 @@ public sealed partial class LaunchCoordinator
     private async Task PrepareAndStartAsync(LaunchOperation chosen,IPreparingLaunchProvider provider,long generation,
         TimeSpan stabilization,TimeSpan stagger,CancellationToken ct)
     {
-        var context=new LaunchPreparationContext(chosen.Intent);
+        var context=new LaunchPreparationContext(chosen.Intent,!IsTrialOperation(chosen.Intent.OperationId));
         IPreparedAccountLaunch? prepared=null;bool dispatchInvoked=false,preparationFailureReported=false;
         try
         {

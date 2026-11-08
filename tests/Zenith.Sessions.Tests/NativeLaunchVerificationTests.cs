@@ -22,8 +22,9 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     private static readonly DateTimeOffset Now = new(2026, 11, 8, 12, 0, 0, TimeSpan.Zero);
     private static readonly long Start = Now.AddMinutes(-2).UtcTicks;
     private static readonly Guid Operation = Guid.Parse("7d1f1c2e-5b7a-4c3d-9e8f-0123456789ab");
+    private static readonly NativeLaunchExecutableIdentity Identity = new(new('A', 64), new('B', 64), new('C', 64));
     private static NativeLaunchVerification Entry(string mode = "official-page", string product = "Roblox")
-        => new(mode, product, Now, Operation, 730001, Start, 456, 42);
+        => new(mode, product, Now, Operation, 730001, Start, 456, 42, Identity);
 
     [Theory]
     [InlineData("official-page", "Roblox", 730001, 456, 42, true)]
@@ -95,8 +96,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
             await store.SaveAsync(loaded.Settings with { NativeLaunchVerifications = [Entry("Official-Page", "roblox")] }, default);
         }
         string saved = await File.ReadAllTextAsync(path);
-        Assert.Contains("\"NativeLaunchVerifications\":[{\"Mode\":\"official-page\",\"Product\":\"Roblox\",\"VerifiedUtc\":\"2026-11-08T12:00:00+00:00\",\"OperationId\":\"" + Operation
-            + "\",\"ProcessId\":730001,\"ProcessStartUtcTicks\":" + Start + ",\"UserId\":456,\"PlaceId\":42}]", saved, StringComparison.Ordinal);
+        Assert.Contains("\"NativeLaunchVerifications\":[" + JsonSerializer.Serialize(Entry()) + "]", saved, StringComparison.Ordinal);
         using (var store = new SettingsStore(_root))
         {
             var reloaded = await store.LoadAsync(default);
@@ -112,6 +112,35 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     private static LaunchOperation StartedRow(LaunchState state = LaunchState.ClientStartedUnverified, LaunchProcessReceipt? receipt = null) => new(
         new(Operation, Guid.NewGuid(), 1, 456, 42, 0, Now.AddMinutes(-3), 7, null, RobloxServerKind.Unknown, true), state,
         state == LaunchState.ClientStartedUnverified ? LaunchProblem.ClientStartedUnverified : LaunchProblem.None, Now, receipt ?? new(730001, Start, Now.AddMinutes(-1)));
+
+    [Fact]
+    public async Task APreIdentitySettingsRecordIsPreservedAsHistoryWithoutQualifyingThePlayer()
+    {
+        Directory.CreateDirectory(_root);
+        var legacy = Entry() with { Executable = null };
+        string json = JsonSerializer.Serialize(new SessionsSettings(NativeLaunchVerifications: [legacy], Theme: "ocean-blue"))
+            .Replace(",\"Executable\":null", "", StringComparison.Ordinal);
+        await File.WriteAllTextAsync(Path.Combine(_root, "settings.json"), json);
+        using var store = new SettingsStore(_root);
+        var read = await store.LoadAsync(default);
+        Assert.Null(read.Notice); Assert.Equal("ocean-blue", read.Settings.Theme);
+        Assert.Null(Assert.Single(read.Settings.NativeLaunchVerifications!).Executable);
+        var source = new Source { Saved = read.Settings.NativeLaunchVerifications };
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => new Child(1), new TrustOwner(), source, (_, _) => true);
+        provider.Configure(RobloxCandidate()); Assert.Equal(CapabilityState.Unverified, provider.AccountLaunch.State);
+        await store.SaveAsync(read.Settings with { NativeLaunchVerifications = [Entry()] }, default);
+        Assert.Equal(Identity, Assert.Single((await store.LoadAsync(default)).Settings.NativeLaunchVerifications!).Executable);
+    }
+
+    [Fact]
+    public void ANewVerificationRequiresTheTrialExecutableAndRejectsMalformedDigests()
+    {
+        var row = StartedRow(); var view = MatchingView(row);
+        Assert.Throws<ArgumentException>(() => NativeLaunchVerification.Record(NativeLaunchMode.OfficialPage, ClientInstallationProduct.Roblox, row, view, Now));
+        Assert.Throws<ArgumentException>(() => NativeLaunchVerification.Record(NativeLaunchMode.OfficialPage, ClientInstallationProduct.Bloxstrap, row, view, Now, Identity));
+        Assert.Throws<InvalidDataException>(() => (Entry() with { Executable = Identity with { FileSha256 = "short" } }).Validated());
+        Assert.Throws<InvalidDataException>(() => (Entry() with { Executable = Identity with { PathSha256 = new('z', 64) } }).Validated());
+    }
     private static NativeTrialEvidenceView MatchingView(LaunchOperation row) => new(row.Intent.OperationId, 456, 42, null, row.ProcessReceipt,
         NativeTrialProcessPresence.Observed, Now, Now.AddMilliseconds(-100),
         new(456, Now.AddSeconds(-1), NativeTrialReportedStatus.ReportedMatchUnverified),
@@ -153,8 +182,8 @@ public sealed class NativeLaunchVerificationTests : IDisposable
         bool can = NativeLaunchVerification.CanRecord(candidateRow, candidateView);
         Assert.Equal(change == "matching", can);
         if (!can) { Assert.Throws<ArgumentException>(() => NativeLaunchVerification.Record(NativeLaunchMode.OfficialPage, ClientInstallationProduct.Roblox, candidateRow, candidateView, Now)); return; }
-        var recorded = NativeLaunchVerification.Record(NativeLaunchMode.DirectTicket, ClientInstallationProduct.Roblox, row, view, Now);
-        Assert.Equal(new NativeLaunchVerification("direct-ticket", "Roblox", Now, Operation, 730001, Start, 456, 42), recorded);
+        var recorded = NativeLaunchVerification.Record(NativeLaunchMode.DirectTicket, ClientInstallationProduct.Roblox, row, view, Now, Identity);
+        Assert.Equal(new NativeLaunchVerification("direct-ticket", "Roblox", Now, Operation, 730001, Start, 456, 42, Identity), recorded);
         Assert.False(NativeLaunchVerification.CanRecord(null, view));
     }
 
@@ -162,7 +191,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     public async Task TheConfiguredProviderIsSupportedOnlyForASelectionWhoseProductTheSavedModeHasAVerificationFor()
     {
         var source = new Source(); var children = new List<Child>();
-        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => { var child = new Child(730001); children.Add(child); return child; }, new TrustOwner(), source);
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => { var child = new Child(730001); children.Add(child); return child; }, new TrustOwner(), source, (_, identity) => identity == Identity);
         // No selection: nothing can be verified, whatever is saved.
         source.Saved = [Entry()];
         Assert.Equal(CapabilityState.Unverified, provider.AccountLaunch.State); Assert.Equal(0, source.Reads);
@@ -189,7 +218,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
         Assert.Empty(children); // Capability reads never create a preparation.
         Assert.DoesNotContain("unverified", provider.ToString(), StringComparison.Ordinal);
         // A provider without a source stays Unverified, and a source can be attached exactly once (the Shell attaches its saved settings to an injected provider).
-        await using var bare = new WindowsConfiguredNativeLaunchProvider(_ => new Child(1), new TrustOwner());
+        await using var bare = new WindowsConfiguredNativeLaunchProvider(_ => new Child(1), new TrustOwner(), matchesExecutable: (_, identity) => identity == Identity);
         bare.Configure(RobloxCandidate()); Assert.Equal(CapabilityState.Unverified, bare.AccountLaunch.State);
         Assert.True(bare.TryUseVerificationSource(source)); Assert.False(bare.TryUseVerificationSource(new Source()));
         Assert.Equal(CapabilityState.Supported, bare.AccountLaunch.State);
@@ -203,7 +232,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
         {
             var child = new Child(Interlocked.Increment(ref next), () => { if (Interlocked.Increment(ref active) > 1) Interlocked.Increment(ref overlap); }, () => Interlocked.Decrement(ref active));
             children.Enqueue(child); return child;
-        }, new TrustOwner(), source);
+        }, new TrustOwner(), source, (_, identity) => identity == Identity);
         provider.Configure(RobloxCandidate());
         var store = new Store();
         await using var queue = new LaunchCoordinator(store, provider, (_, _) => Task.FromResult(true), _ => new(true, "Synthetic capacity"),
@@ -308,6 +337,8 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     private sealed class Child(int pid, Action? entered = null, Action? left = null) : IConfiguredNativeLaunchChild
     {
         public Handle? Handle;
+        public NativeLaunchExecutableIdentity? IdentityValue = Identity;
+        public NativeLaunchExecutableIdentity? ExecutableIdentity => IdentityValue;
         public bool CleanupHealthy => true;
         public Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
         { ct.ThrowIfCancellationRequested(); entered?.Invoke(); Handle = new(context, pid, left); return Task.FromResult(new LaunchPreparationResult(LaunchPreparationFailure.None, Handle)); }
@@ -378,7 +409,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.False(shell.CanRunNativeTrial); // Ordinary launching replaces the trial while it is on.
         string settings = await ReadSettingsAsync();
         Assert.Contains("\"NativeLaunchVerifications\":[{\"Mode\":\"official-page\",\"Product\":\"Roblox\",", settings, StringComparison.Ordinal);
-        Assert.Contains("\"OperationId\":\"" + evidence.Id + "\",\"ProcessId\":" + child.Receipt.ProcessId + ",\"ProcessStartUtcTicks\":" + child.Receipt.ProcessStartUtcTicks + ",\"UserId\":456,\"PlaceId\":42}", settings, StringComparison.Ordinal);
+        Assert.Contains("\"OperationId\":\"" + evidence.Id + "\",\"ProcessId\":" + child.Receipt.ProcessId + ",\"ProcessStartUtcTicks\":" + child.Receipt.ProcessStartUtcTicks + ",\"UserId\":456,\"PlaceId\":42,\"Executable\":", settings, StringComparison.Ordinal);
         Assert.DoesNotContain(EvidenceAlias, settings, StringComparison.Ordinal); Assert.DoesNotContain("synthetic-probe-original", settings, StringComparison.Ordinal);
         Assert.StartsWith("Ordinary launching: on", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
         Assert.Contains("Official page", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal); Assert.Contains("Roblox", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
@@ -400,7 +431,7 @@ public sealed partial class ClientWindowIntegrationTests
     public Task ASavedVerificationLetsACheckedAccountRequestStartThroughThePreparingProviderUntilItIsForgotten() => OnUi(async () =>
     {
         Directory.CreateDirectory(_root);
-        var saved = new SessionsSettings(NativeLaunchVerifications: [new("official-page", "Roblox", DateTimeOffset.UtcNow, Guid.NewGuid(), 730009, DateTimeOffset.UtcNow.AddHours(-1).UtcTicks, 456, 42)]).Validated();
+        var saved = new SessionsSettings(NativeLaunchVerifications: [new("official-page", "Roblox", DateTimeOffset.UtcNow, Guid.NewGuid(), 730009, DateTimeOffset.UtcNow.AddHours(-1).UtcTicks, 456, 42, NativeEvidenceIdentity)]).Validated();
         await File.WriteAllTextAsync(Path.Combine(_root, "settings.json"), JsonSerializer.Serialize(saved));
         var monitor = new NativeEvidenceMonitor(); var child = new NativeEvidenceChild();
         await using var shell = await NativeEvidenceShellAsync(child, monitor, trialAvailable: false);

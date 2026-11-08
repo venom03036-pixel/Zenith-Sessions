@@ -101,6 +101,26 @@ public sealed class WindowsNativeHandoffStartTests : IDisposable
     }
 
     [Fact]
+    public async Task APreexistingWritableMappingPreventsHoldingTheExecutableForDispatch()
+    {
+        CreateFile(); var starter = new Starter();
+        System.IO.MemoryMappedFiles.MemoryMappedFile mapping;
+        using (var file = new FileStream(Executable, FileMode.Open, FileAccess.ReadWrite, FileShare.ReadWrite | FileShare.Delete))
+            mapping = System.IO.MemoryMappedFiles.MemoryMappedFile.CreateFromFile(file, null, 0,
+                System.IO.MemoryMappedFiles.MemoryMappedFileAccess.ReadWrite, HandleInheritability.None, leaveOpen: true);
+        using (mapping)
+        using (var view = mapping.CreateViewAccessor())
+        {
+            await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
+            using var prepared = await verifier.PrepareAsync(Candidate, default);
+            Assert.Null(prepared.Prepared);
+            Assert.Equal(ClientExecutableTrustReason.AccessDenied, prepared.Trust.Reason);
+            Assert.Equal(0, starter.Calls);
+        }
+        AssertFileReleased();
+    }
+
+    [Fact]
     public async Task ChangedSnapshotDuringPreparationCannotEscapeAsAPreparedStart()
     {
         CreateFile(); var expected = await Baseline(); int reads = 0; var starter = new Starter();

@@ -6,14 +6,14 @@ namespace Zenith.Sessions.Core;
 /// R-launch-0 (owner decision of 2026-11-08). One explicit native trial the user recorded as verified: the native launch mode it
 /// used, the installation product it started through, when it was recorded, and the trial's request and process receipt whose
 /// fresh Launch evidence reported the expected player in the requested place. Saved in settings.json (optional within schema 1);
-/// it holds IDs, a time and a receipt only, never sign-in material, a ticket or a path. While the saved launch mode and the
-/// selected installation's product match an entry, the configured native provider reports Supported, so ordinary single and
+/// it holds IDs, a time, a receipt and opaque executable digests, never sign-in material, a ticket or a path. While the saved launch mode and the
+/// selected executable identity match an entry, the configured native provider reports Supported, so ordinary single and
 /// group launch requests are recorded Queued and start through the same preparation, checks, pacing and stop fences as a trial,
 /// with no review per account. One entry per mode and product. It is the evidence the user chose to accept, not proof that any
 /// later client joined as its account; that stays with each client's own log reports.
 /// </summary>
 public sealed record NativeLaunchVerification(string Mode, string Product, DateTimeOffset VerifiedUtc, Guid OperationId,
-    int ProcessId, long ProcessStartUtcTicks, long UserId, long PlaceId)
+    int ProcessId, long ProcessStartUtcTicks, long UserId, long PlaceId, NativeLaunchExecutableIdentity? Executable = null)
 {
     private static readonly ClientInstallationProduct[] Products = Enum.GetValues<ClientInstallationProduct>();
     /// <summary>One entry for each launch mode and installation product at most.</summary>
@@ -44,10 +44,11 @@ public sealed record NativeLaunchVerification(string Mode, string Product, DateT
         if (VerifiedUtc == default || !new LaunchProcessReceipt(ProcessId, ProcessStartUtcTicks, VerifiedUtc).IsValid)
             throw new InvalidDataException("A verified native launch has an invalid time or process receipt.");
         if (UserId <= 0 || PlaceId <= 0) throw new InvalidDataException("A verified native launch has an invalid player or place.");
+        Executable?.Validated(); // Legacy records remain readable but cannot enable ordinary launching.
         var utc = VerifiedUtc.ToUniversalTime();
         string canonicalMode = NativeLaunchModes.ToSettingsValue(mode), canonicalProduct = product.ToString();
         return canonicalMode == Mode && canonicalProduct == Product && utc == VerifiedUtc && utc.Offset == VerifiedUtc.Offset ? this
-            : new(canonicalMode, canonicalProduct, utc, OperationId, ProcessId, ProcessStartUtcTicks, UserId, PlaceId);
+            : new(canonicalMode, canonicalProduct, utc, OperationId, ProcessId, ProcessStartUtcTicks, UserId, PlaceId, Executable);
     }
 
     /// <summary>Validates every entry and refuses a second entry for the same mode and product; null means none. Returns a read-only copy.</summary>
@@ -98,12 +99,14 @@ public sealed record NativeLaunchVerification(string Mode, string Product, DateT
 
     /// <summary>The entry for a trial that passes <see cref="CanRecord"/>, recorded at <paramref name="now"/>; throws <see cref="ArgumentException"/> otherwise.</summary>
     public static NativeLaunchVerification Record(NativeLaunchMode mode, ClientInstallationProduct product, LaunchOperation? started,
-        NativeTrialEvidenceView? evidence, DateTimeOffset now)
+        NativeTrialEvidenceView? evidence, DateTimeOffset now, NativeLaunchExecutableIdentity? executable = null)
     {
         if (!CanRecord(started, evidence)) throw new ArgumentException("Only a started trial whose fresh evidence reports the expected player in the requested place can be recorded as verified.", nameof(evidence));
+        if (product != ClientInstallationProduct.Roblox || executable is null)
+            throw new ArgumentException("Only a standard-player trial with its exact held executable identity can be recorded.", nameof(executable));
         var receipt = started!.ProcessReceipt!;
         return new NativeLaunchVerification(NativeLaunchModes.ToSettingsValue(mode), product.ToString(), now, started.Intent.OperationId,
-            receipt.ProcessId, receipt.ProcessStartUtcTicks, started.Intent.UserId, started.Intent.PlaceId).Validated();
+            receipt.ProcessId, receipt.ProcessStartUtcTicks, started.Intent.UserId, started.Intent.PlaceId, executable).Validated();
     }
 
     /// <summary>The user-facing label of the saved mode, or the saved text when it does not parse. Display only; the file holds <see cref="Mode"/>.</summary>

@@ -23,6 +23,8 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
     private NativeLaunchDiagnosticSnapshot? _diagnostic;
     private Owner? _diagnosticOwner;
     private long _diagnosticRevision;
+    private NativeLaunchExecutableIdentity? _executableIdentity;
+    internal NativeLaunchExecutableIdentity? ExecutableIdentity => Volatile.Read(ref _executableIdentity);
 
     /// <param name="extraArguments">Where the account's saved extra client arguments (R-launch-16) are read at preparation time;
     /// null passes none. They are read before the executable is held and appended after the official request by the direct start.</param>
@@ -61,6 +63,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
                 return Task.FromResult(new LaunchPreparationResult(LaunchPreparationFailure.Rejected));
             var owner = new Owner(context, CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token));
             _active = owner;
+            Volatile.Write(ref _executableIdentity, null);
             BeginDiagnostic(owner);
             var work = Task.Run(() => PrepareOwnedAsync(owner), CancellationToken.None);
             owner.PreparationWork = work; return work;
@@ -85,6 +88,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
             }
             executable = await _executableTrust.PrepareAsync(_installation, extra, owner.Token).ConfigureAwait(false);
             var trust = executable.Trust;
+            Volatile.Write(ref _executableIdentity, WindowsClientExecutableTrust.LaunchIdentity(trust));
             UpdateDiagnostic(owner, value => value with { TrustStatus = trust.Status,
                 TrustReason = trust.Reason, ExecutableObservedUtc = trust.ObservedUtc });
             owner.Token.ThrowIfCancellationRequested();

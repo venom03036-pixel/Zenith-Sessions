@@ -34,7 +34,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     // ("official-page"; "direct-ticket" asks Roblox for a launch ticket instead, R-api-7); without AcceptedBootstrapperPublishers (or with [])
     // no bootstrapper is ever started, since launching through one needs the publisher the user accepted for that product (R-launch-17);
     // without NativeLaunchVerifications (or with []) ordinary and group launch requests stay blocked, since ordinary launching needs one
-    // explicit trial recorded as verified for the saved launch mode and the selected installation's product (R-launch-0). A
+    // explicit trial recorded as verified for the saved launch mode and exact executable identity (R-launch-0). Legacy entries without that identity stay readable but never enable launching. A
     // PanicShortcut that earlier builds saved but that is no longer allowed (such as Ctrl+Alt+Q, which is AltGr+Q) is read as F12
     // with a notice by SettingsStore; any other refused value, including extra arguments that break a rule, a launch mode that is
     // not one of the two names, an accepted publisher with an unknown product or a malformed thumbprint, or a verified launch with an

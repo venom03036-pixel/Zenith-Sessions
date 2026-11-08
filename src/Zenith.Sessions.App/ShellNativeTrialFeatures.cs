@@ -118,15 +118,14 @@ public sealed partial class ShellViewModel
         // only a row that is still selected may be described as unsupported.
         var selection=SelectedInstallation?.Candidate;
         // The provider's own acceptance rule, not a looser copy: the launcher and bootstrapper-managed
-        // players are present Roblox rows that Configure would reject, so they are never eligible. A
-        // bootstrapper's own row (R-launch-17) is eligible only while its publisher is accepted in the saved
-        // settings; the trust verifier checks the file against that acceptance again before any start.
-        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)&&(selection!.Product==ClientInstallationProduct.Roblox||IsAcceptedBootstrapper(selection))?selection:null;
+        // players are present Roblox rows that Configure would reject, so they are never eligible.
+        // This build offers standard-player trials only; bootstrapper inspection remains available.
+        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)&&selection!.Product==ClientInstallationProduct.Roblox?selection:null;
         // Revoke trial permission (and pause the queue) only when the trial installation can
         // actually change: off a selected native file, or onto a row the provider accepts. Moving
         // between rows that can never be the trial installation only updates the status text.
-        bool interrupted=false;
-        if(_nativeLaunch.Selected||eligible is not null)
+        bool interrupted=false, queueWasRunning=!EffectiveQueuePaused, selectionFenced=_nativeLaunch.Selected||eligible is not null;
+        if(selectionFenced)
         {
             interrupted=HasNativeTrialInProgress();
             InvalidateNativeTrialReview();
@@ -151,6 +150,8 @@ public sealed partial class ShellViewModel
         // The fence above is intended; replace the selection text and the stale "Trial queued" banner
         // so the user knows the trial stopped. A Panic or Lock reason keeps priority.
         if(interrupted&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice)NativeTrialStatus=Notice=NativeTrialStoppedBySelection;
+        else if(queueWasRunning&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice&&selectionFenced)
+            Notice="The installation selection changed and the launch queue was paused. Review the selection, then choose Resume queue when ready.";
         PublishLaunchRelease();
         RefreshNativeTrialFeatures();RefreshNativeLaunchVerification();
     }
@@ -161,11 +162,9 @@ public sealed partial class ShellViewModel
             or LaunchState.Launching or LaunchState.Stabilizing)&&_launchQueue.IsTrialOperation(operation.Intent.OperationId));
     private const string NoNativeInstallationSelected="No native installation is selected. In Settings, choose Refresh installation, then select a present native Roblox player file.";
     private static string UnsupportedNativeInstallation(InstallationCandidateRow? row)=>row?.ManagedBy is { } owner
-        ?$"This Roblox player is managed by {owner}. Native trials are not supported for players managed by a bootstrapper; select a Roblox player that Roblox installed itself, or select the {owner} row itself to launch through {owner} once its publisher is accepted. The inventory row remains available for inspection."
+        ?$"This Roblox player is managed by {owner}. Native trials are not supported here: bootstrapper launching is deferred until its exact player can be associated with the launch. Select a Roblox player that Roblox installed itself. The inventory row remains available for inspection."
         :row?.Candidate is { } candidate&&BootstrapperProducts.IsBootstrapper(candidate.Product)
-        ?(BootstrapperProducts.IsOwnExecutable(candidate.Product,candidate.ExecutablePath)&&candidate.FileState==ClientInstallationFileState.PresentUnverified
-            ?$"This row is the {candidate.Product} bootstrapper. Launching through it is not supported until you verify its publisher and choose Accept publisher for {candidate.Product} in Settings → Roblox installation. {candidate.Product} then starts the Roblox player and applies its own client settings and FFlags; Zenith never writes client files. The inventory row remains available for inspection."
-            :$"This {candidate.Product} row is not supported for a native trial: only {candidate.Product}'s own present executable ({BootstrapperProducts.ExecutableName(candidate.Product)}) can start it. The inventory row remains available for inspection.")
+        ?$"This row is the {candidate.Product} bootstrapper. Native trials are not supported here: bootstrapper launching is deferred until its exact Roblox player can be associated with the launch. Publisher inspection remains available; use the standard Roblox player for this build."
         :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
     private void FenceNativeTrial(string reason)
     {

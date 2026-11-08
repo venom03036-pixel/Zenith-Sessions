@@ -83,10 +83,11 @@ public sealed partial class WindowsClientExecutableTrust
         return copy;
     }
 
-    private sealed class VerifiedExecutableLease(FileStream file, ClientExecutableFileSnapshot expected) : IDisposable
+    private sealed class VerifiedExecutableLease(FileStream file, ClientExecutableFileSnapshot expected, string sha256) : IDisposable
     {
         public FileStream File { get; } = file;
         public ClientExecutableFileSnapshot Expected { get; } = expected;
+        public string Sha256 { get; } = sha256;
         public void Dispose() => File.Dispose();
     }
 
@@ -94,7 +95,9 @@ public sealed partial class WindowsClientExecutableTrust
     {
         CheckAncestors(held.Expected.FullPath, ct);
         using var current = OpenRead(held.Expected.FullPath);
-        return _snapshot(held.File.SafeFileHandle) == held.Expected && _snapshot(current) == held.Expected;
+        if (_snapshot(held.File.SafeFileHandle) != held.Expected || _snapshot(current) != held.Expected) return false;
+        held.File.Position = 0;
+        return Hash(held.File, held.Expected.Length, ct) == held.Sha256;
     }
 
     private sealed class PreparedNativeHandoffStart(WindowsClientExecutableTrust owner, Operation operation,

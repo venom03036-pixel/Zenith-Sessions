@@ -228,9 +228,9 @@ public sealed class BootstrapperLaunchPolicyTests : IDisposable
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide", StringComparison.Ordinal) == true));
         var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => (string?)e.Attribute("Text") ?? "").ToList();
         Assert.Contains(texts, text => text == "Launching through a bootstrapper");
-        string section = Assert.Single(texts, text => text.StartsWith("Settings → Roblox installation lists each installed bootstrapper", StringComparison.Ordinal));
+        string section = Assert.Single(texts, text => text.StartsWith("Settings → Roblox installation lists Bloxstrap", StringComparison.Ordinal));
         foreach (string expected in new[] { "Bloxstrap, Fishstrap, Froststrap or Voidstrap", "Verify publisher", "Accept publisher", "thumbprint", "applies its own client settings and FFlags",
-            "Zenith never writes the client's settings or FFlag files", "Off by default", "unsigned", "Extra client arguments are never passed", "the bootstrapper's process, not the player's" })
+            "Zenith never writes those files", "deferred", "exact Roblox player", "does not enable trials or ordinary launching", "standard Roblox player" })
             Assert.Contains(expected, section, StringComparison.Ordinal);
     }
 
@@ -441,7 +441,7 @@ public sealed partial class ClientWindowIntegrationTests
         []);
 
     [Fact]
-    public Task ABootstrapperRowBecomesTheTrialInstallationOnlyAfterItsPublisherIsVerifiedAndAcceptedOnce() => OnUi(async () =>
+    public Task BootstrapperPublisherAcceptanceStaysInspectionOnlyUntilExactPlayerAssociationIsImplemented() => OnUi(async () =>
     {
         var discovery = new InstallationProbe { Override = BootstrapperSnapshot() }; var trust = new BootstrapperTrustProbe();
         var monitor = new Monitor(); string settingsPath = Path.Combine(_root, "settings.json");
@@ -458,8 +458,8 @@ public sealed partial class ClientWindowIntegrationTests
             // Off by default: the bootstrapper's own row is selectable but not the trial installation, and the status says what to do.
             shell.SelectedInstallation = row;
             Assert.False(provider.Selected); Assert.NotEqual(row.ExecutablePath, shell.NativeTrialInstallation); Assert.False(shell.CanRunNativeTrial);
-            Assert.Contains("Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.Contains("Accept publisher", shell.NativeTrialStatus, StringComparison.Ordinal);
-            Assert.Contains("not supported", shell.NativeTrialStatus, StringComparison.Ordinal);
+            Assert.Contains("Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.Contains("deferred", shell.NativeTrialStatus, StringComparison.Ordinal);
+            Assert.Contains("deferred", shell.NativeTrialStatus, StringComparison.Ordinal);
             Assert.Contains("off", shell.BootstrapperLaunchStatus, StringComparison.Ordinal); Assert.Contains("Bloxstrap", shell.BootstrapperLaunchStatus, StringComparison.Ordinal);
             Assert.True(shell.CanVerifyInstallationPublisher); Assert.False(shell.CanAcceptBootstrapperPublisher); Assert.False(shell.CanForgetBootstrapperPublisher);
             Assert.Equal("Select a native Roblox installation, then explicitly verify its publisher.", shell.PublisherVerificationStatus);
@@ -475,14 +475,14 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.DoesNotContain("SHA-256 " + new string('C', 64), shell.PublisherVerificationStatus, StringComparison.Ordinal);
             Assert.True(shell.CanAcceptBootstrapperPublisher); Assert.False(provider.Selected);
 
-            // Accept once for Bloxstrap: saved to settings, and the selected row becomes the trial installation.
+            // Accept once for Bloxstrap: saved inspection choice, with launching still deferred.
             shell.AcceptBootstrapperPublisher.Execute(null); await shell.AcceptBootstrapperPublisher.Execution;
             string saved = await File.ReadAllTextAsync(settingsPath);
             Assert.Contains("\"Product\":\"Bloxstrap\"", saved, StringComparison.Ordinal); Assert.Contains(BootstrapperTrustProbe.Thumbprint, saved, StringComparison.Ordinal);
             Assert.Contains("\"Publisher\":\"Example Publisher\"", saved, StringComparison.Ordinal); Assert.Equal("Settings saved", shell.SaveStatus);
-            Assert.True(provider.Selected); Assert.Equal(row.ExecutablePath, shell.NativeTrialInstallation);
-            Assert.Contains("Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.Contains("applies its own client settings", shell.NativeTrialStatus, StringComparison.Ordinal);
-            Assert.Contains("does not write client files", shell.NativeTrialStatus, StringComparison.Ordinal);
+            Assert.False(provider.Selected); Assert.NotEqual(row.ExecutablePath, shell.NativeTrialInstallation);
+            Assert.Contains("Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.Contains("standard Roblox player", shell.NativeTrialStatus, StringComparison.Ordinal);
+            Assert.Contains("Publisher inspection remains available", shell.NativeTrialStatus, StringComparison.Ordinal);
             Assert.False(shell.CanAcceptBootstrapperPublisher); Assert.True(shell.CanForgetBootstrapperPublisher);
             Assert.Contains("Example Publisher", shell.BootstrapperLaunchStatus, StringComparison.Ordinal); Assert.Contains(BootstrapperTrustProbe.Thumbprint[..16], shell.BootstrapperLaunchStatus, StringComparison.Ordinal);
             Assert.Contains("Example Publisher", shell.PublisherVerificationStatus, StringComparison.Ordinal); Assert.Contains("Accepted", shell.PublisherVerificationStatus, StringComparison.Ordinal);
@@ -498,18 +498,18 @@ public sealed partial class ClientWindowIntegrationTests
             // The managed player under Bloxstrap's folder is still inspection-only and points at the bootstrapper's own row.
             shell.SelectedInstallation = managed;
             Assert.False(provider.Selected); Assert.Contains("managed by Bloxstrap", shell.NativeTrialStatus, StringComparison.Ordinal);
-            Assert.Contains("Bloxstrap row", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.False(shell.CanAcceptBootstrapperPublisher);
-            shell.SelectedInstallation = row; Assert.True(provider.Selected);
+            Assert.Contains("exact player", shell.NativeTrialStatus, StringComparison.Ordinal); Assert.False(shell.CanAcceptBootstrapperPublisher);
+            shell.SelectedInstallation = row; Assert.False(provider.Selected);
 
-            // Forget: the acceptance leaves settings and the row stops being the trial installation.
+            // Forget: the acceptance leaves settings; the row remains inspection-only.
             shell.ForgetBootstrapperPublisher.Execute(null); await shell.ForgetBootstrapperPublisher.Execution;
             Assert.DoesNotContain("\"Product\":\"Bloxstrap\"", await File.ReadAllTextAsync(settingsPath), StringComparison.Ordinal);
-            Assert.False(provider.Selected); Assert.False(shell.CanForgetBootstrapperPublisher); Assert.Contains("Accept publisher", shell.NativeTrialStatus, StringComparison.Ordinal);
+            Assert.False(provider.Selected); Assert.False(shell.CanForgetBootstrapperPublisher); Assert.Contains("deferred", shell.NativeTrialStatus, StringComparison.Ordinal);
             Assert.Empty(shell.Launches); Assert.DoesNotContain(shell.Events, line => line.Contains("Operation failed", StringComparison.Ordinal));
 
             // Accept again so the reopened shell below can show that the saved acceptance is read back.
             trust.Changed = false; shell.VerifyInstallationPublisher.Execute(null); await shell.VerifyInstallationPublisher.Execution;
-            shell.AcceptBootstrapperPublisher.Execute(null); await shell.AcceptBootstrapperPublisher.Execution; Assert.True(provider.Selected);
+            shell.AcceptBootstrapperPublisher.Execute(null); await shell.AcceptBootstrapperPublisher.Execution; Assert.False(provider.Selected);
         }
         await using (var reopened = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, installationDiscovery: discovery, executableTrust: trust))
         {
@@ -519,7 +519,7 @@ public sealed partial class ClientWindowIntegrationTests
             var row = Assert.Single(reopened.InstallationCandidates, row => row.Candidate.Product == ClientInstallationProduct.Bloxstrap);
             Assert.Null(reopened.SelectedInstallation); // An accepted publisher never makes the bootstrapper's row a preselection.
             reopened.SelectedInstallation = row;
-            Assert.True(provider.Selected); Assert.Equal(row.ExecutablePath, reopened.NativeTrialInstallation); Assert.True(reopened.CanForgetBootstrapperPublisher);
+            Assert.False(provider.Selected); Assert.NotEqual(row.ExecutablePath, reopened.NativeTrialInstallation); Assert.True(reopened.CanForgetBootstrapperPublisher);
         }
     });
 

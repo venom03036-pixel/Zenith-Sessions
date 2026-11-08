@@ -282,7 +282,7 @@ public sealed partial class ClientWindowIntegrationTests
     private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null,
         IPublicRobloxClientReleaseDirectory? releases=null,bool trialAvailable=true)
     {
-        var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
+        var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner(), matchesExecutable: (_, identity) => identity == NativeEvidenceIdentity);
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
             signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity(), nativeProvider: provider,accounts:accounts,clientReleases:releases);
         try
@@ -380,6 +380,7 @@ public sealed partial class ClientWindowIntegrationTests
             Directory.Delete(full, true);
         }
     }
+    private static readonly NativeLaunchExecutableIdentity NativeEvidenceIdentity = new(new('D', 64), new('E', 64), new('F', 64));
     private sealed class NativeEvidenceChild : IConfiguredNativeLaunchChild, INativeLaunchDiagnosticSource
     {
         public LaunchProcessReceipt Receipt { get; } = new(730001, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, DateTimeOffset.UtcNow);
@@ -392,6 +393,7 @@ public sealed partial class ClientWindowIntegrationTests
         public INativeLaunchDiagnosticSource? DiagnosticSource=>this;
         public NativeLaunchDiagnosticSnapshot? GetDiagnostic(Guid operationId)=>_diagnostic?.OperationId==operationId?_diagnostic:null;
         public bool CleanupHealthy => true;
+        public NativeLaunchExecutableIdentity? ExecutableIdentity => NativeEvidenceIdentity;
         public async Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
         {
             Interlocked.Increment(ref Preparations); Entered.TrySetResult(context);

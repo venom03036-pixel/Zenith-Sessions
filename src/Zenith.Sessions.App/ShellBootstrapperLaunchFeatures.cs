@@ -48,8 +48,8 @@ public sealed partial class ShellViewModel
             var product = candidate.Product;
             string own = BootstrapperProducts.IsOwnExecutable(product, candidate.ExecutablePath) ? "" : $" This row is not {product}'s own executable ({BootstrapperProducts.ExecutableName(product)}), so it cannot be the trial installation.";
             return AcceptedPublisherFor(product) is { } accepted
-                ? $"Launch through {product}: on. Accepted publisher {accepted.Publisher} (certificate SHA-256 {accepted.CertificateSha256}). {product} starts the Roblox player and applies its own client settings and FFlags; Zenith never writes client files. Before any start Windows must verify this file's signature by that exact certificate; a different or missing signature refuses the start. Choose Forget accepted publisher to turn it off.{own}"
-                : $"Launch through {product}: off. No publisher is accepted for {product}. Choose Verify publisher, review the signer and its certificate thumbprint, then Accept publisher. {product} would then start the Roblox player and apply its own client settings and FFlags; Zenith never writes client files, and extra client arguments are never passed through a bootstrapper.{own}";
+                ? $"Launch through {product}: off for this build. Accepted publisher {accepted.Publisher} (certificate SHA-256 {accepted.CertificateSha256}) is retained, but launching is deferred until the exact Roblox player can be associated with its bootstrapper. Use the standard Roblox player. Zenith never writes client files.{own}"
+                : $"Launch through {product}: off for this build. Publisher inspection and Accept publisher remain available, but do not enable launching. Bootstrapper support follows the standard Roblox player after exact player association is implemented.{own}";
         }
     }
 
@@ -76,8 +76,8 @@ public sealed partial class ShellViewModel
         if (IsLocked || _shuttingDown) return;
         // The selected bootstrapper row may now be the trial installation; the same path as a click decides.
         ConfigureNativeTrialInstallation();
-        PublisherVerificationStatus = $"Accepted publisher {entry.Publisher} for {offer.Product} (certificate SHA-256 {entry.CertificateSha256}). Launching through {offer.Product} is on for this row; its signature is checked by that certificate again before any start.";
-        Notice = $"Accepted publisher {entry.Publisher} for {offer.Product}. {offer.Product} applies its own client settings when it starts Roblox; Zenith does not write client files.";
+        PublisherVerificationStatus = $"Accepted publisher {entry.Publisher} for {offer.Product} (certificate SHA-256 {entry.CertificateSha256}). Bootstrapper launching remains deferred; this acceptance does not enable a trial.";
+        Notice = $"Accepted publisher {entry.Publisher} for {offer.Product}. Use the standard Roblox player for this build; bootstrapper launching remains deferred.";
         RefreshBootstrapperLaunch();
     }
 
@@ -89,7 +89,7 @@ public sealed partial class ShellViewModel
         if (IsLocked || _shuttingDown) return;
         // Off again: a selected row of that product stops being the trial installation (and stops any trial, like a selection change).
         ConfigureNativeTrialInstallation();
-        PublisherVerificationStatus = $"Forgot the accepted publisher {accepted.Publisher} for {candidate.Product}. Launching through {candidate.Product} is off; verify and accept its publisher again to turn it on.";
+        PublisherVerificationStatus = $"Forgot the accepted publisher {accepted.Publisher} for {candidate.Product}. Bootstrapper launching remains deferred.";
         Notice = $"Launching through {candidate.Product} is off.";
         RefreshBootstrapperLaunch();
     }
