@@ -150,6 +150,26 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task EvidenceReportLeavesOutTheBrowserTrackerNumberTheLaunchReceiptKeeps() => OnUi(async () =>
+    {
+        const long tracker = 4815162342108;
+        var child = new NativeEvidenceChild { BrowserTracker = tracker }; await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
+        shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
+        var evidence = await NativeEvidenceStartedAsync(shell);
+        // The queue's receipt keeps the tracker for launch-to-log linking; only the export leaves it out.
+        Assert.Equal(tracker, evidence.Operation.ProcessReceipt!.BrowserTrackerId);
+        Assert.Equal(tracker, evidence.View!.ProcessReceipt!.BrowserTrackerId);
+        string report = shell.BuildNativeTrialEvidenceReport();
+        Assert.DoesNotContain(tracker.ToString(System.Globalization.CultureInfo.InvariantCulture), report, StringComparison.Ordinal);
+        Assert.DoesNotContain("BrowserTracker", report, StringComparison.OrdinalIgnoreCase);
+        AssertNativeEvidenceReport(report, evidence.Id);
+        using var document = JsonDocument.Parse(report); var receipt = document.RootElement.GetProperty("Evidence").GetProperty("ProcessReceipt");
+        Assert.Equal(child.Receipt.ProcessId, receipt.GetProperty("ProcessId").GetInt32());
+        Assert.Equal(child.Receipt.ProcessStartUtcTicks, receipt.GetProperty("ProcessStartUtcTicks").GetInt64());
+        Assert.Equal(tracker, shell.SelectedLaunchEvidence!.Operation.ProcessReceipt!.BrowserTrackerId);
+    });
+
+    [Fact]
     public Task AnEvidenceExportThatFailsAsLockLandsIsJournaledByItsCauseNotItsWrapper() => OnUi(async () =>
     {
         var child = new NativeEvidenceChild(); await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
@@ -306,6 +326,11 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(new[] { "ArrivalVerified", "CanAuthorizeAccountAction", "CanRouteInput", "ExpectedUserId", "Explanation", "LastKnownDestination",
             "LastKnownUser", "OperationId", "Outcome", "Presence", "ProcessMeasurementUtc", "ProcessObservedUtc", "ProcessReceipt", "ReportedDestination",
             "ReportedUser", "RequestedJobId", "RequestedPlaceId" }, root.GetProperty("Evidence").EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal));
+        // FormatVersion 2's receipt is the process instance only. A field later added to the queue's receipt
+        // (such as the browser tracker) must not reach the export without a new format.
+        var receipt = root.GetProperty("Evidence").GetProperty("ProcessReceipt");
+        if (receipt.ValueKind != JsonValueKind.Null)
+            Assert.Equal(new[] { "ProcessId", "ProcessStartUtcTicks", "RecordedUtc" }, receipt.EnumerateObject().Select(item => item.Name).Order(StringComparer.Ordinal));
         foreach (string forbidden in new[] { _root, JsonSerializer.Serialize(_root)[1..^1], EvidenceAlias, EvidenceNote, "probe_player", "synthetic-probe-original", "RobloxPlayerBeta.exe", "private synthetic window title",
             "SessionCookie", "RefreshToken", "gameinfo", "roblox-player:", "WindowTitle", "ExecutablePath", "ProfileId" })
             Assert.DoesNotContain(forbidden, report, StringComparison.OrdinalIgnoreCase);
@@ -358,6 +383,8 @@ public sealed partial class ClientWindowIntegrationTests
         public LaunchProcessReceipt Receipt { get; } = new(730001, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, DateTimeOffset.UtcNow);
         public TaskCompletionSource<LaunchPreparationContext> Entered { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource? PreparationGate; public int Preparations, Starts;
+        /// <summary>The synthetic browser tracker the start reports, as the native handoff would; none by default.</summary>
+        public long? BrowserTracker;
         public Func<Guid,NativeLaunchDiagnosticSnapshot?>? DiagnosticFactory;
         private NativeLaunchDiagnosticSnapshot? _diagnostic;
         public INativeLaunchDiagnosticSource? DiagnosticSource=>this;
@@ -384,7 +411,8 @@ public sealed partial class ClientWindowIntegrationTests
             if (!boundary.IsCurrent || !await boundary.ValidateAsync(DispatchIntent, ct) || !boundary.IsCurrent || !boundary.ReadAdmission().Allowed)
                 return new(ProviderLaunchStatus.RejectedBeforeStart);
             Interlocked.Increment(ref child.Starts);
-            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: child.Receipt.ProcessId, ProcessStartUtcTicks: child.Receipt.ProcessStartUtcTicks);
+            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: child.Receipt.ProcessId, ProcessStartUtcTicks: child.Receipt.ProcessStartUtcTicks,
+                BrowserTrackerId: child.BrowserTracker);
         }
         public ValueTask DisposeAsync() { _closed = true; return ValueTask.CompletedTask; }
     }

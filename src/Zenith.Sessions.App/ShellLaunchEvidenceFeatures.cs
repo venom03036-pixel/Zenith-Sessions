@@ -212,12 +212,15 @@ public sealed partial class ShellViewModel
         if(SelectedLaunchEvidence is not {View:{ } view} selected)throw new InvalidOperationException("Select a launch request with evidence first.");
         var diagnostic=SelectedNativeDiagnostics.OperationId==selected.Id?SelectedNativeDiagnostics:NativeLaunchDiagnosticPresentation.Unavailable(selected.Id);
         var stages=diagnostic.Snapshot;
+        // The browser tracker number stays out of the export, as it stays out of view: the queue's receipt keeps it
+        // only to link a launch to its client log. Leaving it out keeps the FormatVersion 2 receipt (PID, start, recorded time).
+        var exported=view.ProcessReceipt is {BrowserTrackerId:not null} receipt?view with{ProcessReceipt=receipt with{BrowserTrackerId=null}}:view;
         var report=new
         {
             FormatVersion=2,Product="Zenith Sessions Personal",CreatedUtc=DateTimeOffset.UtcNow,
             Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),Scope="Unverified launch diagnostics; expected values never replace observations.",
             ProviderCapability=CapabilityState.Unverified,selected.Operation.Intent.OperationId,selected.Operation.State,selected.Operation.Problem,
-            Evidence=view,Pacing=_launchQueue.ReadPacing(),AccountVerified=false,ArrivalVerified=false,InputAuthorized=false,
+            Evidence=exported,Pacing=_launchQueue.ReadPacing(),AccountVerified=false,ArrivalVerified=false,InputAuthorized=false,
             NativeDiagnostics=new
             {
                 diagnostic.OperationId,diagnostic.Available,Revision=stages?.Revision,StartedUtc=stages?.StartedUtc,UpdatedUtc=stages?.UpdatedUtc,
