@@ -12,9 +12,10 @@ public sealed record PublicAccountPageUpdate(long PageGeneration, long UserId,
     IReadOnlyList<PublicAccountPageBinding> Bindings, PublicDirectoryResult<PublicAccountData> Result);
 
 /// <summary>
-/// One latest-page pump borrowing one presenter. No row tasks, polling, retries or additional image cache. When the
+/// One latest-page pump borrowing one presenter. No row tasks, polling or additional image cache. When the
 /// presenter's directory supports it, headshot descriptors are read up to 50 players per request (a 100-player page
 /// costs 2 descriptor requests instead of 100); each player's profile and picture are still requested one at a time.
+/// Pending descriptors get at most one delayed re-ask inside the same owned, cancellable request.
 /// </summary>
 public sealed class PublicAccountPageLoader : IAsyncDisposable
 {
@@ -191,6 +192,19 @@ public sealed class PublicAccountPageLoader : IAsyncDisposable
             if (result.State == PublicDirectoryState.Success && result.Value is { } items)
                 foreach (PublicRobloxAvatarBatchItem item in items)
                     if (item is not null && ids.Contains(item.UserId)) descriptors[item.UserId] = item;
+            // Only Roblox's explicit Pending state permits this one re-ask. A blocked/missing/error item or a
+            // transport cooldown never does. Keep the original ready descriptors if the re-ask is unavailable.
+            long[] pending = ids.Where(id => descriptors[id]?.State == PublicRobloxThumbnailState.Pending).ToArray();
+            if (pending.Length != 0)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), _clock, request.Token).ConfigureAwait(false);
+                if (!Current(plan) || !_canUse()) return false;
+                var retried = await _presenter.GetAvatarDescriptorsAsync(pending, request.Token).ConfigureAwait(false);
+                if (!Current(plan) || !_canUse() || request.Token.IsCancellationRequested) return false;
+                if (retried.State == PublicDirectoryState.Success && retried.Value is { } updated)
+                    foreach (PublicRobloxAvatarBatchItem item in updated)
+                        if (item is not null && Array.IndexOf(pending, item.UserId) >= 0) descriptors[item.UserId] = item;
+            }
             return true;
         }
         finally
