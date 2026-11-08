@@ -255,7 +255,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public bool IsWindows=>Tab=="Windows";
     // The open page as the sidebar names it. The window title leads with it (taskbar, Alt-Tab) and the window announces it to
     // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
-    public string PageName=>IsJoinGame?"Join a game":Tab;
+    public string PageName=>Strings["Page_"+Tab];
     public string WindowTitle=>PageName+" · "+InstanceTitle;
     public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
@@ -341,10 +341,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
-        _idleLock=new(idleClock);
+        _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
@@ -391,6 +391,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeSignInBrowserData();
         InitializeClientLogCleanupFeatures(clientLogCleanup);
         InitializeKeepAwakeFeatures(keepAwakeInput,foregroundSwitch,userIdle,capabilityGate);
+        InitializeScheduledShutdownFeatures(shutdownScheduler);
+        InitializePublicNetworkGuardFeatures(publicNetworkMonitor);
+        InitializeDiscordAlertFeatures(discordWebhookStore,discordTransport);
+        InitializeDiscordPresenceFeatures(discordPresencePipe);
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
@@ -400,6 +404,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); ApplySavedClientUpdateCheck(restart:true); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        LanguageChoices=CreateLanguageChoices();
+        ApplyLanguage=new(async p=> { if(_ready && !_shuttingDown && p is string id) { _settings=_settings with { Language=ShellLanguages.Normalize(id) };ApplyEffectiveLanguage();await SaveCurrentSettingsAsync(); } },error=>Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
@@ -454,13 +460,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             _defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
             LoadNativeLaunchModeDraft(); RefreshBootstrapperLaunch();
             _showClientGpu=_settings.ShowClientGpu;ApplyClientGpu(_showClientGpu);
+            _publicNetworkGuard=_settings.PublicNetworkGuard;_discordAlerts=_settings.DiscordAlerts;
+            _discordPresence=_settings.DiscordPresence;_discordPresenceGame=_settings.DiscordPresenceGame;_discordApplicationId=_settings.DiscordApplicationId;
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _keepAwakeMinutes=_settings.KeepAwakeMinutes; ApplySavedKeepAwake(0);
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin), nameof(CheckRobloxUpdates), nameof(ShowClientGpu), nameof(KeepAwakeMinutes) }) Raise(field);
-            ApplyEffectiveTheme();
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin), nameof(CheckRobloxUpdates), nameof(ShowClientGpu), nameof(KeepAwakeMinutes), nameof(PublicNetworkGuard), nameof(DiscordAlerts), nameof(DiscordPresence), nameof(DiscordPresenceGame), nameof(DiscordApplicationId) }) Raise(field);
+            ApplyEffectiveLanguage();ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
@@ -492,6 +500,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                     await Task.Run(() => _accounts.SaveAsync(AccountProfile.Create($"Sample account {i:00}") with { Group = i <= 8 ? "Card Clash" : "Bubble Gum", PreferredPlaceId = i <= 8 ? 110829983956014 : 2512643572 }, _lifetime.Token));
             }
             stage=ManagerSubsystem.Telemetry;await RecentClients.InitializeAsync();
+            stage=ManagerSubsystem.DiscordAlerts;await LoadDiscordWebhookSummaryAsync();
             stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();ApplySavedClientUpdateCheck(restart:true);
             PreferencesEdited(); Notice = loaded.Notice ?? queueRecoveryNotice ?? projectionNotice ?? "Ready. Account metadata stays local; running processes require verified identity before automation.";
             AddEvent(IsSample ? "Isolated sample profile library opened; no sample session is shown as a live client." : "Local account library opened.");
@@ -504,6 +513,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
+            // Last, once everything else has opened: a saved guard on a Public network locks the dashboard at once, and nothing
+            // opened after that point would otherwise be running outside the lock.
+            ApplySavedPublicNetworkGuard();
+            ApplySavedDiscordAlerts(wasOn:false);
+            ApplySavedDiscordPresence(wasOn:false);
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
         catch (Exception ex) { _ready=false; _libraryUnavailable=true; ApplySavedPanicShortcut(); RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
@@ -941,6 +955,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         ObserveJoinedClientForPacing(evidence);
         RefreshLaunchEvidenceWith(evidence);
         RecentClients.Observe(snapshot,evidence,now);
+        ObserveClientAlerts(now);
+        ObserveDiscordPresence(snapshot);
         ObserveClientArrivals(snapshot,evidence);
         // Rows retained from a failed, partial or stale scan keep their log text but not Join same / Copy.
         var logViews = _logProjection.Snapshot(now, snapshot, logs);
@@ -983,16 +999,20 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         string defaultClientArguments=ExtraClientArgumentPolicy.Validate(DefaultClientArguments);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,ShowClientGpu=ShowClientGpu,KeepAwakeMinutes=KeepAwakeMinutes,KeepSignInBrowserData=KeepSignInBrowserData,CheckRobloxUpdates=CheckRobloxUpdates,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
+        if(!global::Zenith.Sessions.Core.DiscordApplicationId.TryParse(DiscordApplicationId,out string discordApplicationId,out string applicationProblem)) throw new ArgumentException(applicationProblem);
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,PublicNetworkGuard=PublicNetworkGuard,DiscordAlerts=DiscordAlerts,DiscordPresence=DiscordPresence,DiscordPresenceGame=DiscordPresenceGame,DiscordApplicationId=discordApplicationId,ShowClientGpu=ShowClientGpu,KeepAwakeMinutes=KeepAwakeMinutes,KeepSignInBrowserData=KeepSignInBrowserData,CheckRobloxUpdates=CheckRobloxUpdates,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
             NativeLaunchMode=NativeLaunchModes.ToSettingsValue(SelectedNativeLaunchMode.Mode) }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
-        bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;bool updateChecksWereOn=_savedSettings.CheckRobloxUpdates;
+        bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;bool updateChecksWereOn=_savedSettings.CheckRobloxUpdates;bool discordAlertsWereOn=_savedSettings.DiscordAlerts,discordPresenceWasOn=_savedSettings.DiscordPresence;
         await SaveCurrentSettingsAsync(requested);
         DefaultClientArguments=defaultClientArguments;
         ShowSavedPanicShortcut(panicShortcut);
         ArrivalMutePreferenceSaved(muteArrivalsWasOn);
         ClientUpdateCheckPreferenceSaved(updateChecksWereOn);
+        ApplySavedPublicNetworkGuard();
+        ApplySavedDiscordAlerts(discordAlertsWereOn);
+        ApplySavedDiscordPresence(discordPresenceWasOn);
     }
     private void PreferencesEdited()
     {
@@ -1002,7 +1022,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(PhysicalPerClient, out double physical) && physical == limits.NewClientPhysicalGiB
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
-            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
+            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme && _settings.Language == _savedSettings.Language
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && MuteArrivingClients == _savedSettings.MuteArrivingClients
             && KeepSignInBrowserData == _savedSettings.KeepSignInBrowserData
@@ -1011,6 +1031,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && SelectedNativeLaunchMode.Mode == SavedNativeLaunchMode
             && ShowClientGpu == _savedSettings.ShowClientGpu
             && KeepAwakeMinutes == _savedSettings.KeepAwakeMinutes
+            && PublicNetworkGuard == _savedSettings.PublicNetworkGuard
+            && DiscordAlerts == _savedSettings.DiscordAlerts
+            && DiscordPresence == _savedSettings.DiscordPresence && DiscordPresenceGame == _savedSettings.DiscordPresenceGame && DiscordApplicationId.Trim() == _savedSettings.DiscordApplicationId
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -1018,7 +1041,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
     {
-        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
+        string theme=_settings.Theme,language=_settings.Language;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
         try
         {
@@ -1027,13 +1050,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             {
                 // Appearance and window-position autosaves merge with the latest successful explicit save,
                 // even when they waited behind it. Never persist uncommitted field drafts.
-                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
+                var snapshot=(requested??_savedSettings) with { Theme=theme,Language=language,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
                 int keepAwakeBefore=_savedSettings.KeepAwakeMinutes;
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
                 ApplySavedNativeLaunchMode();
-                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
+                _settings=snapshot with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
                 ApplyClientGpu(snapshot.ShowClientGpu);
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
@@ -1072,7 +1095,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             await _preferencesWriter.WaitAsync(budget.Token);
             try
             {
-                var snapshot=_savedSettings with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
+                var snapshot=_savedSettings with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot,budget.Token));
                 _savedSettings=snapshot;
             }
@@ -1116,12 +1139,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(StopGroupChanges);Step(StopSignInBrowserData);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
         Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
         if(PanicRequested is {} listeners) foreach(Action listener in listeners.GetInvocationList()) Step(listener);
+        // Every stop, the idle and Windows session locks included, clears an error already showing; one raised after a lock
+        // begins stays through Unlock. MANAGER-IMPLEMENTATION.md states this rule; keeping an existing error is an owner decision.
         Step(ClearError);Step(()=>Notice=reason);Step(()=>AddEvent(reason));_diagnostics.Record(kind);
         if(locking) { Step(()=>ClearSettingsSearch.Execute(null));Step(()=>IsLocked=true); }
         if(failed is null) return;
@@ -1190,6 +1215,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     internal bool PrepareForSessionEnd(TimeSpan flushBudget)
     {
+        // The session end may be the shutdown Zenith scheduled arriving; exit's cancel of that schedule is skipped.
+        _windowsSessionEnding=true;
         BeginShutdown();
         _diagnostics.Record(ManagerEventKind.Shutdown);
         // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
@@ -1208,6 +1235,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopClientTrimOperations();
         StopClientSoundOperations();
         StopSignInBrowserData();
+        StopShutdownCountdown();
+        StopPublicNetworkWatch();
+        StopDiscordAlertOutbox();
+        StopDiscordPresence();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
@@ -1244,6 +1275,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientLogCleanupFeaturesAsync();
         await DisposeClientUpdateFeaturesAsync();
         await StopOwnerAsync(()=>_keepAwakeTick);
+        await DisposeScheduledShutdownFeaturesAsync();
+        DisposePublicNetworkGuardFeatures();
+        await DisposeDiscordAlertFeaturesAsync();
+        await DisposeDiscordPresenceFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
@@ -1257,7 +1292,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // StopDirectoryFeaturesAsync releases below (Rule 13). Both were cancelled above; each is awaited here first.
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution, StartNativeTrial.Execution);
         await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
-        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
+        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,ApplyLanguage.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
         await StopOwnerAsync(DisposeRecipientBundlesAsync);
@@ -1431,6 +1466,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// Without a trusted count it keeps that reason only for <see cref="ClientUpdateHold.UntrustedSampleGrace"/> after the newest trusted inventory.</param>
     private LaunchAdmission ReadLaunchAdmissionForBudget(IReadOnlyList<LaunchOperation> operations,LaunchResourceBudget budget,bool heldForUpdate)
     {
+        // The public-network guard's hold comes first: it is the reason the user can act on, and it holds whether or not
+        // monitoring is ready. Taken on Windows' thread the moment the network turns Public (ShellPublicNetworkGuardFeatures).
+        if(Volatile.Read(ref _publicNetworkHeld)==1) return new(false,PublicNetworkPolicy.HoldExplanation,LaunchHoldReason.PublicNetwork);
         var observed=Volatile.Read(ref _resourceAdmission);
         if(observed is null || IsLocked || _shuttingDown) return new(false,"Monitoring is not ready or controls are locked.");
         var snapshot=observed.Desktop;var admission=observed.Admission;
@@ -1510,6 +1548,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 else Launches.Add(new(operation) { Label=Accounts.FirstOrDefault(a=>a.Profile.Id==operation.Intent.ProfileId)?.Label??"Saved profile · "+operation.Intent.ProfileId.ToString("N")[..6] });
             }
             RecordOverviewQueue(latest);
+            ObserveLaunchBatchAlerts(latest);
             RefreshVisibleQueueStatus();
             RefreshAccountLaunchStates();
             RefreshNativeTrialFeatures();

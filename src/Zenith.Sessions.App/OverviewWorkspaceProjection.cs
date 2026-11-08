@@ -77,7 +77,7 @@ public static class OverviewWorkspaceProjection
             return(null,"Queue unavailable or still opening.","Existing queue files and uncertain requests require review; no empty healthy queue is implied.");
         int count=rows.Count;
         if(count is <0 or >LaunchReservationProjection.MaximumOperations) return(null,"Queue summary unavailable.","The retained queue snapshot needs review.");
-        int queued=0,starting=0,waiting=0,held=0,blocked=0,failed=0,review=0;
+        int queued=0,starting=0,waiting=0,held=0,network=0,blocked=0,failed=0,review=0;
         var ids=new HashSet<Guid>();
         for(int i=0;i<count;i++)
         {
@@ -88,6 +88,7 @@ public static class OverviewWorkspaceProjection
             if(row.State is LaunchState.Preparing or LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing) starting++;
             // Capacity waits restart on their own (the runner's own predicate); other blocks need the user.
             if(LaunchDescriptions.AwaitsClientUpdate(row)) held++;
+            else if(LaunchDescriptions.AwaitsPublicNetwork(row)) network++;
             else if(LaunchDescriptions.AwaitsCapacity(row)) waiting++;
             else if(row.State==LaunchState.Blocked) blocked++;
             if(row.State==LaunchState.Failed) failed++;
@@ -96,7 +97,8 @@ public static class OverviewWorkspaceProjection
         string mode=input.Locked?"Controls locked":input.QueuePaused?"Queue paused":"Queue active";
         string observed=input.QueueObservedUtc is { } at && ValidDate(at,now)?" · snapshot observed "+Stamp(at):" · observation time unavailable";
         return(queued,mode+observed,$"{starting} preparing/dispatching · {waiting} waiting for capacity (start automatically while the queue is active)"
-            +(held>0?$" · {held} held for a possible Roblox update that could close running clients (start automatically once none runs)":"")+$" · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
+            +(held>0?$" · {held} held for a possible Roblox update that could close running clients (start automatically once none runs)":"")
+            +(network>0?$" · {network} held for a public network (start automatically once the network is private)":"")+$" · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
     }
     private static bool Fresh(DateTimeOffset at,DateTimeOffset now,TimeSpan age)=>ValidDate(at,now) && now-at<=age;
     private static bool ValidDate(DateTimeOffset at,DateTimeOffset now)=>at!=default && now!=default && at<=now;

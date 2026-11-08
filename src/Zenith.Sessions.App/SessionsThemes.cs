@@ -103,8 +103,14 @@ internal static class SessionsThemes
 
     /// <summary>
     /// UI thread: shows <paramref name="palette"/> through <paramref name="resources"/>. Under High Contrast, hovered and pressed rows
-    /// and buttons keep the window colour behind their text and show the state as a bar of the window text colour along their leading
-    /// edge, 3 pixels wide on hover and 6 while pressed. Every other palette's hover and press colours are applied as they are.
+    /// and buttons that take the theme's hover and press fills (in SessionsControls.xaml all but the primary, danger and row action
+    /// buttons; a selected segment keeps its selection fill) keep the window colour behind their text and show the state as a bar of
+    /// the window text colour along their leading edge, 3 pixels wide on hover and 6 while pressed. The bar stops short of what the
+    /// control shows: the narrowest controls that take these fills, the 28 px icon buttons, keep 7.5 px before their centred glyph,
+    /// and the secondary button 12 px of padding before its label (HighContrastHoverTests renders both pressed). Every other
+    /// palette's hover and press colours are applied as they are. The window applies every live change (a theme chosen in Settings,
+    /// High Contrast switched on or off) through this method; nothing else in the Sessions app calls ThemeManager.Apply except the
+    /// packaged check's default-theme reset.
     /// </summary>
     public static void Apply(ResourceDictionary resources, ThemePreset palette)
     {

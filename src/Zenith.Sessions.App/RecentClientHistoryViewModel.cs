@@ -135,6 +135,8 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
         }
         finally { _checkingFaults = false; }
     }
+    /// <summary>The current presence view (active and ended clients), or null before history has opened or once tracking paused.</summary>
+    public RecentClientHistoryView? Snapshot() => _loaded && !_trackingFailed ? _history.Snapshot() : null;
     public void RecordCloseRequest(SessionProcessKey process, DateTimeOffset requestedUtc)
     {
         // A normal close remains available under dashboard lock. This only records the successful request.

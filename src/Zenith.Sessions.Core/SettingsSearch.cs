@@ -46,6 +46,8 @@ public static class SettingsSearchCatalog
         E("protected-recovery", "Protected-file recovery", "Review pending protected credential cleanup and retry it. This does not restore obsolete authorization.",
             SettingsSearchTarget.Recovery, "recovery", "retry", "credential", "vault", "cleanup", "protected", "unused records"),
 
+        E("language", "Language", "Choose English, Follow Windows, or a pseudo-locale for testing translated labels and right-to-left layout. Language changes apply immediately; untranslated pages stay in English.",
+            SettingsSearchTarget.Appearance, "language", "localization", "translation", "culture", "right to left", "rtl", "pseudo"),
         E("theme-graphite-mint", "Graphite Mint", "Find the existing graphite theme with a mint accent.",
             SettingsSearchTarget.Appearance, "theme", "palette", "default"),
         E("theme-midnight", "Midnight", "Find the existing near-black theme with green accents.",
@@ -64,6 +66,14 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "anti-afk", "anti afk", "afk", "away from keyboard", "idle kick", "idle disconnect", "keep awake", "keepalive", "f13", "20 minutes", "automation"),
         E("panic-shortcut", "Panic shortcut", "Choose the global shortcut for Panic stop: F12 by default, or another such as Ctrl+Alt+Shift+P. Save settings to register it; F12 still works while the manager is focused.",
             SettingsSearchTarget.Appearance, "panic", "hotkey", "hot key", "keyboard shortcut", "global shortcut", "emergency stop", "F12", "key combination"),
+        E("scheduled-shutdown", "Scheduled shutdown", "Ask Windows to shut down this PC after a chosen time, with a countdown and Cancel shutdown. Nothing is scheduled unless you ask; Panic and Exit cancel it.",
+            SettingsSearchTarget.Appearance, "shutdown", "shut down", "power off", "turn off", "switch off", "timer", "countdown", "sleep timer", "schedule", "auto shutdown"),
+        E("public-network-guard", "Hold launches on a public network", "Choose whether new launches are held and the dashboard locks while Windows files the active connection as Public (café, hotel or airport Wi-Fi). Off by default; held requests start again once the network is private. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "public network", "public wifi", "wifi", "wi-fi", "hotspot", "café", "cafe", "hotel", "airport", "network profile", "untrusted network", "guard", "security", "privacy"),
+        E("discord-alerts", "Send Discord alerts", "Choose whether Zenith posts an alert to one saved Discord webhook when a client crashes, stops responding or is disconnected, and when a launch batch has finished. Off by default; the webhook URL is kept protected. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "discord", "webhook", "web hook", "alert", "alerts", "notification", "notifications", "notify", "crash", "hang", "disconnect", "batch finished", "message", "ping", "channel"),
+        E("discord-presence", "Show Zenith in your Discord status", "Choose whether the Discord app on this PC shows how many Roblox clients Zenith sees running and, if you also choose it, the game they are in. Off by default; needs a Discord application ID; cleared on Lock, Panic and exit. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "discord", "status", "rich presence", "presence", "playing", "activity", "game status", "show game", "client count", "application id", "now playing"),
 
         E("profile-maximum-efficiency", "Maximum Efficiency", "Choose the manager profile with less frequent process observations and wider eligible-start spacing.",
             SettingsSearchTarget.Performance, "performance preset", "monitoring", "cadence", "sampling"),

@@ -43,6 +43,10 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientLogs=>"Roblox client logs",
         ManagerSubsystem.ClientUpdate=>"Roblox update",
         ManagerSubsystem.KeepAwake=>"Keep clients awake",
+        ManagerSubsystem.ScheduledShutdown=>"Scheduled shutdown",
+        ManagerSubsystem.PublicNetwork=>"Public-network guard",
+        ManagerSubsystem.DiscordAlerts=>"Discord alerts",
+        ManagerSubsystem.DiscordPresence=>"Discord status",
         _=>"Unrecognized subsystem"
     };
 }
@@ -142,7 +146,9 @@ public sealed partial class ShellViewModel
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
     private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
-    internal const string RepeatLaunchStoppedStatus="a new launch cannot bring this window forward until you exit from the tray and start Zenith Sessions again";
+    // The fact is short enough for the trimmed header; the remedy ends the status, for the tooltip and the Guide.
+    internal const string RepeatLaunchStoppedStatus="a new launch cannot show Zenith";
+    internal const string RepeatLaunchStoppedRemedy="exit from the tray and start Zenith Sessions again to let a new launch show this window";
     // UI thread only: set by the dispatcher step below, read by RefreshDiagnosticsStatus.
     private bool _repeatLaunchListenerStopped;
     /// <summary>
@@ -170,21 +176,30 @@ public sealed partial class ShellViewModel
     }
     /// <summary>
     /// The Diagnostics page header draws this on one trimmed 320 px line (about 60 characters at 12 px); only its tooltip
-    /// and the Guide show the rest. So a stopped state comes first and the skip count second, and both stay short enough
-    /// to be read without hovering, even with a six-digit count.
+    /// and the Guide show the rest. So the facts come in the order a reader needs them, each short enough to be read
+    /// without hovering: a stopped monitor or startup first, then a stopped restore listener (the only place that says
+    /// why a new launch shows nothing), then the disk writer's failure or its skip count. The storage footer repeats the
+    /// failure and the count, so the count is the one that may fall behind the ellipsis when all three are set. The
+    /// restore listener's remedy comes last, for the tooltip. The first fact carries the line's capital; the writer's
+    /// failure text is a sentence of its own and keeps its own.
     /// </summary>
     internal static string DiagnosticsStatusText(string? failure,bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,bool restoreListenerStopped)
     {
-        string? stopped=live?null:monitorStopped?"Monitoring stopped":startupNeedsAttention?"Startup needs attention":null;
-        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
-        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
+        string? stopped=live?null:monitorStopped?"monitoring stopped":startupNeedsAttention?"startup needs attention":null;
+        // The skip count mixes a full writer queue with entries lost to a disk error (any kind, failures and Panic
+        // included), so it names no cause; a disk-writer failure replaces it so the header agrees with the storage footer.
         string? unwritten=dropped<=0?null:dropped==1?"1 event not saved to disk":$"{dropped} events not saved to disk";
-        string status=failure??(stopped is not null
-            ? $"{stopped} · {(unwritten is null?"":unwritten+" · ")}diagnostics still recording · view updates when refreshed"
-            : !live?"Diagnostics starting"
-            : unwritten is not null?$"Diagnostics active · {unwritten}":"Diagnostics active · bounded to three log files");
-        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
-        return restoreListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
+        var parts=new List<string>(6);
+        if(stopped is not null) parts.Add(stopped);
+        if(restoreListenerStopped) parts.Add(RepeatLaunchStoppedStatus);
+        if(failure is not null) parts.Add(failure);
+        else if(stopped is not null) {if(unwritten is not null) parts.Add(unwritten);parts.Add("diagnostics still recording");}
+        else if(!live) parts.Add("diagnostics starting");
+        else {parts.Add("diagnostics active");parts.Add(unwritten??"bounded to three log files");}
+        if(stopped is not null) parts.Add("view updates when refreshed");
+        if(restoreListenerStopped) parts.Add(RepeatLaunchStoppedRemedy);
+        string status=string.Join(" · ",parts);
+        return char.ToUpperInvariant(status[0])+status[1..];
     }
     private void RefreshDiagnosticsView(bool explicitRequest=false)
     {

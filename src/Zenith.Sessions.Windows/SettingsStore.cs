@@ -22,7 +22,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
     bool MuteArrivingClients = false, bool KeepSignInBrowserData = false, bool CheckRobloxUpdates = false, string DefaultClientArguments = "", bool ShortenWaitAfterJoin = false,
     string NativeLaunchMode = NativeLaunchModes.OfficialPageValue, IReadOnlyList<AcceptedBootstrapperPublisher>? AcceptedBootstrapperPublishers = null,
-    IReadOnlyList<NativeLaunchVerification>? NativeLaunchVerifications = null, bool ShowClientGpu = false, int KeepAwakeMinutes = 0)
+    IReadOnlyList<NativeLaunchVerification>? NativeLaunchVerifications = null, bool ShowClientGpu = false, int KeepAwakeMinutes = 0, bool PublicNetworkGuard = false, bool DiscordAlerts = false, bool DiscordPresence = false, bool DiscordPresenceGame = false, string DiscordApplicationId = "", string Language = "en")
 {
     // KeepSignInBrowserData and CheckRobloxUpdates also default off; they are optional schema-1 choices.
     // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients, DefaultClientArguments,
@@ -46,12 +46,15 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
             || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes) || !KeepAwakePolicy.IsValidMinutes(KeepAwakeMinutes)
             || !global::Zenith.Sessions.Core.PanicShortcut.TryParse(PanicShortcut, out _, out _)
             || DefaultClientArguments is null || !ExtraClientArgumentPolicy.TryParse(DefaultClientArguments, out var defaultArguments, out _)
-            || !NativeLaunchModes.TryParse(NativeLaunchMode, out var launchMode))
+            || !NativeLaunchModes.TryParse(NativeLaunchMode, out var launchMode) || DiscordApplicationId is null || DiscordApplicationId.Length != 0 && !global::Zenith.Sessions.Core.DiscordApplicationId.IsValid(DiscordApplicationId))
             throw new InvalidDataException("Settings have an unsupported version or invalid value.");
         (Capacity ?? new()).Validated();
         (Performance ?? new()).Validated();
         ManagerWindow?.Validated();
-        return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated(),
+        // Optional schema-1 preference. A newer/edited choice falls back to English without invalidating unrelated settings.
+        string language=Language?.Trim().ToLowerInvariant() ?? "en";
+        if(language is not ("follow-windows" or "pseudo" or "pseudo-rtl" or "en")) language="en";
+        return this with { Language=language, Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated(),
             DefaultClientArguments = string.Join(' ', defaultArguments), NativeLaunchMode = NativeLaunchModes.ToSettingsValue(launchMode),
             AcceptedBootstrapperPublishers = AcceptedBootstrapperPublisher.Validate(AcceptedBootstrapperPublishers),
             NativeLaunchVerifications = NativeLaunchVerification.Validate(NativeLaunchVerifications) };

@@ -160,6 +160,14 @@ public partial class MainWindow : Window
         var bounds = RestoreBounds; var dpi = VisualTreeHelper.GetDpi(this);
         return ManagerWindowPlacement.FromLogical(bounds.X, bounds.Y, bounds.Width, bounds.Height, dpi.DpiScaleX, dpi.DpiScaleY, WindowState == WindowState.Maximized);
     }
+    // The webhook URL is a secret: the masked field is read once here, handed to the shell as the command's parameter and cleared
+    // at once, so it is never bound to a property, never kept by the window and never written anywhere but the protected store.
+    private void SaveDiscordWebhook_Click(object sender, RoutedEventArgs e)
+    {
+        string url = SettingsDiscordWebhook.Password;
+        SettingsDiscordWebhook.Clear();
+        _vm.SaveDiscordWebhook.Execute(url);
+    }
     // The footer's error (assertive) and status (polite) texts are live regions. WPF does not raise LiveRegionChanged when a
     // bound text changes, so each update of either binding announces it; Fail and Inform notify even for identical text.
     private void AnnounceNotice(object sender, System.Windows.Data.DataTransferEventArgs e)
@@ -261,7 +269,15 @@ public partial class MainWindow : Window
                 "maximum-clients"=>SettingsMaximumClients,
                 "close-button"=>SettingsCloseButtonExits,
                 "idle-lock"=>SettingsIdleLock,
+                // The saved choice only edits the draft until Save settings; focusing it never ticks it.
+                "public-network-guard"=>SettingsPublicNetworkGuard,
+                // The on/off choice, never the masked URL field or a button that sends.
+                "discord-alerts"=>SettingsDiscordAlerts,
+                // The on/off choice, never the application ID field or Resume Discord status.
+                "discord-presence"=>SettingsDiscordPresence,
                 "panic-shortcut"=>SettingsPanicShortcut,
+                // The delay choice, never Schedule shutdown: search lands on a field, not on a button that starts work.
+                "scheduled-shutdown"=>SettingsShutdownDelay,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")

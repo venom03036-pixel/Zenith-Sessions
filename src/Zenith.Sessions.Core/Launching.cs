@@ -137,8 +137,11 @@ public static class LaunchDescriptions
     public static bool AwaitsCapacity(LaunchOperation operation)=>operation.State==LaunchState.Blocked && operation.Problem==LaunchProblem.InsufficientCapacity;
     /// <summary>A waiting row held because starting the selected player would let Roblox's update close running clients.</summary>
     public static bool AwaitsClientUpdate(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.ClientUpdate;
-    /// <summary>The row's explanation: its problem's, or the update hold's for a row waiting on a Roblox update.</summary>
-    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation:Explain(operation.State,operation.Problem);
+    /// <summary>A waiting row held because the active network is Public (the public-network guard); it starts on its own once that ends.</summary>
+    public static bool AwaitsPublicNetwork(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.PublicNetwork;
+    /// <summary>The row's explanation: its problem's, or the hold's for a row waiting on a Roblox update or on a public network.</summary>
+    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation
+        :AwaitsPublicNetwork(operation)?PublicNetworkPolicy.HoldExplanation:Explain(operation.State,operation.Problem);
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
