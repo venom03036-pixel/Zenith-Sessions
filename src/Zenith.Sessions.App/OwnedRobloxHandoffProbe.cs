@@ -19,13 +19,21 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
 {
     private static readonly TimeSpan InspectionDeadline=TimeSpan.FromMinutes(3);
     // How long a cleanup waits for its browser's exit, well past the five-second observation. Until then other owners hear
-    // that the browser is still closing; past it the folder is kept and marked, and they ask for a restart. Disposal joins it.
+    // that the browser is still closing; past it the folder is kept and marked, and they ask for a restart. Disposal joins
+    // it, for at most ShutdownJoinLimit.
     internal static readonly TimeSpan BrowserExitLimit=TimeSpan.FromSeconds(30);
+    // How long disposal (Exit) waits for an inspection still stopping and its tracked cleanup, together (Z1559, owner
+    // decision 2026-11-08). WebView2 initialization has no cancellation contract and a browser may never report its exit;
+    // neither may hold Exit open. Past it the folder's lease is released and the marked folder is left for the startup sweep.
+    internal static readonly TimeSpan ShutdownJoinLimit=TimeSpan.FromSeconds(10);
     private readonly TimeProvider _time=TimeProvider.System;
     private readonly object _state=new();
     private readonly CancellationTokenSource _lifetime=new();
     private TaskCompletionSource? _owner;
     private Task _cleanup=Task.CompletedTask;
+    // The running inspection's folder, from its admission until the inspection returns, so a disposal that stops waiting
+    // for an inspection that never returns can still release the folder's lease.
+    private SignInProfileDirectory? _admitted;
     private SignInProfileDirectory? _retainedDirectory;
     private bool _blocked,_disposed;
     private Task? _dispose;
@@ -97,7 +105,15 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         SignInProfileDirectory? directory=null;bool browserStarted=false;OwnedCapture? result=null;
         try
         {
-            try{directory=await Task.Run(()=>SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token),stop.Token).ConfigureAwait(false);}
+            try
+            {
+                directory=await Task.Run(()=>
+                {
+                    var admitted=SignInProfileDirectory.Create(dataRoot,context.ProfileId,stop.Token);
+                    lock(_state)_admitted=admitted; // Recorded with the lease it holds, before anything can wait on this inspection.
+                    return admitted;
+                },stop.Token).ConfigureAwait(false);
+            }
             // Leftover data kept for review persists until someone reviews it. Latch so later checks are refused
             // before any account's grant is reserved, instead of blaming WebView2 each time. Any other storage failure
             // (remote, redirected, unwritable or full storage, or a file another program has open) is not this probe's
@@ -133,7 +149,8 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             }
             if(result?.Outcome==RobloxHandoffProbeOutcome.Cancelled&&stop.IsCancellationRequested&&!caller.IsCancellationRequested&&!_lifetime.IsCancellationRequested)
             {result.Dispose();result=Capture(RobloxHandoffProbeOutcome.TimedOut);}
-            stop.Dispose();deadline.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;}owner.TrySetResult();
+            // The folder is removed, or retained above or by the tracked cleanup, so it is no longer the running inspection's.
+            stop.Dispose();deadline.Dispose();lock(_state){if(ReferenceEquals(_owner,owner))_owner=null;_admitted=null;}owner.TrySetResult();
         }
         return result??Capture(RobloxHandoffProbeOutcome.Failed);
     }
@@ -238,7 +255,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
                 try{awaitBrowserExit=environment.GetProcessInfos().Count!=0;}
                 catch(Exception){awaitBrowserExit=true;cleanupProblem=true;}
             // The task stays owned after a five-second observation timeout. No second browser may start, and DisposeAsync
-            // joins it, which waits for the real exit for at most BrowserExitLimit, before relinquishing its directory.
+            // joins it, for at most ShutdownJoinLimit, before relinquishing its directory.
             Task cleanup=FinishCleanupAsync(environment,exited,browserExited.Task,awaitBrowserExit,directory,cleanupProblem,DetachClosedGuards,_time);
             if(!await TrackCleanupAsync(cleanup,directory,TimeSpan.FromSeconds(5))){accepted?.Dispose();accepted=Capture(RobloxHandoffProbeOutcome.CleanupFailed);}
             if(completion.Task.IsCompletedSuccessfully&&!ReferenceEquals(accepted,completion.Task.Result))completion.Task.Result.Dispose();
@@ -350,8 +367,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     }
     /// <summary>Removes the private folder after the browser's confirmed exit. An exit not reported within
     /// <see cref="BrowserExitLimit"/> is a failed cleanup: the folder is kept and marked, every guard stays installed on
-    /// the browser that may still be live, and disposal's join of this task is bounded, so Exit finishes and the startup
-    /// sweep or the next admission recovers the folder once its lease is released. <paramref name="time"/> lets tests fire that limit.</summary>
+    /// the browser that may still be live, and disposal's join of this task is bounded by <see cref="ShutdownJoinLimit"/>,
+    /// so Exit finishes and the startup sweep or the next admission recovers the folder once its lease is released.
+    /// <paramref name="time"/> lets tests fire that limit.</summary>
     internal static async Task FinishCleanupAsync(CoreWebView2Environment? environment,EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited,
         Task browserExited,bool awaitBrowserExit,SignInProfileDirectory directory,bool priorProblem,Action detachGuards,TimeProvider time)
     {
@@ -383,12 +401,35 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     }
     private sealed class ProbeFailure(RobloxHandoffProbeOutcome outcome):Exception{public RobloxHandoffProbeOutcome Outcome{get;}=outcome;}
     public ValueTask DisposeAsync(){lock(_state){_disposed=true;return new(_dispose??=StopAsync(_owner?.Task));}}
+    /// <summary>Exit's join: the inspection still stopping, then its tracked cleanup, for at most <see cref="ShutdownJoinLimit"/>
+    /// together. A cleanup joined within that limit is unchanged and still waits for the browser's real exit (for at most
+    /// <see cref="BrowserExitLimit"/>), and its failure keeps its own type. Past the limit the folder's lease is released,
+    /// whether the cleanup or the inspection itself still holds it, and the unconfirmed cleanup is reported as a
+    /// <see cref="TimeoutException"/>; the folder keeps its marker and data, so the startup sweep removes it once the browser
+    /// is gone, or keeps it for review. Nothing here ends the browser or the inspection: that browser's guards stay installed.</summary>
     private async Task StopAsync(Task? owner)
     {
         await Task.Yield();_lifetime.Cancel();
-        if(owner is not null)await owner.ConfigureAwait(false);
-        Task cleanup;lock(_state)cleanup=_cleanup;
-        try{await cleanup.ConfigureAwait(false);}
-        finally{_retainedDirectory?.ReleaseOwnership();_retainedDirectory=null;_lifetime.Dispose();}
+        using var limit=new CancellationTokenSource(ShutdownJoinLimit,_time);
+        bool timedOut=false;
+        try
+        {
+            if(owner is not null)await owner.WaitAsync(limit.Token).ConfigureAwait(false);
+            Task cleanup;lock(_state)cleanup=_cleanup;
+            await cleanup.WaitAsync(limit.Token).ConfigureAwait(false);
+        }
+        catch(OperationCanceledException ex) when(ex.CancellationToken==limit.Token)
+        {
+            timedOut=true;
+            throw new TimeoutException("Exit stopped waiting for the private browser to close. Its sign-in folder is left for the next start to remove.");
+        }
+        finally
+        {
+            SignInProfileDirectory? admitted,retained;
+            lock(_state){admitted=_admitted;retained=_retainedDirectory;_admitted=null;_retainedDirectory=null;}
+            admitted?.ReleaseOwnership();retained?.ReleaseOwnership();
+            // An inspection still running after a timed-out join may yet read _lifetime, so it is disposed only after a full join.
+            if(!timedOut)_lifetime.Dispose();
+        }
     }
 }
