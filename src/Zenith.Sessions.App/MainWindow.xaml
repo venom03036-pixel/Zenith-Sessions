@@ -463,6 +463,9 @@
                     <MenuItem Header="Import profile metadata…" Click="ImportProfiles" IsEnabled="{Binding IsReady}" />
                     <MenuItem Header="Export profile metadata…" Click="ExportProfiles" IsEnabled="{Binding IsReady}" />
                     <Separator />
+                    <MenuItem Header="Export protected backup (contains sign-ins)…" Click="ExportProtectedBackup" IsEnabled="{Binding CanUsePortableBackup}" />
+                    <MenuItem Header="Import protected backup…" Click="ImportProtectedBackup" IsEnabled="{Binding CanUsePortableBackup}" />
+                    <Separator />
                     <MenuItem Header="Create profile only…" Click="AddProfile" IsEnabled="{Binding IsReady}" ToolTip="Optional local metadata without signing in. It cannot authorize a Roblox launch." />
                   </ContextMenu>
                 </Button.ContextMenu>

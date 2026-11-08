@@ -12,35 +12,41 @@ public sealed class VaultPasswordDialog : Window
     private readonly Action _cancel;
     private bool _busy, _closeWhenDone;
     public VaultPasswordDialog(VaultPasswordAction action, Func<ReadOnlyMemory<byte>, Task<bool>> apply, Func<string> problem, Action cancel)
+        : this(action == VaultPasswordAction.Unlock ? "Unlock saved sign-ins" : action == VaultPasswordAction.Disable ? "Disable master password" : "Protect saved sign-ins",
+            action == VaultPasswordAction.Disable ? "Your saved sign-ins will return to Windows-account protection only. Enter the current master password to confirm."
+                : action == VaultPasswordAction.Unlock ? "Enter the master password for this library. This is your vault password, not a Roblox password."
+                : "Choose a master password, or use the same password to resume interrupted encryption. A forgotten password means the saved sign-ins are gone. Profiles can be kept and signed in again. Use at least 12 characters.",
+            "Master password", action == VaultPasswordAction.EnableOrResume,
+            action == VaultPasswordAction.Unlock ? "Unlock" : action == VaultPasswordAction.Disable ? "Disable password" : "Apply protection", apply, problem, cancel) { }
+
+    public VaultPasswordDialog(string title, string description, string passwordLabel, bool repeatPassword, string submitLabel,
+        Func<ReadOnlyMemory<byte>, Task<bool>> apply, Func<string> problem, Action cancel)
     {
         _cancel = cancel;
-        Title = action == VaultPasswordAction.Unlock ? "Unlock saved sign-ins" : action == VaultPasswordAction.Disable ? "Disable master password" : "Protect saved sign-ins";
+        Title = title;
         Width = 500; SizeToContent = SizeToContent.Height; MinWidth = 420; MaxHeight = 680;
         WindowStartupLocation = WindowStartupLocation.CenterOwner;
         SetResourceReference(BackgroundProperty, "CardBackground"); SetResourceReference(ForegroundProperty, "TextPrimary");
         var panel = new StackPanel { Margin = new Thickness(24) };
         panel.Children.Add(new TextBlock { Text = Title, FontSize = 23, FontWeight = FontWeights.SemiBold });
-        var explanation = new TextBlock { Text = action == VaultPasswordAction.Disable
-            ? "Your saved sign-ins will return to Windows-account protection only. Enter the current master password to confirm."
-            : action == VaultPasswordAction.Unlock ? "Enter the master password for this library. This is your vault password, not a Roblox password."
-            : "Choose a master password, or use the same password to resume interrupted encryption. A forgotten password means the saved sign-ins are gone. Profiles can be kept and signed in again. Use at least 12 characters.",
+        var explanation = new TextBlock { Text = description,
             TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 14, 0, 18) };
         explanation.SetResourceReference(TextBlock.ForegroundProperty, "TextSecondary"); panel.Children.Add(explanation);
-        panel.Children.Add(new TextBlock { Text = "Master password", Margin = new Thickness(0, 0, 0, 6) });
+        panel.Children.Add(new TextBlock { Text = passwordLabel, Margin = new Thickness(0, 0, 0, 6) });
         var password = new PasswordBox { MaxLength = 256, MinHeight = 36 };
-        System.Windows.Automation.AutomationProperties.SetName(password, "Master password"); panel.Children.Add(password);
+        System.Windows.Automation.AutomationProperties.SetName(password, passwordLabel); panel.Children.Add(password);
         PasswordBox? repeated = null;
-        if (action == VaultPasswordAction.EnableOrResume)
+        if (repeatPassword)
         {
-            panel.Children.Add(new TextBlock { Text = "Repeat master password", Margin = new Thickness(0, 14, 0, 6) });
+            panel.Children.Add(new TextBlock { Text = "Repeat " + passwordLabel.ToLowerInvariant(), Margin = new Thickness(0, 14, 0, 6) });
             repeated = new PasswordBox { MaxLength = 256, MinHeight = 36 };
-            System.Windows.Automation.AutomationProperties.SetName(repeated, "Repeat master password"); panel.Children.Add(repeated);
+            System.Windows.Automation.AutomationProperties.SetName(repeated, "Repeat " + passwordLabel.ToLowerInvariant()); panel.Children.Add(repeated);
         }
         var error = new TextBlock { TextWrapping = TextWrapping.Wrap, Margin = new Thickness(0, 12, 0, 0) };
         error.SetResourceReference(TextBlock.ForegroundProperty, "AccentDanger"); panel.Children.Add(error);
         var actions = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0, 18, 0, 0) };
         var cancelButton = new Button { Content = "Cancel", MinWidth = 90, Margin = new Thickness(0, 0, 8, 0) };
-        var submit = new Button { Content = action == VaultPasswordAction.Unlock ? "Unlock" : action == VaultPasswordAction.Disable ? "Disable password" : "Apply protection", IsDefault = true, MinWidth = 130 };
+        var submit = new Button { Content = submitLabel, IsDefault = true, MinWidth = 130 };
         submit.SetResourceReference(StyleProperty, "PrimaryButton"); actions.Children.Add(cancelButton); actions.Children.Add(submit); panel.Children.Add(actions);
         cancelButton.Click += (_, _) => RequestStop();
         submit.Click += async (_, _) =>

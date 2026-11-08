@@ -246,10 +246,11 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
 
     private async Task<LinkedIdentity> VerifyAndSave(Operation operation, RobloxSessionCredential credential, AuthorizationRecord? previous,
         bool handoffInspection = false, Guid? inspectionMutationId = null, AuthorizationWriteSnapshot? writeSnapshot = null,
-        bool createProfile = false)
+        bool createProfile = false, long? expectedPortableUserId = null)
     {
         using var first = await client.ValidateAsync(credential, operation.Token).ConfigureAwait(false);
         Ensure(operation); ValidateIdentity(first.Identity);
+        if (expectedPortableUserId is { } expected && first.Identity.UserId != expected) throw new PortableIdentityMismatchException();
         if (previous is not null && !SameIdentity(previous, first.Identity))
         {
             if (handoffInspection) throw new HandoffInspectionException(RobloxHandoffProbeOutcome.IdentityMismatch);
