@@ -61,9 +61,9 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
     /// same verify-and-save path as a sign-in: the identity check must name the same player as the record that was sent,
     /// the record must still be that one with no other write reserved, and the commit is conditional on that snapshot at
     /// the next generation. Any other result leaves the saved record as it was; an interrupted commit is fenced to only
-    /// this operation's own write, like an interrupted sign-in. After an expected failure the share-link answer stands and
-    /// only the failure's type is reported, never its text (it could quote protected paths). Any other exception is a
-    /// defect: it is not absorbed, so the caller's failure path shows and records it.
+    /// this operation's own write, like an interrupted sign-in. After an expected failure, or a fence that could not run, the
+    /// share-link answer stands and only the failure's type is reported, never its text (it could quote protected paths).
+    /// Any other exception is a defect: it is not absorbed, so the caller's failure path shows and records it.
     /// </summary>
     private async Task KeepRotatedSessionAsync(Operation operation, AuthorizationRecord sent, RobloxSessionCredential candidate)
     {
@@ -80,8 +80,9 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
         catch (Exception error) when (IsExpectedSessionFailure(error)) { failed?.Invoke(error.GetType()); }
         finally
         {
-            // A fence failure is not forwarded either: the record is then the verified replacement or the original.
-            if (!kept && operation.FinalMutationIssued) await FenceFailedSessionMutationAsync(operation.ProfileId, operation.FinalMutationId).ConfigureAwait(false);
+            // A fence failure is not thrown either: the record is then the verified replacement or the original. Like a keep
+            // failure, only its type is reported, so a cleanup that could not run is not dropped silently.
+            if (!kept && operation.FinalMutationIssued) await FenceFailedSessionMutationAsync(operation.ProfileId, operation.FinalMutationId, failed).ConfigureAwait(false);
         }
     }
 

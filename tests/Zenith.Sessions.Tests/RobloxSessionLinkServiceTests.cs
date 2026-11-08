@@ -39,8 +39,10 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         private readonly Dictionary<Guid, long> _generations = [];
         private readonly Dictionary<Guid,long> _committed=[];
         private readonly Dictionary<Guid,Guid> _owners=[];
-        public int Reads, Saves; public bool FailSave;
+        public int Reads, Saves, FenceAttempts; public bool FailSave;
         public Func<AuthorizationRecord, Task>? BeforeSave;
+        /// <summary>When set, fencing an owned write fails with this exception instead of running.</summary>
+        public Exception? FenceFailure;
         public Task<AuthorizationRecord?> ReadAsync(Guid id, CancellationToken ct)
         { ct.ThrowIfCancellationRequested(); Reads++; return Task.FromResult(Records.GetValueOrDefault(id)); }
         public async Task SaveAsync(AuthorizationRecord record, CancellationToken ct)
@@ -84,7 +86,8 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         }
         public Task<bool> TryFenceOwnedMutationAsync(Guid id,Guid mutationId,CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();if(_owners.GetValueOrDefault(id)!=mutationId)return Task.FromResult(false);
+            ct.ThrowIfCancellationRequested();FenceAttempts++;if(FenceFailure is not null)return Task.FromException<bool>(FenceFailure);
+            if(_owners.GetValueOrDefault(id)!=mutationId)return Task.FromResult(false);
             _generations[id]=Snapshot(id).NextGeneration;_owners[id]=Guid.Empty;return Task.FromResult(true);
         }
         private static AuthorizationMetadata Summary(AuthorizationRecord r) => new(r.ProfileId, r.ProfileId.ToString("N"), r.Provider, r.Issuer, r.Subject,
@@ -333,6 +336,28 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         await using (var keeping = new RobloxSessionLinkService(repository, clean, new Client(), new Browser(), shareLinks: rotating, failed: failures.Add))
             Assert.Equal(RobloxShareLinkOutcome.Experience, (await keeping.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
         Assert.Empty(failures); Assert.Equal("synthetic-share-rotation", clean.Records[profile.Id].SessionCookie);
+    }
+
+    [Fact]
+    public async Task ShareLinkKeepWhoseCleanupCannotFenceItsWriteReportsTheCleanupFailureTypeToo()
+    {
+        // N-B1a-6: the replacement's commit reached the store and then failed, so the keep fences that write. When the fence
+        // itself fails, that failure is reported by type as well, after the keep's own; the share-link answer still stands.
+        using var repository = await Repository(); var profile = await Profile(repository); using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        foreach (var (fenceFailure, expected) in new (Exception?, Type[])[]
+        {
+            (null, [typeof(IOException)]), // The fence ran: only the keep failure is reported.
+            (new UnauthorizedAccessException("Synthetic fence denied"), [typeof(IOException), typeof(UnauthorizedAccessException)])
+        })
+        {
+            var vault = new Vault { FailSave = true, FenceFailure = fenceFailure }; var saved = Saved(profile.Id); vault.Records[profile.Id] = saved;
+            var failures = new List<Type>();
+            var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: new("synthetic-share-rotation")) };
+            await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver, failed: failures.Add);
+            using (var answer = await service.ResolveShareLinkAsync(profile.Id, link, default))
+                Assert.Equal(RobloxShareLinkOutcome.Experience, answer.Outcome);
+            Assert.Equal(expected, failures); Assert.Equal(1, vault.FenceAttempts); Assert.Same(saved, vault.Records[profile.Id]);
+        }
     }
 
     private sealed class ShareLinks : IRobloxShareLinkClient

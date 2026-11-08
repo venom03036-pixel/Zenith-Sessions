@@ -5,7 +5,8 @@ namespace Zenith.Sessions.Windows;
 
 /// <summary>
 /// One owned saved-session operation and one bounded waiting disconnect. Never launches a client. <paramref name="failed"/>
-/// receives only the type of an expected failure that the service absorbs without changing its answer (never its message).
+/// receives only the type of an expected failure that the service absorbs without changing its answer, or of a fence of its
+/// own interrupted write that could not run (never its message).
 /// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
     IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
@@ -222,7 +223,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         // replacement has not committed. Do not skip that invalidation by allocating beyond it.
         return current == pending;
     }
-    private async Task<bool> FenceFailedSessionMutationAsync(Guid profileId, Guid mutationId)
+    /// <summary>False when the fence could not run. <paramref name="absorbed"/> then receives only the type of the failure, never its text.</summary>
+    private async Task<bool> FenceFailedSessionMutationAsync(Guid profileId, Guid mutationId, Action<Type>? absorbed = null)
     {
         // Failure can occur after Linked bytes commit but before projection/acknowledgment. Keep
         // this safety write under the same owner even when its user-facing token was cancelled.
@@ -236,7 +238,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             await conditional.TryFenceOwnedMutationAsync(profileId, mutationId, safety.Token).ConfigureAwait(false);
             return true;
         }
-        catch (Exception) { return false; }
+        catch (Exception error) { absorbed?.Invoke(error.GetType()); return false; }
     }
     private static bool IsSuccessor(long previous, long next) => previous < long.MaxValue && next == previous + 1;
 
