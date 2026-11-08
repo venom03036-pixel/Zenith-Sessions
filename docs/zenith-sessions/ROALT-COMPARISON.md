@@ -95,6 +95,7 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | ID | RoALT capability | Zenith's version | Commit |
 |---|---|---|---|
 | R-instances-2 | In-game state stays visible for the whole session: In game with place and job until a teleport, disconnect or exit. | A connected client's place and server stay on its Sessions row past the five-minute evidence age, marked "last confirmed N min ago", until its log shows a join, teleport, disconnect or exit, the log binding lapses or a tail is unread. Join same game, Join same server and Copy still need evidence under five minutes. | lane D6b |
+| R-instances-15 | Per-client GPU numbers: each client's busiest GPU engine and dedicated GPU memory from the per-process counters. | Settings → Performance profile → Show each client's GPU use (off by default). When on, the Sessions table shows each client's busiest engine and dedicated memory next to CPU and memory, from the same one-second sampler. A client is credited only when its PID carried the same start time in the inventory before the collection and in a re-read after it; a reused PID, an ended client or an untrusted row is Unavailable, never 0. | lane D6b |
 
 ## Not copied: techniques Zenith excludes
 
@@ -125,7 +126,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Notifications and presence sharing | R-api-12, R-shell-22, R-api-17 | Discord webhook alerts and Discord rich presence, opt-in only |
 | Security model | R-accounts-10, R-accounts-11, R-shell-18, R-accounts-12 | A master password, a password-sealed backup that includes saved sign-ins, and an encrypted account database |
 | Sign-in convenience | R-accounts-7, R-accounts-8 | Google or Apple sign-in, and keeping one sign-in browser profile to reduce captchas (keeps Roblox tracking cookies on disk) |
-| Client control | R-instances-7, R-instances-12, R-instances-16, R-instances-18, R-instances-15 | A hard CPU cap per client, force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit, per-client GPU numbers |
+| Client control | R-instances-7, R-instances-12, R-instances-16, R-instances-18 | A hard CPU cap per client, force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit. R-instances-15 (per-client GPU numbers) was decided and built in round 4 |
 | Idle kick | R-instances-17 | Anti-AFK by focusing clients and sending a key. Not recommended: it is idle-policy evasion and bypasses Zenith's single input path |
 | App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
 | Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-shell-21, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, scheduled shutdown, a same-pass retry for pending headshots |

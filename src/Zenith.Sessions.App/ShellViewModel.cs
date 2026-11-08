@@ -111,6 +111,12 @@ public sealed class SessionRow(SessionObservation observation) : Observable
     public string IoTransfers=>Observation.Problem is null && Observation.IoRates is { } io
         ? "R "+TelemetryDisplay.Number(io.ReadBytesPerSecond/1024,"0.0"," KiB/s")+" · W "+TelemetryDisplay.Number(io.WriteBytesPerSecond/1024,"0.0"," KiB/s")+" · other "+TelemetryDisplay.Number(io.OtherBytesPerSecond/1024,"0.0"," KiB/s") : "Unavailable / warming up";
     public string ObservedTime=>Observation.ObservedUtc.LocalDateTime.ToString("T");
+    private string _gpu=ClientGpuText.Off;
+    /// <summary>This client's busiest GPU engine and dedicated GPU memory, from the latest fresh snapshot's confirmed client row
+    /// (matched by PID and start time); "Off in Settings" until the saved option is on; never a number for an unknown value.</summary>
+    public string Gpu=>_gpu;
+    public void UpdateGpu(GpuClientTelemetry? client,bool fresh,bool enabled)
+    { string text=ClientGpuText.Format(client,fresh,enabled); if(_gpu!=text) { _gpu=text; Raise(nameof(Gpu)); } }
     public void Update(SessionObservation value)
     {
         var prior = Observation; Observation = value;
@@ -429,11 +435,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;
+            _showClientGpu=_settings.ShowClientGpu;ApplyClientGpu(_showClientGpu);
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(ShowClientGpu) }) Raise(field);
             ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
@@ -902,6 +909,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
         // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
         bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
+        PresentClientGpu(snapshot,now);
         // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
         var logs = _logCorrelator?.Snapshot;
         _logProjection.Update(snapshot.Sessions, logs, now);
@@ -949,7 +957,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(!PanicShortcut.TryParse(PanicShortcutText,out var panicShortcut,out string panicProblem)) throw new ArgumentException(panicProblem);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,ShowClientGpu=ShowClientGpu }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
@@ -967,7 +975,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
-            && MuteArrivingClients == _savedSettings.MuteArrivingClients
+            && MuteArrivingClients == _savedSettings.MuteArrivingClients && ShowClientGpu == _savedSettings.ShowClientGpu
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -990,6 +998,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
                 _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
+                ApplyClientGpu(snapshot.ShowClientGpu);
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";

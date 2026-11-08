@@ -400,7 +400,8 @@ internal static class DistributionSelfCheck
                 if(!(await monitor.SampleAsync(ct)).Resources.IsValid) throw new InvalidDataException("Native memory/commit sampling failed.");
                 await Task.Delay(1050,ct); // Rate counters need two collections on the single sampler.
                 gpuEvidence=(await monitor.SampleAsync(ct)).Resources.Gpu;
-                if(gpuEvidence is null || gpuEvidence.Adapters.Count>WindowsGpuTelemetryReader.MaximumAdapters
+                // Per-client numbers are off by default, so a monitor nobody configured publishes no client rows.
+                if(gpuEvidence is null || gpuEvidence.Adapters.Count>WindowsGpuTelemetryReader.MaximumAdapters || gpuEvidence.Clients.Count!=0
                     || gpuEvidence.Adapters.Any(adapter=>adapter.Engines.Count>WindowsGpuTelemetryReader.MaximumEnginesPerAdapter
                         || adapter.BusiestEnginePercent is { } percent && (!double.IsFinite(percent)||percent is <0 or >100)))
                     throw new InvalidDataException("GPU evidence violated the optional bounded counter contract.");

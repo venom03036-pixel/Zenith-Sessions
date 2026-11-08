@@ -75,6 +75,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.CustomTiming, "performance preset", "custom timing", "reset"),
         E("main-account", "Main saved account", "Use the selected library account as main, or clear the choice. This selection does not verify a running client.",
             SettingsSearchTarget.Performance, "main account choice", "library", "priority", "clear main"),
+        E("client-gpu", "Show each client's GPU use", "Off by default. Turn it on and save to show each client's busiest GPU engine and dedicated GPU memory as a column of the Sessions table. Unknown values stay Unavailable, never 0.",
+            SettingsSearchTarget.Performance, "gpu", "graphics card", "video memory", "vram", "dedicated memory", "engine", "utilization", "per client", "monitor"),
         E("process-timing", "Process details interval", "Custom process sampling interval: 500 to 5000 milliseconds. Cached measurements keep their original time.",
             SettingsSearchTarget.CustomTiming, "process sample", "polling", "cadence", "milliseconds", "monitor", "refresh"),
         E("dashboard-timing", "Dashboard interval", "Custom dashboard presentation interval: 250 to 2000 milliseconds.",
