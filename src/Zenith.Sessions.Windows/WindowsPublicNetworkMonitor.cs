@@ -11,7 +11,7 @@ namespace Zenith.Sessions.Windows;
 /// name and id are never read or kept. A Windows error on any read answers Unknown, which never holds (Rule 16), and the
 /// subscription stays so the next change is read again. Start, Stop and Dispose are expected on one STA thread (the manager's UI
 /// thread); Windows then delivers <see cref="Changed"/> on that thread through its message loop. A change that arrives while a
-/// read is under way is folded into one more read, so a burst of notifications costs at most two reads.
+/// read is under way schedules another read. Notifications during that read coalesce again; reads continue until no change is pending.
 /// </summary>
 public sealed class WindowsPublicNetworkMonitor : IPublicNetworkMonitor
 {
@@ -125,7 +125,7 @@ public sealed class WindowsPublicNetworkMonitor : IPublicNetworkMonitor
         Changed?.Invoke(exposure);
     }
 
-    // Caller holds _gate. Reads once, and once more for each notification that arrived meanwhile.
+    // Caller holds _gate. Coalesces notifications during each read, then repeats until no notification is pending.
     private NetworkExposure ReadFolded()
     {
         _reading = true;
