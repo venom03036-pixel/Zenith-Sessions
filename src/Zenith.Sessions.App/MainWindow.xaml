@@ -1121,6 +1121,25 @@
                   <WrapPanel Margin="0,10,0,0"><Button Content="Use selected server" Command="{Binding UseServer}" IsEnabled="{Binding CanUseServer}" Style="{StaticResource PrimaryButton}" Margin="0,0,8,8" /><Button Content="Copy requested link" Click="CopyRequestedServerLink" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource QuietButton}" Margin="0,0,8,8" /></WrapPanel>
                   <TextBlock Text="{Binding Status}" Style="{StaticResource Caption}" />
                 </StackPanel>
+                <Expander Header="Signed-in server options" DataContext="{Binding DataContext, RelativeSource={RelativeSource AncestorType=Window}}" Margin="0,10,0,10">
+                  <StackPanel>
+                    <TextBlock Text="Uses the selected account only when you press a fetch button. Each click loads one page; private observations stay in memory." Style="{StaticResource Caption}" Margin="0,6,0,8" />
+                    <WrapPanel>
+                      <Button Content="Recommended · selected account" Command="{Binding BrowseSignedServers}" CommandParameter="Recommended" IsEnabled="{Binding CanBrowseSignedServers}" Margin="0,0,6,6" />
+                      <Button Content="Lowest reported latency · selected account" Command="{Binding BrowseSignedServers}" CommandParameter="BestLatency" IsEnabled="{Binding CanBrowseSignedServers}" Margin="0,0,6,6" />
+                      <Button Content="Fetch my private servers" Command="{Binding BrowseSignedServers}" CommandParameter="OwnedPrivate" IsEnabled="{Binding CanBrowseSignedServers}" Margin="0,0,6,6" />
+                      <Button Content="Next signed-in page" Command="{Binding NextSignedServers}" IsEnabled="{Binding CanNextSignedServers}" Margin="0,0,6,6" />
+                      <Button Content="Cancel and clear signed-in pages" Command="{Binding ClearSignedServers}" Style="{StaticResource QuietButton}" Margin="0,0,6,6" />
+                    </WrapPanel>
+                    <ListView ItemsSource="{Binding SignedPublicServers}" SelectedItem="{Binding SelectedSignedServer}" MaxHeight="180" AutomationProperties.Name="Signed-in public servers"><ListView.View><GridView><GridViewColumn Header="Server" Width="280" DisplayMemberBinding="{Binding JobId}" /><GridViewColumn Header="Players" Width="85" DisplayMemberBinding="{Binding Occupancy}" /><GridViewColumn Header="Ping" Width="95" DisplayMemberBinding="{Binding Ping}" /><GridViewColumn Header="Friends" Width="85" DisplayMemberBinding="{Binding Friends}" /></GridView></ListView.View></ListView>
+                    <Button Content="Use selected signed-in public server" Command="{Binding UseSignedServer}" IsEnabled="{Binding CanBrowseSignedServers}" HorizontalAlignment="Left" Margin="0,6,0,8" />
+                    <ListView ItemsSource="{Binding OwnedPrivateServers}" SelectedItem="{Binding SelectedOwnedServer}" MaxHeight="180" AutomationProperties.Name="Owned private servers"><ListView.View><GridView><GridViewColumn Header="Name" Width="230" DisplayMemberBinding="{Binding Name}" /><GridViewColumn Header="Server ID" Width="120" DisplayMemberBinding="{Binding Id}" /><GridViewColumn Header="Players" Width="85" DisplayMemberBinding="{Binding Playing}" /><GridViewColumn Header="Capacity" Width="85" DisplayMemberBinding="{Binding MaxPlayers}" /></GridView></ListView.View></ListView>
+                    <WrapPanel Margin="0,8,0,8"><TextBox Text="{Binding PrivateServerName, UpdateSourceTrigger=PropertyChanged}" MaxLength="80" MinWidth="220" AutomationProperties.Name="New private-server name" /><Button Content="Review rename on Roblox…" Click="RenameOwnedPrivateServerClick" IsEnabled="{Binding CanBrowseSignedServers}" Margin="6,0,0,0" /></WrapPanel>
+                    <TextBlock Text="{Binding SignedServerStatus}" Style="{StaticResource Caption}" />
+                    <TextBlock Text="Buying, renewing and changing subscriptions are unavailable here. Manage them yourself on Roblox." Style="{StaticResource Caption}" Margin="0,8,0,0" />
+                    <Button Content="Open game page on roblox.com" Click="OpenGamePageClick" HorizontalAlignment="Left" Style="{StaticResource QuietButton}" />
+                  </StackPanel>
+                </Expander>
                 <!-- Private server tab: one explicit check with the selected account's saved session. Codes are never shown in full. -->
                 <Border Style="{StaticResource SurfaceCard}" DataContext="{Binding DataContext.ShareLink, RelativeSource={RelativeSource AncestorType=Window}}" Visibility="{Binding DataContext.IsPrivateServerTab, RelativeSource={RelativeSource AncestorType=Window}, Converter={StaticResource VisibleIf}}">
                   <StackPanel>

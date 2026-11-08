@@ -10,7 +10,7 @@ namespace Zenith.Sessions.Windows;
 /// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
     IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
-    Action<Type>? failed = null, IRobloxAccountDataClient? accountData = null)
+    Action<Type>? failed = null, IRobloxAccountDataClient? accountData = null, IRobloxSignedInServerClient? signedServers = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();

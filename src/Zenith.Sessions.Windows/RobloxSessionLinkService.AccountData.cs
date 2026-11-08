@@ -9,15 +9,23 @@ public sealed partial class RobloxSessionLinkService : IRobloxAccountDataService
     /// newest cookie before exposing observations. A failed or interrupted call never restores possibly stale authority.
     /// This deliberately adds an identity check to every observation (including private detail fields).
     /// </summary>
-    public async Task<RobloxAccountResult> ReadAccountAsync(RobloxAccountContext context, RobloxAccountRead kind,
+    public Task<RobloxAccountResult> ReadAccountAsync(RobloxAccountContext context, RobloxAccountRead kind,
         RobloxAccountContext? target, CancellationToken ct)
+        => RunAccountRequestAsync(context, kind, target, ct,
+            accountData is null ? null : (credential, token) => accountData.ReadAsync(kind, context.UserId, target?.UserId, credential, token));
+
+    // All credential-bearing directory operations share this exact operation/fence/rotation lifecycle. Only fixed
+    // internal clients can supply a request; no arbitrary URI or delegate is accepted by the public service API.
+    private async Task<RobloxAccountResult> RunAccountRequestAsync(RobloxAccountContext context, RobloxAccountRead kind,
+        RobloxAccountContext? target, CancellationToken ct,
+        Func<RobloxSessionCredential, CancellationToken, Task<RobloxAccountResponse>>? request, bool verifyBeforeRequest = false)
     {
         ArgumentNullException.ThrowIfNull(context); ct.ThrowIfCancellationRequested();
         if (!context.IsValid || !Enum.IsDefined(kind)) throw new ArgumentException("Select a verified saved account.");
         bool friendship = kind is RobloxAccountRead.FriendshipStatus or RobloxAccountRead.RequestFriendship or RobloxAccountRead.AcceptFriendship;
         if (friendship != (target is not null) || target is not null && (!target.IsValid || target.UserId == context.UserId || target.ProfileId == context.ProfileId))
             throw new ArgumentException("Review two different saved accounts for a friendship action.");
-        if (accountData is null) return new(RobloxAccountOutcome.Unavailable, context);
+        if (request is null) return new(RobloxAccountOutcome.Unavailable, context);
         var operation = Begin(context.ProfileId, SavedSessionOperationKind.AccountObservation, ct); bool succeeded = false;
         try
         {
@@ -48,19 +56,22 @@ public sealed partial class RobloxSessionLinkService : IRobloxAccountDataService
             using var credential = new RobloxSessionCredential(previous.SessionCookie, previous.ExpiresUtc);
             // A social mutation must confirm the actor BEFORE changing friendship state, as well as after any
             // response rotation. Keep this validation under the original durable fence; no new authority is published yet.
-            using var mutationCredential = kind is RobloxAccountRead.RequestFriendship or RobloxAccountRead.AcceptFriendship
+            using var mutationCredential = verifyBeforeRequest || kind is RobloxAccountRead.RequestFriendship or RobloxAccountRead.AcceptFriendship
                 ? await ConfirmMutationActorAsync(operation, credential, previous).ConfigureAwait(false) : null;
             if (mutationCredential is not null)
             {
                 var current = await ReadSnapshotAsync(operation).ConfigureAwait(false);
                 if (current.Record != pending || current.HighestAllocated != pending.Generation || current.LastCommitted != pending.Generation || current.HighestMutationId != fenceId)
                     throw AuthorizationChanged();
-                var other = await ((ISnapshotAuthorizationVault)vault).ReadWriteSnapshotAsync(target!.ProfileId, operation.Token).ConfigureAwait(false);
-                Ensure(operation); Reviewed(other.Record, target);
-                if (other.HighestAllocated != target.Generation || other.LastCommitted != target.Generation) throw AuthorizationChanged();
+                if (target is not null)
+                {
+                    var other = await ((ISnapshotAuthorizationVault)vault).ReadWriteSnapshotAsync(target.ProfileId, operation.Token).ConfigureAwait(false);
+                    Ensure(operation); Reviewed(other.Record, target);
+                    if (other.HighestAllocated != target.Generation || other.LastCommitted != target.Generation) throw AuthorizationChanged();
+                }
             }
             var sentCredential = mutationCredential ?? credential;
-            using var response = await accountData.ReadAsync(kind, context.UserId, target?.UserId, sentCredential, operation.Token).ConfigureAwait(false);
+            using var response = await request(sentCredential, operation.Token).ConfigureAwait(false);
             Ensure(operation);
             if (response.Outcome == RobloxAccountOutcome.Challenge)
                 return new(RobloxAccountOutcome.Challenge, context); // No automatic challenge handling or further requests.

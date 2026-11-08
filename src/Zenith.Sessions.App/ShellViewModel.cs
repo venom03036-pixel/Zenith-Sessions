@@ -330,7 +330,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
-        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IRobloxAccountDataClient? accountDataClient=null)
+        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IRobloxAccountDataClient? accountDataClient=null,IRobloxSignedInServerClient? signedServerClient=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -343,8 +343,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
         _diagnostics=new(root);
         _accountDataClient=accountDataClient??new RobloxAccountDataClient();
+        _signedServerClient=signedServerClient??new RobloxSignedInServerClient();
         // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
-        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),accountData:_accountDataClient);
+        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),accountData:_accountDataClient,signedServers:_signedServerClient);
         _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
@@ -408,6 +409,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         CancelAuthorization=new(_=>_authorizationStop?.Cancel());
         InitializeAccountHealthFeatures();
         InitializeAccountObservationFeatures();
+        InitializeSignedServerFeatures();
         CleanupCredentials=new(async _=> { if(!_ready) throw new AccountLinkException("Resolve the library startup error before retrying credential cleanup."); await CleanupCredentialsAsync(); },error=>Fail(error,ManagerSubsystem.Vault));
         InitializeHandoffProbe(handoffProbe);
         InitializeNativeTrialFeatures();
@@ -564,6 +566,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // Selection may change while the query, credential summaries or main-account lookup
         // waits. Capture the latest UI choice only at publication, before collection reset.
         Guid? selected = _selectAfterReload??SelectedAccount?.Profile.Id;
+        _publishingAccountRows=true;
+        try
+        {
         Accounts.Clear(); foreach (var row in rows)
         {
             // Attach cached images only at final UI publication, after any Lock/Panic clear.
@@ -574,6 +579,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
         RefreshAccountLaunchStates();
         SelectedAccount = Accounts.FirstOrDefault(a => a.Profile.Id == selected);
+        }
+        finally { _publishingAccountRows=false; ReconcileSignedServerSelection(); }
         _selectAfterReload=null;
         AccountCount = allCount; _filteredTotal = page.Total; PageLabel = page.Total == 0 ? "No matching profiles" : $"{page.Page * 100 + 1}–{Math.Min(page.Total, (page.Page + 1) * 100)} of {page.Total} profiles";RecordOverviewLibraryLoaded();
         Raise(nameof(CanNext)); Raise(nameof(CanPrevious)); Raise(nameof(EmptyAccountsText));
@@ -687,7 +694,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // sign-in lane may meanwhile be running a command for other rows, so it is neither cancelled nor waited for then.
         using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
         if(IsSignInLaneOperation(removal.StoppedOperationKind) || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
-        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,InspectNativeHandoff.Execution); }
+        { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,BrowseSignedServers.Execution,NextSignedServers.Execution,RenameOwnedPrivateServer.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
         Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}{queueStopped}"; AddEvent("Selected profiles removed.");
@@ -1206,7 +1213,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution, StartNativeTrial.Execution);
         await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
-            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
+            NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,BrowseSignedServers.Execution,NextSignedServers.Execution,RenameOwnedPrivateServer.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
         await StopOwnerAsync(DisposeRecipientBundlesAsync);
         await StopOwnerAsync(StopDirectoryFeaturesAsync);
@@ -1226,7 +1233,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(DisposeNativeTrialFeaturesAsync);
         _queryCancellation?.Dispose(); _preferencesWriter.Dispose(); _profileSerial.Dispose(); StopOwner(_credentialCleanup); await StopOwnerAsync(()=>_linkService.DisposeAsync());
         if(_signIn is IAsyncDisposable signInOwner) await StopOwnerAsync(()=>signInOwner.DisposeAsync());
-        StopOwner(_identityProjection); StopOwner(_vault); StopOwner(_sessionClient as IDisposable); StopOwner(_accountDataClient as IDisposable);
+        StopOwner(_identityProjection); StopOwner(_vault); StopOwner(_sessionClient as IDisposable); StopOwner(_accountDataClient as IDisposable); StopOwner(_signedServerClient as IDisposable);
         StopOwner(_accounts as IDisposable); StopOwner(_monitor as IDisposable); StopOwner(_settingsStore);_sampleSerial.Dispose();
     }
     // Shutdown only. Cancellation is expected while stopping (Error Handling Standards); any other fault keeps its type only (Rule 10, via Fail).
@@ -1292,7 +1299,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         string queueStopped=StopQueueForSavedStateRemoval("Trial stopped because a saved sign-in was removed. Review any process-start receipt before retrying; existing Roblox clients remain open.");
         if(QueueReady) await _launchQueue.InvalidateAuthorizationAsync(selected.Profile.Id,_lifetime.Token);
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
-        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,InspectNativeHandoff.Execution);
+        _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,RefreshPresence.Execution,RefreshPrivateDetails.Execution,BefriendReviewedAccounts.Execution,BrowseSignedServers.Execution,NextSignedServers.Execution,RenameOwnedPrivateServer.Execution,InspectNativeHandoff.Execution);
         await Task.Run(()=>_linkService.DisconnectAsync(selected.Profile.Id,_lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token);
         if(!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice="Saved sign-in removed from Zenith. The account profile and running clients were preserved. This does not sign out Roblox on other devices."+queueStopped;
