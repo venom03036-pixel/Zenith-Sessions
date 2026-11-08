@@ -87,7 +87,7 @@ public sealed class TargetedInputRun
     private Transition _requested;
     private Task<TargetedInputRunSnapshot>? _transition;
     private Task<TargetedInputDispatchResult>? _batch;
-    private bool _batchActive, _transitionActive, _clearPending, _clearReturnPaused;
+    private bool _batchActive, _transitionActive, _clearPending, _clearReturnPaused, _stopAfterFault;
     private long _generation = 1, _sequence;
     private int _x, _y;
     private string _explanation = "Input ownership opened; no input has been sent.";
@@ -187,7 +187,14 @@ public sealed class TargetedInputRun
     internal void RequestStopLocked(string reason)
     {
         if (_state == TargetedInputRunState.Stopped || _owner.DisposalInProgressLocked && !_transitionActive) return;
-        if (_requested != Transition.Stop) { _generation++; _requested = Transition.Stop; _state = TargetedInputRunState.Stopping; _explanation = reason; }
+        if (_requested != Transition.Stop)
+        {
+            // Stopping a fault that released (or is releasing) its holds only frees the lease, whoever asks;
+            // keep why it faulted. A failed cleanup's text already replaced that reason, so it keeps the stop's.
+            _stopAfterFault = _requested == Transition.Fault || _state == TargetedInputRunState.Faulted && _submitted.Count == 0;
+            if (!_stopAfterFault) _explanation = reason;
+            _generation++; _requested = Transition.Stop; _state = TargetedInputRunState.Stopping;
+        }
         EnsureTransitionLocked();
     }
     private Task<TargetedInputRunSnapshot> EnsureTransitionLocked()
@@ -325,7 +332,10 @@ public sealed class TargetedInputRun
                     _requested = Transition.None;
                     _transitionActive = false;
                     if (request == Transition.Stop)
-                    { _logical.Clear(); _state = TargetedInputRunState.Stopped; _owner.ReleaseLocked(this); }
+                    {
+                        _logical.Clear(); _state = TargetedInputRunState.Stopped; _owner.ReleaseLocked(this);
+                        if (_stopAfterFault) _explanation += " Stopped after the fault; its holds were released and the window lease is free.";
+                    }
                     else if (request == Transition.Fault) _state = TargetedInputRunState.Faulted;
                     else if (request == Transition.Clear)
                     {

@@ -489,6 +489,22 @@ public sealed class TargetedInputCoordinatorTests
     }
 
     [Fact]
+    public async Task StoppingAFaultWhoseHoldsWereReleasedKeepsTheFaultReasonInsteadOfBlamingTheUser()
+    {
+        await using var fixture = new Fixture(); var run = Open(fixture, Target(1)); int ordinary = 0;
+        fixture.Transport.Validation = (_, cleanup, _) => ValueTask.FromResult(cleanup || Interlocked.Increment(ref ordinary) == 1
+            ? TargetedInputValidation.Current : TargetedInputValidation.GeometryChanged);
+        var faulted = await run.SubmitAsync(new[] { Down(65), Down(66) }).WaitAsync(Deadline);
+        Assert.Equal(TargetedInputRunState.Faulted, faulted.Run.State); Assert.Equal(0, faulted.Run.SubmittedHolds);
+        var stopped = await run.StopAsync().WaitAsync(Deadline);
+        Assert.Equal(TargetedInputRunState.Stopped, stopped.State);
+        Assert.Equal(faulted.Run.Explanation + " Stopped after the fault; its holds were released and the window lease is free.", stopped.Explanation);
+        // An ordinary stop of a healthy run still names the user.
+        fixture.Transport.Validation = null;
+        Assert.Equal("Stopped by user.", (await Open(fixture, Target(2)).StopAsync().WaitAsync(Deadline)).Explanation);
+    }
+
+    [Fact]
     public async Task DefinitivelyGoneRegistrationNeedsNoReleaseToAReusedWindow()
     {
         await using var fixture = new Fixture(); var run = Open(fixture); await run.SubmitAsync(new[] { Down(65) }).WaitAsync(Deadline);

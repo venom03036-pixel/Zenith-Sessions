@@ -390,6 +390,9 @@ public sealed partial class TargetedMacroExecutionTests
             Assert.Equal(TargetedInputRunState.Stopped, result.Snapshot.Input.State);
             Assert.Equal(0, result.Snapshot.Input.SubmittedHolds);
             Assert.DoesNotContain("Cleanup failed", result.Snapshot.Explanation);
+            // The runner's stop only freed the faulted run's lease; the input snapshot keeps why it faulted.
+            Assert.StartsWith("The pinned target identity or geometry changed", result.Snapshot.Input.Explanation);
+            Assert.EndsWith("its holds were released and the window lease is free.", result.Snapshot.Input.Explanation);
             Assert.Collection(f.Transport.Commands,
                 pressed => { Assert.False(pressed.Cleanup); Assert.Equal(TargetedInputKind.KeyDown, pressed.Signal.Kind); },
                 released => { Assert.True(released.Cleanup); Assert.Equal(TargetedInputKind.KeyUp, released.Signal.Kind); });
