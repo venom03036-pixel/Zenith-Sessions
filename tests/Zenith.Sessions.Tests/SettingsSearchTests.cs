@@ -142,6 +142,18 @@ public sealed class SettingsSearchTests
     }
 
     [Fact]
+    public void PendingClientPerformanceListsOnlyAutomaticAffinityAsUnavailableBesideCoreSpreading()
+    {
+        // Core spreading sets process affinity in Sessions, so the pending explanation must not call affinity itself
+        // unconfigurable.
+        var result = Assert.Single(SettingsSearchCatalog.Search("fps"));
+        Assert.Equal("pending-client-performance", result.Id);
+        Assert.Contains("CPU caps and automatic affinity policies are not configurable here", result.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("cap/affinity", result.Description, StringComparison.Ordinal);
+        Assert.Contains("core spreading are set in Sessions", result.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void CustomNavigationExplainsThatItDoesNotChangeTheProfileOrDraft()
     {
         var result = SettingsSearchCatalog.Search("Custom")[0];

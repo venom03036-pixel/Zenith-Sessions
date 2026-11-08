@@ -110,7 +110,7 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Previews, "preview", "thumbnails", "live view", "capture", "watch clients", "stop previews"),
         E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
             SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
-        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
+        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, rendering, CPU caps and automatic affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];
 
