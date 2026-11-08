@@ -157,6 +157,27 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task FindBoxDoesNotClaimACheckForALinkThePrivateTabRefused()=>SearchTest.OnUi(async()=>
+    {
+        const string Sent="Share link sent to Browse servers → Private server. That tab shows whether it was checked. Its code was not searched.";
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true,Response=_=>Private()};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        await using var find=new DestinationSearchViewModel(f.Directory,f.Browser,f.Details,()=>f.Allowed,clock:f.Clock,shareLinkHandler:link=>vm.CheckAsync(link));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            // A second link pasted in the Find box while the first is still being checked: the Private server tab refuses it.
+            f.Browser.LinkInput=Link("ExperienceDetails");await find.SearchOrUseAsync();
+            Assert.Equal(1,resolver.Calls);Assert.Equal("",f.Browser.LinkInput);Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);
+            // Back on the Find step, the status points at the tab that owns the answer instead of saying a check is under way.
+            Assert.Equal(Sent,find.Status);Assert.DoesNotContain(ShareCode,find.Status,StringComparison.Ordinal);
+        }
+        finally {resolver.Hold=false;resolver.Release();await first.WaitAsync(TimeSpan.FromSeconds(5));}
+        Assert.True(vm.HasPrivateResult);Assert.Null(f.Browser.Destination);
+        Assert.Equal(Sent,find.Status); // Still true once the earlier check has finished (a private result leaves the destination alone).
+    });
+
+    [Fact]
     public Task PrivateResultShowsLast4AndDisabledJoin()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();

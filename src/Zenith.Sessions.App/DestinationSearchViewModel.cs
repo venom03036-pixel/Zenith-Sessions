@@ -130,7 +130,8 @@ public sealed class DestinationSearchViewModel:Observable,IAsyncDisposable
         if(_shareLinks is not null && RobloxShareLinkParser.TryParse(input,out var share))
         {
             // A share code is never searched or logged: clear the box, then hand the link to the Private server check, which owns it.
-            Invalidate("Checking the share link under Browse servers → Private server. Its code was not searched.",clearInput:true);
+            // That tab may refuse it (a check still running or stopping, no account, Lock), so this status never says a check is under way.
+            Invalidate("Share link sent to Browse servers → Private server. That tab shows whether it was checked. Its code was not searched.",clearInput:true);
             return _shareLinks(share!);
         }
         PublicRobloxGameSearchQuery? query;
