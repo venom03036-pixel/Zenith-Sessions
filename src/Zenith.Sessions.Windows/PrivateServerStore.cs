@@ -116,7 +116,7 @@ public sealed class PrivateServerStore : IPrivateServerStore, IDisposable
                 () => { try { heldFile.Dispose(); } finally { _writer.Release(); } });
             ownership = null; return lease;
         }
-        catch { ownership?.Dispose(); _writer.Release(); throw; }
+        catch { try { ownership?.Dispose(); } finally { _writer.Release(); } throw; }
     }
 
     private async Task<T> SerializedAsync<T>(Func<CancellationToken, Task<T>> operation, CancellationToken ct)
