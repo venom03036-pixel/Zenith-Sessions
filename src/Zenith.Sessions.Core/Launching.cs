@@ -92,7 +92,7 @@ public static class LaunchDescriptions
         LaunchProblem.ProviderUnavailable=>"Native account launch provider unavailable; no client was started.",
         LaunchProblem.IdentityUnverified=>"Link and verify the intended account before launching.",
         LaunchProblem.InsufficientCapacity=>"Waiting for fresh measurements and sufficient resource headroom.",
-        LaunchProblem.StartupRejected=>"The provider refused startup before a client started. Launch evidence on Join a game shows which check stopped it.",
+        LaunchProblem.StartupRejected=>"The provider refused startup before a client started. While Zenith stays open, this request's native launch stages in Launch evidence on Join a game may show which check stopped it; a restart clears them, and a refusal before any stage was recorded leaves none.",
         LaunchProblem.ArrivalUnverified=>"The correct account and destination were not verified. Reconcile before retrying.",
         LaunchProblem.TimedOut=>"Startup exceeded its deadline. A client may exist; reconcile before retrying.",
         LaunchProblem.CancelledDuringStartup=>"Startup was cancelled. A client may exist; reconcile before retrying.",
@@ -102,7 +102,11 @@ public static class LaunchDescriptions
         LaunchProblem.ClientStartedUnverified=>"A client process was reported started. Its account, current liveness and destination are unverified; review before retrying.",
         // Cause-neutral: the provider's Rejected answer covers the saved sign-in, client trust, a busy
         // provider, a closed page and local faults; only the request's native launch stages name which.
-        LaunchProblem.PreparationRejected=>"Preparation ended before native startup. The saved sign-in, client trust, a busy provider, a closed page or a local fault can cause this; Launch evidence on Join a game shows which. Then create a fresh request.",
+        // The pointer to them is a "may", not a promise (O-C2-3): the stages are memory-only snapshots
+        // (INativeLaunchDiagnosticSource, this app run, at most 128) while this Failed row is saved and
+        // reopens after a restart, and the coordinator also records this problem for a fault it caught
+        // itself or an invalid prepared handle (LaunchCoordinatorPreparation), where no stage was recorded.
+        LaunchProblem.PreparationRejected=>"Preparation ended before native startup. The saved sign-in, client trust, a busy provider, a closed page or a local fault can cause this. While Zenith stays open, this request's native launch stages in Launch evidence on Join a game may show which; a restart clears them, and a fault caught before any stage was recorded leaves none. Then create a fresh request.",
         LaunchProblem.PreparationTimedOut=>"Preparation exceeded its deadline before native startup. Its actual worker must finish cleanup before another attempt.",
         LaunchProblem.PreparationExpired=>"The temporary launch request expired before native startup. Prepare a fresh request.",
         LaunchProblem.PreparationCleanupFailed=>"Launch preparation cleanup could not be confirmed. Preserve the data and close Zenith before retrying.",

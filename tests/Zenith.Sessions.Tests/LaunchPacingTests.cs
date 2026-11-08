@@ -143,16 +143,29 @@ public sealed class LaunchPacingTests
     {
         // The pause sends the user to each failed request. A preparation refusal can come from the saved
         // sign-in, client trust, a busy provider, a closed page or a local fault, so its row must not name
-        // the sign-in alone, and both refusal rows say where the stage that stopped them is shown.
+        // the sign-in alone, and both refusal rows say where the stage that stopped them may be shown.
         string preparation = LaunchDescriptions.Explain(LaunchProblem.PreparationRejected);
         Assert.DoesNotContain("Review the saved sign-in", preparation);
         foreach (string cause in new[] { "saved sign-in", "client trust", "a busy provider", "a closed page", "a local fault" })
             Assert.Contains(cause, preparation);
-        Assert.Contains("Launch evidence on Join a game shows which", preparation);
         Assert.Contains("create a fresh request", preparation);
         string startup = LaunchDescriptions.Explain(LaunchProblem.StartupRejected);
         Assert.Contains("before a client started", startup);
-        Assert.Contains("Launch evidence on Join a game shows which", startup);
+        // O-C2-3: the pointer is a "may", with its two limits named, never a promise. The native launch
+        // stages are memory-only snapshots (INativeLaunchDiagnosticSource, at most 128, this app run), while
+        // the Failed row is saved and reopens after a restart with no stage to show. PreparationRejected is
+        // also recorded by the coordinator itself for a fault it caught or an invalid prepared handle
+        // (LaunchCoordinatorPreparation: catch(Exception), !validHandle), where no provider stage names a
+        // cause; StartupRejected likewise covers a Rejected answer given before any stage was recorded.
+        foreach (string row in new[] { preparation, startup })
+        {
+            Assert.DoesNotContain("shows which", row);
+            Assert.Contains("native launch stages in Launch evidence on Join a game may show which", row);
+            Assert.Contains("While Zenith stays open", row);
+            Assert.Contains("a restart clears them", row);
+        }
+        Assert.Contains("a fault caught before any stage was recorded leaves none", preparation);
+        Assert.Contains("a refusal before any stage was recorded leaves none", startup);
     }
 
     [Fact]
