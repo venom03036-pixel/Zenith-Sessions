@@ -207,7 +207,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     // Several managers can run at once (one per data folder), so the tray, window and taskbar say which one this is.
     public string InstanceTitle { get; }
     public bool IsReady=>_ready;
-    public string ProductLabel => IsSample ? "ISOLATED SAMPLE LIBRARY" : "PERSONAL · LOCAL STORAGE";
+    // The sidebar's library label; it names the same library as InstanceTitle, so another folder never reads as the personal one.
+    public string ProductLabel { get; }
     public ObservableCollection<AccountRow> Accounts { get; } = [];
     public ObservableCollection<SessionRow> Sessions { get; } = [];
     private SessionRow? _selectedSession;
@@ -320,7 +321,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null)
     {
-        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
+        DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);

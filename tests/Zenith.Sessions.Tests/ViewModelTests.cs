@@ -315,6 +315,27 @@ public sealed class ViewModelTests : IDisposable
         Assert.Equal("{Binding WindowTitle}",(string?)System.Xml.Linq.XDocument.Load(xaml).Root!.Attribute("Title"));
     }).WaitAsync(TimeSpan.FromSeconds(10));
     [Fact]
+    public Task SidebarLabelNamesTheSameLibraryAsTheWindowTitle()=>OnDispatcherAsync(async ()=>
+    {
+        // The window and tray name another folder "Library <folder>", so the sidebar must not call it the personal library.
+        await using(var sample=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new SyntheticMonitor()))
+            Assert.Equal("ISOLATED SAMPLE LIBRARY",sample.ProductLabel);
+        await using(var work=new ShellViewModel(Path.Combine(_root,"Work"),false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()))
+        {
+            Assert.Equal("Zenith Sessions · Library Work",work.InstanceTitle);
+            Assert.Equal("LIBRARY · WORK",work.ProductLabel);
+        }
+        // A long folder name is cut short with an ellipsis instead of filling the narrow sidebar.
+        await using var library=new ShellViewModel(Path.Combine(_root,new string('n',200)),false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
+        Assert.StartsWith("LIBRARY · NNN",library.ProductLabel); Assert.EndsWith("…",library.ProductLabel);
+        Assert.InRange(library.ProductLabel.Length,1,StartupOptions.SidebarLabelLimit);
+        // Only the resolved personal library keeps the personal label; a separate folder named Personal does not.
+        string personal=Path.Combine(_root,"personal-stand-in"); Directory.CreateDirectory(personal);
+        Assert.Equal("PERSONAL · LOCAL STORAGE",StartupOptions.SidebarLabelFor(personal.ToUpperInvariant()+"\\",false,personal));
+        Assert.Equal("LIBRARY · PERSONAL",StartupOptions.SidebarLabelFor(Path.Combine(_root,"Personal"),false,personal));
+        Assert.Equal("ISOLATED SAMPLE LIBRARY",StartupOptions.SidebarLabelFor(personal,true,personal));
+    }).WaitAsync(TimeSpan.FromSeconds(10));
+    [Fact]
     public Task FavoritesAndNotesRoundTripThroughTheActualMetadataCommands()=>CheckAsync(async vm=>
     {
         await vm.SaveAccountAsync(AccountProfile.Create("Source") with { Notes="Synthetic note\nSecond line" });

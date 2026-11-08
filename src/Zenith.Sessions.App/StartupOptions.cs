@@ -14,19 +14,34 @@ public sealed record StartupOptions(string DataRoot,bool SampleProfiles,bool Sel
     public static string DescribeInstance(string dataRoot,bool sample,string personalRoot)
     {
         if(sample) return "Sample preview";
-        if(NamesSameFolder(dataRoot,personalRoot)) return "Personal";
-        string full=Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)),name=Path.GetFileName(full);
         // "Library" keeps a separate folder that happens to be named Personal from reading as the personal library.
-        return "Library "+(name.Length>0?name:full);
+        return OtherLibraryName(dataRoot,personalRoot) is { } name?"Library "+name:"Personal";
     }
     /// <summary>The tray, window and taskbar title for this manager, cut to fit the tray.</summary>
-    public static string TitleFor(string dataRoot,bool sample)
+    public static string TitleFor(string dataRoot,bool sample)=>Shorten("Zenith Sessions · "+DescribeInstance(dataRoot,sample),TrayTextLimit);
+    // The sidebar rail is narrow, so a long folder name is cut here; the window title and tray keep more of it.
+    public const int SidebarLabelLimit=40;
+    /// <summary>The sidebar's library label. It names the same library as <see cref="DescribeInstance(string,bool,string)"/>.</summary>
+    public static string SidebarLabelFor(string dataRoot,bool sample)=>SidebarLabelFor(dataRoot,sample,DefaultRoot);
+    public static string SidebarLabelFor(string dataRoot,bool sample,string personalRoot)
     {
-        string title="Zenith Sessions · "+DescribeInstance(dataRoot,sample);
-        if(title.Length<=TrayTextLimit) return title;
-        int cut=TrayTextLimit-1;
-        if(char.IsHighSurrogate(title[cut-1])) cut--;
-        return title[..cut]+"…";
+        if(sample) return "ISOLATED SAMPLE LIBRARY";
+        return OtherLibraryName(dataRoot,personalRoot) is { } name?Shorten("LIBRARY · "+name.ToUpperInvariant(),SidebarLabelLimit):"PERSONAL · LOCAL STORAGE";
+    }
+    // The folder name another library is known by, or null when the folder is the personal library.
+    private static string? OtherLibraryName(string dataRoot,string personalRoot)
+    {
+        if(NamesSameFolder(dataRoot,personalRoot)) return null;
+        string full=Path.TrimEndingDirectorySeparator(Path.GetFullPath(dataRoot)),name=Path.GetFileName(full);
+        return name.Length>0?name:full;
+    }
+    // Cuts to the limit with an ellipsis, never splitting a surrogate pair.
+    private static string Shorten(string text,int limit)
+    {
+        if(text.Length<=limit) return text;
+        int cut=limit-1;
+        if(char.IsHighSurrogate(text[cut-1])) cut--;
+        return text[..cut]+"…";
     }
     public static StartupOptions Parse(IReadOnlyList<string> arguments,string defaultRoot)
     {
