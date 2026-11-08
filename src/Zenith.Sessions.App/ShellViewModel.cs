@@ -330,10 +330,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
-        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null)
+        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IShutdownScheduler? shutdownScheduler=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
-        _idleLock=new(idleClock);
+        _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
@@ -370,6 +370,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
         InitializeClientSoundFeatures(clientSound);
+        InitializeScheduledShutdownFeatures(shutdownScheduler);
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
@@ -1066,7 +1067,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(()=>StopScheduledShutdownOperations(locking));Step(StopGroupChanges);
         Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1142,6 +1143,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     internal bool PrepareForSessionEnd(TimeSpan flushBudget)
     {
+        // The session end may be the shutdown Zenith scheduled arriving; exit's cancel of that schedule is skipped.
+        _windowsSessionEnding=true;
         BeginShutdown();
         _diagnostics.Record(ManagerEventKind.Shutdown);
         // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
@@ -1155,6 +1158,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(_shuttingDown) return;
         _shuttingDown=true;
         StopIdleLock();
+        StopShutdownCountdown();
         StopClientPriorityOperations();
         StopClientTrimOperations();
         StopClientSoundOperations();
@@ -1191,6 +1195,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await DisposeClientSoundFeaturesAsync();
+        await DisposeScheduledShutdownFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.

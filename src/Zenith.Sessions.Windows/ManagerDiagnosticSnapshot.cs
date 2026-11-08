@@ -33,6 +33,8 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.ControlsLocked => "Manager controls locked.",
         ManagerEventKind.ControlsUnlocked => "Manager controls unlocked.",
         ManagerEventKind.Shutdown => "Manager shutdown recorded.",
+        ManagerEventKind.ShutdownScheduled => "Windows accepted a scheduled PC shutdown asked for in Settings.",
+        ManagerEventKind.ShutdownScheduleCancelled => "Windows cancelled the scheduled PC shutdown.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."
     };

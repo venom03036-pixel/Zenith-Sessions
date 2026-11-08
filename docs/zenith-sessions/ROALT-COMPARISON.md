@@ -90,6 +90,12 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | R-accounts-4 | Account headshots load with one batched lookup per page instead of three sequential requests per account. | Account pictures for a page load in batched requests instead of one request per player. | `65829e7` |
 | R-research-11 | HTTP clients are tested over a real loopback socket, so production handler settings (no redirects, no cookie jar) are exercised. | The share-link and server-list clients are tested over a real loopback socket, so their real handler settings are exercised. | `db9d57c` |
 
+### Round 4 (owner decisions of 2026-11-08)
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-shell-21 | Scheduled Windows shutdown with a countdown, schedule and cancel through Windows' shutdown tool; the schedule survives a restart. | Settings → Scheduled shutdown asks Windows' own shutdown tool (shutdown.exe /s /t and /a) to turn the PC off after a chosen delay, with a countdown and Cancel on Settings and in the footer. Nothing is scheduled unless asked in this run and nothing is saved; Panic cancels it and never starts one, Lock leaves it, Exit cancels it, a Windows session end does not. | lane4/D7 |
+
 ## Not copied: techniques Zenith excludes
 
 | RoALT feature | Why Zenith does not do it |
@@ -122,7 +128,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Client control | R-instances-7, R-instances-12, R-instances-16, R-instances-18, R-instances-15 | A hard CPU cap per client, force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit, per-client GPU numbers |
 | Idle kick | R-instances-17 | Anti-AFK by focusing clients and sending a key. Not recommended: it is idle-policy evasion and bypasses Zenith's single input path |
 | App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
-| Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-shell-21, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, scheduled shutdown, a same-pass retry for pending headshots |
+| Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, a same-pass retry for pending headshots (scheduled shutdown, R-shell-21, was approved and built in round 4) |
 | Not RoALT, found by this loop | Z1559, M-L1a-6, R-research-10, R-shell-13 | Bound the exit wait for a browser that never reports its exit; whether one 401 from the share-link endpoint should mark a session as needing sign-in; recording live Roblox responses for tests (network access); moving the data folder |
 
 ## Needs live accounts or clients

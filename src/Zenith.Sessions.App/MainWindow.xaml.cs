@@ -258,6 +258,8 @@ public partial class MainWindow : Window
                 "close-button"=>SettingsCloseButtonExits,
                 "idle-lock"=>SettingsIdleLock,
                 "panic-shortcut"=>SettingsPanicShortcut,
+                // The delay choice, never Schedule shutdown: search lands on a field, not on a button that starts work.
+                "scheduled-shutdown"=>SettingsShutdownDelay,
                 _=>focus
             };
         if(entry.Id=="performance-transfer")
