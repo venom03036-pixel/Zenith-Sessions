@@ -574,8 +574,56 @@ public sealed class ClientProcessPriorityTests
         fixture.Native.Clients[1].Affinity = fixture.Native.Clients[1].SystemAffinity = null; // Threads in several processor groups.
         var result = await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2);
         Assert.Equal(ClientProcessPriorityStatus.SettingUnavailable, result.Results[0].Status);
-        Assert.Equal(ClientProcessPriorityStatus.Applied, result.Results[1].Status);
-        Assert.Equal(new[] { (2, "affinity aa") }, fixture.Native.OtherSets);
+        // The other client alone has nothing to spread from, so it keeps every core instead of half of them.
+        Assert.Equal(ClientProcessPriorityStatus.NotEnoughCores, result.Results[1].Status);
+        Assert.Contains("two selected clients that can be changed", result.Results[1].Explanation, StringComparison.Ordinal);
+        Assert.Equal(0xFFul, fixture.Native.Clients[2].Affinity);
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, result.PendingRestoreCount);
+    }
+
+    [Theory]
+    [InlineData("unreported", ClientProcessPriorityStatus.SettingUnavailable)]
+    [InlineData("exited", ClientProcessPriorityStatus.InvalidClient)]
+    [InlineData("high", ClientProcessPriorityStatus.UnsupportedPriority)]
+    [InlineData("conflict", ClientProcessPriorityStatus.Conflict)]
+    public async Task SpreadDividesTheCoresOnlyAmongTheClientsItCanChange(string refusal, ClientProcessPriorityStatus expected)
+    {
+        await using var fixture = new Fixture(1, 2, 3);
+        var refused = fixture.Native.Clients[2];
+        switch (refusal)
+        {
+            case "unreported": refused.Affinity = refused.SystemAffinity = null; break; // Threads in several processor groups.
+            case "exited": refused.Running = false; break;
+            case "high": refused.Priority = 0x80; break;
+            default:
+                await fixture.Change(ClientProcessPriorityAction.BelowNormal, 2);
+                refused.Priority = 0x20; // Changed back elsewhere after Zenith's change.
+                break;
+        }
+        var untouched = refused.State;
+        var spread = await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2, 3);
+        Assert.Equal(new[] { ClientProcessPriorityStatus.Applied, expected, ClientProcessPriorityStatus.Applied },
+            spread.Results.Select(row => row.Status));
+        // The refused client leaves no unused share: the two clients that changed split every core between them.
+        Assert.Equal(0x55ul, fixture.Native.Clients[1].Affinity);
+        Assert.Equal(0xAAul, fixture.Native.Clients[3].Affinity);
+        Assert.Contains("No other client changed in the same operation", spread.Results[0].Explanation, StringComparison.Ordinal);
+        Assert.Equal(untouched, refused.State);
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
+    }
+
+    [Fact]
+    public async Task PanicWhileSpreadReadsItsClientsChangesNoneAndClosesEveryHandle()
+    {
+        await using var fixture = new Fixture(1, 2, 3);
+        fixture.Native.BeforeRead = (client, _) => { if (client.Pid == 2) fixture.Control.CancelOperations(); };
+        var spread = await fixture.Change(ClientProcessPriorityAction.SpreadCores, 1, 2, 3);
+        Assert.True(spread.Cancelled);
+        Assert.All(spread.Results, row => Assert.Equal(ClientProcessPriorityStatus.Cancelled, row.Status));
+        Assert.Equal(0, fixture.Native.Attempts);
+        Assert.Equal(0, spread.PendingRestoreCount);
+        Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
     }
 
     [Theory]

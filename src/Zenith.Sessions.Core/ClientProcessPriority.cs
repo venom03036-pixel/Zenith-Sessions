@@ -2,8 +2,9 @@ namespace Zenith.Sessions.Core;
 
 /// <summary>
 /// Normal and BelowNormal change only the priority class. Efficiency also turns on EcoQoS power throttling and very low
-/// memory priority. SpreadCores gives each selected client its own share of the CPU cores. RestoreOriginal returns every
-/// value this owner changed to the client's own original.
+/// memory priority. SpreadCores divides the CPU cores among the selected clients it can change, so the shares of one operation
+/// never overlap; clients spread in separate operations can share cores. RestoreOriginal returns every value this owner
+/// changed to the client's own original.
 /// </summary>
 public enum ClientProcessPriorityAction { Normal, BelowNormal, RestoreOriginal, Efficiency, SpreadCores }
 public enum ClientProcessPriorityClass { Normal, BelowNormal, Unsupported }
@@ -22,7 +23,7 @@ public sealed record ClientProcessPriorityResult(SessionObservation Session, Cli
         ClientProcessPriorityStatus.Applied when Action == ClientProcessPriorityAction.Efficiency
             => "Windows confirmed efficiency mode: Below normal priority, EcoQoS power throttling and very low memory priority.",
         ClientProcessPriorityStatus.Applied when Action == ClientProcessPriorityAction.SpreadCores
-            => "Windows confirmed this client's own share of the CPU cores.",
+            => "Windows confirmed this client's share of the CPU cores. No other client changed in the same operation uses them.",
         ClientProcessPriorityStatus.Applied => "The requested process priority was confirmed by Windows.",
         ClientProcessPriorityStatus.Restored => "Windows confirmed the client's original priority, efficiency and core settings.",
         ClientProcessPriorityStatus.Unchanged when Action == ClientProcessPriorityAction.RestoreOriginal && Requested is null
@@ -33,7 +34,7 @@ public sealed record ClientProcessPriorityResult(SessionObservation Session, Cli
         ClientProcessPriorityStatus.UnsupportedPriority => "The current priority is outside Normal and Below normal. It was preserved.",
         ClientProcessPriorityStatus.Conflict => "Another change to this client's priority, efficiency or core setting was observed. The current settings were preserved.",
         ClientProcessPriorityStatus.SettingUnavailable => "Windows did not report this client's current efficiency or core setting, so it was not changed.",
-        ClientProcessPriorityStatus.NotEnoughCores => "Spreading needs at least two selected clients and two CPU cores for each. Nothing was changed.",
+        ClientProcessPriorityStatus.NotEnoughCores => "Spreading needs at least two selected clients that can be changed, and two CPU cores for each. Nothing was changed.",
         ClientProcessPriorityStatus.CapacityReached => "The 128-process restore limit is full. Restore existing settings before changing another process.",
         ClientProcessPriorityStatus.Cancelled => "This client was not changed because the operation was stopped.",
         ClientProcessPriorityStatus.Busy => "Another priority operation still owns its actual work. No additional operation was queued.",
