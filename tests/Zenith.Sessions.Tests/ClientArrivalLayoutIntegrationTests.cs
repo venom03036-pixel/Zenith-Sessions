@@ -349,6 +349,51 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
 
+    // O-C5-3: a client connects during a manual window operation that then fails, for example because the provider returned no
+    // result for the pinned client. The failure report replaces the operation's status after the operation's own finally block
+    // has run, so the note that a client was left alone must be added to that final report, not to the status it replaces.
+    [Fact]
+    public Task AManualOperationThatFailsStillReportsTheClientThatConnectedDuringIt() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(475, minutesAgo: 3); var second = log.Client(476, minutesAgo: 2); var third = log.Client(477, minutesAgo: 1);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.StateChanges);
+        // The user restores the first client by hand; the provider has not answered yet when the second client connects.
+        shell.Sessions.Single(row => row.Observation.ProcessId == 475).IsChecked = true;
+        monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        shell.RestoreCheckedClients.Execute(null);
+        try
+        {
+            Assert.True(shell.IsArrangingClients);
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            Assert.Equal(2, monitor.StateChanges);
+        }
+        finally
+        {
+            // No result for the pinned client: the shell refuses to show this as a success, and the command reports a failure.
+            monitor.Pending.TrySetResult(new([], false, "Synthetic result without the pinned client"));
+        }
+        monitor.Pending = null;
+        await shell.RestoreCheckedClients.Execution; await shell.ClientArrivalWork;
+        Assert.False(shell.IsArrangingClients);
+        Assert.Contains(shell.Events, e => e.Contains("Operation failed"));
+        Assert.StartsWith("The window operation could not finish.", shell.ClientWindowStatus);
+        Assert.Contains("A client connected during this window operation, so automatic layout left the windows alone.", shell.ClientWindowStatus);
+        // The client that connected meanwhile counts as seen; the next client that connects gets the saved choice again.
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(3, monitor.StateChanges);
+        Assert.Equal(new[] { 477 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
+        Assert.DoesNotContain("during this window operation", shell.ClientWindowStatus);
+    });
+
     // O-C5-2: the Settings help text under "When a client connects" lists every case in which a connected client is left
     // alone and never counts again, so the N-B5a-6 rule (a client that connects during a manual window operation) is not
     // learned only from the status line appended after that operation ends.

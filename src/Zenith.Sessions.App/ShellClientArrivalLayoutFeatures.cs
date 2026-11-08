@@ -147,7 +147,9 @@ public sealed partial class ShellViewModel
         catch (Exception error) { ReportClientWindowFailure(error); }
     }
 
-    // IsArrangingClients turned false: the manual operation has written its report, so add why Zenith left a client alone.
+    // The manual operation's report is final (its result, its stopped report or its failure report), so add why Zenith left a
+    // client alone. RunManualWindowOperationAsync calls this after the operation's outcome is handled, never the
+    // IsArrangingClients setter: a failure's report comes after that setter runs and would replace the note (O-C5-3).
     private void ManualWindowOperationEnded()
     {
         if (!_arrivalsLeftAloneForManualOperation) return;
