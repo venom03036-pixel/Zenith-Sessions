@@ -49,6 +49,7 @@ foreach($name in $projects){
     Add-Step ($name+' Release build') 'Dotnet' @('build',$project,'-c','Release','--no-restore','-m:2','-nr:false','-warnaserror')
     Add-Step ($name+' tests') 'Dotnet' @('test',$project,'-c','Release','--no-build','--no-restore','-m:2','-nr:false','--filter',$filter,'--logger',('trx;LogFileName='+$name+'.trx'),'--results-directory',$output)
 }
+Add-Step 'Release verification tool single-file publish' 'ReleaseTool' @()
 Add-Step 'Owned experience Luau verifier' 'Luau' @()
 Add-Step 'Packaged manager 43-stage self-check' 'Package' @('-SkipTests','-StageOnly','-StageFolder','sessions-manager-review')
 $record=[ordered]@{FormatVersion=1;StartedUtc=[DateTimeOffset]::UtcNow.ToString('O');CompletedUtc=$null;Status='Planned';ReleaseReady=$false;Configuration='Release';ExcludedTest=$paid;RestoreDownloads=[bool]$AllowRestoreDownloads;ToolDownloads=[bool]$AcquireLuau;NoRestore=[bool]$NoRestore;SourceStart=$sourceStart;SourceEnd=$null;SourceChanged=$false;Steps=$steps}
@@ -87,6 +88,19 @@ foreach($step in $steps){
                 if($null -eq $luau){throw 'Pinned Luau tools were not verified; the verifier is not skipped.'}
                 & (Join-Path $PSScriptRoot 'Test-ZenithOwnedExperienceBridge.ps1') -LuauDirectory $luau -OutputDirectory (Join-Path $output 'luau') *> $log
                 $code=0
+            }
+            'ReleaseTool' {
+                $toolProject=Join-Path $root 'tools\Zenith.Sessions.ReleaseTool\Zenith.Sessions.ReleaseTool.csproj'
+                $toolOutput=Join-Path $output 'release-tool'
+                $toolRestore=@('restore',$toolProject,'-m:2','-nr:false','-p:NuGetAudit=true','-p:NuGetAuditMode=all')
+                if(-not $AllowRestoreDownloads){$toolRestore+=@('--source',(Join-Path $env:USERPROFILE '.nuget\packages'))}
+                $ErrorActionPreference='Continue';$PSNativeCommandUseErrorActionPreference=$false
+                if(-not $NoRestore){& dotnet @toolRestore *> $log;$restoreCode=$LASTEXITCODE}else{$restoreCode=0}
+                if($restoreCode -ne 0){$ErrorActionPreference='Stop';throw 'Release tool restore failed.'}
+                & dotnet publish $toolProject -c Release --no-restore -m:2 -nr:false -warnaserror -o $toolOutput *>> $log
+                $code=$LASTEXITCODE;$ErrorActionPreference='Stop'
+                if($code -eq 0 -and -not (Test-Path -LiteralPath (Join-Path $toolOutput 'Zenith.Sessions.ReleaseTool.exe') -PathType Leaf)){throw 'The single-file release tool was not published.'}
+                if($code -eq 0 -and @(Get-ChildItem -LiteralPath $toolOutput -File -Recurse | Where-Object {$_.Extension -notin @('.exe','.pdb') -or ($_.Extension -eq '.exe' -and $_.Name -ne 'Zenith.Sessions.ReleaseTool.exe')}).Count -ne 0){throw 'The release tool has executable dependencies outside its signed single-file bundle.'}
             }
             'Package' {
                 if($failed){throw 'Earlier checks failed; packaged release validation cannot be accepted.'}

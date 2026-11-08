@@ -168,6 +168,10 @@ Personal **0.27** passed **2,479/2,479 source-build tests**, the full suite agai
 
 **1,417/1,417 tests;20/20 packaged checks twice; zero forced-build warnings/errors.** The [verification record](PUBLISHER-GPU-VERIFICATION.md) pins all25 staged files, shows actual fresh counters for two GPU adapters and distinguishes synthetic publisher positives from the owned native unsigned-file negative. Fixed-default pressure/recovery, explicit selected-file verification, broad static source coverage and remaining gaps are recorded there. No reference code was executed or real account used. Older increments and rolling links below are historical. Source fingerprints still match all three original prompts; this scope review is not release acceptance.
 
+## Distribution follow-up 0.60 — offline foundations
+
+**PROD-QA-08, PROD-QA-03, PROD-QA-10, CHAT-02:** [Distribution foundations](DISTRIBUTION-FOUNDATIONS.md) records R-shell-14/15 implementation, 36 isolated checks, retained prerequisite-detection failure, a zero-warning single-file tool publish and disabled-by-default execution. The verifier/tool and explicit per-user scripts exist; production update settings/cadence/startup ownership, release host/keys and actual guest installation acceptance remain open. R-research-12 has a source-identified local/Actions gate with an invariant paid-test exclusion, six suites, pinned Luau, zero-warning publishing and 43 packaged cases; final integrated execution remains separate. [Gate evidence](ALL-CHECKS-GATE.md). No installed app or real data was changed; **ReleaseReady=false**.
+
 ## Sources, precedence and stable IDs
 
 - **F:** [Roblox Launcher Full Prompt With Encrypted Account Vault][F], sections 1–17, 399 lines. SHA-256 `EDE5078CF100C0E09CD01614E612D1A4E46E9A992A43DBBF543447AA53E48F4C`.
