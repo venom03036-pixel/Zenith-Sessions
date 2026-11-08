@@ -1,6 +1,7 @@
 using System.IO;
 using System.Security.Cryptography;
 using System.Text;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using Xunit;
 using Zenith.Sessions.App;
@@ -73,6 +74,47 @@ public sealed class DistributionIdentityTests : IDisposable
         WriteSyntheticAssemblies();
         var error=await Assert.ThrowsAsync<InvalidDataException>(()=>DistributionSelfCheck.IdentifyBuildAsync(_root,AppDomain.CurrentDomain.GetAssemblies(),CancellationToken.None));
         Assert.DoesNotContain(_root,error.Message);
+    }
+
+    // Ownership is established before the report is written, so a build that cannot be identified must still leave the stage
+    // results and a static failure type on disk, and must fail the run.
+    [Fact]
+    public async Task ReportIsStillWrittenAndTheRunFailsWhenAFirstPartyAssemblyIsMissing()
+    {
+        WriteSyntheticAssemblies();File.Delete(Path.Combine(_root,MacroHostWindows));
+        string report=Path.Combine(_root,"distribution-check.json");
+        var cases=new DistributionSelfCheck.Case[]{new("Isolated storage ownership",true),new("Packaged brand image",true)};
+
+        int exit=await DistributionSelfCheck.WriteReportAsync(report,cases,new(SQLiteVersion:"3.46.1",CleanupPhase:"Final fixture"),_root,[]);
+
+        Assert.Equal(1,exit);
+        string text=File.ReadAllText(report);
+        Assert.DoesNotContain(Path.GetFileName(_root),text);Assert.DoesNotContain(MacroHostWindows,text);
+        Assert.False(File.Exists(report+".tmp"));
+        using var json=JsonDocument.Parse(text);var root=json.RootElement;
+        Assert.Equal("InvalidDataException",root.GetProperty("IdentityError").GetString());
+        Assert.Equal(JsonValueKind.Null,root.GetProperty("AssemblySha256").ValueKind);
+        Assert.Equal(JsonValueKind.Null,root.GetProperty("FirstPartySha256").ValueKind);
+        Assert.Equal(JsonValueKind.Null,root.GetProperty("FirstPartyIdentitySha256").ValueKind);
+        Assert.Equal(cases.Select(item=>item.Name),root.GetProperty("Cases").EnumerateArray().Select(item=>item.GetProperty("Name").GetString()));
+        Assert.Equal("3.46.1",root.GetProperty("SQLiteVersion").GetString());
+        Assert.Equal("Final fixture",root.GetProperty("CleanupDiagnostic").GetProperty("Phase").GetString());
+    }
+
+    [Fact]
+    public async Task ReportCarriesTheBuildIdentityAndNoIdentityErrorWhenTheSetIsComplete()
+    {
+        WriteSyntheticAssemblies();
+        string report=Path.Combine(_root,"distribution-check.json");
+
+        int exit=await DistributionSelfCheck.WriteReportAsync(report,[new("Isolated storage ownership",true)],new(),_root,[]);
+
+        Assert.Equal(0,exit);
+        using var json=JsonDocument.Parse(File.ReadAllText(report));var root=json.RootElement;
+        var hashes=await DistributionSelfCheck.HashFirstPartyAssembliesAsync(_root,CancellationToken.None);
+        Assert.Equal(JsonValueKind.Null,root.GetProperty("IdentityError").ValueKind);
+        Assert.Equal(hashes[App],root.GetProperty("AssemblySha256").GetString());
+        Assert.Equal(DistributionSelfCheck.CombinedIdentity(hashes),root.GetProperty("FirstPartyIdentitySha256").GetString());
     }
 
     [Fact]
