@@ -176,6 +176,69 @@ public sealed class MacroHostPipeTests
         Assert.Equal(MacroCatalogState.Ready, (await client.GetPageAsync(new(), default)).State);
     }
 
+    [Theory]
+    [InlineData(2999, "close", MacroCatalogState.Disconnected)]
+    [InlineData(3000, "close", MacroCatalogState.Busy)]
+    [InlineData(3500, "close", MacroCatalogState.Busy)]
+    [InlineData(2999, "ready", MacroCatalogState.Ready)]
+    [InlineData(3000, "ready", MacroCatalogState.Busy)]
+    [InlineData(3000, "timer", MacroCatalogState.Busy)]
+    [InlineData(3500, "malformed", MacroCatalogState.Incompatible)]
+    public async Task ElapsedDeadlineDoesNotDependOnWhenItsTimerCallbackRuns(int elapsedMilliseconds, string reply, MacroCatalogState expected)
+    {
+        string name = Name(); var clock = new DelayedDeadlineClock();
+        using var peer = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance);
+        await using var client = new MacroCatalogPipeClient(name, clock);
+        using var testStop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var pending = client.GetPageAsync(new(), default);
+        await peer.WaitForConnectionAsync(testStop.Token);
+        var request = await MacroCatalogPipeCodec.ReadRequestAsync(peer, testStop.Token);
+        Assert.Equal(MacroCatalogPipeCodec.RequestTimeout, clock.DueTime);
+        clock.Advance(TimeSpan.FromMilliseconds(elapsedMilliseconds)); // The due timer callback is deliberately not dispatched.
+        Assert.False(pending.IsCompleted);
+        if (reply == "close") peer.Disconnect();
+        else if (reply == "timer") clock.FireTimeout();
+        else if (reply == "ready")
+            await MacroCatalogPipeCodec.WriteResponseAsync(peer, request.RequestId, Ready(), testStop.Token);
+        else
+            await peer.WriteAsync(new byte[4], testStop.Token); // Invalid zero frame length remains a protocol error.
+        var result = await pending.WaitAsync(testStop.Token);
+        Assert.Equal(expected, result.State);
+        if (expected != MacroCatalogState.Ready) Assert.Empty(result.Items);
+        Assert.Equal(MacroCatalogMessages.For(expected), result.Explanation);
+        Assert.Equal(reply == "timer" ? 1 : 0, clock.Callbacks); Assert.Equal(1, clock.Disposals);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task CallerCancellationAndClientDisposalTakePrecedenceOverAnElapsedDeadline(bool dispose)
+    {
+        string name = Name(); var clock = new DelayedDeadlineClock();
+        using var peer = new NamedPipeServerStream(name, PipeDirection.InOut, 1, PipeTransmissionMode.Byte,
+            PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance);
+        await using var client = new MacroCatalogPipeClient(name, clock);
+        using var caller = new CancellationTokenSource();
+        using var testStop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        var pending = client.GetPageAsync(new(), caller.Token);
+        await peer.WaitForConnectionAsync(testStop.Token);
+        await MacroCatalogPipeCodec.ReadRequestAsync(peer, testStop.Token);
+        clock.Advance(MacroCatalogPipeCodec.RequestTimeout);
+        if (dispose)
+        {
+            await client.DisposeAsync().AsTask().WaitAsync(testStop.Token);
+            Assert.Equal(MacroCatalogState.Disconnected, (await pending).State);
+            Assert.Equal(MacroCatalogState.Disconnected, (await client.GetPageAsync(new(), default)).State);
+        }
+        else
+        {
+            caller.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => pending.WaitAsync(testStop.Token));
+        }
+        Assert.Equal(0, clock.Callbacks); Assert.Equal(1, clock.Disposals);
+    }
+
     [Fact]
     public async Task ArbitrarySourceExceptionIsSanitizedAndDoesNotKillListener()
     {
@@ -477,6 +540,40 @@ public sealed class MacroHostPipeTests
     }
 
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private sealed class DelayedDeadlineClock : TimeProvider
+    {
+        private long _ticks;
+        private int _callbacks;
+        private HeldTimer? _timer;
+        public TimeSpan DueTime { get; private set; }
+        public int Callbacks => Volatile.Read(ref _callbacks);
+        public int Disposals;
+        public override long TimestampFrequency => TimeSpan.TicksPerSecond;
+        public override long GetTimestamp() => Interlocked.Read(ref _ticks);
+        public void Advance(TimeSpan value) => Interlocked.Add(ref _ticks, value.Ticks);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            DueTime = dueTime;
+            return _timer = new HeldTimer(this, callback, state);
+        }
+        public void FireTimeout()
+        {
+            Assert.True(TimeSpan.FromTicks(GetTimestamp()) >= DueTime);
+            Assert.NotNull(_timer); _timer.Fire();
+        }
+        private sealed class HeldTimer(DelayedDeadlineClock owner, TimerCallback callback, object? state) : ITimer
+        {
+            private int _disposed;
+            public void Fire()
+            {
+                if (Volatile.Read(ref _disposed) != 0) return;
+                Interlocked.Increment(ref owner._callbacks); callback(state);
+            }
+            public bool Change(TimeSpan dueTime, TimeSpan period) => Volatile.Read(ref _disposed) == 0;
+            public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) Interlocked.Increment(ref owner.Disposals); }
+            public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
+        }
+    }
     private sealed class Source(Func<MacroCatalogQuery, CancellationToken, Task<MacroCatalogPage>> read) : IMacroCatalogSource
     {
         private int _calls; public int Calls => Volatile.Read(ref _calls);
