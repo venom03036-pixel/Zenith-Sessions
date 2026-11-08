@@ -113,11 +113,11 @@ public sealed partial class ShellViewModel
 
     // UI thread, after settings load and after each explicit Save settings: run, or stop, to match the saved choice. Saving the choice
     // on after it was off is an explicit start, so it clears a stop; saving it unchanged never restarts a stopped outbox (Rule 11).
-    private void ApplySavedDiscordAlerts(bool wasOn)
+    private void ApplySavedDiscordAlerts(bool wasOn, bool allowResume = true)
     {
         if (!_alertsPermitted || _shuttingDown) return;
         bool on = _savedSettings.DiscordAlerts;
-        if (on && !wasOn) { _alertStop = AlertStop.None; _alertFailureShown = false; }
+        if (on && !wasOn && allowResume) { _alertStop = AlertStop.None; _alertFailureShown = false; }
         if (on && _alertStop == AlertStop.None) _alertOutbox.Start();
         else if (!on) { _alertOutbox.Stop(); _alertStop = AlertStop.None; }
         RefreshDiscordAlertStatus();
@@ -313,7 +313,7 @@ public sealed partial class ShellViewModel
     // the outbox stopped until Resume alerts or the choice is saved on after being off.
     private void StopDiscordAlertOperations(bool locking)
     {
-        if (locking || !_savedSettings.DiscordAlerts || !_alertsPermitted) return;
+        if (locking || !_alertsPermitted) return;
         _alertOutbox.Stop();
         _alertStop = AlertStop.Panic;
         RefreshDiscordAlertStatus();

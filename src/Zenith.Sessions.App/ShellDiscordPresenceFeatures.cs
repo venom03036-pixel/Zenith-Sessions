@@ -206,7 +206,7 @@ public sealed partial class ShellViewModel
     {
         if (!_presencePermitted) return;
         _presence.Stop(); _presenceShown = null;
-        if (!locking && _savedSettings.DiscordPresence) _presenceStop = PresenceStop.Panic;
+        if (!locking) _presenceStop = PresenceStop.Panic;
         RefreshDiscordPresenceStatus();
     }
 

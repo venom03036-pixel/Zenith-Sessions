@@ -28,6 +28,73 @@ public sealed class DiscordAlertTests : IDisposable
     private static readonly TimeSpan Positive = TimeSpan.FromSeconds(30);
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task LockDuringPendingSettingsActivationPreservesDiscordMonitoring(bool startup) => OnDispatcherAsync(async () =>
+    {
+        if (startup)
+            using (var store = new SettingsStore(_root))
+                await store.SaveAsync(new SessionsSettings(DiscordAlerts: true), default);
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        if (!startup) await vm.InitializeAsync();
+        Task pending;
+        using (var held = new HeldPreferencesWrite(vm, initialLoad: startup))
+        {
+            if (startup) pending = vm.InitializeAsync();
+            else { vm.DiscordAlerts = true; vm.SaveSettings.Execute(null); pending = vm.SaveSettings.Execution; }
+            Assert.False(pending.IsCompleted);
+            vm.LockDashboard();
+        }
+        await pending;
+        Assert.True(vm.IsReady, vm.Notice);
+        Assert.True(vm.IsLocked);
+        Assert.True(vm.IsDiscordAlertsActive);
+        Assert.False(vm.IsDiscordAlertsStopped);
+        Assert.Empty(transport.Requests);
+    });
+
+    [Fact]
+    public Task AnEarlierInitializationCannotRestartDiscordAlertsAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        using (var store = new SettingsStore(_root))
+            await store.SaveAsync(new SessionsSettings(DiscordAlerts: true), default);
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        Task initialization;
+        using (var held = new HeldPreferencesWrite(vm, initialLoad: true))
+        {
+            initialization = vm.InitializeAsync(); Assert.False(initialization.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await initialization;
+        Assert.True(vm.IsReady, vm.Notice);
+        Assert.False(vm.IsDiscordAlertsActive);
+        Assert.True(vm.IsDiscordAlertsStopped);
+        Assert.Empty(transport.Requests);
+    });
+
+    [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotRestartDiscordAlertsAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        await vm.InitializeAsync();
+        using (var held = new HeldPreferencesWrite(vm))
+        {
+            vm.DiscordAlerts = true; vm.SaveSettings.Execute(null);
+            Assert.False(vm.SaveSettings.Execution.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await vm.SaveSettings.Execution;
+        Assert.False(vm.IsDiscordAlertsActive);
+        Assert.Empty(transport.Requests);
+    });
+
+    [Theory]
     [InlineData("https://discord.com/api/webhooks/123456789012345678/" + Token, true, "discord.com")]
     [InlineData("https://discordapp.com/api/webhooks/123456789012345678/" + Token, true, "discordapp.com")]
     [InlineData("https://ptb.discord.com/api/v10/webhooks/123456789012345678/" + Token, true, "ptb.discord.com")]
