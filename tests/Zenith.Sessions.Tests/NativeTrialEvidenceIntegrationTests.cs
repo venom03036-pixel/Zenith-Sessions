@@ -258,11 +258,12 @@ public sealed partial class ClientWindowIntegrationTests
         }
     }
 
-    private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null)
+    private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null,
+        IPublicRobloxClientReleaseDirectory? releases=null)
     {
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
-            signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity(), nativeProvider: provider,accounts:accounts);
+            signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity(), nativeProvider: provider,accounts:accounts,clientReleases:releases);
         try
         {
             await shell.InitializeAsync();

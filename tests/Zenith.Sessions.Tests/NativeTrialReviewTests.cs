@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 using Xunit;
 using Zenith.Sessions.App;
@@ -324,6 +325,52 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(0,child.Preparations);
     });
 
+    // Rule 13: a start's release read borrows the shell's anonymous public HTTP client. Exit cancels that read first, but a
+    // cancelled request can still be finishing when exit reaches the directory owner, so exit waits for the trial command
+    // before it releases the client, as it waits for an installation refresh and its read.
+    [Fact]
+    public Task ExitWaitsForATrialReleaseReadBeforeReleasingThePublicHttpClient()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        var http=(HttpClient)typeof(ShellViewModel).GetField("_publicHttp",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        Task exit;
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            var read=await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            exit=shell.DisposeAsync().AsTask();
+            Assert.True(read.IsCancellationRequested); // Exit asks the read to stop before it waits for any owner.
+            // Give exit time to reach the directory owner; it may not release the client while the read is still finishing.
+            using(var window=new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                while(!window.IsCancellationRequested&&!exit.IsCompleted&&!IsReleased(http))await Task.Delay(10);
+            Assert.False(IsReleased(http),"Exit released the public HTTP client while the trial's release read was still finishing.");
+        }
+        finally{releases.Finish.TrySetResult();}
+        await exit.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(IsReleased(http)); // The owner still releases it once the read has finished.
+        Assert.Equal(1,releases.Calls);
+        static bool IsReleased(HttpClient client)
+        {
+            try{client.CancelPendingRequests();return false;}
+            catch(ObjectDisposedException){return true;}
+        }
+    });
+
+    // A release request that is still finishing after its cancellation: it returns only when the test lets it.
+    private sealed class HeldReleaseRead:IPublicRobloxClientReleaseDirectory
+    {
+        public int Calls;
+        internal TaskCompletionSource<CancellationToken> Entered {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Finish {get;}=EvidenceGate();
+        public async Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);Entered.TrySetResult(ct);
+            await Finish.Task;
+            ct.ThrowIfCancellationRequested();
+            return new(PublicDirectoryState.Failure,null,"Synthetic failure.");
+        }
+    }
     private sealed class NativeReviewRepository(string root):IAccountRepository,IDisposable
     {
         private readonly AccountRepository _inner=new(root);

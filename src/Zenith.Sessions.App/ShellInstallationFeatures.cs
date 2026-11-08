@@ -278,10 +278,11 @@ public sealed partial class ShellViewModel
             InstallationReleaseStatus = InstallationReleaseStatus.Length == 0 ? LaunchReleaseStartedNote : InstallationReleaseStatus + " " + LaunchReleaseStartedNote;
     }
     // Before a native start: an answer read in the last ten minutes is reused, else Roblox is asked once, for at most
-    // LaunchReleaseReadLimit, under the start's own cancellation (Panic, Lock and shutdown cancel it). A failed or slow answer
-    // keeps the last valid one, which holds only a row compared with it in the same refresh (a player that differed from a
-    // release read after it was observed is still older, as releases only move forward); a row that answer predates stays
-    // "Not checked" and never holds (Rule 16). Only the exception type is recorded, never its text.
+    // LaunchReleaseReadLimit, under the start's own cancellation (Panic, Lock and shutdown cancel it, and exit awaits the start
+    // before it releases the HTTP client this read borrows). A failed or slow answer keeps the last valid one, which holds
+    // only a row compared with it in the same refresh (a player that differed from a release read after it was observed is
+    // still older, as releases only move forward); a row that answer predates stays "Not checked" and never holds (Rule 16).
+    // Only the exception type is recorded, never its text.
     private async Task ReadLaunchReleaseAsync(CancellationToken ct)
     {
         if (_releaseCache is null || _releaseCache.IsFresh) return;

@@ -1190,7 +1190,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
-        await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution);
+        // A refresh and a native start both read Roblox's release over the shared anonymous public client, which
+        // StopDirectoryFeaturesAsync releases below (Rule 13). Both were cancelled above; each is awaited here first.
+        await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution, StartNativeTrial.Execution);
         await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
         try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
