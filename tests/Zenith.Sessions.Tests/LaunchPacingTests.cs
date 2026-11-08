@@ -128,9 +128,27 @@ public sealed class LaunchPacingTests
         Assert.DoesNotContain("check the saved sign-ins", text, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("two starts in a row ended before any client started", text);
         Assert.Contains("stay queued", text);
-        Assert.Contains("details in the launch queue", text);
-        Assert.Contains("sign-in, client trust, resources", text);
+        // The queue rows carry no trust or resource details; the native launch stages in Launch evidence do.
+        Assert.DoesNotContain("details in the launch queue", text);
+        Assert.Contains("native launch stages in Launch evidence on Join a game (sign-in, client trust, resources)", text);
         Assert.Contains("Until a client starts or 10 minutes pass, one more such start pauses the queue again.", text);
+    }
+
+    [Fact]
+    public void RefusedRowTextNamesNoSingleCauseAndPointsToLaunchEvidence()
+    {
+        // The pause sends the user to each failed request. A preparation refusal can come from the saved
+        // sign-in, client trust, a busy provider, a closed page or a local fault, so its row must not name
+        // the sign-in alone, and both refusal rows say where the stage that stopped them is shown.
+        string preparation = LaunchDescriptions.Explain(LaunchProblem.PreparationRejected);
+        Assert.DoesNotContain("Review the saved sign-in", preparation);
+        foreach (string cause in new[] { "saved sign-in", "client trust", "a busy provider", "a closed page", "a local fault" })
+            Assert.Contains(cause, preparation);
+        Assert.Contains("Launch evidence on Join a game shows which", preparation);
+        Assert.Contains("create a fresh request", preparation);
+        string startup = LaunchDescriptions.Explain(LaunchProblem.StartupRejected);
+        Assert.Contains("before a client started", startup);
+        Assert.Contains("Launch evidence on Join a game shows which", startup);
     }
 
     [Fact]
