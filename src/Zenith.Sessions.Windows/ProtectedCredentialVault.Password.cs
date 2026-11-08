@@ -17,13 +17,40 @@ public sealed partial class ProtectedCredentialVault
     private bool _passwordRequired, _passwordMigrating;
     private bool _checkedLegacyInventory;
     private long _passwordEpoch;
+    private AcceptedPasswordDispatch? _acceptedPasswordDispatch;
     private string PasswordControlPath => Path.Combine(_directory, PasswordControlName);
 
-    /// <summary>Fences a pending unlock before waiting for the short synchronous key-use section.</summary>
+    /// <summary>Atomically fences key installation and dispatch acceptance; never waits for a native callback.</summary>
     public void LockMasterPassword()
     {
-        Interlocked.Increment(ref _passwordEpoch);
-        lock (_keyGate) ClearDataKey();
+        lock (_keyGate)
+        {
+            Interlocked.Increment(ref _passwordEpoch); ClearDataKey();
+            if (_acceptedPasswordDispatch is { } accepted) accepted.LockRequested = true;
+        }
+    }
+
+    // Non-secret, operation-local acceptance state. Once accepted, the existing native owner owns
+    // cancellation/drain and any real receipt. Lock can mark it but cannot pretend it never started.
+    internal (bool InFlight, bool LockRequested) PasswordDispatchState
+    { get { lock (_keyGate) return (_acceptedPasswordDispatch is not null, _acceptedPasswordDispatch?.LockRequested == true); } }
+    private AcceptedPasswordDispatch AcceptPasswordDispatch(long epoch, CancellationToken ct)
+    {
+        lock (_keyGate)
+        {
+            EnsureSecretAccess(); CheckPasswordEpoch(epoch, ct);
+            if (_acceptedPasswordDispatch is not null) throw new InvalidOperationException("A dispatch already owns this vault boundary.");
+            return _acceptedPasswordDispatch = new(this);
+        }
+    }
+    private sealed class AcceptedPasswordDispatch(ProtectedCredentialVault owner) : IDisposable
+    {
+        internal bool LockRequested;
+        public void Dispose()
+        {
+            lock (owner._keyGate)
+                if (ReferenceEquals(owner._acceptedPasswordDispatch, this)) owner._acceptedPasswordDispatch = null;
+        }
     }
 
     public async Task<VaultPasswordStatus> GetPasswordStatusAsync(CancellationToken ct)
@@ -78,9 +105,9 @@ public sealed partial class ProtectedCredentialVault
                     byte[] bytes = ReadPrivateBytes(path, MaximumFileBytes);
                     try
                     {
-                        if (!HasMagic(bytes)) throw PasswordFailure();
                         Guid id = ProfileFromPath(path);
-                        _ = ReadProtectedBytes(bytes, id, out _);
+                        _ = ReadProtectedBytes(bytes, id, out bool legacy);
+                        if (legacy) throw new VaultPasswordLegacyMigrationException();
                     }
                     finally { CryptographicOperations.ZeroMemory(bytes); }
                 }
