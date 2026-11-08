@@ -130,6 +130,54 @@ public sealed class ClientReleaseTests
         Assert.Equal(ClientReleaseMatch.NotChecked, RobloxClientRelease.Compare(Player(current + "RobloxPlayerBeta.exe", null), Latest with { Version = "latest" }));
     }
 
+    [Fact]
+    public async Task TheLaunchCacheReusesAReleaseForTenMinutesThenAsksOnceAndKeepsTheLastValidAnswer()
+    {
+        var clock = new Clock(new DateTimeOffset(2026, 11, 7, 12, 0, 0, TimeSpan.Zero)); string body = Recorded;
+        using var handler = new FakeHandler((_, _) => Task.FromResult(Json(body)));
+        using var http = new HttpClient(handler);
+        var cache = new PublicClientReleaseCache(new RobloxPublicDirectory(http, clock), clock);
+        Assert.Null(cache.Latest); Assert.False(cache.IsFresh);
+        var first = await cache.ReadAsync(default);
+        Assert.Equal("version-9ac8595712b447a7", first!.ClientVersionUpload); Assert.Equal(1, handler.Calls); Assert.True(cache.IsFresh);
+        clock.Now += TimeSpan.FromMinutes(9) + TimeSpan.FromSeconds(59);
+        Assert.Same(first, await cache.ReadAsync(default)); Assert.Equal(1, handler.Calls);
+        // Ten minutes old is stale: one request, and its newer answer replaces the kept one.
+        clock.Now += TimeSpan.FromSeconds(1); Assert.False(cache.IsFresh);
+        body = Recorded.Replace("9ac8595712b447a7", "1111111111111111", StringComparison.Ordinal);
+        var second = await cache.ReadAsync(default);
+        Assert.Equal("version-1111111111111111", second!.ClientVersionUpload); Assert.Equal(2, handler.Calls);
+        // A malformed answer is a failure, never a release: the last valid one stays.
+        clock.Now += TimeSpan.FromMinutes(11); body = "{\"version\":\"0.744.0\",\"clientVersionUpload\":\"version-0000000000000000\"}";
+        Assert.Same(second, await cache.ReadAsync(default)); Assert.Equal(3, handler.Calls); Assert.False(cache.IsFresh);
+    }
+
+    [Fact]
+    public async Task TheLaunchCacheKeepsOnlyValidNewerReleasesAndPassesCancellationOn()
+    {
+        var at = new DateTimeOffset(2026, 11, 7, 12, 0, 0, TimeSpan.Zero); var clock = new Clock(at);
+        using var handler = new FakeHandler((_, ct) => { ct.ThrowIfCancellationRequested(); return Task.FromResult(Json(Recorded)); });
+        using var http = new HttpClient(handler);
+        var cache = new PublicClientReleaseCache(new RobloxPublicDirectory(http, clock), clock);
+        cache.Remember(null); cache.Remember(Latest with { ClientVersionUpload = "version-XYZ", RetrievedUtc = at }); Assert.Null(cache.Latest);
+        var kept = Latest with { RetrievedUtc = at }; cache.Remember(kept); Assert.Same(kept, cache.Latest); Assert.True(cache.IsFresh);
+        cache.Remember(Latest with { ClientVersionUpload = "version-0000000000000000", RetrievedUtc = at.AddMinutes(-1) }); Assert.Same(kept, cache.Latest);
+        // A release dated after now (the clock moved back) is never fresh, and the next answer replaces it.
+        var future = Latest with { RetrievedUtc = at.AddMinutes(5) }; cache.Remember(future); Assert.Same(future, cache.Latest); Assert.False(cache.IsFresh);
+        var asked = await cache.ReadAsync(default);
+        Assert.Equal(1, handler.Calls); Assert.Same(asked, cache.Latest); Assert.Equal(at, asked!.RetrievedUtc); Assert.True(cache.IsFresh);
+        clock.Now += TimeSpan.FromMinutes(10);
+        using var stop = new CancellationTokenSource(); stop.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => cache.ReadAsync(stop.Token));
+        Assert.Equal(1, handler.Calls); Assert.Throws<ArgumentNullException>(() => new PublicClientReleaseCache(null!));
+    }
+
+    private sealed class Clock(DateTimeOffset start) : TimeProvider
+    {
+        public DateTimeOffset Now = start;
+        public override DateTimeOffset GetUtcNow() => Now;
+    }
+
     private static ClientInstallationCandidate Player(string path, string? fileVersion, ClientInstallationProduct product = ClientInstallationProduct.Roblox,
         ClientInstallationFileState state = ClientInstallationFileState.PresentUnverified)
         => new(product, path, null, fileVersion, state, [new(ClientInstallationHintSource.VersionDirectory, product)]);

@@ -125,6 +125,16 @@ public sealed class OverviewWorkspaceProjectionTests
         Assert.Contains(" · 2 waiting for capacity (start automatically while the queue is active) · ",view.QueueSummary);
         Assert.Contains(" · 1 blocked · ",view.QueueSummary);Assert.DoesNotContain("3 blocked",view.QueueSummary);
     }
+    [Fact]
+    public void RobloxUpdateHoldsAreCountedApartFromCapacityWaits()
+    {
+        var operations=new[]{Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity},
+            Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity,HoldReason=LaunchHoldReason.ClientUpdate}};
+        var view=OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,operations)},Now);
+        Assert.Contains(" · 1 waiting for capacity (start automatically while the queue is active) · 1 held for a possible Roblox update that could close running clients",view.QueueSummary);
+        Assert.Contains(" · 0 blocked · ",view.QueueSummary);
+        Assert.DoesNotContain("Roblox update",OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,[operations[0]])},Now).QueueSummary);
+    }
     [Theory]
     [InlineData(LaunchState.Blocked,LaunchProblem.InsufficientCapacity,true)]
     [InlineData(LaunchState.Blocked,LaunchProblem.ProviderUnavailable,false)] [InlineData(LaunchState.Blocked,LaunchProblem.IdentityUnverified,false)]

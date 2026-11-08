@@ -92,7 +92,8 @@ public sealed partial class LaunchCoordinator
                 if(PreparationStopped(generation))await UpdateAsync(chosen,LaunchState.Cancelled,LaunchProblem.None,CancellationToken.None).ConfigureAwait(false);
                 else if(prepared.IsExpired)await UpdateAsync(chosen,LaunchState.Failed,LaunchProblem.PreparationExpired,CancellationToken.None).ConfigureAwait(false);
                 else if(!ProviderPermits(chosen.Intent.OperationId))await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.ProviderUnavailable,CancellationToken.None).ConfigureAwait(false);
-                else if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,CancellationToken.None).ConfigureAwait(false);
+                else if(AdmissionForStart(_operations,chosen.Intent.OperationId) is {Allowed:false} admission)
+                    await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,CancellationToken.None,hold:admission.Hold).ConfigureAwait(false);
                 else{await UpdateAsync(chosen,LaunchState.Launching,LaunchProblem.None,CancellationToken.None).ConfigureAwait(false);dispatch=true;}
             }
             finally{_serial.Release();}

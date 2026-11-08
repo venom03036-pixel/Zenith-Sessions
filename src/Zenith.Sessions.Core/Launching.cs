@@ -30,7 +30,13 @@ public sealed record LaunchProcessReceipt(int ProcessId,long ProcessStartUtcTick
         && BrowserTrackerId is null or (>0 and <=MaximumBrowserTrackerId);
 }
 public sealed record LaunchOperation(LaunchIntent Intent,LaunchState State,LaunchProblem Problem,DateTimeOffset UpdatedUtc,
-    LaunchProcessReceipt? ProcessReceipt=null,LaunchResourceBudget? ResourceBudget=null);
+    LaunchProcessReceipt? ProcessReceipt=null,LaunchResourceBudget? ResourceBudget=null)
+{
+    // Why a waiting row (Blocked, InsufficientCapacity) waits. Never written to the queue file, so the v7 format stays
+    // readable by earlier builds; a restart turns every waiting row into a review anyway. Other states ignore it.
+    [System.Text.Json.Serialization.JsonIgnore]
+    public LaunchHoldReason HoldReason { get; init; }
+}
 /// <summary>Why the queue paused itself. None covers a user pause, Panic and a restart.</summary>
 public enum LaunchQueuePauseReason { None,RepeatedRefusals }
 public sealed record LaunchQueueSnapshot(bool Paused,IReadOnlyList<LaunchOperation> Operations)
@@ -41,7 +47,8 @@ public sealed record LaunchQueueSnapshot(bool Paused,IReadOnlyList<LaunchOperati
     [System.Text.Json.Serialization.JsonIgnore]
     public LaunchQueuePauseReason PauseReason { get; init; }
 }
-public sealed record LaunchAdmission(bool Allowed,string Explanation);
+/// <summary>Hold says why a refused start waits; the queue keeps it on the waiting row for its explanation.</summary>
+public sealed record LaunchAdmission(bool Allowed,string Explanation,LaunchHoldReason Hold=LaunchHoldReason.ResourceHeadroom);
 public sealed class LaunchQueueException(string message) : Exception(message);
 public enum ProviderLaunchStatus { RejectedBeforeStart,Uncertain,VerifiedArrival,ClientStartedUnverified }
 // BrowserTrackerId is the non-secret tracker the native request carried; it joins the process receipt only.
@@ -110,6 +117,10 @@ public static class LaunchDescriptions
     /// <summary>A request held only for resource headroom. The runner re-selects it beside Queued rows and
     /// starts it on its own once admission allows; every other Blocked row needs the user first.</summary>
     public static bool AwaitsCapacity(LaunchOperation operation)=>operation.State==LaunchState.Blocked && operation.Problem==LaunchProblem.InsufficientCapacity;
+    /// <summary>A waiting row held because starting the selected player would let Roblox's update close running clients.</summary>
+    public static bool AwaitsClientUpdate(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.ClientUpdate;
+    /// <summary>The row's explanation: its problem's, or the update hold's for a row waiting on a Roblox update.</summary>
+    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation:Explain(operation.Problem);
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
@@ -398,12 +409,13 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             if(chosen is null)return;
             // A cheap fresh preflight is not a reservation. Preparing remains excluded from
             // NeedsReservation while a user-owned page may wait; reserve only at Launching.
-            // A row already waiting for headroom keeps its saved state: the Shell signals after every
-            // monitor sample, and re-saving an unchanged hold would fsync and republish once a second.
-            if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)
+            // A row already waiting keeps its saved state: the Shell signals after every monitor sample, and
+            // re-saving an unchanged hold would fsync and republish once a second. Only a changed reason is saved.
+            var admission=AdmissionForStart(_operations,chosen.Intent.OperationId);
+            if(!admission.Allowed)
             {
-                if(!LaunchDescriptions.AwaitsCapacity(chosen))
-                    await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct).ConfigureAwait(false);
+                if(!LaunchDescriptions.AwaitsCapacity(chosen) || chosen.HoldReason!=admission.Hold)
+                    await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,ct,hold:admission.Hold).ConfigureAwait(false);
                 return;
             }
             if(_paused || generation!=Interlocked.Read(ref _generation)) return;
@@ -441,8 +453,8 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         {
             if(_paused || generation!=Interlocked.Read(ref _generation) || _activeStop!.IsCancellationRequested)
                 await UpdateAsync(chosen,LaunchState.Cancelled,LaunchProblem.None,CancellationToken.None).ConfigureAwait(false);
-            else if(!AdmissionForStart(_operations,chosen.Intent.OperationId).Allowed)
-                await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,CancellationToken.None).ConfigureAwait(false);
+            else if(AdmissionForStart(_operations,chosen.Intent.OperationId) is {Allowed:false} admission)
+                await UpdateAsync(chosen,LaunchState.Blocked,LaunchProblem.InsufficientCapacity,CancellationToken.None,hold:admission.Hold).ConfigureAwait(false);
             else { await UpdateAsync(chosen,LaunchState.Launching,LaunchProblem.None,CancellationToken.None).ConfigureAwait(false);dispatch=true; }
         }
         finally {_serial.Release();}
@@ -626,7 +638,9 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         try {await UpdateAsync(operation,state,problem,CancellationToken.None).ConfigureAwait(false);}
         finally {_serial.Release();}
     }
-    private async Task UpdateAsync(LaunchOperation operation,LaunchState state,LaunchProblem problem,CancellationToken ct,bool notify=true)
+    // Every transition sets the hold reason: only a refused start passes one, so a row leaving a wait never keeps it.
+    private async Task UpdateAsync(LaunchOperation operation,LaunchState state,LaunchProblem problem,CancellationToken ct,bool notify=true,
+        LaunchHoldReason hold=LaunchHoldReason.ResourceHeadroom)
     {
         int index=_operations.FindIndex(o=>o.Intent.OperationId==operation.Intent.OperationId);
         if(index<0) throw new InvalidOperationException("The owned launch operation disappeared.");
@@ -634,7 +648,7 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         if(current.Intent!=operation.Intent) throw new InvalidOperationException("The owned launch intent changed.");
         var updated=_time.GetUtcNow();
         if(current.ProcessReceipt is { } receipt && receipt.RecordedUtc>updated) updated=receipt.RecordedUtc;
-        _operations[index]=current with { State=state,Problem=problem,UpdatedUtc=updated };await PersistAsync(ct,notify).ConfigureAwait(false);
+        _operations[index]=current with { State=state,Problem=problem,UpdatedUtc=updated,HoldReason=hold };await PersistAsync(ct,notify).ConfigureAwait(false);
     }
     private async Task PersistAsync(CancellationToken ct,bool notify=true)
     {

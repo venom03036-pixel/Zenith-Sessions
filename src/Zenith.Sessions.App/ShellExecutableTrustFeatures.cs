@@ -18,9 +18,10 @@ public sealed partial class ShellViewModel
         private set { if (Set(ref _publisherBusy, value)) { Raise(nameof(CanVerifyInstallationPublisher)); Raise(nameof(CanRefreshInstallations)); } }
     }
     private const string PublisherLauncherStatus = "This row is the Roblox launcher (RobloxPlayerLauncher.exe), which installs and updates Roblox. Its publisher is not checked here; select a RobloxPlayerBeta.exe row to verify the player.";
-    // The verifier checks only the direct player files; a launcher row would always answer "not evaluated".
+    // The verifier checks only the direct player files; a launcher row would always answer "not evaluated". A refresh that
+    // has shown its rows and only awaits Roblox's release answer does not hold verification: that answer never replaces a row.
     public bool CanVerifyInstallationPublisher => _ready && !IsLocked && !_shuttingDown && !IsSample
-        && !IsInstallationDiscoveryBusy && !IsPublisherVerificationBusy
+        && !_installationListPending && !IsPublisherVerificationBusy
         && SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox, FileState: ClientInstallationFileState.PresentUnverified } candidate
         && RobloxNativePlayerFiles.IsDirectPlayer(candidate.ExecutablePath);
     private string PublisherIdleText() => SelectedInstallation?.Candidate is { Product: ClientInstallationProduct.Roblox } candidate

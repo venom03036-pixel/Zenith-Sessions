@@ -9,7 +9,8 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxClientReleaseDi
     /// <summary>The recorded body is about 100 bytes; anything past this cap is refused before parsing.</summary>
     public const int MaximumClientReleaseBytes = 4 * 1024;
     // Roblox's public client-version endpoint for the Windows player. Anonymous and read-only: no cookie, no channel,
-    // no download. The caller asks once per explicit refresh; the shared slots, rate-limit pause and redirect refusal apply.
+    // no download. The caller asks once per explicit refresh, and a native start through PublicClientReleaseCache asks only when
+    // the last answer is ten minutes old; the shared slots, rate-limit pause and redirect refusal apply.
     private static readonly Uri ClientReleaseUri = new("https://clientsettingscdn.roblox.com/v2/client-version/WindowsPlayer");
 
     public Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
@@ -21,6 +22,46 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxClientReleaseDi
             if (!RobloxClientRelease.IsValid(release)) throw new InvalidPublicResponseException();
             return Success(release, "Roblox's current public Windows player release. Nothing was downloaded or installed.");
         }, ct, maximumBytes: MaximumClientReleaseBytes);
+    }
+}
+
+/// <summary>
+/// The newest valid public release Zenith has read, kept for the launch update hold. <see cref="ReadAsync"/> reuses it while
+/// it is younger than <see cref="Lifetime"/> and otherwise asks once; a failed, malformed or slow answer keeps the last valid
+/// one (or none), so an unreachable service never invents a release and never holds a launch. No timer, polling or retry;
+/// the borrowed directory stays owned (and disposed) by its caller.
+/// </summary>
+public sealed class PublicClientReleaseCache(IPublicRobloxClientReleaseDirectory directory, TimeProvider? clock = null)
+{
+    public static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
+    private readonly IPublicRobloxClientReleaseDirectory _directory = directory ?? throw new ArgumentNullException(nameof(directory));
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+    private readonly object _gate = new();
+    private PublicRobloxClientRelease? _latest;
+
+    public PublicRobloxClientRelease? Latest { get { lock (_gate) return _latest; } }
+    /// <summary>True while the kept release was read less than <see cref="Lifetime"/> ago. A release dated in the future is not fresh.</summary>
+    public bool IsFresh => Latest is { } latest && _clock.GetUtcNow() - latest.RetrievedUtc is var age && age >= TimeSpan.Zero && age < Lifetime;
+
+    /// <summary>
+    /// Keeps a valid release unless a newer one is already kept; one dated after now (the clock moved back) is always replaced,
+    /// or every start would ask again without ever keeping the answer. An invalid or missing release changes nothing.
+    /// </summary>
+    public void Remember(PublicRobloxClientRelease? release)
+    {
+        if (!RobloxClientRelease.IsValid(release)) return;
+        var now = _clock.GetUtcNow();
+        lock (_gate) if (_latest is null || _latest.RetrievedUtc <= release!.RetrievedUtc || _latest.RetrievedUtc > now) _latest = release;
+    }
+
+    /// <summary>The kept release when fresh, else one request. Cancellation and directory exceptions reach the caller.</summary>
+    public async Task<PublicRobloxClientRelease?> ReadAsync(CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        if (IsFresh) return Latest;
+        var result = await _directory.GetCurrentWindowsPlayerReleaseAsync(ct).ConfigureAwait(false);
+        if (result is { State: PublicDirectoryState.Success }) Remember(result.Value);
+        return Latest;
     }
 }
 
