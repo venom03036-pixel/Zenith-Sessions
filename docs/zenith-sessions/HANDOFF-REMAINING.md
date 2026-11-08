@@ -4,6 +4,8 @@ This replaces the historical handoff's “24 blocked / 19 implemented” snapsho
 
 The complete **93-ID** ledger is [ROUND4-STATUS.md](ROUND4-STATUS.md) / [ROUND4-STATUS.json](ROUND4-STATUS.json). Exact live steps and owner questions are in [ROUND4-LIVE-TRIALS.md](ROUND4-LIVE-TRIALS.md). No original item disappears.
 
+The owner subsequently requested the four retained minor fixes. Their completed implementations and regression evidence are indexed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). The new candidate needs its own same-commit two-pass verification; the old accepted build's results remain historical.
+
 Offline acceptance checklist (verify the external records for this commit):
 
 1. Inspect the repair records and [final review](ROUND4-FINAL-REVIEW.md), including settings/startup stop precedence and elevated-helper ownership. Each important repair requires genuine failing-before evidence and merged passing results.

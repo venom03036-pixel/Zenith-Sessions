@@ -44,7 +44,7 @@ Material repairs and retained failing-before evidence:
 
 The final review coverage and remaining findings are recorded in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). A changed commit requires review of that delta and two new complete gate runs; focused green runs cannot substitute for them.
 
-The retained minors are listed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md): cached password-mode dashboard state, an overstated network-read comment, stale bootstrapper publisher guidance and overconfident leftover CPU-cap wording. Credential reads still refresh on-disk control and fail closed; deferred bootstrapper launching remains refused. No credential or launch-authority bypass was established for those presentation issues.
+The owner's four requested follow-ups are repaired in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md): Unlock refreshes protected vault state with stop ownership, network-read comments match the loop, bootstrapper guidance states the deferral, and leftover CPU notices preserve uncertainty. [Unlock regressions](VAULT-UNLOCK-MODE-REPAIR.md) and [guidance regressions](GUIDANCE-MINOR-REPAIRS.md) retain failing-before evidence. Existing credential and launch gates remain intact. The follow-up requires a new same-commit two-pass gate and immutable review; the previous accepted candidate's results cannot qualify changed source.
 
 ## Final acceptance contract
 

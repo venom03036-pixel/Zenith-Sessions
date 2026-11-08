@@ -17,12 +17,16 @@ Independent reviewers must read the final source/diff for their assigned scope, 
 
 Important repairs and evidence are linked from [QUALITY_STATUS.md](QUALITY_STATUS.md). In particular, startup/settings activation cannot clear a newer Panic, initial public-network locking precedes scheduled update work, actual preparation mode/executable govern launch qualification, portable import drops authority, and upload-limit mutations retain the external helper's ownership after cancellation. A UTC clock correction cannot establish that an unresolved helper disappeared.
 
-## Retained minor findings
+## Completed minor follow-ups
 
-1. **Cached password-mode dashboard state.** A shell that cached Disabled before another store instance enabled a master password can omit the password prompt on dashboard Unlock. Actual credential reads refresh on-disk control and fail closed. This is a presentation/control mismatch; no credential-access bypass was established. Location: `ShellVaultPasswordFeatures.cs` Unlock path and `ProtectedCredentialVault.Password.cs` current-control read. Retain as follow-up under the owner's minor-only stop rule.
-2. **Network coalescing comment overstates its bound.** `WindowsPublicNetworkMonitor.ReadFolded` describes at most two reads, while its `_pending` loop drains until quiet. The comment should say that. A real continuous-notification starvation counterexample was not established; do not label this a proved important availability defect or claim a fixed two-read runtime bound.
-3. **Bootstrapper publisher guidance is stale.** `ClientExecutableTrustResult.Summary` for `PublisherNotAccepted` still suggests accepting a publisher enables launching. Bootstrapper launching is deferred in this build; the provider/trial gates still refuse it. This is misleading guidance, not a launch-authority bypass.
-4. **Leftover CPU-cap wording exceeds the observation.** `ShellClientPriorityFeatures.cs` says surviving recorded clients still carry a cap, but query-only recovery proves exact process identity and job membership, not the abandoned job's current rate. A failed first cap with unknown readback can leave a legitimate conservative record for an inert job. The text should say the client may still carry a cap; the current wording neither changes a process nor loses ownership.
+The owner explicitly requested these four repairs after the previous minor-only stop. The original accepted build and its review remain historical evidence; the follow-up candidate requires its own two complete gate runs and final review binding.
+
+1. **Current password-mode dashboard admission.** Unlock now reads protected control through the vault's writer lease before deciding whether to prompt. The operation is owned, cancelled and joined; captured stop generations reject Lock/Panic/cancellation during command admission, the read and result publication. Credential reads retain their independent fail-closed checks. See [unlock repair evidence](VAULT-UNLOCK-MODE-REPAIR.md).
+2. **Accurate network coalescing comments.** Both `WindowsPublicNetworkMonitor` comments now describe coalescing notifications during each read and repeating until none is pending. The executable loop is unchanged. Independent source review, rather than an invented behavioral test, verifies this documentation-only correction; no fixed two-read runtime bound is claimed.
+3. **Deferred bootstrapper guidance.** Accepted, unaccepted and changed-publisher summaries now state that acceptance does not enable launching and direct the user to the standard Roblox player. Existing provider/trial gates are unchanged. See [guidance repair evidence](GUIDANCE-MINOR-REPAIRS.md).
+4. **Conditional leftover CPU-cap guidance.** Startup notices distinguish confirmed job membership from an unreadable rate, denied process queries and an unreadable ledger. They describe possible caps and conditional recovery without asserting a crash or a successful cap mutation. Native control and recovery ownership are unchanged. See [guidance repair evidence](GUIDANCE-MINOR-REPAIRS.md).
+
+The immutable follow-up review must establish whether any new finding remains. These repairs do not change the 93 item dispositions or qualify any attended trial.
 
 ## Evidence to inspect before handing off
 

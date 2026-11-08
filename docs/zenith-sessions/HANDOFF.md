@@ -31,7 +31,7 @@ Native preparation holds the selected executable identity and records the actual
 
 Private joining is a distinct reviewed one-account Official-page trial for a protected saved link. There is no guessed Direct-ticket private URI or public fallback. Listing/saving/renaming private servers does not authorize purchasing, renewal or permission changes.
 
-Master-password migration and portable backup are implemented. Import requires reviewed consent and identity verification, creates fresh local identities, preserves existing accounts and excludes client arguments, launch verification, automation authority and webhook secrets. Forgotten-password recovery is separately confirmed; no alternate clear recovery key is persisted.
+Master-password migration and portable backup are implemented. Dashboard Unlock refreshes current protected control rather than trusting a cached mode; pending admission is cancelled and joined through Lock/Panic/Exit. Import requires reviewed consent and identity verification, creates fresh local identities, preserves existing accounts and excludes client arguments, launch verification, automation authority and webhook secrets. Forgotten-password recovery is separately confirmed; no alternate clear recovery key is persisted. The four post-completion follow-ups and their evidence are indexed in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md); they require a new complete gate pair on the final descendant commit.
 
 The shipped input transport remains unavailable. Policy/arbiter/keep-awake fake tests do not enable background macros, broadcasting or anti-idle input. Automatic recovery is not implemented. These are visible decisions, not hidden success paths.
 
