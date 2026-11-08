@@ -99,6 +99,90 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
+    // M-L1a-5: another saved-session operation (here a share-link check) holding the link service refuses the check
+    // before anything is read or changed. That is not "needs sign-in": the batch stops and counts every account as not checked.
+    [Fact]
+    public Task CheckedSignInsStopWhenAnotherAccountOperationHoldsTheSignInServiceAndChangeNothing() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var shareLinks = new HoldingShareLinks();
+        await using var shell = await HealthShell(signIn, client, linked: 3, shareLinks: shareLinks);
+        foreach (var row in shell.Accounts) row.IsChecked = true;
+        var ids = shell.Accounts.Select(row => row.Profile.Id).ToArray();
+        shell.SelectedAccount = HealthRow(shell, 1);
+        shell.ShareLink.LinkInput = "https://www.roblox.com/share?code=4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e&type=Server";
+        Task sharing = shell.ShareLink.CheckAsync();
+        try
+        {
+            await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            shell.CheckCheckedSignIns.Execute(null); await shell.CheckCheckedSignIns.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally { shareLinks.Release(); await sharing.WaitAsync(TimeSpan.FromSeconds(5)); }
+
+        Assert.Empty(client.Snapshot());
+        Assert.Contains("stopped because another account operation was running", shell.Notice); Assert.Contains("3 not checked", shell.Notice);
+        Assert.DoesNotContain("need sign-in", shell.Notice); Assert.DoesNotContain("needs sign-in", shell.Notice); Assert.DoesNotContain("sign-in because", shell.Notice);
+        foreach (var row in shell.Accounts) Assert.Equal("Saved link", row.Identity);
+        using var vault = new ProtectedCredentialVault(_root);
+        foreach (var id in ids) Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(id, default))!.Health);
+        Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+    });
+
+    // M-L1a-5: Roblox never processed a check, and another operation replaced its fence before the restore. The restore is
+    // refused (the newer sign-in is kept), but Roblox was still unreachable or busy, so the batch must stop there.
+    [Fact]
+    public Task CheckedSignInsStopWhenAnUnprocessedChecksRestoreFindsANewerSignIn() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient();
+        await using var shell = await HealthShell(signIn, client, linked: 4);
+        foreach (var row in shell.Accounts) row.IsChecked = true;
+        var order = shell.Accounts.Select(row => (Cookie: CookieOf(row), row.Profile.Id)).ToArray();
+        client.Replies[order[1].Cookie] = HealthReply.NotProcessed;
+        client.OnCall = async cookie =>
+        {
+            if (cookie != order[1].Cookie) return;
+            // Another operation saves this account's sign-in again while Roblox is answering, replacing the check's fence.
+            using var other = new ProtectedCredentialVault(_root);
+            var snapshot = await other.ReadWriteSnapshotAsync(order[1].Id, default);
+            var newer = snapshot.Record! with { Generation = snapshot.NextGeneration, Health = AuthorizationHealth.Linked };
+            Assert.Equal(AuthorizationMutationStatus.Applied, (await other.TryCommitSnapshotAsync(snapshot, newer, Guid.NewGuid(), default)).Status);
+        };
+
+        shell.CheckCheckedSignIns.Execute(null); await shell.CheckCheckedSignIns.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Equal(new[] { order[0].Cookie, order[1].Cookie }, client.Snapshot().Select(call => call.Cookie));
+        Assert.Contains("could not be reached or was busy", shell.Notice); Assert.Contains("1 verified", shell.Notice); Assert.Contains("3 not checked", shell.Notice);
+        Assert.DoesNotContain("need sign-in", shell.Notice); Assert.DoesNotContain("needs sign-in", shell.Notice); Assert.DoesNotContain("sign-in because", shell.Notice);
+        using var vault = new ProtectedCredentialVault(_root);
+        foreach (var account in order) Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(account.Id, default))!.Health);
+        foreach (var row in shell.Accounts) Assert.Equal("Saved link", row.Identity);
+        Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+    });
+
+    // M-L1a-5: a row whose saved sign-in could not be read because protected storage was busy is not a row without one.
+    [Fact]
+    public Task CheckedSignInsCountRowsWhoseStatusCouldNotBeReadSeparatelyFromRowsWithNoSavedSignIn() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient();
+        await using var shell = await HealthShell(signIn, client, linked: 2);
+        shell.Search = "Health 01"; await shell.AccountQuery; Assert.Single(shell.Accounts);
+        using (new FileStream(Path.Combine(_root, "accounts.vault", ProtectedCredentialVault.WriterLockFileName), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            // Health 02 has a saved sign-in but was not on the page before, so the busy store leaves it with no last-known one.
+            shell.Search = ""; await shell.AccountQuery;
+            var busy = HealthRow(shell, 2); Assert.True(busy.SignInStatusBusy); Assert.Null(busy.KnownUserId);
+            busy.IsChecked = true;
+
+            shell.CheckCheckedSignIns.Execute(null); await shell.CheckCheckedSignIns.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Empty(client.Snapshot());
+        Assert.Contains("Nothing was sent to Roblox.", shell.Notice);
+        Assert.DoesNotContain("no saved sign-in", shell.Notice);
+        Assert.Contains("1 checked account's sign-in status could not be read because protected storage was busy", shell.Notice);
+        Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+        await shell.AccountQuery;
+    });
+
     [Theory]
     [InlineData("cancel")]
     [InlineData("lock")]
@@ -152,9 +236,9 @@ public sealed partial class ClientWindowIntegrationTests
     private static string HealthCookie(int index) => HealthCookiePrefix + index.ToString("00", CultureInfo.InvariantCulture);
     private static string CookieOf(AccountRow row) => HealthCookie((int)(row.KnownUserId!.Value - 1000));
     private static AccountRow HealthRow(ShellViewModel shell, int index) => shell.Accounts.Single(row => row.Alias == $"Health {index:00}");
-    private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0)
+    private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0, IRobloxShareLinkClient? shareLinks = null)
     {
-        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), signIn: signIn, sessionClient: client);
+        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), signIn: signIn, sessionClient: client, shareLinkClient: shareLinks);
         try
         {
             await shell.InitializeAsync();
@@ -186,6 +270,8 @@ public sealed partial class ClientWindowIntegrationTests
         private readonly List<(string Cookie, long At)> _calls = [];
         public readonly Dictionary<string, HealthReply> Replies = [];
         public string? HoldCookie; public CancellationToken HeldToken;
+        /// <summary>Runs before each reply, while Roblox is "answering"; a test uses it to act as another operation.</summary>
+        public Func<string, Task>? OnCall;
         public readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Release() => _release.TrySetResult();
@@ -195,6 +281,7 @@ public sealed partial class ClientWindowIntegrationTests
         {
             ct.ThrowIfCancellationRequested(); string cookie = credential.CopyValue();
             lock (_calls) _calls.Add((cookie, Stopwatch.GetTimestamp()));
+            if (OnCall is { } onCall) await onCall(cookie).ConfigureAwait(false);
             if (cookie == HoldCookie)
             { HeldToken = ct; Entered.TrySetResult(); await _release.Task.ConfigureAwait(false); ct.ThrowIfCancellationRequested(); }
             // Synthetic failure text carries the cookie to prove it never reaches Notice or Events.
@@ -209,5 +296,20 @@ public sealed partial class ClientWindowIntegrationTests
             int index = int.Parse(cookie[HealthCookiePrefix.Length..], CultureInfo.InvariantCulture); long userId = 1000 + index;
             return new(new(userId, "health_" + index, RobloxSessionIdentity.Issuer, userId.ToString(CultureInfo.InvariantCulture)));
         }
+    }
+    /// <summary>A share-link check that holds the saved-session service until released, then answers "unavailable" (no write).</summary>
+    private sealed class HoldingShareLinks : IRobloxShareLinkClient
+    {
+        public readonly TaskCompletionSource Entered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Release() => _release.TrySetResult();
+        public async Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink link, RobloxSessionCredential credential, RobloxShareLinkTokenScope scope, CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Entered.TrySetResult();
+            await _release.Task.WaitAsync(ct).ConfigureAwait(false);
+            return new(RobloxShareLinkOutcome.Unavailable);
+        }
+        public void ForgetTokens(Guid profileId) { }
+        public void ForgetAllTokens() { }
     }
 }

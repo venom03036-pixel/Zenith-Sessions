@@ -469,7 +469,11 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
             throw new RobloxSessionException(RobloxSessionFailure.NotProcessed, "Synthetic refusal");
         } };
         await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
-        await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default));
+        // M-L1a-5: the refused restore still reports that Roblox never processed the check, so a batch stops on it
+        // instead of reading a generic "changed" refusal as a sign-in answer and continuing into the outage.
+        var error = await Assert.ThrowsAsync<RobloxSessionException>(() => service.CheckSavedAsync(profile.Id, default));
+        Assert.Equal(RobloxSessionFailure.NotProcessed, error.Failure); Assert.Contains("newer sign-in was kept", error.Message);
+        Assert.DoesNotContain("Synthetic", error.Message);
         Assert.Equal("newer_player", vault.Records[profile.Id].VerifiedUsername); Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
     }
 
@@ -478,7 +482,8 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
     {
         using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); vault.Records[profile.Id] = Saved(profile.Id) with { ExpiresUtc = DateTimeOffset.UtcNow.AddSeconds(-1) };
         var client = new Client(); await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser());
-        await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default)); Assert.Equal(0, client.Calls);
+        var expired = await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default)); Assert.Equal(0, client.Calls);
+        Assert.False(expired.OperationInProgress); // A real sign-in answer, not a refusal by a busy service.
         Assert.Equal(AuthorizationHealth.SignInRequired, vault.Records[profile.Id].Health);
     }
 
@@ -491,7 +496,9 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         var browser = new Browser { Wait = _ => { entered.TrySetResult(); return release.Task; } };
         await using var service = new RobloxSessionLinkService(repository, vault, new Client(), browser);
         var linking = service.LinkAsync(profile.Id, default); await entered.Task;
-        await Assert.ThrowsAsync<AccountLinkException>(() => service.LinkAsync(profile.Id, default));
+        Assert.True((await Assert.ThrowsAsync<AccountLinkException>(() => service.LinkAsync(profile.Id, default))).OperationInProgress);
+        // M-L1a-5: a check refused by the busy service says so, so a batch can stop instead of counting it as needing sign-in.
+        Assert.True((await Assert.ThrowsAsync<AccountLinkException>(() => service.CheckSavedAsync(profile.Id, default))).OperationInProgress);
         var disconnecting = service.DisconnectAsync(profile.Id, default); Assert.False(disconnecting.IsCompleted);
         var late = new RobloxSessionCredential(Secret); release.SetResult(late);
         await Assert.ThrowsAnyAsync<OperationCanceledException>(() => linking); await disconnecting;

@@ -99,7 +99,13 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
                 operation.FinalMutationIssued = true; // Cleanup may fence only this exact write.
                 var receipt = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(pendingSnapshot, restored,
                     operation.FinalMutationId, operation.Token).ConfigureAwait(false);
-                Ensure(operation); RequireMutation(receipt, restored.Generation);
+                Ensure(operation);
+                // Another operation replaced this check's fence, so its newer record is kept. Roblox still never
+                // processed the check: report that, so a caller treats it as unreachable or busy, not as a sign-in answer.
+                if (receipt.Status == AuthorizationMutationStatus.Conflict)
+                    throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
+                        "Roblox could not be reached or was busy, so the saved sign-in was not checked. Another operation changed it meanwhile, and that newer sign-in was kept.");
+                RequireMutation(receipt, restored.Generation);
                 succeeded = true;
                 throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
                     "Roblox could not be reached or was busy, so the saved sign-in was not checked. It was left unchanged; check it again later.");
@@ -448,7 +454,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         lock (_state)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_active is not null || _disconnect is not null) throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.");
+            if (_active is not null || _disconnect is not null)
+                throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.") { OperationInProgress = true };
             return _active = new(profileId, CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token));
         }
     }

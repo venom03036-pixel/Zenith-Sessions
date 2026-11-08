@@ -106,4 +106,11 @@ public interface IAccountLinkService
     Task<bool> DisconnectAsync(Guid profileId, string clientId, CancellationToken ct);
 }
 
-public sealed class AccountLinkException(string message) : Exception(message);
+public sealed class AccountLinkException(string message) : Exception(message)
+{
+    /// <summary>
+    /// Another saved-sign-in operation held the service, so this one was refused before it read or changed anything.
+    /// A caller that works through many accounts stops on it instead of reporting each one as needing sign-in.
+    /// </summary>
+    public bool OperationInProgress { get; init; }
+}
