@@ -28,7 +28,7 @@ public sealed record ClientInstallationIssue(ClientInstallationIssueCode Code,Cl
         ClientInstallationIssueCode.UnsafePath=>"A redirected, nonlocal or otherwise unsafe metadata path was skipped.",
         ClientInstallationIssueCode.LimitReached=>"Discovery reached a bounded query or result limit. Additional candidates may exist.",
         ClientInstallationIssueCode.ConflictingProtocols=>"Roblox protocol registrations point to different executables. No provider was selected.",
-        ClientInstallationIssueCode.MultipleCandidates=>"Multiple executable candidates remain for a product. No version or provider was selected automatically.",
+        ClientInstallationIssueCode.MultipleCandidates=>"Multiple executable candidates remain for a product. A row is suggested only when exactly one present native Roblox player remains, or the Roblox registrations name one.",
         _=>"Installation discovery was unavailable for part of the inventory. Absence cannot be established."
     };
 }

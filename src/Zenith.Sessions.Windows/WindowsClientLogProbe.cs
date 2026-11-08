@@ -126,8 +126,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
     {
         string name = Path.GetFileName(imagePath);
         if (!ClientImageNames.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
-        bool packaged = imagePath.Split(Path.DirectorySeparatorChar).Any(component => component.Equals("WindowsApps", StringComparison.OrdinalIgnoreCase));
-        return packaged == (variant == ClientLogVariant.Uwp);
+        return RobloxNativePlayerFiles.IsPackagedPath(imagePath) == (variant == ClientLogVariant.Uwp);
     }
 
     public ResourceHolderResult QueryHolders(string path, CancellationToken ct) => RestartManagerLogQuery.Query(path, ct);
