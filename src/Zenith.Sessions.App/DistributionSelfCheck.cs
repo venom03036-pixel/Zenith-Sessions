@@ -17,7 +17,7 @@ internal static class DistributionSelfCheck
 {
     private static readonly Guid FixtureId=new("76232fdc-843e-41c9-86b2-fab45cba55c7");
     private static readonly Guid SessionFixtureId=new("67fbfa82-8738-4a7f-96a7-5290353e81aa");
-    internal sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null);
+    internal sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null,string? CauseType=null);
     private sealed class SyntheticHandoffStart : IPreparedNativeHandoffStart
     {
         public int Calls {get;private set;}
@@ -784,16 +784,23 @@ internal static class DistributionSelfCheck
                 throw new InvalidDataException("Credential cleanup failed.");
             cases.Add(new(stage,true));
         }
-        catch(Exception ex)
-        {
-            var failure=ex.GetBaseException();var method=failure.TargetSite;
-            // Static phase/code/method only: never persist exception messages, arguments,
-            // raw paths, authorization material or a raw exception/stack dump.
-            cases.Add(new(stage,false,ex.GetType().Name,$"0x{failure.HResult:X8}",step,method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}"));
-        }
+        catch(Exception ex) { cases.Add(FailedCase(stage,ex,step)); }
         if(!owned) { Console.WriteLine("Distribution self-check refused an unowned data folder."); return 2; }
         return await WriteReportAsync(report,cases,new(sqliteVersion,elapsed.ElapsedMilliseconds,gpuEvidence,publisherEvidence,cleanupPhase,cleanupPending,cleanupRemaining,cleanupErrorType),
             AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies());
+    }
+
+    // ErrorCode and FailingMethod locate one failure, and CauseType names the root exception's type when another exception
+    // caused the one ErrorType names. An exception with an inner exception is usually a wrapper thrown by framework code
+    // (reflection, XAML, a type initializer), so the root it wraps locates the failure. A timeout is the stage's own failure:
+    // it is located where it was thrown, and an earlier failure it keeps (such as the deadline cancellation) is only its cause.
+    internal static Case FailedCase(string stage,Exception ex,string? step)
+    {
+        var root=ex.GetBaseException();var located=ex is TimeoutException?ex:root;var method=located.TargetSite;
+        // Static phase/code/method/type names only: never persist exception messages, arguments,
+        // raw paths, authorization material or a raw exception/stack dump.
+        return new(stage,false,ex.GetType().Name,$"0x{located.HResult:X8}",step,method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}",
+            ReferenceEquals(root,ex)?null:root.GetType().Name);
     }
 
     // What the stages gathered for the report: static values and counts only, never paths, messages or protected material.
