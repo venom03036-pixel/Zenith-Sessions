@@ -306,7 +306,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
 
         var guide = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide", StringComparison.Ordinal) == true));
-        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => (string?)e.Attribute("Text") ?? "").ToList();
+        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
         Assert.Contains(texts, text => text == "Ordinary launching after a verified trial");
         string section = Assert.Single(texts, text => text.StartsWith("Ordinary and group launch requests", StringComparison.Ordinal));
         foreach (string expected in new[] { "recorded blocked", "Record this trial as verified", "Forget verified trial", "settings.json", "no sign-in material",

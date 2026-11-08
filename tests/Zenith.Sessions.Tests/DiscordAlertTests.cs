@@ -49,7 +49,8 @@ public sealed class DiscordAlertTests : IDisposable
         bool parsed = DiscordWebhookAddress.TryParse(text, out var address, out string problem);
         Assert.True(parsed == accepted, $"'{text}' was {(parsed ? "accepted" : "refused")}: {problem}");
         if (!accepted) { Assert.Null(address); Assert.False(string.IsNullOrWhiteSpace(problem)); return; }
-        using (address!)
+        Assert.NotNull(address);
+        using (address)
         {
             Assert.Equal(host, address.Host);
             Assert.Equal("AbCd", address.Last4);

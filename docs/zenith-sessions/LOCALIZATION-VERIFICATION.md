@@ -16,3 +16,9 @@ Validation (offline, synthetic profiles and monitor):
 The initial runs exposed literal-only assertions in the existing Guide, shortcut and Panic tests and a standalone WPF fragment without its `local` namespace. Those fixtures now resolve the production English catalog and keep checking actual caption/command behavior. The new literal gate found three Appearance descriptions that still needed migration; they now use their existing catalog keys. A layout assertion initially counted a TextBlock's margin as clipped text; it was corrected to measure actual formatted text width. Both pseudo directions then fit the unchanged controls.
 
 Full integrated suites and attended native trials remain separate release gates. No real account, Roblox client, paid cloud test or installer was used.
+
+## Integration 0.61 — resource bindings after lane merge
+
+The merged `a46c27b` build failed two localization completeness checks in `artifacts/completion-integration/integration-second.trx`: the D6b keep-awake Appearance controls and five D1/D6b Guide headings still used literal text. They now resolve through the English catalog, including the keep-awake accessible name. Layout, command bindings and English wording are unchanged. The existing Guide wording tests now use the shared resource resolver and retain every expected-string assertion; the Discord address test explicitly proves the parsed address is non-null before using it.
+
+After this repair, 131 affected checks passed with zero failures/skips and no build warning in `artifacts/completion-integration/merged-localization-accepted.trx`. The preceding 126/131 run is retained as `merged-localization-after.trx`; its five failures were assertions reading markup instead of resolved resource text. This is focused integration evidence, not the final twice-on-one-commit gate or a live qualification.

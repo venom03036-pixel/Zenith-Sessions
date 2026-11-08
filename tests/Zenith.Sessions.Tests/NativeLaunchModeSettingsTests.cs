@@ -116,7 +116,7 @@ public sealed class NativeLaunchModeSettingsTests : IDisposable
         var document = XDocument.Load(stream);
         var guide = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide", StringComparison.Ordinal) == true));
-        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => (string?)e.Attribute("Text") ?? "").ToList();
+        var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
         Assert.Contains(texts, text => text == "Native launch mode");
         string mode = Assert.Single(texts, text => text.Contains("Settings → Roblox installation → Native launch mode", StringComparison.Ordinal));
         Assert.Contains("Official page is the default", mode, StringComparison.Ordinal);

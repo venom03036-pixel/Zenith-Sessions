@@ -109,4 +109,12 @@
   <data name="GuideHeading_SavedMacros" xml:space="preserve"><value>Saved macros from Personal Zenith</value></data>
   <data name="GuideHeading_Assignments" xml:space="preserve"><value>Shared macro assignments</value></data>
   <data name="GuideHeading_Recovery" xml:space="preserve"><value>8. Interrupted saves and recovery</value></data>
+  <data name="Appearance_KeepAwake" xml:space="preserve"><value>Keep clients awake</value></data>
+  <data name="Appearance_ResumeKeepAwake" xml:space="preserve"><value>Resume keeping clients awake</value></data>
+  <data name="Appearance_KeepAwakeDescription" xml:space="preserve"><value>Off by default. When on and saved, every chosen gap (5 to 19 minutes; Roblox disconnects a client after 20 idle minutes) Zenith brings each client forward, sends it one F13 press through its single input owner, and puts the window that was in front back. It waits while you have used the keyboard or mouse in the last 10 seconds. It is refused until the live input isolation trial marks background input Supported; until then this choice only shows why nothing runs. Panic and Lock stop it until you choose Resume keeping clients awake. Save settings to apply.</value></data>
+  <data name="GuideHeading_ClientGpu" xml:space="preserve"><value>Client GPU use</value></data>
+  <data name="GuideHeading_KeepAwake" xml:space="preserve"><value>Keep clients awake</value></data>
+  <data name="GuideHeading_NativeLaunchMode" xml:space="preserve"><value>Native launch mode</value></data>
+  <data name="GuideHeading_BootstrapperLaunch" xml:space="preserve"><value>Launching through a bootstrapper</value></data>
+  <data name="GuideHeading_OrdinaryLaunch" xml:space="preserve"><value>Ordinary launching after a verified trial</value></data>
 </root>
