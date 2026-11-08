@@ -1272,8 +1272,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var projection=LaunchReservationProjection.Evaluate(new(true,operations),snapshot,limits,now);
         // Checked before headroom: it is the reason the user can act on, and it changes only when clients open or close.
         // Possible clients this queue started count as running; the fresh complete inventory makes the count trustworthy.
-        if(projection.ForecastsKnown && projection.FreshProcessInventory
-            && ClientUpdateHold.Evaluate(_launchReleaseMatch,projection.OccupiedForAdmission) is {Hold:true} update)
+        // The selected row's comparison (and its file) is read only while a client may run: with none, nothing can close.
+        if(projection.ForecastsKnown && projection.FreshProcessInventory && projection.OccupiedForAdmission>0
+            && ClientUpdateHold.Evaluate(LaunchReleaseMatchForHold(),projection.OccupiedForAdmission) is {Hold:true} update)
             return new(false,update.Reason,LaunchHoldReason.ClientUpdate);
         var decision=CapacityPolicy.Evaluate(snapshot.Resources,limits,projection.Reservations,projection.OccupiedForAdmission,now,budget);
         return new(admission.Allowed && projection.ForecastsKnown && projection.FreshProcessInventory && decision.SamplesHealthy && decision.MemoryOnlySlots>0,
@@ -1292,9 +1293,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private void QueueChanged(LaunchQueueSnapshot snapshot)
     {
         var previous=Interlocked.Exchange(ref _latestQueue,snapshot);
-        var oldGenerations=previous.Operations.ToDictionary(row=>row.Intent.OperationId,row=>row.Intent.AuthorizationGeneration);
-        if(snapshot.Operations.Any(row=>oldGenerations.TryGetValue(row.Intent.OperationId,out long prior)&&row.Intent.AuthorizationGeneration!=prior))
+        var old=previous.Operations.ToDictionary(row=>row.Intent.OperationId);
+        if(snapshot.Operations.Any(row=>old.TryGetValue(row.Intent.OperationId,out var prior)&&row.Intent.AuthorizationGeneration!=prior.Intent.AuthorizationGeneration))
             Interlocked.Exchange(ref _nativeMetadataPending,1);
+        // Every snapshot passes here (only the UI step below is coalesced), so a receipt the previous one lacked is a client
+        // this queue's provider just started. Receipts restored at startup arrive before any installation is selected.
+        if(snapshot.Operations.Any(row=>row.ProcessReceipt is {IsValid:true}
+            &&!(old.TryGetValue(row.Intent.OperationId,out var prior)&&prior.ProcessReceipt is {IsValid:true})))
+            NoteQueueClientStarted();
         Volatile.Write(ref _pendingQueue,snapshot);
         if(Interlocked.Exchange(ref _queueUiScheduled,1)!=0 || _dispatcher.HasShutdownStarted) return;
         _dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>
@@ -1321,6 +1327,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             RefreshAccountLaunchStates();
             RefreshNativeTrialFeatures();
             RefreshLaunchEvidence();
+            ShowLaunchReleaseStarted();
             if(Volatile.Read(ref _pendingQueue) is { } pending) QueueChanged(pending);
         }));
     }

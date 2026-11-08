@@ -191,7 +191,7 @@ public sealed partial class ShellViewModel
         LaunchOperation request;
         try
         {
-            // The queue holds this start while a client runs if the player is older than Roblox's release (the update would close them).
+            // The queue holds this start while a client runs if the selected row reads "Not current" (Roblox's update may close them).
             await ReadLaunchReleaseAsync(stop.Token);
             var profile=await _accounts.FindAsync(review.Profile.Id,stop.Token);
             var grant=await _vault.GetSummaryAsync(review.Profile.Id,stop.Token);

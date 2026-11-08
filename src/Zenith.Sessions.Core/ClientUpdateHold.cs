@@ -10,14 +10,17 @@ public enum LaunchHoldReason { ResourceHeadroom, ClientUpdate }
 public sealed record ClientUpdateHoldDecision(bool Hold, string Reason);
 
 /// <summary>
-/// Whether starting the selected Roblox player now would close running clients: Roblox updates an outdated player as it
+/// Whether starting the selected Roblox player now may close running clients: Roblox updates an outdated player as it
 /// starts, and its installer closes every running client. Pure: the caller supplies the comparison of the selected player
 /// with Roblox's current public release and how many clients may be running. Only a known mismatch with a client running
-/// holds; an unknown release, a player that could not be compared and a current player never do (Rule 16).
+/// holds; an unknown release, a player that could not be compared and a current player never do (Rule 16). The caller
+/// passes NotCurrent only while that comparison is still evidence about the next start: the release was read after the
+/// player was observed, the file still exists, and no client was started from it for that release since.
+/// Only the default live channel is read, so the text never claims more than "may".
 /// </summary>
 public static class ClientUpdateHold
 {
-    public const string Explanation = "Roblox has an update that would close running clients. The selected player is older than Roblox's current release, and Roblox updates a player as it starts. This request starts on its own once no Roblox client is running.";
+    public const string Explanation = "Roblox may have an update that could close running clients: the selected player does not match the current release of Roblox's default live channel (the only channel checked), and Roblox updates an outdated player as it starts. This request starts on its own once no Roblox client is running; cancel it to stop waiting.";
 
     // Fixed answers: admission asks once per monitor sample, so a decision never allocates.
     private static readonly ClientUpdateHoldDecision Held = new(true, Explanation),

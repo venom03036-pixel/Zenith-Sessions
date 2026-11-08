@@ -96,7 +96,7 @@ public static class OverviewWorkspaceProjection
         string mode=input.Locked?"Controls locked":input.QueuePaused?"Queue paused":"Queue active";
         string observed=input.QueueObservedUtc is { } at && ValidDate(at,now)?" · snapshot observed "+Stamp(at):" · observation time unavailable";
         return(queued,mode+observed,$"{starting} preparing/dispatching · {waiting} waiting for capacity (start automatically while the queue is active)"
-            +(held>0?$" · {held} held for a Roblox update that would close running clients (start automatically once none runs)":"")+$" · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
+            +(held>0?$" · {held} held for a possible Roblox update that could close running clients (start automatically once none runs)":"")+$" · {blocked} blocked · {failed} failed · {review} reviewable retained requests. These are requests, not joined accounts.");
     }
     private static bool Fresh(DateTimeOffset at,DateTimeOffset now,TimeSpan age)=>ValidDate(at,now) && now-at<=age;
     private static bool ValidDate(DateTimeOffset at,DateTimeOffset now)=>at!=default && now!=default && at<=now;

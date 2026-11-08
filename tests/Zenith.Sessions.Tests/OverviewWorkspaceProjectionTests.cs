@@ -131,9 +131,9 @@ public sealed class OverviewWorkspaceProjectionTests
         var operations=new[]{Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity},
             Operation(LaunchState.Blocked) with {Problem=LaunchProblem.InsufficientCapacity,HoldReason=LaunchHoldReason.ClientUpdate}};
         var view=OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,operations)},Now);
-        Assert.Contains(" · 1 waiting for capacity (start automatically while the queue is active) · 1 held for a Roblox update that would close running clients",view.QueueSummary);
+        Assert.Contains(" · 1 waiting for capacity (start automatically while the queue is active) · 1 held for a possible Roblox update that could close running clients",view.QueueSummary);
         Assert.Contains(" · 0 blocked · ",view.QueueSummary);
-        Assert.DoesNotContain("held for a Roblox update",OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,[operations[0]])},Now).QueueSummary);
+        Assert.DoesNotContain("Roblox update",OverviewWorkspaceProjection.Create(Input() with {Queue=new(true,[operations[0]])},Now).QueueSummary);
     }
     [Theory]
     [InlineData(LaunchState.Blocked,LaunchProblem.InsufficientCapacity,true)]

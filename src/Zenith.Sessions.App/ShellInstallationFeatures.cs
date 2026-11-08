@@ -9,10 +9,26 @@ public sealed class InstallationCandidateRow(ClientInstallationCandidate candida
 {
     private ClientReleaseMatch _release = release;
     public ClientInstallationCandidate Candidate { get; } = candidate;
-    // Compared with Roblox's current public release on the last explicit refresh. The row is listed before Roblox answers
-    // and filled in place when it does, so a selected row (and a verification of it) keeps its identity. Leftover older
-    // version folders are "Not current" on their own row; whether an update is pending is said once, for the installation.
-    public ClientReleaseMatch Release { get => _release; internal set { if (Set(ref _release, value)) Raise(nameof(ReleaseStatus)); } }
+    // When the inventory read this row's files. A release read before then says nothing about them: the player may have been
+    // updated past it in between, and an equality comparison cannot tell an older player from a newer one.
+    internal DateTimeOffset ObservedUtc { get; init; }
+    // The release Release was compared with; null while the row reads "Not checked".
+    internal PublicRobloxClientRelease? ComparedWith { get; private set; }
+    // Compared with Roblox's current public release on the last explicit refresh, or with a newer answer a native start read.
+    // The row is listed before Roblox answers and filled in place when it does, so a selected row (and a verification of it)
+    // keeps its identity. Leftover older version folders are "Not current" on their own row; whether an update is pending is
+    // said once, for the installation. The launch update hold reads this same value, so a row reading "Not checked" never holds.
+    public ClientReleaseMatch Release { get => _release; private set { if (Set(ref _release, value)) Raise(nameof(ReleaseStatus)); } }
+    // The refresh's own answer was requested after its rows were read, so it describes them and is compared directly.
+    internal void CompareWith(PublicRobloxClientRelease? release)
+    {
+        if (!RobloxClientRelease.IsValid(release)) return;
+        ComparedWith = release; Release = RobloxClientRelease.Compare(Candidate, release);
+    }
+    // Any other answer (kept from an earlier refresh, or read for a start) only when it was read at or after this row's files
+    // and is newer than the one already applied, so the column only moves forward and never takes an older release.
+    internal bool Accepts(PublicRobloxClientRelease release) => RobloxClientRelease.IsValid(release) && !ReferenceEquals(release, ComparedWith)
+        && release.RetrievedUtc >= ObservedUtc && (ComparedWith is null || release.RetrievedUtc > ComparedWith.RetrievedUtc);
     public string ReleaseStatus => Release switch
     {
         ClientReleaseMatch.Current => "Current release",
@@ -73,9 +89,19 @@ public sealed partial class ShellViewModel
     private IClientInstallationDiscovery _installationDiscovery = null!;
     private IPublicRobloxClientReleaseDirectory? _clientReleases;
     private PublicClientReleaseCache? _releaseCache;
-    // The native trial installation compared with the newest release Zenith has read, for the queue's admission (pool
-    // thread). NotChecked when no trial installation is selected or no valid release was ever read: nothing holds then.
-    private volatile ClientReleaseMatch _launchReleaseMatch;
+    // What the selected native trial row shows about Roblox's release, for the queue's admission (pool thread): its Release
+    // value, its file and the release it was compared with. Null when no trial installation is selected, so nothing holds.
+    // Immutable and swapped whole, so admission never reads a match from one row with the path of another.
+    private sealed record LaunchReleaseEvidence(ClientReleaseMatch Match, string Player, string Upload);
+    private LaunchReleaseEvidence? _launchRelease;
+    // The player/release pairs a client this queue started was started from while that row read "Not current". Roblox then
+    // updated that player as it started, or showed it does not update it for that release (another channel, a staged rollout),
+    // so the comparison no longer says anything about the next start and never holds it again. Memory-only, at most
+    // MaximumLaunchReleaseStarts entries (oldest dropped); the list is its own lock (queue thread and admission).
+    private const int MaximumLaunchReleaseStarts = 8;
+    private readonly List<LaunchReleaseEvidence> _launchReleaseStarts = [];
+    private long _launchReleaseStartCount, _shownLaunchReleaseStartCount;
+    private const string LaunchReleaseStartedNote = "A Roblox client was started from the selected player after it was compared, so Roblox may have updated it as it started. Starts from it are no longer held for that release; refresh installations to compare it again.";
     // A start asks Roblox again only when its last answer is older than PublicClientReleaseCache.Lifetime, and waits at most this.
     private static readonly TimeSpan LaunchReleaseReadLimit = TimeSpan.FromSeconds(5);
     private CancellationTokenSource? _installationStop;
@@ -145,7 +171,7 @@ public sealed partial class ShellViewModel
             for (int index = 0; index < rows.Length; index++)
             {
                 var candidate = snapshot.Candidates[index];
-                InstallationCandidates.Add(rows[index] = new(candidate with { Evidence = Array.AsReadOnly(candidate.Evidence.ToArray()) }));
+                InstallationCandidates.Add(rows[index] = new(candidate with { Evidence = Array.AsReadOnly(candidate.Evidence.ToArray()) }) { ObservedUtc = snapshot.ObservedUtc });
             }
             foreach (var issue in snapshot.Issues)
                 if (InstallationCandidateRow.IssueLine(issue) is var line && !InstallationIssues.Contains(line)) InstallationIssues.Add(line);
@@ -158,7 +184,9 @@ public sealed partial class ShellViewModel
             // Cancel check already said the release check stopped; an answer that still arrives is not applied.
             if (!Current() || releaseStop.IsCancellationRequested) return;
             var latest = release is { State: PublicDirectoryState.Success } && RobloxClientRelease.IsValid(release.Value) ? release.Value : null;
-            foreach (var row in rows) row.Release = RobloxClientRelease.Compare(row.Candidate, latest);
+            // This answer was requested after the rows were read, so it describes them. A failed one leaves them "Not checked";
+            // the release kept from an earlier refresh predates them and is never applied to them (see Accepts).
+            foreach (var row in rows) row.CompareWith(latest);
             InstallationReleaseStatus = ReleaseSummary(release, latest, rows);
             _releaseCache?.Remember(latest); PublishLaunchRelease();
         }
@@ -188,17 +216,72 @@ public sealed partial class ShellViewModel
             return new(PublicDirectoryState.Failure, null, "The request to the public version service failed.");
         }
     }
-    // Dispatcher only. The provider starts exactly the accepted selection, so only that file is compared. The queue is
-    // signalled so a held request re-checks at once rather than at the next monitor sample.
+    // Dispatcher only. The provider starts exactly the accepted selection, so only that row is read, and the hold reads what
+    // that row shows (after a newer kept answer fills the rows). The queue is signalled so a held request re-checks at once
+    // rather than at the next monitor sample.
     private void PublishLaunchRelease()
     {
-        var installation = _nativeLaunch.Selected ? SelectedInstallation?.Candidate : null;
-        _launchReleaseMatch = installation is null ? ClientReleaseMatch.NotChecked : RobloxClientRelease.Compare(installation, _releaseCache?.Latest);
+        ApplyKeptRelease();
+        var row = _nativeLaunch.Selected ? SelectedInstallation : null;
+        Volatile.Write(ref _launchRelease, row is null ? null : new(row.Release, row.Candidate.ExecutablePath, row.ComparedWith?.ClientVersionUpload ?? ""));
         _launchQueue.Signal();
+    }
+    // A newer answer read for a start fills the listed rows in place and restates the summary. An answer older than the rows,
+    // kept when this refresh's own read failed or was stopped, is never applied: the rows stay "Not checked" and nothing holds.
+    private void ApplyKeptRelease()
+    {
+        if (_releaseCache?.Latest is not { } kept || !InstallationCandidates.Any(row => row.Accepts(kept))) return;
+        foreach (var row in InstallationCandidates) if (row.Accepts(kept)) row.CompareWith(kept);
+        InstallationReleaseStatus = ReleaseSummary(new(PublicDirectoryState.Success, kept, ""), kept, InstallationCandidates);
+    }
+    // Pool thread (queue admission), only while a client may be running. The selected row's own comparison, unless it no
+    // longer says anything about the next start: a client this queue started from that player since, for that release, or a
+    // file that is gone (an update replaced its version folder, or Roblox was started outside Zenith). No LINQ or closure; at
+    // most one file-attribute query per admission, and only while the row reads "Not current" and a client may run. A failed
+    // query reads as missing, which never holds (Rule 16).
+    private ClientReleaseMatch LaunchReleaseMatchForHold()
+    {
+        if (Volatile.Read(ref _launchRelease) is not { } evidence) return ClientReleaseMatch.NotChecked;
+        if (evidence.Match != ClientReleaseMatch.NotCurrent) return evidence.Match;
+        lock (_launchReleaseStarts) if (StartedFromOwned(evidence)) return ClientReleaseMatch.NotCompared;
+        return System.IO.File.Exists(evidence.Player) ? ClientReleaseMatch.NotCurrent : ClientReleaseMatch.NotCompared;
+    }
+    // Queue thread (its Changed event): this queue's provider started a Roblox process, and only native trials, from the
+    // selected installation, can. While that row reads "Not current" its player/release pair stops holding from now on.
+    private void NoteQueueClientStarted()
+    {
+        if (Volatile.Read(ref _launchRelease) is not { Match: ClientReleaseMatch.NotCurrent } evidence) return;
+        lock (_launchReleaseStarts)
+        {
+            if (StartedFromOwned(evidence)) return;
+            if (_launchReleaseStarts.Count == MaximumLaunchReleaseStarts) _launchReleaseStarts.RemoveAt(0);
+            _launchReleaseStarts.Add(evidence);
+        }
+        Interlocked.Increment(ref _launchReleaseStartCount);
+        _launchQueue.Signal();
+    }
+    // Caller holds the _launchReleaseStarts lock.
+    private bool StartedFromOwned(LaunchReleaseEvidence evidence)
+    {
+        foreach (var started in _launchReleaseStarts)
+            if (string.Equals(started.Upload, evidence.Upload, StringComparison.Ordinal)
+                && string.Equals(started.Player, evidence.Player, StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
+    // Dispatcher: say once, beside the release summary, why the selected row's comparison stopped holding and how to renew it.
+    private void ShowLaunchReleaseStarted()
+    {
+        long count = Interlocked.Read(ref _launchReleaseStartCount);
+        if (count == _shownLaunchReleaseStartCount) return;
+        _shownLaunchReleaseStartCount = count;
+        if (!InstallationReleaseStatus.Contains(LaunchReleaseStartedNote, StringComparison.Ordinal))
+            InstallationReleaseStatus = InstallationReleaseStatus.Length == 0 ? LaunchReleaseStartedNote : InstallationReleaseStatus + " " + LaunchReleaseStartedNote;
     }
     // Before a native start: an answer read in the last ten minutes is reused, else Roblox is asked once, for at most
     // LaunchReleaseReadLimit, under the start's own cancellation (Panic, Lock and shutdown cancel it). A failed or slow answer
-    // keeps the last valid one, so it never holds a start (Rule 16); only its exception type is recorded, never its text.
+    // keeps the last valid one, which holds only a row compared with it in the same refresh (a player that differed from a
+    // release read after it was observed is still older, as releases only move forward); a row that answer predates stays
+    // "Not checked" and never holds (Rule 16). Only the exception type is recorded, never its text.
     private async Task ReadLaunchReleaseAsync(CancellationToken ct)
     {
         if (_releaseCache is null || _releaseCache.IsFresh) return;

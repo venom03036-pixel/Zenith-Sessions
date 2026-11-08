@@ -11,18 +11,23 @@ using Zenith.Sessions.Windows;
 namespace Zenith.Sessions.Tests;
 
 // The real Shell/queue composition with isolated local data, a synthetic monitor, a fake installation inventory and a fake
-// public release source. No process, network, Roblox client or account is touched.
+// public release source. No process, network, Roblox client or account is touched; the "player" is an empty file in the
+// fixture folder, because a hold re-checks that the selected player still exists.
 public sealed class ClientUpdateHoldTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-update-hold-" + Guid.NewGuid().ToString("N"));
+    private readonly Inventory _inventory;
     private static readonly BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
-    private const string PlayerFolder = "version-00000000000000aa";
-    private const string Player = "C:\\Synthetic\\Roblox\\Versions\\" + PlayerFolder + "\\RobloxPlayerBeta.exe";
+    private const string PlayerFolder = "version-00000000000000aa", OlderFolder = "version-1111111111111111";
     private static ulong G(double value) => checked((ulong)Math.Ceiling(value * CapacityPolicy.GiB));
-    private static PublicRobloxClientRelease Release(string upload = "version-1111111111111111", DateTimeOffset? at = null)
+    public ClientUpdateHoldTests() => _inventory = new(_root);
+    private static PublicRobloxClientRelease Release(string upload = OlderFolder, DateTimeOffset? at = null)
         => new("0.746.0.7461200", upload, at ?? DateTimeOffset.UtcNow);
     private static LaunchOperation Candidate() => new(new(Guid.NewGuid(), Guid.NewGuid(), 1, 123, 42, 0, DateTimeOffset.UtcNow, 7),
         LaunchState.Queued, LaunchProblem.None, DateTimeOffset.UtcNow, ResourceBudget: new(G(.1), G(.1)));
+    // A trial whose provider started a Roblox process: the queue recorded its process-start receipt.
+    private static LaunchOperation Started() => Candidate() with { State = LaunchState.ClientStartedUnverified, Problem = LaunchProblem.ClientStartedUnverified,
+        ProcessReceipt = new(4242, DateTime.UtcNow.AddSeconds(-2).Ticks, DateTimeOffset.UtcNow) };
 
     [Theory]
     [InlineData(ClientReleaseMatch.NotCurrent, 1, true)]
@@ -37,7 +42,7 @@ public sealed class ClientUpdateHoldTests : IDisposable
         var decision = ClientUpdateHold.Evaluate(selected, running);
         Assert.Equal(hold, decision.Hold);
         if (hold) Assert.Equal(ClientUpdateHold.Explanation, decision.Reason);
-        else Assert.DoesNotContain("would close", decision.Reason, StringComparison.Ordinal);
+        else Assert.DoesNotContain("could close", decision.Reason, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -55,7 +60,9 @@ public sealed class ClientUpdateHoldTests : IDisposable
         Publish(shell, monitor.Snapshot(running: 1));
         var held = Admission(shell, Candidate());
         Assert.False(held.Allowed, "A start from an outdated player must wait while a client runs: Roblox would install the update and close it.");
-        Assert.StartsWith("Roblox has an update that would close running clients.", held.Explanation, StringComparison.Ordinal);
+        // Hedged: only the default live channel is read, and a staged rollout or another channel may not update this player.
+        Assert.StartsWith("Roblox may have an update that could close running clients:", held.Explanation, StringComparison.Ordinal);
+        Assert.Contains("default live channel", held.Explanation, StringComparison.Ordinal);
         Assert.Equal(LaunchHoldReason.ClientUpdate, held.Hold);
 
         Publish(shell, monitor.Snapshot(running: 0));
@@ -126,10 +133,124 @@ public sealed class ClientUpdateHoldTests : IDisposable
         await SelectPlayerAsync(shell);
         releases.Throw = new HttpRequestException("synthetic unreachable service");
         await ReadForStart(shell); Assert.Equal(2, releases.Calls);
-        // A release only moves forward, so a player older than the last answer is still older than Roblox's current one.
+        // The kept answer was read after this player was observed (the same refresh), and releases only move forward, so a
+        // player that differed from it then is still older than Roblox's current release now.
         Publish(shell, monitor.Snapshot(running: 1));
         Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, Candidate()).Hold);
         Assert.DoesNotContain("synthetic unreachable service", shell.Notice + shell.ErrorNotice + shell.NativeTrialStatus, StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task AClientStartedFromTheOutdatedPlayerEndsItsHoldForThatRelease() => OnUi(async () =>
+    {
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release() };
+        await using var shell = await Ready(monitor, releases);
+        Assert.Equal(ClientReleaseMatch.NotCurrent, (await SelectPlayerAsync(shell)).Release);
+        // The first account's trial: no client runs, so nothing can close and it starts.
+        Publish(shell, monitor.Snapshot(running: 0));
+        Assert.True(Admission(shell, Candidate()).Allowed);
+        // The queue records that trial's process receipt: Roblox ran the selected player, and updates an outdated one as it starts.
+        Observe(shell, new(false, [Started()]));
+        await Dispatcher.Yield(DispatcherPriority.ContextIdle);
+
+        // The next account's trial while that client runs is not held with the update claim: the start already let Roblox
+        // update this player, or showed that it does not update it for this release (another channel, a staged rollout).
+        Publish(shell, monitor.Snapshot(running: 1));
+        var next = Admission(shell, Candidate());
+        Assert.True(next.Allowed, next.Explanation); Assert.Equal(LaunchHoldReason.ResourceHeadroom, next.Hold);
+        Assert.DoesNotContain("could close", next.Explanation, StringComparison.Ordinal);
+        Assert.Contains("refresh installations", shell.InstallationReleaseStatus, StringComparison.OrdinalIgnoreCase);
+
+        // A refresh that still finds that player and the same release: the start did not replace it, so it is never held for that release.
+        Assert.Equal(ClientReleaseMatch.NotCurrent, (await SelectPlayerAsync(shell)).Release);
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.True(Admission(shell, Candidate()).Allowed);
+        // A newer release is a new update that may close clients, so it holds again.
+        releases.Answer = Release("version-2222222222222222");
+        await SelectPlayerAsync(shell);
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, Candidate()).Hold);
+    });
+
+    [Fact]
+    public Task ASelectedPlayerThatNoLongerExistsIsNeverHeld() => OnUi(async () =>
+    {
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release() };
+        await using var shell = await Ready(monitor, releases);
+        await SelectPlayerAsync(shell);
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, Candidate()).Hold);
+        // Roblox's updater replaced that version folder (for example when Roblox was started outside Zenith).
+        File.Delete(_inventory.Player);
+        Publish(shell, monitor.Snapshot(running: 1));
+        var admission = Admission(shell, Candidate());
+        Assert.True(admission.Allowed, admission.Explanation);
+    });
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public Task ANewerPlayerIsNeverHeldOnAnOlderKeptReleaseItWasNotComparedWith(bool staleKeptRelease, bool stopped) => OnUi(async () =>
+    {
+        // Release A is read while this PC still has A's folder.
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release(OlderFolder, staleKeptRelease ? DateTimeOffset.UtcNow.AddMinutes(-30) : null) };
+        _inventory.Folder = OlderFolder;
+        await using var shell = await Ready(monitor, releases);
+        Assert.Equal(ClientReleaseMatch.Current, (await SelectPlayerAsync(shell)).Release);
+        // Roblox then ships B and this PC updates: the next refresh finds only B's folder, and Roblox's answer fails or Cancel check stops it.
+        _inventory.Folder = PlayerFolder;
+        InstallationCandidateRow player;
+        if (stopped)
+        {
+            releases.Gate = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            shell.RefreshInstallations.Execute(null);
+            for (int wait = 0; wait < 100 && releases.Calls < 2; wait++) await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+            Assert.Equal(2, releases.Calls);
+            player = Assert.Single(shell.InstallationCandidates); shell.SelectedInstallation = player;
+            shell.CancelInstallationDiscovery.Execute(null);
+            await shell.RefreshInstallations.Execution;
+            releases.Gate = null;
+        }
+        else
+        {
+            releases.Throw = new HttpRequestException("synthetic unreachable service");
+            player = await SelectPlayerAsync(shell);
+        }
+        Assert.Equal(_inventory.Player, shell.NativeTrialInstallation);
+        Assert.Equal("Not checked", player.ReleaseStatus);
+        Publish(shell, monitor.Snapshot(running: 1));
+        var admission = Admission(shell, Candidate());
+        Assert.True(admission.Allowed, admission.Explanation);
+
+        // The start's own read: a fresh kept A is reused, a stale one is asked for again and that read fails too. Either way
+        // only A is known, which this row was never compared with, so the row still reads "Not checked" and nothing holds.
+        releases.Throw = new HttpRequestException("synthetic unreachable service");
+        await ReadForStart(shell);
+        Assert.Equal(staleKeptRelease ? 3 : 2, releases.Calls);
+        Publish(shell, monitor.Snapshot(running: 1));
+        admission = Admission(shell, Candidate());
+        Assert.True(admission.Allowed, admission.Explanation); Assert.Equal("Not checked", player.ReleaseStatus);
+    });
+
+    [Fact]
+    public Task ANewerReleaseReadForAStartFillsTheRowsSoTheHoldMatchesWhatTheRowShows() => OnUi(async () =>
+    {
+        // The refresh's own answer failed: the row reads "Not checked" and nothing holds.
+        var monitor = new Monitor(); var releases = new Releases { Throw = new HttpRequestException("synthetic unreachable service") };
+        await using var shell = await Ready(monitor, releases);
+        var player = await SelectPlayerAsync(shell);
+        Assert.Equal("Not checked", player.ReleaseStatus);
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.True(Admission(shell, Candidate()).Allowed);
+        // The start asks again and Roblox answers: the row shows that comparison, and the hold follows the row.
+        releases.Throw = null; releases.Answer = Release();
+        await ReadForStart(shell); Assert.Equal(2, releases.Calls);
+        Assert.Equal("Not current", player.ReleaseStatus);
+        Assert.StartsWith("Update pending:", shell.InstallationReleaseStatus, StringComparison.Ordinal);
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, Candidate()).Hold);
     });
 
     [Fact]
@@ -150,7 +271,7 @@ public sealed class ClientUpdateHoldTests : IDisposable
 
     private async Task<ShellViewModel> Ready(Monitor monitor, Releases? releases)
     {
-        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, installationDiscovery: new Inventory(), clientReleases: releases);
+        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, installationDiscovery: _inventory, clientReleases: releases);
         try
         {
             await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
@@ -160,12 +281,12 @@ public sealed class ClientUpdateHoldTests : IDisposable
         }
         catch { await shell.DisposeAsync(); throw; }
     }
-    private static async Task<InstallationCandidateRow> SelectPlayerAsync(ShellViewModel shell)
+    private async Task<InstallationCandidateRow> SelectPlayerAsync(ShellViewModel shell)
     {
         shell.RefreshInstallations.Execute(null); await shell.RefreshInstallations.Execution;
         var player = Assert.Single(shell.InstallationCandidates);
         shell.SelectedInstallation = player;
-        Assert.Equal(Player, shell.NativeTrialInstallation);
+        Assert.Equal(_inventory.Player, shell.NativeTrialInstallation);
         return player;
     }
     private static Task ReadForStart(ShellViewModel shell)
@@ -178,24 +299,37 @@ public sealed class ClientUpdateHoldTests : IDisposable
     }
     private static LaunchAdmission Admission(ShellViewModel shell, LaunchOperation candidate, params LaunchOperation[] reservations)
         => (LaunchAdmission)typeof(ShellViewModel).GetMethod("ReadCandidateLaunchAdmission", Private)!.Invoke(shell, [candidate, reservations])!;
+    // The queue's Changed event, as the coordinator raises it after saving a snapshot.
+    private static void Observe(ShellViewModel shell, LaunchQueueSnapshot snapshot)
+        => typeof(ShellViewModel).GetMethod("QueueChanged", Private)!.Invoke(shell, [snapshot]);
 
     private sealed class Releases : IPublicRobloxClientReleaseDirectory
     {
         public int Calls; public PublicRobloxClientRelease? Answer; public Exception? Throw;
-        public Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        // Set to hold the answer until the caller cancels it (Cancel check).
+        public TaskCompletionSource? Gate;
+        public async Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested(); Calls++;
+            if (Gate is { } gate) await gate.Task.WaitAsync(ct);
             if (Throw is not null) throw Throw;
-            return Task.FromResult(Answer is null ? new PublicDirectoryResult<PublicRobloxClientRelease>(PublicDirectoryState.Failure, null, "Synthetic failure.")
-                : new(PublicDirectoryState.Success, Answer, "Synthetic public release."));
+            return Answer is null ? new PublicDirectoryResult<PublicRobloxClientRelease>(PublicDirectoryState.Failure, null, "Synthetic failure.")
+                : new(PublicDirectoryState.Success, Answer, "Synthetic public release.");
         }
     }
-    private sealed class Inventory : IClientInstallationDiscovery
+    private sealed class Inventory(string root) : IClientInstallationDiscovery
     {
-        public Task<ClientInstallationSnapshot> DiscoverAsync(CancellationToken ct) => Task.FromResult(new ClientInstallationSnapshot(DateTimeOffset.UtcNow,
-            ClientInstallationSnapshotStatus.Complete,
-            [new(ClientInstallationProduct.Roblox, Player, "Synthetic Roblox", "0.745.0.7451137", ClientInstallationFileState.PresentUnverified,
-                [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Roblox)])], []));
+        public string Folder = PlayerFolder;
+        public string Player => Path.Combine(root, "Roblox", "Versions", Folder, "RobloxPlayerBeta.exe");
+        public Task<ClientInstallationSnapshot> DiscoverAsync(CancellationToken ct)
+        {
+            // An empty stand-in file, never a program: the hold only asks whether the selected path still exists.
+            string player = Player; Directory.CreateDirectory(Path.GetDirectoryName(player)!);
+            if (!File.Exists(player)) File.WriteAllBytes(player, []);
+            return Task.FromResult(new ClientInstallationSnapshot(DateTimeOffset.UtcNow, ClientInstallationSnapshotStatus.Complete,
+                [new(ClientInstallationProduct.Roblox, player, "Synthetic Roblox", "0.745.0.7451137", ClientInstallationFileState.PresentUnverified,
+                    [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Roblox)])], []));
+        }
     }
     private sealed class Monitor : IDesktopMonitor
     {
