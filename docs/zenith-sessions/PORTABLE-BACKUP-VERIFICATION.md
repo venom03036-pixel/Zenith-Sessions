@@ -32,3 +32,7 @@ Command: `dotnet test tests/Zenith.Sessions.Tests/Zenith.Sessions.Tests.csproj -
 ## Remaining checks
 
 Independent source review must inspect format authentication, parser bounds, buffer lifetime, explicit consent, settings merge, import identity and late-write fences. Integrated full suites, Release/self-check, packaged keyboard/screen-reader/theme dialog checks and attended export/import with disposable test accounts remain open. A different Windows account or machine is needed to demonstrate portable restore and destination DPAPI rebinding in practice. Damaged storage and crash/power-loss behavior require controlled fixtures. **LiveTestReady=false; release acceptance=false.**
+
+## Direct-service allowlist follow-up
+
+The file codec already excludes per-account extra launch arguments through the account model's `JsonIgnore`. A direct service caller can still construct a document carrying that field. The import service now clears it explicitly when issuing fresh destination profiles, so the authority restriction does not depend only on serialization. `portable-arguments-before.trx` records the actual prior failure (expected no argument, received `--imported-argument`). `portable-arguments-after.trx` passes all **66** selected portable/argument fixtures with no failures/skips. No real launch occurred. Checkpoint: `0.51-d4-portable-review`.
