@@ -1,9 +1,16 @@
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$ReleaseTool,[Parameter(Mandatory)][uri]$FeedUri,[Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$PublisherCertificateSha256)
+param([Parameter(Mandatory)][string]$ReleaseTool,[Parameter(Mandatory)][uri]$FeedUri,[Parameter(Mandatory)][ValidatePattern('^[A-Fa-f0-9]{64}$')][string]$PublisherCertificateSha256,[int]$WaitForProcessId=0,[long]$WaitForProcessStartTicks=0)
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'ZenithSessionsDistribution.Common.ps1')
 $identity=[Security.Principal.WindowsIdentity]::GetCurrent()
 try{if(([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)){throw 'Run this per-user installer from a normal, non-administrator PowerShell window.'}}finally{$identity.Dispose()}
+if($WaitForProcessId -gt 0){
+    $parent=Get-Process -Id $WaitForProcessId -ErrorAction SilentlyContinue
+    if($null -ne $parent){try{
+        if($parent.StartTime.ToUniversalTime().Ticks -ne $WaitForProcessStartTicks){throw 'The startup handoff process identity changed. Close Zenith and run the installer explicitly.'}
+        if(-not $parent.WaitForExit(10000)){throw 'Zenith has not finished closing. No installation was changed.'}
+    }finally{$parent.Dispose()}}
+}
 $paths=Get-ZenithDistributionPaths
 [void](Assert-ZenithDistributionPath $paths.Programs)
 Assert-ZenithClosed
@@ -50,6 +57,7 @@ if(-not ([IO.Path]::GetFullPath($stage.Directory)).StartsWith($expectedRoot,[Str
 $choice=Read-Host ('Install Zenith Sessions '+$stage.Version+' to '+$paths.Install+'? Type INSTALL to continue')
 if($choice -cne 'INSTALL'){Write-Output 'Verified files were staged; installation was not changed.';return}
 Assert-ZenithClosed
+$registration=Get-ZenithRegistrationSnapshot $paths
 $stageLocks=New-Object 'Collections.Generic.List[IO.FileStream]'
 try {
     [void](Assert-ZenithDistributionPath $stage.Directory)
@@ -62,11 +70,5 @@ try {
     if($inventory.Version -ne $stage.Version){throw 'The verified release version changed after approval.'}
     $manifest=Promote-ZenithRelease (Join-Path $stage.Directory 'content') $paths.Install $paths.Pending $paths.Previous $inventory.ManifestSha256
 } finally { foreach($handle in $stageLocks){$handle.Dispose()} }
-$shell=New-Object -ComObject WScript.Shell
-try{$shortcut=$shell.CreateShortcut($paths.Shortcut);$shortcut.TargetPath=Join-Path $paths.Install 'Zenith.Sessions.App.exe';$shortcut.WorkingDirectory=$paths.Install;$shortcut.Save()}finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
-New-Item -Path $paths.Registry -Force | Out-Null
-$uninstall='powershell.exe -NoProfile -ExecutionPolicy Bypass -File "'+(Join-Path $paths.Install 'Uninstall-ZenithSessions.ps1')+'"'
-foreach($entry in @{DisplayName='Zenith Sessions Personal';DisplayVersion=$manifest.Version;Publisher='Zenith';InstallLocation=$paths.Install;UninstallString=$uninstall;DisplayIcon=(Join-Path $paths.Install 'Zenith.Sessions.App.exe')}.GetEnumerator()){New-ItemProperty -LiteralPath $paths.Registry -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null}
-New-ItemProperty -LiteralPath $paths.Registry -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
-New-ItemProperty -LiteralPath $paths.Registry -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
+Complete-ZenithRegistration $paths {Register-ZenithInstallation $paths $manifest.Version} {Restore-ZenithRegistration $paths $registration}
 Write-Output 'Installed. The previous version, if any, was retained for recovery. Account data was preserved. Start Zenith Sessions when ready.'

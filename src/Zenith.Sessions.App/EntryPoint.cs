@@ -27,6 +27,16 @@ internal static class EntryPoint
             if (problem is not null) System.Windows.MessageBox.Show(problem,"Zenith Sessions");
             return problem == DifferentPermissionsMessage ? 2 : 0;
         }
+        if (!options.SampleProfiles)
+        {
+            try
+            {
+                if (PendingReleaseUpdateHandoff.Offer(options.DataRoot, AppContext.BaseDirectory,
+                    version => System.Windows.MessageBox.Show($"Version {version} was approved for the next start. Open the attended installer now? Zenith will close first; the installer will verify the release again.", "Zenith Sessions update", System.Windows.MessageBoxButton.YesNo) == System.Windows.MessageBoxResult.Yes,
+                    start => { using var installer = System.Diagnostics.Process.Start(start) ?? throw new IOException("Installer could not start."); })) return 0;
+            }
+            catch (Exception error) { System.Windows.MessageBox.Show($"The pending update could not start ({error.GetType().Name}). Zenith will open normally; existing files were preserved.", "Zenith Sessions update"); }
+        }
         var app = new App { Coordinator = instance,Options=options }; app.InitializeComponent();
         try { return app.Run(); }
         finally { instance.StopAsync().GetAwaiter().GetResult(); }

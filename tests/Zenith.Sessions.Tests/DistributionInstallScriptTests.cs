@@ -93,5 +93,32 @@ public sealed class DistributionInstallScriptTests : IDisposable
         string command = "function Get-ItemProperty { param($LiteralPath,$ErrorAction) if($LiteralPath -eq 'HKCU:\\Software\\Microsoft\\EdgeUpdate\\Clients\\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}'){[pscustomobject]@{pv=" + Quote(version) + "}} }; if((Test-ZenithWebView2) -eq $" + expected.ToString().ToLowerInvariant() + "){exit 0}else{exit 19}";
         var result = await Run(command); Assert.True(result.ExitCode == 0, result.Output + result.Errors);
     }
+    [Fact]
+    public async Task RegistrationFailureRestoresThePriorInstallAndRunsRegistrationRecovery()
+    {
+        string old=await Package("old","1.0.0.0"),next=await Package("new");
+        Assert.Equal(0,(await Run(Promote(old))).ExitCode);Assert.Equal(0,(await Run(Promote(next))).ExitCode);
+        string restored=Path.Combine(_root,"registration-restored.txt");
+        string command="$paths=[pscustomobject]@{Install="+Quote(Install)+";Pending="+Quote(Pending)+";Previous="+Quote(Previous)+"}; try { Complete-ZenithRegistration $paths {throw 'synthetic registry denial'} {[IO.File]::WriteAllText("+Quote(restored)+",'restored')}; exit 99 } catch { $_.Exception.Message; exit 0 }";
+        var result=await Run(command);Assert.Equal(0,result.ExitCode);Assert.Contains("registry denial",result.Output);
+        Assert.Equal("restored",await File.ReadAllTextAsync(restored));Assert.Equal("synthetic 1.0.0.0",await File.ReadAllTextAsync(Path.Combine(Install,"Zenith.Sessions.App.exe")));
+        Assert.True(File.Exists(Path.Combine(Pending,"Zenith.Sessions.App.exe")));
+    }
+    [Fact]
+    public async Task PackageGenerationKeepsPreviewGateAndBuildsAnExactFileInventory()
+    {
+        string source=await Package("preview-source");string oldManifest=Path.Combine(source,"release-manifest.json");
+        using(var document=JsonDocument.Parse(await File.ReadAllTextAsync(oldManifest)))
+            await File.WriteAllTextAsync(Path.Combine(source,"preview-manifest.json"),JsonSerializer.Serialize(new{FormatVersion=1,ReleaseReady=false,DevelopmentPreview=true,Files=document.RootElement.GetProperty("Files").Clone()}));
+        File.Delete(oldManifest);string output=Path.Combine(_root,"generated");
+        string script=Path.Combine(PowerShellScriptCompatibilityTests.RepositoryRoot,"scripts","New-ZenithSessionsReleasePackage.ps1");
+        var result=await Run("& "+Quote(script)+" -Source "+Quote(source)+" -Version '2.0.0.0' -OutputDirectory "+Quote(output));Assert.True(result.ExitCode==0,result.Output+result.Errors);
+        using var manifest=JsonDocument.Parse(await File.ReadAllTextAsync(Path.Combine(output,"content","release-manifest.json")));
+        Assert.False(manifest.RootElement.GetProperty("ReleaseReady").GetBoolean());
+        foreach(var item in manifest.RootElement.GetProperty("Files").EnumerateArray())
+        {string path=Path.Combine(output,"content",item.GetProperty("Path").GetString()!);Assert.Equal(item.GetProperty("Sha256").GetString(),Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(path))));}
+        Assert.True(File.Exists(Path.Combine(output,"package.zip")));
+        using var archive=System.IO.Compression.ZipFile.OpenRead(Path.Combine(output,"package.zip"));Assert.All(archive.Entries,entry=>Assert.False(entry.FullName.EndsWith('/')));
+    }
     public void Dispose() { if (Directory.Exists(_root)) Directory.Delete(_root, true); }
 }

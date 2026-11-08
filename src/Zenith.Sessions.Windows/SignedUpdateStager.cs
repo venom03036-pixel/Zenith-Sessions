@@ -34,7 +34,7 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
         using var archiveFile = new FileStream(Path.Combine(stage, "package.zip"), FileMode.Open, FileAccess.Read, FileShare.Read);
         if (archiveFile.Length != release.Manifest.PackageBytes || !StringComparer.OrdinalIgnoreCase.Equals(Convert.ToHexString(await SHA256.HashDataAsync(archiveFile, ct).ConfigureAwait(false)), release.Manifest.PackageSha256))
             throw new CryptographicException("Staged ZIP differs from its signed manifest.");
-        archiveFile.Position = 0; using var archive = new ZipArchive(archiveFile, ZipArchiveMode.Read);
+        archiveFile.Position = 0; ValidateZipDirectoryBudget(archiveFile); using var archive = new ZipArchive(archiveFile, ZipArchiveMode.Read);
         if (archive.Entries.Count is 0 or > 2048) throw new InvalidDataException("Invalid update file count.");
         var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long total = 0; string? inventoryHash = null;
         string content = Path.Combine(stage, "content");
@@ -75,6 +75,13 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
         string root = Path.GetFullPath(stagingRoot);
         AssertNoRedirects(root);
         Directory.CreateDirectory(root);
+        long retainedBytes = 0;
+        foreach (string file in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        {
+            ct.ThrowIfCancellationRequested(); retainedBytes = checked(retainedBytes + new FileInfo(file).Length);
+            if (retainedBytes + release.Manifest.PackageBytes + SignedUpdateVerifier.MaximumPackageBytes > 4 * SignedUpdateVerifier.MaximumPackageBytes)
+                throw new IOException("The two-GiB update staging budget is full. Review retained update files before trying again.");
+        }
         string stage = Path.Combine(root, "update-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(stage);
         try
@@ -127,6 +134,7 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
     }
     private static async Task ExtractAsync(Stream input, string destination, CancellationToken ct)
     {
+        ValidateZipDirectoryBudget(input);
         using var zip = new ZipArchive(input, ZipArchiveMode.Read, leaveOpen: true);
         if (zip.Entries.Count is 0 or > 2048) throw new InvalidDataException("Invalid update file count.");
         long total = 0; var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -145,16 +153,18 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
             if (await CopyBoundedAsync(source, target, entry.Length, ct).ConfigureAwait(false) != entry.Length) throw new InvalidDataException("Incomplete archive entry.");
         }
     }
-    internal static void AssertNoRedirects(string path)
+    internal static void AssertNoRedirects(string path, bool inspectChildren = true)
     {
         for (string? item = Path.GetFullPath(path); item is not null; item = Path.GetDirectoryName(item))
             if ((File.Exists(item) || Directory.Exists(item)) && (File.GetAttributes(item) & FileAttributes.ReparsePoint) != 0)
                 throw new IOException("Distribution paths cannot contain redirected folders.");
-        if (!Directory.Exists(path)) return;
+        if (!inspectChildren || !Directory.Exists(path)) return;
+        int count = 0;
         var pending = new Stack<string>(); pending.Push(path);
         while (pending.TryPop(out string? directory))
             foreach (string item in Directory.EnumerateFileSystemEntries(directory))
             {
+                if (++count > 10000) throw new IOException("Distribution file inventory exceeds its bound.");
                 var attributes = File.GetAttributes(item);
                 if ((attributes & FileAttributes.ReparsePoint) != 0) throw new IOException("Distribution contains redirected files.");
                 if ((attributes & FileAttributes.Directory) != 0) pending.Push(item);
@@ -168,7 +178,7 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
     private static string ValidateEntryName(ZipArchiveEntry entry, HashSet<string> names)
     {
         string name = entry.FullName.Replace('\\', '/');
-        if (name.Split('/').Any(part => part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ')
+        if (name.Length > 512 || name.Split('/').Any(part => part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ')
             || part.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || IsDeviceName(part)) || Path.IsPathRooted(name)
             || !names.Add(name) || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000) throw new InvalidDataException("Unsafe or duplicate update file path.");
         return name;
@@ -179,5 +189,26 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
         while (true) { int read = await input.ReadAsync(buffer, ct).ConfigureAwait(false); if (read == 0) break; total += read; if (total > bound) throw new InvalidDataException("ZIP entry exceeds its bound."); hash.AppendData(buffer, 0, read); }
         if (total != bound) throw new InvalidDataException("Incomplete ZIP entry.");
         return Convert.ToHexString(hash.GetHashAndReset());
+    }
+    private static void ValidateZipDirectoryBudget(Stream stream)
+    {
+        // Bound the central directory before ZipArchive materializes entries; checking Entries.Count afterward alone is too late.
+        long prior = stream.Position; int length = (int)Math.Min(stream.Length, 65557);
+        if (length < 22) throw new InvalidDataException("Incomplete ZIP directory.");
+        byte[] tail = new byte[length]; stream.Position = stream.Length - length; stream.ReadExactly(tail); stream.Position = prior;
+        for (int i = length - 22; i >= 0; i--)
+        {
+            var span = tail.AsSpan(i);
+            if (System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span) != 0x06054b50) continue;
+            int comment = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(span[20..]);
+            if (i + 22 + comment != length) continue;
+            int count = System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(span[10..]);
+            uint size = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span[12..]), offset = System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span[16..]);
+            if (count is 0 or > 2048 || size > 4 * 1024 * 1024 || System.Buffers.Binary.BinaryPrimitives.ReadUInt32LittleEndian(span[4..]) != 0
+                || System.Buffers.Binary.BinaryPrimitives.ReadUInt16LittleEndian(span[8..]) != count || (long)offset + size != stream.Length - length + i)
+                throw new InvalidDataException("ZIP directory exceeds the supported bounded format.");
+            return;
+        }
+        throw new InvalidDataException("ZIP directory is missing.");
     }
 }
