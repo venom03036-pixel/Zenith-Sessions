@@ -20,7 +20,34 @@ public sealed record RequestedServerChoice(RequestedServerChoiceKind Kind, Roblo
 /// <param name="PlaceOnlyCount">Accounts left with the place and no chosen server.</param>
 /// <param name="UsableCount">Distinct fresh, well-formed servers of the place that were compared.</param>
 public sealed record ServerSpread(IReadOnlyList<RobloxRequestedDestination> Destinations, int SpreadCount, int PlaceOnlyCount,
-    int UsableCount, string Explanation);
+    int UsableCount, string Explanation)
+{
+    /// <summary>
+    /// What this spread gave the <paramref name="requests"/> a queue recorded from it, <paramref name="withServer"/> of them with
+    /// their own listed server. It counts requests, not accounts that joined: a recorded request can still be blocked.
+    /// </summary>
+    public string ExplainRecorded(int requests, int withServer)
+    {
+        ArgumentOutOfRangeException.ThrowIfNegative(withServer);
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(withServer, requests);
+        // Only this spread's servers can be handed out, and every one is used before a request goes without one.
+        ArgumentOutOfRangeException.ThrowIfGreaterThan(withServer, SpreadCount);
+        string count = requests == 1 ? "1 request" : requests.ToString(CultureInfo.InvariantCulture) + " requests";
+        string given = withServer.ToString(CultureInfo.InvariantCulture);
+        int rest = requests - withServer;
+        string all = requests == 1 ? "the request asks" : $"the {count} ask";
+        string explanation = requests == 0 ? "No request was recorded, so no listed server was handed out."
+            : withServer == requests
+                ? (requests == 1 ? "The request got its own listed server" : $"Each of the {count} got its own listed server")
+                    + " with room for one more player and a spare seat."
+            : withServer > 0
+                ? $"{given} of {count} got their own listed server with room for one more player and a spare seat. Only {given} loaded {(withServer == 1 ? "server had" : "servers had")} that room, so the other {rest.ToString(CultureInfo.InvariantCulture)} {(rest == 1 ? "asks" : "ask")} for the place without a chosen server."
+            : UsableCount == 0
+                ? $"No fresh public server is loaded, so {all} for the place without a chosen server. Browse public servers first to spread them."
+                : $"None of the loaded servers had room for one more player and a spare seat, so {all} for the place without a chosen server.";
+        return withServer > 0 ? explanation + " Seats are not reserved, room can change and arrival still needs verification." : explanation;
+    }
+}
 
 public static class RequestedServerSelection
 {

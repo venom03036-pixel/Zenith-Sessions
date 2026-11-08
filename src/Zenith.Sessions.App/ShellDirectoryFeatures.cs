@@ -405,7 +405,6 @@ public sealed partial class ShellViewModel
                 _diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());
                 return $"Place {target.PlaceId} destination requests: one or more selected accounts could not be reviewed. Review the accounts and try again. No request was made.";
             }
-            if(review.Spread is { } servers) advice=servers.Explanation;
             IReadOnlyList<LaunchBatchRow> rows;
             // A stopped or unhealthy queue rejects the whole review before anything is written.
             try{rows=await _launchQueue.EnqueueBatchAsync(review,ct);}
@@ -414,6 +413,7 @@ public sealed partial class ShellViewModel
             // after the commit withdraws the rows this command created; rows the queue already
             // cancelled for a stop are left alone.
             bool withdrawn=ct.IsCancellationRequested||epoch!=_directoryGeneration;
+            int withServer=0;
             foreach(var row in rows)
             {
                 if(row is not {Disposition:LaunchBatchDisposition.Recorded,Operation:{ } operation}) continue;
@@ -422,12 +422,17 @@ public sealed partial class ShellViewModel
                     if(!LaunchDescriptions.Terminal(operation.State))
                         try{await _launchQueue.CancelAsync(operation.Intent.OperationId,CancellationToken.None);}
                         catch(Exception error){_diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());}
+                    continue;
                 }
-                else if(operation.State==LaunchState.Blocked) blocked++;
+                if(operation.State==LaunchState.Blocked) blocked++;
                 else if(!LaunchDescriptions.Terminal(operation.State)) queued++;
+                else continue;
+                if(operation.Intent.RequestedJobId is not null) withServer++;
             }
             // Already pending, queue full, unavailable forecast, cancelled by a stop or withdrawn.
             skipped=snapshot.Count-queued-blocked;
+            // The queue hands a spread's servers only to the requests it records, so describe those, not the reviewed accounts.
+            if(review.Spread is { } servers) advice=servers.ExplainRecorded(queued+blocked,withServer);
         }
         QueueExpanded=true;
         return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable. No arrival is assumed. {advice}";

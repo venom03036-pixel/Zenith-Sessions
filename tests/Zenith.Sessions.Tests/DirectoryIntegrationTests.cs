@@ -182,9 +182,41 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         Assert.Equal(2,own.Length);Assert.Equal(2,own.Distinct().Count());
         Assert.All(own,job=>Assert.Contains(job,new[]{jobs[0],jobs[2]}));
         Assert.Equal(2,requested.Count(job=>job is null));
-        Assert.Contains("2 of 4 accounts got their own listed server",vm.Notice);
-        Assert.Contains("the other 2 will join the place without a chosen server",vm.Notice);
-        Assert.Contains("4 blocked",vm.Notice);
+        // Every request is blocked (the general provider is unavailable), so the advice counts recorded requests, not accounts that got in.
+        Assert.Contains("0 queued, 4 blocked, 0 already pending or unavailable",vm.Notice);
+        Assert.Contains("2 of 4 requests got their own listed server",vm.Notice);
+        Assert.Contains("the other 2 ask for the place without a chosen server",vm.Notice);
+        Assert.DoesNotContain("accounts got",vm.Notice);
+    });
+    [Fact]
+    public Task SpreadingGivesNoServerToAnAccountThatIsAlreadyPending()=>OnUi(async () =>
+    {
+        var servers=new Servers();
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),servers);
+        await vm.InitializeAsync();
+        foreach(string label in new[]{"First","Second","Third","Fourth"}) await vm.SaveAccountAsync(AccountProfile.Create(label));
+        const long place=42;var now=DateTimeOffset.UtcNow;
+        string[] jobs=["51111111-2222-4333-8444-000000000001","51111111-2222-4333-8444-000000000002","51111111-2222-4333-8444-000000000003"];
+        servers.Rows=[new(place,jobs[0],1,10,null,null,now),new(place,jobs[1],2,10,null,null,now),new(place,jobs[2],3,10,null,null,now)];
+        vm.ServerBrowser.UsePreferredPlace(place);
+        // The first two accounts in the list already have a request waiting.
+        var waiting=vm.Accounts.Take(2).Select(row=>row.Profile.Id).ToArray();
+        foreach(var row in vm.Accounts.Take(2)) row.IsChecked=true;
+        vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(2,vm.Launches.Count);
+
+        vm.ServerBrowser.Browse.Execute(null);await vm.ServerBrowser.Browse.Execution;
+        Assert.Equal(3,vm.ServerBrowser.Servers.Count);
+        foreach(var row in vm.Accounts) row.IsChecked=true;
+        vm.ServerBrowser.SpreadAcrossServers=true;
+        vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(4,vm.Launches.Count);
+        var added=vm.Launches.Where(l=>!waiting.Contains(l.Operation.Intent.ProfileId)).Select(l=>l.Operation.Intent.RequestedJobId).ToArray();
+        // Both new requests get a listed server; the waiting accounts use none up.
+        Assert.Equal(2,added.Length);Assert.All(added,job=>Assert.Contains(job,jobs));Assert.Equal(2,added.Distinct().Count());
+        Assert.Contains("0 queued, 2 blocked, 2 already pending or unavailable",vm.Notice);
+        Assert.Contains("Each of the 2 requests got its own listed server",vm.Notice);
+        Assert.DoesNotContain("of 4",vm.Notice);
     });
     private async Task<IReadOnlyList<LaunchOperation>> ReadQueueBackupAsync()
     {

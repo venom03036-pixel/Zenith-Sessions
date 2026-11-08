@@ -278,11 +278,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
 
     private LaunchOperation CreateQueuedOperation(LaunchIntent intent,bool trial,CancellationToken ct)
     {
-        LaunchProblem issue=!trial && _provider.AccountLaunch.State!=CapabilityState.Supported?LaunchProblem.ProviderUnavailable:
-            intent.UserId<=0 || intent.AuthorizationGeneration<=0 || intent.PlaceId<=0?LaunchProblem.IdentityUnverified:LaunchProblem.None;
+        LaunchProblem issue=NewRequestProblem(intent,trial);
         return new(intent,issue==LaunchProblem.None?LaunchState.Queued:LaunchState.Blocked,issue,intent.RequestedUtc,
             ResourceBudget:ResolveResourceBudget(intent,ct));
     }
+    // Why a new request would be recorded Blocked, or None when it would be Queued. It never depends on the requested server.
+    private LaunchProblem NewRequestProblem(LaunchIntent intent,bool trial)
+        =>!trial && _provider.AccountLaunch.State!=CapabilityState.Supported?LaunchProblem.ProviderUnavailable:
+            intent.UserId<=0 || intent.AuthorizationGeneration<=0 || intent.PlaceId<=0?LaunchProblem.IdentityUnverified:LaunchProblem.None;
 
     private static bool IsPendingOrUnresolved(LaunchOperation operation)
         =>!LaunchDescriptions.Terminal(operation.State)||LaunchDescriptions.HasUnresolvedReservation(operation);

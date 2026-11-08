@@ -175,6 +175,28 @@ public sealed class RequestedServerSelectionTests
     }
 
     [Fact]
+    public void TheRecordedResultCountsRequestsThatGotAServerNotReviewedAccounts()
+    {
+        var loaded = Spread(4, Row(1, 0), Row(2, 0), Row(3, 0));
+        Assert.Equal("No request was recorded, so no listed server was handed out.", loaded.ExplainRecorded(0, 0));
+        Assert.StartsWith("The request got its own listed server with room for one more player and a spare seat.", loaded.ExplainRecorded(1, 1));
+        Assert.StartsWith("Each of the 2 requests got its own listed server", loaded.ExplainRecorded(2, 2));
+        string some = Spread(4, Row(1, 0), Row(2, 0)).ExplainRecorded(3, 2);
+        Assert.Contains("2 of 3 requests got their own listed server", some);
+        Assert.Contains("Only 2 loaded servers had that room, so the other 1 asks for the place without a chosen server.", some);
+        Assert.All(new[] { loaded.ExplainRecorded(1, 1), some }, text => Assert.EndsWith("arrival still needs verification.", text));
+        Assert.Equal("None of the loaded servers had room for one more player and a spare seat, so the request asks for the place without a chosen server.",
+            Spread(1, Row(1, 19)).ExplainRecorded(1, 0));
+        Assert.Equal("No fresh public server is loaded, so the 2 requests ask for the place without a chosen server. Browse public servers first to spread them.",
+            Spread(2).ExplainRecorded(2, 0));
+        Assert.DoesNotContain("account", some);
+        Assert.Throws<ArgumentOutOfRangeException>(() => loaded.ExplainRecorded(1, 2));
+        Assert.Throws<ArgumentOutOfRangeException>(() => loaded.ExplainRecorded(1, -1));
+        // More requests with a server than the spread held servers is a caller bug.
+        Assert.Throws<ArgumentOutOfRangeException>(() => loaded.ExplainRecorded(4, 4));
+    }
+
+    [Fact]
     public void SpreadingValidatesItsArguments()
     {
         Assert.Throws<ArgumentNullException>(() => RequestedServerSelection.SpreadServers(Place, null!, 1, Now, false, null));
