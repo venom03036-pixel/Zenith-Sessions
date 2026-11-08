@@ -54,19 +54,21 @@ public enum LaunchLogLinkStatus
 {
     /// <summary>
     /// No client log names its tracker in the part read so far that was created since the launch began and before any
-    /// later offered launch with the same tracker began; or one does, but another log written since the launch began has
-    /// not yet had a successful head read.
+    /// later offered launch with the same tracker began; or one does, but the last head read of another log written since
+    /// the launch began has not succeeded (no read yet, or the latest one failed). Another offered launch with the same
+    /// tracker that began at the same instant changes nothing on its own: the tie counts only once such a log names it.
     /// </summary>
     NotLinked,
     /// <summary>
-    /// Every log written since the launch began has had a successful head read, exactly one such log names it, no other
+    /// The last head read of every log written since the launch began succeeded, exactly one such log names it, no other
     /// offered launch with the same tracker began at the same instant, and that log names the tracker of no other offered
     /// launch that had begun when the log was created (a launch that began later cannot own it).
     /// </summary>
     Linked,
     /// <summary>
-    /// More than one such log names it, another offered launch with the same tracker began at the same instant, or the log
-    /// also names the tracker of another launch that had begun when the log was created.
+    /// More than one such log names it; one does and another offered launch with the same tracker began at the same
+    /// instant; or the launch would otherwise be Linked, but its log also names the tracker of another launch that had
+    /// begun when the log was created.
     /// </summary>
     Ambiguous,
     /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>

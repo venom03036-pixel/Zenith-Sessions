@@ -72,6 +72,23 @@ public sealed partial class SessionLogCorrelatorTests
     }
 
     [Fact]
+    public async Task LaunchesThatBeganAtTheSameInstantAreUnlinkedNotAmbiguousUntilALogNamesTheirTracker()
+    {
+        // Two offered launches with the same tracker began at the same instant, so a log naming it could be either's.
+        // Until one does, the tie decides nothing (O-C8-3): the one log written since they began has had its head read
+        // and names no tracker yet, so both rows are NotLinked. Once its head names the tracker, both are Ambiguous.
+        var client = Key(77); var clock = new Clock(); Write(SyntheticClientLogFixtures.Line("FLog::SyntheticStartup", "starting"));
+        LaunchLogExpectation[] launches = [Launch(), Launch()];
+        await using var worker = new WindowsSessionLogCorrelator(new Probe(Log, client), timeProvider: clock);
+        worker.Offer(Desktop(client), client.HostId, launches);
+        var first = await After(worker);
+        Assert.Equal(launches.Select(launch => new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.NotLinked)), first.Launches);
+        File.AppendAllText(Log, TrackerLine());
+        clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, launches);
+        Assert.Equal(launches.Select(launch => new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Ambiguous)), (await After(worker, first.Revision)).Launches);
+    }
+
+    [Fact]
     public async Task ALogWhoseHeadCouldNotBeReadKeepsTheLaunchUnlinkedUntilItsHeadIsRead()
     {
         // A second log written since the launch began is locked by another writer, so its head read fails. It could name
