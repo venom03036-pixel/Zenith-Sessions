@@ -41,6 +41,7 @@ Material repairs and retained failing-before evidence:
 | Elevated upload-limit helpers retain ownership through actual exit | [UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md) |
 | CPU cap records precede mutations and survive failed adjustments/clock changes | [CPU-CAP-OWNER-REVIEW-REPAIR.md](CPU-CAP-OWNER-REVIEW-REPAIR.md) |
 | Private account details survive WPF row publication while real identity changes clear them | [PRIVATE-DETAILS-BINDING-REPAIR.md](PRIVATE-DETAILS-BINDING-REPAIR.md) |
+| Connected host requests use their actual monotonic deadline when timer callbacks are delayed | [PIPE-DEADLINE-REPAIR.md](PIPE-DEADLINE-REPAIR.md) |
 
 The final review coverage and remaining findings are recorded in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). A changed commit requires review of that delta and two new complete gate runs; focused green runs cannot substitute for them.
 

@@ -35,6 +35,8 @@ Master-password migration and portable backup are implemented. Dashboard Unlock 
 
 The shipped input transport remains unavailable. Policy/arbiter/keep-awake fake tests do not enable background macros, broadcasting or anti-idle input. Automatic recovery is not implemented. These are visible decisions, not hidden success paths.
 
+Macro catalog requests retain the three-second budget. A delayed cancellation callback cannot make an expired connected request look disconnected or accept a late valid reply; monotonic elapsed time governs that boundary. This follow-up does not enable production input. See [PIPE-DEADLINE-REPAIR.md](PIPE-DEADLINE-REPAIR.md) and the failed-gate history before accepting the new repeated checks.
+
 Release tooling has empty production trust and no default feed. The collapsed Settings update section binds existing commands; daily checks are opt-in and cancel on stop. Installation is separately approved and asks again on the next start. Package creation and offline tests do not establish ReleaseReady. See [DISTRIBUTION-FOUNDATIONS.md](DISTRIBUTION-FOUNDATIONS.md).
 
 ## Final acceptance procedure

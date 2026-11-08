@@ -28,6 +28,10 @@ The owner explicitly requested these four repairs after the previous minor-only 
 
 The immutable follow-up review must establish whether any new finding remains. These repairs do not change the 93 item dispositions or qualify any attended trial.
 
+## Deadline regression exposed by the repeat gate
+
+The attempted second pass on the four-minor candidate found a connected macro-host request reported Disconnected after its deadline. The host/client timer callbacks can run in the opposite order to their due times. [PIPE-DEADLINE-REPAIR.md](PIPE-DEADLINE-REPAIR.md) records the production repair and deterministic failing-before checks for delayed cancellation callbacks and late valid replies. The three-second budget remains unchanged; earlier EOF, local disposal, caller cancellation and malformed-response outcomes remain distinct. Busy describes a missed connected-request budget, not proof that a remote host still lives. The failed pass remains in [integration history](ROUND4-INTEGRATION-VERIFICATION.md); the replacement commit needs fresh independent review and a new successful pair.
+
 ## Evidence to inspect before handing off
 
 - Two distinct full-gate directories, each with `checks.json`, six actual TRX results, all zero-warning Release builds, Luau checks, release-tool publish and 43 successful packaged stages. Both must bind the same clean commit/content digest throughout.
