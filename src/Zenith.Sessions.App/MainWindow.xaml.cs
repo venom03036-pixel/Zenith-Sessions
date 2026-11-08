@@ -145,10 +145,8 @@ public partial class MainWindow : Window
             // and still give the priority and sound warnings and stop the instance coordinator.
             try { await _vm.ExitAsync(placement); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
-            if (_vm.PendingPriorityRestoreCount > 0)
-                MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
-                    + " original client priorities. Review those clients in Task Manager. The settings last until you change them or the clients exit.",
-                    "Client priority restoration", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (_vm.ExitPriorityWarning is { } priorityWarning)
+                MessageBox.Show(this, priorityWarning, "Client priority restoration", MessageBoxButton.OK, MessageBoxImage.Warning);
             if (_vm.ExitSoundWarning is { } soundWarning)
                 MessageBox.Show(this, soundWarning, "Client sound restoration", MessageBoxButton.OK, MessageBoxImage.Warning);
             if (((App)Application.Current).Coordinator is { } coordinator) await coordinator.StopAsync();
