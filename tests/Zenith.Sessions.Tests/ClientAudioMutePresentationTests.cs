@@ -64,7 +64,7 @@ public sealed partial class ClientPreviewPresentationTests
 
         await Refresh(shell);await Refresh(shell);
         Assert.Equal(2,control.ChangeCalls); // Muted once; never again.
-        Assert.True(File.ReadAllText(Path.Combine(_root,"settings.json")).Contains("\"MuteArrivingClients\":true"));
+        Assert.Contains("\"MuteArrivingClients\":true",File.ReadAllText(Path.Combine(_root,"settings.json")));
     });
 
     [Fact]
