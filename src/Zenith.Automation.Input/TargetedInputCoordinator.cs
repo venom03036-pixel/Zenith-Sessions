@@ -91,6 +91,9 @@ public sealed class TargetedInputRun
     private long _generation = 1, _sequence;
     private int _x, _y;
     private string _explanation = "Input ownership opened; no input has been sent.";
+    // What a fault's text says happened, without its request for cleanup; a stop that then releases the holds
+    // reports this instead of an instruction it has just carried out. Faulted is terminal, so it is never stale.
+    private string? _faultSummary;
     public TargetedInputTarget Target { get; }
     public TargetedInputPurpose Purpose { get; }
     internal TargetedInputRun(TargetedInputCoordinator owner, TargetedInputTarget target,
@@ -190,7 +193,8 @@ public sealed class TargetedInputRun
         if (_requested != Transition.Stop)
         {
             // Stopping a fault that released (or is releasing) its holds only frees the lease, whoever asks;
-            // keep why it faulted. A failed cleanup's text already replaced that reason, so it keeps the stop's.
+            // keep why it faulted (its summary, once released). A failed cleanup's text already replaced that
+            // reason, so it keeps the stop's.
             _stopAfterFault = _requested == Transition.Fault || _state == TargetedInputRunState.Faulted && _submitted.Count == 0;
             if (!_stopAfterFault) _explanation = reason;
             _generation++; _requested = Transition.Stop; _state = TargetedInputRunState.Stopping;
@@ -243,7 +247,7 @@ public sealed class TargetedInputRun
                 lock (_owner.Sync)
                 {
                     if (signal.IsDown && Find(_logical, signal.HoldId) < 0 && _logical.Count >= _owner.Limits.MaximumHolds)
-                    { FaultLocked("The per-run held-control budget was reached; cleanup is required."); status = TargetedInputDispatchStatus.Faulted; break; }
+                    { FaultLocked("The per-run held-control budget was reached; cleanup is required.", "The per-run held-control budget was reached."); status = TargetedInputDispatchStatus.Faulted; break; }
                     if (signal.IsUp && Find(_logical, signal.HoldId) < 0)
                     { FaultLocked("A release without a matching run-owned press was rejected."); status = TargetedInputDispatchStatus.Faulted; break; }
                 }
@@ -256,8 +260,12 @@ public sealed class TargetedInputRun
                 { status = TargetedInputDispatchStatus.Inactive; break; }
                 if (outcome != TargetedInputSubmission.Queued)
                 {
-                    lock (_owner.Sync) FaultLocked(outcome == TargetedInputSubmission.Uncertain
-                        ? "Submission may have occurred; owned cleanup must be checked." : "Target-directed input was rejected; no foreground fallback was used.");
+                    lock (_owner.Sync)
+                    {
+                        if (outcome == TargetedInputSubmission.Uncertain)
+                            FaultLocked("Submission may have occurred; owned cleanup must be checked.", "Submission may have occurred.");
+                        else FaultLocked("Target-directed input was rejected; no foreground fallback was used.");
+                    }
                     status = TargetedInputDispatchStatus.Faulted; break;
                 }
                 if (!Open(generation)) { status = TargetedInputDispatchStatus.Inactive; break; }
@@ -266,7 +274,7 @@ public sealed class TargetedInputRun
         catch (OperationCanceledException)
         { lock (_owner.Sync) RequestStopLocked("Input batch cancelled; preserving the submitted prefix and releasing its holds."); status = TargetedInputDispatchStatus.Cancelled; }
         catch (Exception)
-        { lock (_owner.Sync) FaultLocked("The input transport failed. Submitted or uncertain holds require cleanup."); status = TargetedInputDispatchStatus.Faulted; }
+        { lock (_owner.Sync) FaultLocked("The input transport failed. Submitted or uncertain holds require cleanup.", "The input transport failed."); status = TargetedInputDispatchStatus.Faulted; }
         finally
         {
             lock (_owner.Sync) _batchActive = false;
@@ -278,10 +286,12 @@ public sealed class TargetedInputRun
         lock (_owner.Sync) return new(status, sent, uncertain, SnapshotLocked());
     }
 
-    private void FaultLocked(string reason)
+    /// <param name="summary">The part of <paramref name="reason"/> that stays true once the holds are released; omit it when that is all of it.</param>
+    private void FaultLocked(string reason, string? summary = null)
     {
         if (_requested == Transition.Stop) return;
         _requested = Transition.Fault; _state = TargetedInputRunState.Pausing; _generation++; _explanation = reason;
+        _faultSummary = summary ?? reason;
         EnsureTransitionLocked();
     }
     private async Task<TargetedInputRunSnapshot> TransitionAsync()
@@ -316,6 +326,7 @@ public sealed class TargetedInputRun
                         { _requested = Transition.None; _state = TargetedInputRunState.Running; _transitionActive = false; _explanation = "Resumed after target validation; only unfinished holds were restored."; return SnapshotLocked(); }
                         _requested = Transition.Fault; _state = TargetedInputRunState.Pausing;
                         _explanation = "Hold restoration or target validation failed. The run remains faulted until cleanup is explicitly checked.";
+                        _faultSummary = "Hold restoration or target validation failed.";
                     }
                     continue;
                 }
@@ -334,7 +345,8 @@ public sealed class TargetedInputRun
                     if (request == Transition.Stop)
                     {
                         _logical.Clear(); _state = TargetedInputRunState.Stopped; _owner.ReleaseLocked(this);
-                        if (_stopAfterFault) _explanation += " Stopped after the fault; its holds were released and the window lease is free.";
+                        if (_stopAfterFault)
+                            _explanation = (_faultSummary ?? _explanation) + " Stopped after the fault; its holds were released and the window lease is free.";
                     }
                     else if (request == Transition.Fault) _state = TargetedInputRunState.Faulted;
                     else if (request == Transition.Clear)
