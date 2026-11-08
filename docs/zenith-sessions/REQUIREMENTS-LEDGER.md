@@ -824,3 +824,7 @@ VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity c
 ### D3 0.70 — require monotonic evidence before releasing a lost helper
 
 **CAP-11-03, CAP-13-04, PROD-QA-03.** A fresh review reproduced four cases where a UTC-derived boot stamp discarded an unresolved upload-limit owner after clock correction or ambiguous restart. The persisted monotonic uptime now releases a lost owner only after a demonstrated decrease; equal/higher uptime retains the hold. Legacy records gain an observation without losing their hold. **93 affected tests passed, 0 failed/skipped**, including the unchanged real-restart models. [Exact failing-before evidence and recovery limits](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md#clock-correction-follow-up-070-uploadboot). Synthetic clocks/helpers only; no real reboot/UAC/QoS and no release-readiness claim.
+
+## CPU-cap recovery record repair (0.72)
+
+**CAP-14-01, CAP-14-03, PROD-QA-03.** Failed adjustments retain an existing cap record unless readback proves the held job inert; re-enabling a held inert job records ownership before mutation and refuses I/O/capacity failure. Clock-estimate changes no longer discard records; exact PID/start/liveness checks retire old instances, while denied queries retain uncertainty. Thirteen red-before-repair cases and **91/91 passing affected fake-native/presentation checks**, zero skips, are recorded in [the repair evidence](CPU-CAP-OWNER-REVIEW-REPAIR.md). No real client or native cap ran; integrated full gates and attended native trials remain pending.

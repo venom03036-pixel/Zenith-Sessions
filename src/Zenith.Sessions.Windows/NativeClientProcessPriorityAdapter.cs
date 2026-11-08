@@ -279,7 +279,8 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         /// <summary>
         /// Sets or clears the hard cap of this run's own job for the client. The first cap records the client, then creates
         /// the job, keeps its handle and puts the client in it; a crash after that leaves the record for the next start to
-        /// name the client. A refusal before the rate is set leaves at most an inert job (no limits) that the next cap reuses.
+        /// name the client. Reusing a held inert job records the client again before enabling its cap. Failed adjustments
+        /// retain an earlier cap's record unless a readback confirms that the job has no rate control.
         /// A cleared cap drops the record; the handle stays until the client is seen to have exited.
         /// </summary>
         private bool WriteCap(uint cap, out ClientProcessPriorityStatus refusal)
@@ -290,12 +291,11 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
             if (job is not null)
             {
                 if (!_native.IsInJob(process, job, out bool inOwnJob) || !inOwnJob) { refusal = ClientProcessPriorityStatus.Conflict; return false; }
+                if (cap != 0 && !RememberCap(out refusal)) return false;
                 return SetRate(job, cap, out refusal);
             }
             if (cap == 0) return true; // Not in any job: there is no cap to clear.
-            try { owner._ledger.Remember(_record); }
-            catch (InvalidOperationException) { refusal = ClientProcessPriorityStatus.CapacityReached; return false; }
-            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return false; }
+            if (!RememberCap(out refusal)) return false;
             var created = _native.CreateJob(out int error);
             if (created.IsInvalid)
             {
@@ -326,21 +326,26 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
             return SetRate(created, cap, out refusal);
         }
 
+        private bool RememberCap(out ClientProcessPriorityStatus refusal)
+        {
+            refusal = ClientProcessPriorityStatus.NotConfirmed;
+            try { owner._ledger.Remember(_record); return true; }
+            catch (InvalidOperationException) { refusal = ClientProcessPriorityStatus.CapacityReached; return false; }
+            catch (Exception failure) when (failure is IOException or UnauthorizedAccessException) { return false; }
+        }
+
         private bool SetRate(SafeJobObjectHandle job, uint cap, out ClientProcessPriorityStatus refusal)
         {
             refusal = ClientProcessPriorityStatus.NotConfirmed;
             if (!_native.SetCpuRate(job, cap == 0 ? ClientJobCpuRate.None : ClientJobCpuRate.Cap(cap), out int error))
             {
                 refusal = ErrorStatus(error);
-                if (cap != 0) owner.ForgetQuietly(_record); // No cap is on the client, so the record would mislead the next start.
+                // A failed replacement can leave the previous cap in effect. Neither failure nor an unreadable
+                // rate proves an inert job; preserve the recovery record unless Windows confirms no rate control.
+                if (_native.ReadCpuRate(job, out var observed) && observed == ClientJobCpuRate.None) owner.ForgetQuietly(_record);
                 return false;
             }
             if (cap == 0) owner.ForgetQuietly(_record);
-            else
-            {
-                try { owner._ledger.Remember(_record); }
-                catch (Exception failure) when (failure is IOException or UnauthorizedAccessException or InvalidOperationException) { }
-            }
             return true;
         }
 
