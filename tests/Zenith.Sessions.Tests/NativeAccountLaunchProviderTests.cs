@@ -156,6 +156,23 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         Assert.NotNull(next.Prepared); await next.Prepared!.DisposeAsync();
     }
 
+    // R-api-7: the mode that produced the request (official page or direct ticket) is one more fixed fact in Launch evidence.
+    [Theory]
+    [InlineData(NativeLaunchMode.OfficialPage)]
+    [InlineData(NativeLaunchMode.DirectTicket)]
+    public async Task TheLaunchModeThatProducedTheRequestIsRecordedBesideTheOtherFixedFacts(NativeLaunchMode mode)
+    {
+        await using var f = new Fixture(_root); f.Capture.Mode = mode;
+        // The real preparer records the capture's fixed facts, mode included (NativeHandoffPreparationTests covers that).
+        f.Preparer.BrowserFacts = new(mode == NativeLaunchMode.DirectTicket ? RobloxHandoffProbeOutcome.TicketIssued : RobloxHandoffProbeOutcome.CapturedAndPrevented,
+            NativeHandoffCaptureStatus.AcceptedSourceGrammar, DateTimeOffset.UtcNow, mode);
+        var result = await f.Provider.PrepareAsync(f.Context, default); await using var handle = result.Prepared!;
+        var diagnostic = f.Provider.GetDiagnostic(f.Intent.OperationId)!;
+        Assert.Equal(mode, diagnostic.LaunchMode);
+        Assert.Equal(mode == NativeLaunchMode.DirectTicket ? RobloxHandoffProbeOutcome.TicketIssued : RobloxHandoffProbeOutcome.CapturedAndPrevented, diagnostic.BrowserOutcome);
+        Assert.DoesNotContain(SyntheticHandoff.Ticket, JsonSerializer.Serialize(diagnostic));
+    }
+
     [Fact]
     public async Task AForeignCapturedContextCannotBeAdoptedEvenWhenTheFinalIntentWasUnchanged()
     {
@@ -423,13 +440,15 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         public int Calls, Disposals;
         public CancellationToken Token;
         public NativeHandoffCandidate? Candidate;
+        public NativeLaunchMode Mode = NativeLaunchMode.OfficialPage;
         public Func<NativeHandoffContext, NativeHandoffContext>? ChangeContext;
         public Func<CancellationToken, Task>? BeforeReturn;
         public async Task<NativeBrowserCapture> CaptureAsync(NativeHandoffContext context, RobloxSessionCredential credential, CancellationToken ct)
         {
             Calls++; Token = ct; Candidate = SyntheticHandoff.Capture(ChangeContext?.Invoke(context) ?? context, Clock);
             if (BeforeReturn is not null) await BeforeReturn(ct);
-            return new(RobloxHandoffProbeOutcome.CapturedAndPrevented, Candidate, new("synthetic-native-current"), NativeHandoffCaptureStatus.AcceptedSourceGrammar);
+            return new(Mode == NativeLaunchMode.DirectTicket ? RobloxHandoffProbeOutcome.TicketIssued : RobloxHandoffProbeOutcome.CapturedAndPrevented,
+                Candidate, new("synthetic-native-current"), NativeHandoffCaptureStatus.AcceptedSourceGrammar, Mode);
         }
         public ValueTask DisposeAsync() { Disposals++; Candidate?.Dispose(); return ValueTask.CompletedTask; }
     }

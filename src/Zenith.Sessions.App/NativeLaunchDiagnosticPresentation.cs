@@ -20,7 +20,8 @@ public sealed record NativeLaunchDiagnosticPresentation
         :value.Stage switch
         {
             NativeLaunchDiagnosticStage.VerifyingExecutable=>"Checking the selected executable's publisher.",
-            NativeLaunchDiagnosticStage.PreparingHandoff=>"Preparing the selected account's official-page handoff.",
+            NativeLaunchDiagnosticStage.PreparingHandoff=>value.LaunchMode==NativeLaunchMode.DirectTicket
+                ?"Preparing the selected account's launch request (direct ticket).":"Preparing the selected account's official-page handoff.",
             NativeLaunchDiagnosticStage.Prepared=>"Handoff prepared. Native startup and arrival are not established.",
             NativeLaunchDiagnosticStage.Dispatching=>"Final native dispatch stage. Review the recorded outcome below.",
             NativeLaunchDiagnosticStage.Stopped=>"Stop requested for this attempt. A native request already delivered cannot be recalled.",
@@ -30,8 +31,11 @@ public sealed record NativeLaunchDiagnosticPresentation
         :ReadFailed?"No native-stage timestamp could be read."
         :"No native-stage timestamp recorded. Queue history does not restore these transient details.";
     public string StageTimes=>Snapshot is { } value?"Publisher: "+Observed(value.ExecutableObservedUtc)+"\nPreparation: "+Observed(value.PreparationObservedUtc)
-        +"\nOfficial page: "+Observed(value.BrowserObservedUtc)+"\nDispatch: "+Observed(value.DispatchObservedUtc)+"\nCleanup: "+Observed(value.CleanupObservedUtc)
+        +"\n"+RequestSource+": "+Observed(value.BrowserObservedUtc)+"\nDispatch: "+Observed(value.DispatchObservedUtc)+"\nCleanup: "+Observed(value.CleanupObservedUtc)
         :"Individual stage times unavailable.";
+    // The stage that produced the launch request: the official page unless the snapshot recorded the direct ticket mode (R-api-7).
+    private bool DirectTicket=>Snapshot?.LaunchMode==NativeLaunchMode.DirectTicket;
+    private string RequestSource=>DirectTicket?"Direct ticket":"Official page";
     public string Trust=>Snapshot is {TrustReason:{ } reason} value?"Publisher: "+(value.TrustStatus switch
     {ClientExecutableTrustStatus.VerifiedRobloxPublisher=>"verified · ",ClientExecutableTrustStatus.Rejected=>"rejected · ",ClientExecutableTrustStatus.Deferred=>"deferred · ",_=>"unknown · "})+TrustReason(reason)
         :"Publisher: not reached or not recorded.";
@@ -43,31 +47,42 @@ public sealed record NativeLaunchDiagnosticPresentation
         NativeHandoffPreparationStatus.SignInRequired=>"the selected saved sign-in needs review or renewal.",
         NativeHandoffPreparationStatus.IdentityMismatch=>"the saved sign-in did not verify as the expected player.",
         NativeHandoffPreparationStatus.AuthorizationChanged=>"the selected authorization changed.",
-        NativeHandoffPreparationStatus.CaptureRejected=>"the official-page handoff was rejected.",
+        NativeHandoffPreparationStatus.CaptureRejected=>"the launch request was rejected.",
         NativeHandoffPreparationStatus.CleanupFailed=>"cleanup could not be confirmed.",
         NativeHandoffPreparationStatus.Expired=>"the prepared handoff expired.",
         NativeHandoffPreparationStatus.Cancelled=>"the preparation was cancelled.",
         NativeHandoffPreparationStatus.StorageUnavailable=>"private browser storage was unavailable, so it was refused before the saved sign-in was used; the saved sign-in was kept.",
         _=>"the preparation failed."
     }):"Preparation: not reached or not recorded.";
-    public string Browser=>Snapshot?.BrowserOutcome is { } outcome?"Official page: "+(outcome switch
+    public string Browser
     {
-        RobloxHandoffProbeOutcome.CapturedAndPrevented=>"external navigation captured and cancelled. Later native dispatch is a separate stage.",
-        RobloxHandoffProbeOutcome.ContextRejected=>"page context was rejected.",
-        RobloxHandoffProbeOutcome.OriginRejected=>"page origin was rejected.",
-        RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"an unsupported external scheme was blocked.",
-        RobloxHandoffProbeOutcome.MalformedHandoff=>"the handoff structure was rejected.",
-        RobloxHandoffProbeOutcome.TimedOut=>"the page request timed out.",
-        RobloxHandoffProbeOutcome.Cancelled=>"the page request was cancelled.",
-        RobloxHandoffProbeOutcome.BrowserUnavailable=>"the private browser was unavailable.",
-        RobloxHandoffProbeOutcome.SignInRequired=>"the saved sign-in needs review or renewal.",
-        RobloxHandoffProbeOutcome.IdentityMismatch=>"the page did not verify as the expected player.",
-        RobloxHandoffProbeOutcome.AuthorizationChanged=>"the selected authorization changed.",
-        RobloxHandoffProbeOutcome.Busy=>"another page request was still owned.",
-        RobloxHandoffProbeOutcome.CleanupFailed=>"private browser cleanup could not be confirmed.",
-        RobloxHandoffProbeOutcome.StorageUnavailable=>"private browser storage was unavailable.",
-        _=>"the page request failed."
-    }):"Official page: not reached or not recorded.";
+        get
+        {
+            if(Snapshot?.BrowserOutcome is not { } outcome)return RequestSource+": not reached or not recorded.";
+            string request=DirectTicket?"the ticket request":"the page request";
+            return RequestSource+": "+outcome switch
+            {
+                RobloxHandoffProbeOutcome.CapturedAndPrevented=>"external navigation captured and cancelled. Later native dispatch is a separate stage.",
+                RobloxHandoffProbeOutcome.TicketIssued=>"Roblox issued a launch ticket for the saved sign-in and Zenith built the launch request itself. Later native dispatch is a separate stage.",
+                RobloxHandoffProbeOutcome.ContextRejected=>"page context was rejected.",
+                RobloxHandoffProbeOutcome.OriginRejected=>"page origin was rejected.",
+                RobloxHandoffProbeOutcome.ExternalSchemeBlocked=>"an unsupported external scheme was blocked.",
+                RobloxHandoffProbeOutcome.MalformedHandoff=>"the handoff structure was rejected.",
+                RobloxHandoffProbeOutcome.TimedOut=>request+" timed out.",
+                RobloxHandoffProbeOutcome.Cancelled=>request+" was cancelled.",
+                RobloxHandoffProbeOutcome.BrowserUnavailable=>"the private browser was unavailable.",
+                RobloxHandoffProbeOutcome.SignInRequired=>"the saved sign-in needs review or renewal.",
+                RobloxHandoffProbeOutcome.IdentityMismatch=>"the page did not verify as the expected player.",
+                RobloxHandoffProbeOutcome.AuthorizationChanged=>"the selected authorization changed.",
+                RobloxHandoffProbeOutcome.Busy=>"another "+(DirectTicket?"ticket":"page")+" request was still owned.",
+                RobloxHandoffProbeOutcome.CleanupFailed=>"private browser cleanup could not be confirmed.",
+                RobloxHandoffProbeOutcome.StorageUnavailable=>"private browser storage was unavailable.",
+                RobloxHandoffProbeOutcome.RateLimited=>"Roblox asked Zenith to slow down (HTTP 429) before issuing a launch ticket; try again later.",
+                RobloxHandoffProbeOutcome.Refused=>"Roblox refused the ticket request (HTTP 403) for the saved sign-in.",
+                _=>request+" failed."
+            };
+        }
+    }
     public string Shape=>Snapshot?.ShapeStatus is { } status?"Handoff shape: "+(status switch
     {
         NativeHandoffCaptureStatus.AcceptedSourceGrammar=>"accepted source grammar; compatibility remains unverified.",

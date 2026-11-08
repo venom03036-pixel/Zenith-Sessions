@@ -93,11 +93,12 @@ public sealed partial class RobloxSessionLinkService
             // Record only closed enums before cancellation can throw; the capture itself is disposed
             // by this owner and never retained as diagnostic history.
             try
-            { if (captured is not null) browserFacts = new NativeBrowserPreparationFacts(captured.Outcome, captured.ShapeStatus, DateTimeOffset.UtcNow).Validated(); }
+            { if (captured is not null) browserFacts = new NativeBrowserPreparationFacts(captured.Outcome, captured.ShapeStatus, DateTimeOffset.UtcNow, captured.Mode).Validated(); }
             catch (Exception) { /* Diagnostic capture cannot change preparation, cleanup or grant decisions. */ }
             Ensure(operation);
             if (captured is null) return new(NativeHandoffPreparationStatus.CaptureRejected);
-            if (captured.Outcome != RobloxHandoffProbeOutcome.CapturedAndPrevented)
+            // A captured official-page request and a request built from an issued ticket (R-api-7) are prepared the same way.
+            if (captured.Outcome is not (RobloxHandoffProbeOutcome.CapturedAndPrevented or RobloxHandoffProbeOutcome.TicketIssued))
                 return new(captured.Outcome switch
                 {
                     RobloxHandoffProbeOutcome.CleanupFailed => NativeHandoffPreparationStatus.CleanupFailed,

@@ -195,7 +195,7 @@ public partial class MainWindow : Window
         try
         {
             var answer = MessageBox.Show(this, review.SelectionSummary + "\n\n" + review.InstallationSummary + "\n" + review.ArgumentsSummary
-                + "\n\nContinue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.",
+                + "\n\n" + review.LaunchModeSummary,
                 "Confirm native account trial", MessageBoxButton.OKCancel, MessageBoxImage.Information, MessageBoxResult.Cancel);
             if (answer == MessageBoxResult.OK) _vm.StartNativeTrial.Execute(review);
         }
@@ -253,6 +253,7 @@ public partial class MainWindow : Window
                 "launch-spacing"=>SettingsLaunchSpacing,
                 "stabilization-timing"=>SettingsStabilizationTiming,
                 "shorten-wait-after-join"=>ShortenWaitAfterJoinOption,
+                "native-launch-mode"=>SettingsNativeLaunchMode,
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,

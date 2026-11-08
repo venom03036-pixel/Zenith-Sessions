@@ -6,11 +6,12 @@ namespace Zenith.Sessions.Windows;
 /// <summary>
 /// One owned saved-session operation and one bounded waiting disconnect. Never launches a client. <paramref name="failed"/>
 /// receives only the type of an expected failure that the service absorbs without changing its answer, or of a fence of its
-/// own interrupted write that could not run (never its message).
+/// own interrupted write that could not run (never its message). <paramref name="launchTickets"/> is the direct launch-ticket
+/// client (R-api-7) whose kept anti-forgery tokens a disconnect forgets, like the share-link client's; it is borrowed, not owned.
 /// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
     IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
-    Action<Type>? failed = null)
+    Action<Type>? failed = null, IRobloxLaunchTicketClient? launchTickets = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();
@@ -356,6 +357,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             if (active?.ProfileId == profileId) active.Invalidated = true;
         }
         shareLinks?.ForgetTokens(profileId); // Sign-out: no anti-forgery token kept for this profile outlives its saved session.
+        launchTickets?.ForgetTokens(profileId);
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
         try
         {

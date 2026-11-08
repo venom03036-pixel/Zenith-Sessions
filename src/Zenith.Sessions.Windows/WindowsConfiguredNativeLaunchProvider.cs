@@ -322,7 +322,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
                     TrustStatus = facts.TrustStatus ?? previous.TrustStatus, TrustReason = facts.TrustReason ?? previous.TrustReason,
                     PreparationStatus = facts.PreparationStatus ?? previous.PreparationStatus,
                     BrowserOutcome = facts.BrowserOutcome ?? previous.BrowserOutcome, ShapeStatus = facts.ShapeStatus ?? previous.ShapeStatus,
-                    DispatchStatus = facts.DispatchStatus ?? previous.DispatchStatus,
+                    DispatchStatus = facts.DispatchStatus ?? previous.DispatchStatus, LaunchMode = facts.LaunchMode ?? previous.LaunchMode,
                     ExecutableObservedUtc = facts.ExecutableObservedUtc ?? previous.ExecutableObservedUtc,
                     PreparationObservedUtc = facts.PreparationObservedUtc ?? previous.PreparationObservedUtc,
                     BrowserObservedUtc = facts.BrowserObservedUtc ?? previous.BrowserObservedUtc,

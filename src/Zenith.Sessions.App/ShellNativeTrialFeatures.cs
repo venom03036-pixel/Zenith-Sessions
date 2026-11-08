@@ -6,7 +6,7 @@ namespace Zenith.Sessions.App;
 
 public sealed partial class ShellViewModel
 {
-    private readonly IRobloxNativeHandoffCapture _nativeCapture;
+    private readonly SelectableNativeHandoffCapture _nativeCapture;
     private readonly WindowsConfiguredNativeLaunchProvider _nativeLaunch;
     private int _nativeMetadataPending;
     private long _nativeTrialEpoch;
@@ -41,19 +41,27 @@ public sealed partial class ShellViewModel
         internal ClientInstallationCandidate Installation {get;}
         internal long Epoch {get;}
         internal long Version {get;}
+        /// <summary>The saved native launch mode at review time (R-api-7); the trial status repeats what it does.</summary>
+        internal NativeLaunchMode Mode {get;}
         public string SelectionSummary {get;}
         public string InstallationSummary {get;}
         /// <summary>The extra client arguments the direct start will add after Roblox's request, as saved now: this account's own set,
         /// else the saved default, else none (R-launch-16). Shown in the review only; never logged.</summary>
         public string ArgumentsSummary {get;}
-        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version,string defaultClientArguments="")
+        /// <summary>What confirming does in the saved mode: open the page and wait for Play, or request a ticket and start the player.</summary>
+        public string LaunchModeSummary {get;}
+        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version,string defaultClientArguments="",
+            NativeLaunchMode mode=NativeLaunchMode.OfficialPage)
         {
             Profile=row.Profile;PlayerId=row.KnownUserId!.Value;AuthorizationGeneration=row.AuthorizationGeneration!.Value;
-            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;
+            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;Mode=mode;
             SelectionSummary=$"{row.Label} · expected player {PlayerId} · place {Destination.PlaceId}"
                 +(Destination.JobId is { } job?$" · server {job}":" · any server");
             InstallationSummary=installation.ExecutablePath;
             ArgumentsSummary=ExtraClientArgumentPolicy.Describe(row.Profile.ExtraClientArguments,defaultClientArguments);
+            LaunchModeSummary="Native launch mode: "+NativeLaunchModes.Label(mode)+". "+(mode==NativeLaunchMode.DirectTicket
+                ?"Zenith will request a launch ticket with this account's saved sign-in and start the selected native player itself; no Roblox page opens. This may start a real Roblox client."
+                :"Continue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.");
         }
         public override string ToString()=>"Selected-account native trial review";
     }
@@ -63,7 +71,8 @@ public sealed partial class ShellViewModel
         _nativeTrialReview=null;
         if(!CanRunNativeTrial || SelectedAccount is not { } selected || !Accounts.Contains(selected)
             ||ServerBrowser.ReadyDestination is not { } destination || SelectedInstallation?.Candidate is not { } installation)return null;
-        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments);
+        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments,
+            SavedNativeLaunchMode);
     }
     public void DiscardNativeTrialReview(NativeTrialReview review)
     {Interlocked.CompareExchange(ref _nativeTrialReview,null,review);}
@@ -217,7 +226,7 @@ public sealed partial class ShellViewModel
         QueueExpanded=true;
         bool resumed=await _launchQueue.ResumeTrialAsync(request.Intent.OperationId,_lifetime.Token);
         if(review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)||_preserveStopNotice||IsLocked||_shuttingDown)return;
-        NativeTrialStatus=resumed?"Trial queued for "+review.SelectionSummary+". The private Roblox game page may open. Choose Play there. A process receipt alone does not verify its account or arrival."
+        NativeTrialStatus=resumed?"Trial queued for "+review.SelectionSummary+". "+DescribeNativeLaunchMode(review.Mode)
             :"The trial was stopped before it could resume. Review the queue and create a fresh request.";
         Notice=NativeTrialStatus;
     }
@@ -249,6 +258,7 @@ public sealed partial class ShellViewModel
         {
             try{await _nativeCapture.DisposeAsync();}
             catch(Exception error){ReportNativeTrialCleanupFailure(error);}
+            finally{(_launchTicketClient as IDisposable)?.Dispose();} // After the capture that borrowed it; kept tokens go with it.
         }
     }
     private void ReportNativeTrialCleanupFailure(Exception error)

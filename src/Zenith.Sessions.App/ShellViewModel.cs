@@ -140,6 +140,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private readonly IRobloxSessionSignIn _signIn;
     private readonly RobloxSessionLinkService _linkService;
     private readonly IRobloxShareLinkClient _shareLinkClient;
+    private readonly IRobloxLaunchTicketClient _launchTicketClient;
     private readonly IPrivateServerStore _privateServerStore;
     private readonly AccountIdentityProjection _identityProjection;
     private readonly CredentialCleanupService _credentialCleanup;
@@ -330,7 +331,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
-        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null)
+        IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IRobloxLaunchTicketClient? launchTicketClient=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -341,9 +342,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _identityProjection=new(root,_accounts,_vault);
         _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher);
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
+        _launchTicketClient=launchTicketClient??new RobloxLaunchTicketClient();
         _diagnostics=new(root);
         // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
-        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type));
+        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type),
+            launchTickets:_launchTicketClient);
         _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
@@ -351,7 +354,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RecentClients=new(historyStore??new RecentClientHistoryStore(root),CanUseDirectories,
             error=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,error.GetType()),faultProbe??(monitor is null?new WindowsClientFaultProbe():null));
         _queueStore=new(root);
-        _nativeCapture=new OwnedRobloxNativeHandoffCapture(root,dispatcher);
+        // One capture for the provider: the official page by default, or the direct ticket request once that mode is saved (R-api-7).
+        _nativeCapture=new SelectableNativeHandoffCapture(new OwnedRobloxNativeHandoffCapture(root,dispatcher),new DirectTicketNativeHandoffCapture(_launchTicketClient));
         // An injected development provider transfers ownership; it must remain Unverified.
         _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this));
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
@@ -429,6 +433,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;_defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
+            LoadNativeLaunchModeDraft();
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
@@ -953,7 +958,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         string defaultClientArguments=ExtraClientArgumentPolicy.Validate(DefaultClientArguments);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
+            NativeLaunchMode=NativeLaunchModes.ToSettingsValue(SelectedNativeLaunchMode.Mode) }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
@@ -973,6 +979,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && MuteArrivingClients == _savedSettings.MuteArrivingClients && DefaultClientArgumentsDraftIsSaved && ShortenWaitAfterJoin == _savedSettings.ShortenWaitAfterJoin
+            && SelectedNativeLaunchMode.Mode == SavedNativeLaunchMode
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -993,6 +1000,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
+                ApplySavedNativeLaunchMode();
                 _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
@@ -1068,7 +1076,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;
         // The installation stop clears the selection first, so the trial fence below keeps the Panic/Lock reason (Z1600).
         Step(CancelInstallationWork);
-        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
+        Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));
+        Step(_launchTicketClient.ForgetAllTokens); // The next direct ticket request starts with a fresh handshake (R-api-7).
+        Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);

@@ -15,7 +15,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
             TrustStatus: ClientExecutableTrustStatus.VerifiedRobloxPublisher, TrustReason: ClientExecutableTrustReason.Verified,
             PreparationStatus: NativeHandoffPreparationStatus.Ready, BrowserOutcome: RobloxHandoffProbeOutcome.CapturedAndPrevented,
             ShapeStatus: NativeHandoffCaptureStatus.AcceptedSourceGrammar, ExecutableObservedUtc: originalTime,
-            PreparationObservedUtc: originalTime, BrowserObservedUtc: originalTime);
+            PreparationObservedUtc: originalTime, BrowserObservedUtc: originalTime, LaunchMode: NativeLaunchMode.DirectTicket);
     }
     private sealed class DiagnosticReader(Func<Guid, NativeLaunchDiagnosticSnapshot?> read) : INativeLaunchDiagnosticSource
     { public NativeLaunchDiagnosticSnapshot? GetDiagnostic(Guid operationId) => read(operationId); }
@@ -39,6 +39,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
             Assert.Equal(NativeHandoffAttemptStatus.StartedUnverified, pending.DispatchStatus);
             Assert.Equal(NativeLaunchCleanupStatus.Pending, pending.CleanupStatus); Assert.Null(pending.CleanupObservedUtc); Assert.False(dispatch.IsCompleted);
             Assert.Equal(facts.ExecutableObservedUtc, pending.ExecutableObservedUtc); Assert.Equal(facts.BrowserObservedUtc, pending.BrowserObservedUtc);
+            Assert.Equal(NativeLaunchMode.DirectTicket, pending.LaunchMode); // The child's recorded mode is copied like its other fixed facts (R-api-7).
         }
         finally { child.DisposeGate.TrySetResult(); }
         Assert.Equal(ProviderLaunchStatus.ClientStartedUnverified, (await dispatch).Status);

@@ -14,7 +14,7 @@ These held before this work and still hold.
 | Area | Zenith | RoALT |
 |---|---|---|
 | Launch safety | Checks the exact client file it starts (Authenticode signature from Roblox Corporation, double hash, re-open comparison, handle held until start) | Never signature-checks the launched executable |
-| Launch tickets | Never builds or rewrites the ticket-bearing `roblox-player` URI; captures the official page's own request and checks its grammar, place, job and a 30 s window | Mints tickets and rewrites the URI, including an empty channel token |
+| Launch tickets | By default captures the official page's own ticket-bearing `roblox-player` request and checks its grammar, place, job and a 30 s window; since R-api-7 (2026-11-08) the selectable Direct ticket mode builds the request itself from a ticket Roblox issued for the saved sign-in, through that same grammar, with honest headers and a one-use pinned ticket | Mints tickets and rewrites the URI with website Referer and Origin headers and a desktop-browser User-Agent |
 | Account binding | Rechecks profile revision, verified player ID, authorization generation and a fresh same-player verification just before dispatch | Moves on once its own timer passes |
 | Queue durability | Durable, crash-safe queue (temp file, write-through, File.Replace with a backup); never resumes on its own after a crash | In-memory frontend queue |
 | Failure isolation | A batch reports a disposition per account; one account's failure stays with it | Any post-request refusal stops every remaining launch in the batch |
@@ -90,6 +90,12 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | R-accounts-4 | Account headshots load with one batched lookup per page instead of three sequential requests per account. | Account pictures for a page load in batched requests instead of one request per player. | `65829e7` |
 | R-research-11 | HTTP clients are tested over a real loopback socket, so production handler settings (no redirects, no cookie jar) are exercised. | The share-link and server-list clients are tested over a real loopback socket, so their real handler settings are exercised. | `db9d57c` |
 
+### Round 4 (owner decisions of 2026-11-08)
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-api-7 (also covers R-launch-13) | RoALT launches the native client as the selected account by requesting a Roblox authentication ticket, with no window per account: one assertion GET and one ticket POST, then the process spawn. | Direct ticket, a selectable native launch mode next to the official-page capture (which stays the default until the live trial): one assertion GET and one ticket POST with the saved sign-in under the share-link resolver's discipline, Zenith's own User-Agent and no Referer or Origin, a one-use pinned ticket, and a request Zenith builds for the frozen destination through the same grammar the page capture validates; no page opens and no click is needed, and every other check stays. | lane4/D1 |
+
 ## Not copied: techniques Zenith excludes
 
 | RoALT feature | Why Zenith does not do it |
@@ -109,7 +115,6 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 
 | Theme | Items | What deciding yes would mean |
 |---|---|---|
-| Launching without the official page | R-api-7, R-launch-13 | Request launch tickets directly with the saved session and drop the per-account sign-in window. Faster, but it reverses the decision to capture the official page's own request |
 | Hands-free batch launching | R-launch-0, R-launch-2 | Enable ordinary single and group launches end to end (after the planned live trial), and shorten waits when the previous client reports joining |
 | Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Launch through Bloxstrap-style tools (they write client settings files on Zenith's behalf), pass extra client arguments, or preselect an installation automatically |
 | Roblox updates | R-launch-9, R-shell-19 | Check for and install the official Roblox update from inside Zenith (download and run a signed installer) |

@@ -20,7 +20,10 @@ public sealed record RobloxHandoffProbeContext(Guid ProfileId,long ExpectedUserI
 public enum RobloxHandoffProbeOutcome
 {
     CapturedAndPrevented,ContextRejected,OriginRejected,ExternalSchemeBlocked,MalformedHandoff,TimedOut,Cancelled,
-    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed,StorageUnavailable
+    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed,StorageUnavailable,
+    // Appended for the Direct ticket mode (R-api-7) so the existing numeric values keep their meaning: Roblox issued a ticket
+    // and Zenith built the request itself; Roblox asked to slow down (429); Roblox refused the ticket request (403).
+    TicketIssued,RateLimited,Refused
 }
 
 [Flags]

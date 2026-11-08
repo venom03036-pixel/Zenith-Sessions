@@ -95,7 +95,8 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
                 handoffReturned = true;
                 UpdateDiagnostic(owner, value => value with { PreparationStatus = result?.Status,
                     PreparationObservedUtc = DateTimeOffset.UtcNow, BrowserOutcome = result?.BrowserFacts?.Outcome,
-                    ShapeStatus = result?.BrowserFacts?.ShapeStatus, BrowserObservedUtc = result?.BrowserFacts?.ObservedUtc });
+                    ShapeStatus = result?.BrowserFacts?.ShapeStatus, BrowserObservedUtc = result?.BrowserFacts?.ObservedUtc,
+                    LaunchMode = result?.BrowserFacts?.Mode });
                 native = result?.Preparation; Volatile.Write(ref owner.Native, native);
                 failure = result?.Status switch
                 {

@@ -100,6 +100,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Installations, "publisher", "signature", "Authenticode", "offline", "trust", "certificate", "verification"),
         E("extra-client-arguments", "Extra client arguments", "Add command-line arguments after Roblox's own launch request when Zenith starts the native player itself: a default here, or one account's own set in Edit account profile. Off until entered; never through a bootstrapper. Save settings to apply.",
             SettingsSearchTarget.Installations, "arguments", "command line", "flags", "launch flags", "switches", "parameters", "client arguments", "launch arguments", "per account", "RobloxPlayerBeta"),
+        E("native-launch-mode", "Native launch mode", "Choose how a native trial gets its launch request: Official page (the default) captures the game page's own request when you choose Play; Direct ticket asks Roblox for a launch ticket with the saved sign-in and builds it, no page or click. Save to apply.",
+            SettingsSearchTarget.Installations, "launch mode", "direct ticket", "official page", "ticket", "authentication ticket", "hands-free", "no browser", "no click", "Play", "trial", "RobloxPlayerBeta"),
         E("webview-runtime", "Private sign-in window", "Microsoft Edge WebView2 Runtime is required for the owned official-site sign-in. Saved sign-in alone does not establish native account launching.",
             SettingsSearchTarget.SignIn, "WebView2", "runtime", "browser", "login", "session", "private", "saved signin"),
         E("settings-folder", "Open settings folder", "Open the companion's writable user settings folder. User data stays outside the application folder.",
