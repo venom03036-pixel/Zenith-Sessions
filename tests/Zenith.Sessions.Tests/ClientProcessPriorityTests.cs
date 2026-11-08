@@ -815,7 +815,7 @@ public sealed class ClientProcessPriorityTests
     }
 
     [Fact]
-    public async Task AWindowsRestartForgetsOldCapsBeforeOpeningADeniedReusedPid()
+    public async Task AChangedBootClockEstimateCannotRetireACapWhenTheExactInstanceCannotBeRead()
     {
         string root=Path.Combine(Path.GetTempPath(),"zenith-cap-boot-"+Guid.NewGuid().ToString("N"));
         try
@@ -824,10 +824,31 @@ public sealed class ClientProcessPriorityTests
             new ClientCpuCapLedgerFile(path,Now.AddHours(-5)).Remember(new(1,Session(1).ProcessStartUtcTicks));
             await using var fixture=new Fixture(new ClientCpuCapLedgerFile(path,Now),1);
             fixture.Native.OpenError=5;fixture.Native.QueryError=5;
-            Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
-            Assert.Empty(fixture.Ledger.Records);Assert.Equal(0,fixture.Native.QueryOpens);Assert.Empty(fixture.Native.Handles);
+            Assert.Equal(new ClientCpuCapLeftovers(0,1,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+            Assert.Single(fixture.Ledger.Records);Assert.Equal(1,fixture.Native.QueryOpens);Assert.All(fixture.Native.Handles, handle=>Assert.True(handle.IsClosed));
             var sameBoot=new ClientCpuCapLedgerFile(path,Now.AddHours(-5).AddSeconds(2));
             Assert.Single(sameBoot.Records);
+        }
+        finally { if(Directory.Exists(root)) Directory.Delete(root,true); }
+    }
+
+    [Fact]
+    public async Task AConfirmedNewProcessInstanceRetiresTheOldCapAfterRestart()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"zenith-cap-restart-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path=Path.Combine(root,"caps.json");
+            new ClientCpuCapLedgerFile(path,Now.AddHours(-5)).Remember(new(1,Session(1).ProcessStartUtcTicks));
+            await using var fixture=new Fixture(new ClientCpuCapLedgerFile(path,Now),1);
+            fixture.Native.Clients[1].Start=Now.UtcTicks;
+            fixture.Native.Clients[1].ForeignJob=true;
+            Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+            Assert.Empty(fixture.Ledger.Records);
+            Assert.Empty(new ClientCpuCapLedgerFile(path,Now).Records);
+            Assert.Equal(1,fixture.Native.QueryOpens);
+            Assert.Empty(fixture.Native.Reads);
+            Assert.Equal(0,fixture.Native.Attempts);
         }
         finally { if(Directory.Exists(root)) Directory.Delete(root,true); }
     }
@@ -916,6 +937,119 @@ public sealed class ClientProcessPriorityTests
         Assert.Empty(fixture.Native.Jobs);
     }
 
+    [Fact]
+    public async Task ARefusedCapReplacementKeepsThePriorCapRecordedForRestart()
+    {
+        await using var fixture = new Fixture(1);
+        await fixture.Control.CapCpuAsync([Session(1)], 50, default);
+        fixture.Native.DenyCap = true;
+        var refused = Assert.Single((await fixture.Control.CapCpuAsync([Session(1)], 30, default)).Results);
+        Assert.Equal(ClientProcessPriorityStatus.AccessDenied, refused.Status);
+        Assert.Equal(ClientJobCpuRate.Cap(5000), Assert.Single(fixture.Native.Jobs).Rate);
+        Assert.True(fixture.Ledger.Contains(1, Session(1).ProcessStartUtcTicks));
+        Assert.Equal(1, fixture.Control.PendingRestoreCount);
+        await using var restarted = new WindowsClientProcessPriorityControl(new NativeClientProcessPriorityAdapter(fixture.Native, fixture.Ledger));
+        Assert.Equal(new ClientCpuCapLeftovers(1, 0, false, false), await restarted.CheckLeftoverCpuCapsAsync(default));
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task AReusedInertJobRefusesCapBeforeMutationWhenItsRecordCannotBeSaved(bool cleared, bool capacity)
+    {
+        var ledger = new SwitchableLedger();
+        await using var fixture = new Fixture(ledger, 1);
+        fixture.Native.DenyCap = !cleared;
+        await fixture.Control.CapCpuAsync([Session(1)], 50, default);
+        fixture.Native.DenyCap = false;
+        if (cleared) await fixture.Control.RestoreAllAsync(default);
+        var job = Assert.Single(fixture.Native.Jobs);
+        Assert.Equal(ClientJobCpuRate.None, job.Rate);
+        Assert.Empty(ledger.Records);
+        ledger.Failure = capacity ? new InvalidOperationException("SYNTHETIC_CAPACITY") : new IOException("SYNTHETIC_DISK_FULL");
+        int attempts = fixture.Native.Attempts;
+        var result = Assert.Single((await fixture.Control.CapCpuAsync([Session(1)], 30, default)).Results);
+        Assert.Equal(capacity ? ClientProcessPriorityStatus.CapacityReached : ClientProcessPriorityStatus.NotConfirmed, result.Status);
+        Assert.Equal(attempts, fixture.Native.Attempts);
+        Assert.Equal(ClientJobCpuRate.None, job.Rate);
+        Assert.Empty(ledger.Records);
+        Assert.Equal(0, fixture.Control.PendingRestoreCount);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AReusedInertJobRecordsTheCapBeforeWindowsCanAcceptIt(bool cleared)
+    {
+        var ledger = new SwitchableLedger();
+        await using var fixture = new Fixture(ledger, 1);
+        fixture.Native.DenyCap = !cleared;
+        await fixture.Control.CapCpuAsync([Session(1)], 50, default);
+        fixture.Native.DenyCap = false;
+        if (cleared) await fixture.Control.RestoreAllAsync(default);
+        Assert.Empty(ledger.Records);
+        bool? recordedAtWrite = null;
+        fixture.Native.BeforeCap = () => recordedAtWrite = ledger.Contains(1, Session(1).ProcessStartUtcTicks);
+        var applied = await fixture.Control.CapCpuAsync([Session(1)], 30, default);
+        Assert.Equal(ClientProcessPriorityStatus.Applied, Assert.Single(applied.Results).Status);
+        Assert.True(recordedAtWrite);
+        Assert.Single(ledger.Records);
+        Assert.Single(fixture.Native.Jobs);
+        fixture.Native.BeforeCap = null;
+    }
+
+    [Theory]
+    [InlineData(-6, false)]
+    [InlineData(6, false)]
+    [InlineData(6, true)]
+    public async Task AClockCorrectionCannotHideAnExactLiveCapOnRestart(int shiftHours, bool legacy)
+    {
+        string root = Path.Combine(Path.GetTempPath(), "zenith-cap-clock-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            string path = Path.Combine(root, "caps.json");
+            if (legacy) File.WriteAllText(path, System.Text.Json.JsonSerializer.Serialize(new { schema = 1, caps = new[] { new { processId = 1, startUtcTicks = Session(1).ProcessStartUtcTicks } } }));
+            else new ClientCpuCapLedgerFile(path, Now.AddHours(-5)).Remember(new(1, Session(1).ProcessStartUtcTicks));
+            await using var fixture = new Fixture(new ClientCpuCapLedgerFile(path, Now.AddHours(-5 + shiftHours)), 1);
+            fixture.Native.Clients[1].ForeignJob = true;
+            Assert.Equal(new ClientCpuCapLeftovers(1, 0, false, false), await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+            Assert.Single(fixture.Ledger.Records);
+            Assert.Equal(1, fixture.Native.QueryOpens);
+            Assert.Equal(0, fixture.Native.Attempts);
+        }
+        finally { Directory.Delete(root, true); }
+    }
+
+    private sealed class SwitchableLedger : IClientCpuCapLedger
+    {
+        private readonly InMemoryClientCpuCapLedger _inner = new();
+        public Exception? Failure;
+        public bool Unreadable => false;
+        public IReadOnlyList<ClientCpuCapRecord> Records => _inner.Records;
+        public bool Contains(int processId, long startUtcTicks) => _inner.Contains(processId, startUtcTicks);
+        public void Remember(ClientCpuCapRecord record) { if (Failure is not null) throw Failure; _inner.Remember(record); }
+        public void Forget(int processId, long startUtcTicks) => _inner.Forget(processId, startUtcTicks);
+    }
+
+    [Fact]
+    public async Task AFailedFirstCapRetainsItsRecordWhenReadbackCannotConfirmAnInertJob()
+    {
+        await using var fixture=new Fixture(1);
+        fixture.Native.DenyCap=true;
+        fixture.Native.BeforeCap=()=>fixture.Native.FailRateRead=true;
+        try
+        {
+            var result=await fixture.Control.CapCpuAsync([Session(1)],25,default);
+            Assert.Equal(ClientProcessPriorityStatus.AccessDenied,Assert.Single(result.Results).Status);
+            Assert.Single(fixture.Ledger.Records);
+            Assert.Equal(ClientJobCpuRate.None,Assert.Single(fixture.Native.Jobs).Rate);
+        }
+        finally { fixture.Native.BeforeCap=null;fixture.Native.FailRateRead=false; }
+    }
+
     private sealed class RefusingLedger : IClientCpuCapLedger
     {
         public bool Unreadable => false;
@@ -963,7 +1097,8 @@ public sealed class ClientProcessPriorityTests
         private readonly Dictionary<SafeProcessHandle, Client> _handles = [];
         public Action<Client, int>? BeforeRead;
         public Action<Client>? BeforeSet, AfterSet;
-        public bool DenySet, FailRead, DenyThrottling, DenyCap;
+        public Action? BeforeCap;
+        public bool DenySet, FailRead, DenyThrottling, DenyCap, FailRateRead;
         public int OpenError;
         public int QueryError,QueryOpens;
         public int Attempts;
@@ -1010,10 +1145,11 @@ public sealed class ClientProcessPriorityTests
         public bool ReadCpuRate(SafeJobObjectHandle job, out ClientJobCpuRate rate)
         {
             rate = _jobs[job].Rate;
-            return true;
+            return !FailRateRead;
         }
         public bool SetCpuRate(SafeJobObjectHandle job, ClientJobCpuRate rate, out int error)
         {
+            BeforeCap?.Invoke();
             Attempts++;
             error = DenySet || DenyCap ? 5 : 0;
             if (error != 0) return false;

@@ -103,12 +103,12 @@ internal sealed class ClientCpuCapLedgerFile(string path, DateTimeOffset? bootUt
             {
                 var file = JsonSerializer.Deserialize<LedgerFile>(File.ReadAllBytes(_path), Options);
                 if (file is not { Schema: 1 }) _unreadable = true;
-                // Jobs cannot survive a Windows restart. Legacy schema-1 records have no boot stamp; retain only
-                // instances whose start could belong to this boot. Two minutes allow normal clock-reading jitter.
-                else if (file.BootUtc is null || (file.BootUtc.Value - _bootUtc).Duration() <= TimeSpan.FromMinutes(2))
+                // UTC minus uptime is only a clock estimate, not a Windows boot identity. A wall-clock correction
+                // can move it while old capped clients still run. Keep all exact instance records, including legacy
+                // rows; query-only PID/start/liveness reconciliation retires those that really exited or were reused.
+                else
                     foreach (var row in file.Caps ?? [])
-                    if (row is { ProcessId: > 0, StartUtcTicks: > 0 } && records.Count < IClientCpuCapLedger.Capacity
-                        && (file.BootUtc is not null || row.StartUtcTicks >= _bootUtc.AddMinutes(-2).UtcTicks))
+                    if (row is { ProcessId: > 0, StartUtcTicks: > 0 } && records.Count < IClientCpuCapLedger.Capacity)
                         records.Add(new(row.ProcessId, row.StartUtcTicks));
             }
             catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException) { _unreadable = true; }
