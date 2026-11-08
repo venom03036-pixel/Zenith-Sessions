@@ -537,8 +537,11 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
                 ForgetRefusalsOwned();
                 if(hasReceipt)
                 {
-                    BeginPacing(chosen.Intent.OperationId,stabilization>=stagger?stabilization:stagger,
-                        stabilization>=stagger?LaunchPacingReason.StartupStabilization:LaunchPacingReason.BetweenStarts);
+                    // The gate keeps this start's receipt and the stagger floor so that the client's own join report may
+                    // end the stabilization early, down to the stagger (ReleasePacingEarly, R-launch-2).
+                    BeginStartupPacing(chosen.Intent.OperationId,stabilization>=stagger?stabilization:stagger,
+                        stabilization>=stagger?LaunchPacingReason.StartupStabilization:LaunchPacingReason.BetweenStarts,
+                        stagger,result!.ProcessId!.Value,result.ProcessStartUtcTicks!.Value);
                     unverifiedPacing=true;
                 }
                 await UpdateAsync(chosen,hasReceipt?LaunchState.ClientStartedUnverified:LaunchState.Uncertain,

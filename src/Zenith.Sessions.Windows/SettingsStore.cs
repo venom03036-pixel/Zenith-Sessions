@@ -20,13 +20,15 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     CapacitySettings? Capacity = null, string OAuthClientId = "", int OAuthCallbackPort = 47635,
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
-    bool MuteArrivingClients = false, string DefaultClientArguments = "")
+    bool MuteArrivingClients = false, string DefaultClientArguments = "", bool ShortenWaitAfterJoin = false)
 {
-    // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients and DefaultClientArguments are optional
-    // within schema 1: files without them load unchanged, and older builds ignore them. Without CloseButtonExits the window's close
-    // button keeps hiding the manager to the tray; without IdleLockMinutes (or with 0) the manager never locks itself after idle
-    // time; without PanicShortcut the global panic shortcut is F12; without MuteArrivingClients no client is muted when it appears;
-    // without DefaultClientArguments (or with "") Zenith's direct player start passes no extra arguments (R-launch-16). A
+    // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients, DefaultClientArguments and
+    // ShortenWaitAfterJoin are optional within schema 1: files without them load unchanged, and older builds ignore them. Without
+    // CloseButtonExits the window's close button keeps hiding the manager to the tray; without IdleLockMinutes (or with 0) the
+    // manager never locks itself after idle time; without PanicShortcut the global panic shortcut is F12; without MuteArrivingClients
+    // no client is muted when it appears; without DefaultClientArguments (or with "") Zenith's direct player start passes no extra
+    // arguments (R-launch-16); without ShortenWaitAfterJoin the full startup stabilization wait stays after every reported start
+    // (R-launch-2). A
     // PanicShortcut that earlier builds saved but that is no longer allowed (such as Ctrl+Alt+Q, which is AltGr+Q) is read as F12
     // with a notice by SettingsStore; any other refused value, including extra arguments that break a rule, makes the settings invalid.
     public SessionsSettings Validated()

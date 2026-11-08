@@ -85,6 +85,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.CustomTiming, "stabilisation", "settle", "timing", "milliseconds"),
         E("performance-transfer", "Share manager performance settings", "Copy a code, save a file, or review an import before using it in the draft. Save settings is still required; accounts and credentials are excluded.",
             SettingsSearchTarget.Performance, "export", "import", "share code", "review code", "review file", "transfer", "portable", "use in draft"),
+        E("shorten-wait-after-join", "Shorten the wait after a client joins", "Choose whether a startup stabilization wait ends early once the started client's own log reports it joined, never before the launch spacing. Off by default; save settings to apply.",
+            SettingsSearchTarget.Performance, "join", "joined", "connected", "wait", "shorten", "early", "next start", "between starts", "faster launches"),
 
         E("spare-ram", "Minimum spare RAM", "Set the physical memory headroom to leave available, in GiB.",
             SettingsSearchTarget.Memory, "spare physical", "reserve", "memory", "headroom", "ram"),

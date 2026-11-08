@@ -252,6 +252,7 @@ public partial class MainWindow : Window
                 "dashboard-timing"=>SettingsDashboardTiming,
                 "launch-spacing"=>SettingsLaunchSpacing,
                 "stabilization-timing"=>SettingsStabilizationTiming,
+                "shorten-wait-after-join"=>ShortenWaitAfterJoinOption,
                 "physical-per-client"=>SettingsPhysicalPerClient,
                 "commit-per-client"=>SettingsCommitPerClient,
                 "maximum-clients"=>SettingsMaximumClients,

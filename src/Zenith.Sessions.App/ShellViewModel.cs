@@ -428,12 +428,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             SpareRam = limits.SparePhysicalGiB.ToString(CultureInfo.CurrentCulture); PhysicalPerClient = limits.NewClientPhysicalGiB.ToString(CultureInfo.CurrentCulture);
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
-            _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;_defaultClientArguments=_settings.DefaultClientArguments;
+            _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;_defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin) }) Raise(field);
             ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
@@ -905,8 +905,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
         var logs = _logCorrelator?.Snapshot;
         _logProjection.Update(snapshot.Sessions, logs, now);
-        // One registry snapshot per tick feeds both readers.
+        // One registry snapshot per tick feeds both readers, and the optional early release of the launch wait, which runs
+        // before the pacing status is refreshed so the status shows the shortened wait in the same tick.
         var evidence=_logProjection.EvidenceSnapshot(now);
+        ObserveJoinedClientForPacing(evidence);
         RefreshLaunchEvidenceWith(evidence);
         RecentClients.Observe(snapshot,evidence,now);
         ObserveClientArrivals(snapshot,evidence);
@@ -951,7 +953,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         string defaultClientArguments=ExtraClientArgumentPolicy.Validate(DefaultClientArguments);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,DefaultClientArguments=defaultClientArguments }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
@@ -970,7 +972,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
-            && MuteArrivingClients == _savedSettings.MuteArrivingClients && DefaultClientArgumentsDraftIsSaved
+            && MuteArrivingClients == _savedSettings.MuteArrivingClients && DefaultClientArgumentsDraftIsSaved && ShortenWaitAfterJoin == _savedSettings.ShortenWaitAfterJoin
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
