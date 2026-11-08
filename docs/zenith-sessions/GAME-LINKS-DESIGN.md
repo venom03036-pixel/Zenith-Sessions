@@ -207,12 +207,14 @@ name, creator line, playing + rating, accent border and check when it is the cur
   (R-accounts-3; whether Roblox invalidates the old cookie after rotating it is not established.) Every other outcome
   leaves the vault unchanged.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
-  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
+  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `NotListed`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
 - `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
   (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
   `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
-  request after the signed-in resolve has finished. A restricted, missing or failed lookup is `Unavailable`.
+  request after the signed-in resolve has finished. A listing that answers without the universe (restricted universes are
+  left out) or the directory's own Unknown answer is `NotListed`, shown as "This link's game is restricted or not publicly
+  listed, so it cannot be opened from Zenith." with no retry advice; a failed or deferred lookup stays `Unavailable`.
 - Friend invites (`ExperienceInvite`, `NotificationExperienceInvite`) read `experienceInviteData` /
   `notificationExperienceInviteData`: `status`, a required `placeId`, an optional `universeId` and `instanceId`. Only a
   `Valid` invite whose `instanceId` is a nonempty dashed GUID becomes `ServerInstance(placeId, jobId)`, with the job ID
