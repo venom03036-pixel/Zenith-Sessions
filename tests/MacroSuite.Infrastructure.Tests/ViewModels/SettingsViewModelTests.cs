@@ -692,6 +692,13 @@ public class SettingsViewModelTests
         vm.RecordHotkey.Should().Be("F6");
         vm.StopHotkey.Should().Be("F8");
         vm.RecordHotkeyDisplay.Should().Be("F6");
+        // A reload normalizes the binds again, so it cannot show the repair was saved; read the file.
+        using (var saved = System.Text.Json.JsonDocument.Parse(File.ReadAllText(Path.Combine(paths.ConfigDirectory, "settings.json"))))
+        {
+            new[] { "recordHotkey", "stopHotkey", "playHotkey", "pauseHotkey" }
+                .Select(name => saved.RootElement.GetProperty(name).GetString())
+                .Should().Equal(new[] { "F6", "F8", "F4", "F5" }, "the repaired binds must be written to settings.json on load");
+        }
         var reloaded = new SettingsViewModel(vault, new AIVisionRouter(vault), paths: paths);
         new[] { reloaded.RecordHotkey, reloaded.StopHotkey }.Should().Equal("F6", "F8");
 
