@@ -177,9 +177,10 @@ public sealed partial class ShellViewModel
         var snapshot=_diagnosticSnapshot??_diagnostics.GetSnapshot();
         // Applied policy and committed limits only; unsaved drafts, the main account, sign-in and window-layout settings stay out.
         var performance=Volatile.Read(ref _activePerformance);var limits=Volatile.Read(ref _savedSettings).Capacity!;
+        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; advance it again whenever an allowlisted field is added.
         var report=new
         {
-            FormatVersion=1,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
+            FormatVersion=2,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
             CreatedUtc=DateTimeOffset.UtcNow,Runtime=Environment.Version.ToString(),Architecture=RuntimeInformation.ProcessArchitecture.ToString(),
             Os=new {Description=RuntimeInformation.OSDescription,Version=Environment.OSVersion.Version.ToString()},
             Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
