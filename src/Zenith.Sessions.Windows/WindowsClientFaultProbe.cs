@@ -35,8 +35,7 @@ public sealed class WindowsClientFaultProbe : IClientFaultProbe
     }
 
     internal static string[] DefaultDumpFolders(string local) => string.IsNullOrEmpty(local) ? [] :
-        [Path.Combine(local, "Roblox", "logs", "crashes", "reports"),
-            Path.Combine(local, "Packages", "ROBLOXCorporation.ROBLOX_55nm5eh3cm0pr", "LocalState", "logs", "crashes", "reports")];
+        Array.ConvertAll(RobloxClientFolders.LogRoots(local), root => Path.Combine(root.Path, "crashes", "reports"));
 
     public ClientFaultCheck Check(RecentClientHistoryEntry ended, DateTimeOffset now, CancellationToken ct)
     {

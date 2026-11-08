@@ -90,6 +90,23 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
     }
 
     [Fact]
+    public void CrashDumpFoldersAndLogRootsComeFromOneSharedListOfRobloxFolders()
+    {
+        // One list of current-user Roblox folders, so the log and crash-record probes cannot drift apart.
+        string local = Path.Combine(_root, "local");
+        Assert.Equal(new[]
+        {
+            (Path.Combine(local, "Roblox", "logs"), ClientLogVariant.Win32),
+            (Path.Combine(local, "Packages", RobloxClientFolders.PackageFamilyName, "LocalState", "logs"), ClientLogVariant.Uwp),
+        }, RobloxClientFolders.LogRoots(local));
+        Assert.Equal(RobloxClientFolders.LogRoots(local).Select(root => Path.Combine(root.Path, "crashes", "reports")),
+            WindowsClientFaultProbe.DefaultDumpFolders(local));
+        Assert.Empty(WindowsClientFaultProbe.DefaultDumpFolders(""));
+        using var logs = new WindowsClientLogProbe();
+        Assert.Equal(RobloxClientFolders.LogRoots(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)), logs.Roots);
+    }
+
+    [Fact]
     public void FaultRecordMatchingNeedsTheExactPidAndCreationTime()
     {
         long created = new DateTime(2026, 11, 7, 20, 13, 17, DateTimeKind.Utc).AddTicks(1997408).Ticks;

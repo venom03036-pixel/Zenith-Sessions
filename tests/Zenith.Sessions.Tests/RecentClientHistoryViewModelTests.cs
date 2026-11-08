@@ -225,6 +225,25 @@ public sealed class RecentClientHistoryViewModelTests
         Assert.Single(failures);
     }
 
+    [Fact]
+    public void HistoryHelpTextNamesTheEvidenceForEveryOutcomeARowCanShow()
+    {
+        using var input = typeof(RecentClientHistoryViewModelTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        string help = Assert.Single(System.Xml.Linq.XDocument.Load(input).Descendants().Select(element => (string?)element.Attribute("Text"))
+            .OfType<string>().Where(text => text.StartsWith("A fresh complete scan stopped observing", StringComparison.Ordinal)));
+        // A new end cause must name its evidence in the panel's help text before this test passes.
+        foreach (var cause in Enum.GetValues<ClientEndCause>())
+            Assert.Contains(cause switch
+            {
+                ClientEndCause.Crashed => "a crash Windows recorded for that exact process",
+                ClientEndCause.NotResponding => "a hang at its last observation",
+                ClientEndCause.Disconnected or ClientEndCause.LeftGame or ClientEndCause.LaunchedElsewhere => "a disconnect in its log",
+                ClientEndCause.PossibleCrash => "a Roblox crash dump written as it ended",
+                ClientEndCause.Unknown => "Otherwise the cause is unknown",
+                _ => throw new ArgumentOutOfRangeException(nameof(cause), cause, "Name this end cause's evidence in the history help text.")
+            }, help);
+    }
+
     private sealed class Probe : IClientFaultProbe
     {
         public bool Fail, Block, Cancelled;

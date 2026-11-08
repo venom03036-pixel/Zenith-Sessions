@@ -20,10 +20,7 @@ internal sealed class WindowsClientLogProbe : IClientLogProbe
 
     internal WindowsClientLogProbe() : this(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)) { }
 
-    private WindowsClientLogProbe(string local) : this(
-        [(Path.Combine(local, "Roblox", "logs"), ClientLogVariant.Win32),
-            (Path.Combine(local, "Packages", "ROBLOXCorporation.ROBLOX_55nm5eh3cm0pr", "LocalState", "logs"), ClientLogVariant.Uwp)],
-        local, CurrentUser()) { }
+    private WindowsClientLogProbe(string local) : this(RobloxClientFolders.LogRoots(local), local, CurrentUser()) { }
 
     /// <summary>
     /// Every root must sit below <paramref name="trustedAnchor"/> with no reparse point on the way; production passes
