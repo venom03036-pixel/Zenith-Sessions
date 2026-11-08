@@ -252,22 +252,30 @@ public sealed class WindowsNativeHandoffStartTests : IDisposable
         Assert.Equal(0, starter.Calls); AssertFileReleased();
     }
 
+    // Since R-launch-17 (owner decision 2026-11-08) a bootstrapper's own executable can be prepared once its publisher is
+    // accepted (BootstrapperLaunchTests covers that start, which never receives the extra arguments); without an accepted
+    // publisher it gets no start, and the launcher is still never evaluated.
     [Theory]
     [InlineData("bootstrapper")]
     [InlineData("launcher")]
     public async Task ExtraArgumentsNeverReachABootstrapperOrTheLauncher(string kind)
     {
         CreateFile(); var starter = new Starter(); await using var verifier = new WindowsClientExecutableTrust(new Policy(), starter: starter);
-        ClientInstallationCandidate candidate;
-        if (kind == "bootstrapper") candidate = Candidate with { Product = ClientInstallationProduct.Bloxstrap };
+        ClientInstallationCandidate candidate; ClientExecutableTrustReason expected;
+        if (kind == "bootstrapper")
+        {
+            string bootstrapper = Path.Combine(Root, "Bloxstrap.exe"); File.WriteAllText(bootstrapper, "Synthetic bootstrapper bytes, never executed");
+            candidate = Candidate with { Product = ClientInstallationProduct.Bloxstrap, ExecutablePath = bootstrapper }; expected = ClientExecutableTrustReason.PublisherNotAccepted;
+        }
         else
         {
             string launcher = Path.Combine(Root, RobloxNativePlayerFiles.LauncherName); File.WriteAllText(launcher, "Synthetic launcher bytes, never executed");
-            candidate = Candidate with { ExecutablePath = launcher };
+            candidate = Candidate with { ExecutablePath = launcher }; expected = ClientExecutableTrustReason.BootstrapperNotEvaluated;
         }
         using var preparation = await verifier.PrepareAsync(candidate, ["--synthetic-flag"], default);
-        Assert.Null(preparation.Prepared); Assert.Equal(ClientExecutableTrustReason.BootstrapperNotEvaluated, preparation.Trust.Reason);
+        Assert.Null(preparation.Prepared); Assert.Equal(expected, preparation.Trust.Reason);
         Assert.NotEqual(ClientExecutableTrustStatus.VerifiedRobloxPublisher, preparation.Trust.Status);
+        Assert.NotEqual(ClientExecutableTrustStatus.VerifiedAcceptedPublisher, preparation.Trust.Status);
         Assert.Equal(0, starter.Calls); AssertFileReleased();
     }
 

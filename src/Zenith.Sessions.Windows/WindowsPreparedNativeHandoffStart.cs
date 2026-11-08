@@ -29,13 +29,14 @@ public sealed partial class WindowsClientExecutableTrust
     /// <summary>
     /// As above, with the user's extra client arguments (R-launch-16) the held start appends after the official request.
     /// Each argument is checked with <see cref="ExtraClientArgumentPolicy.IsValidArgument"/> here, before any file is held;
-    /// an invalid set throws <see cref="ArgumentException"/>. Only a direct player ever gets a prepared start (the launcher
-    /// and bootstrappers return no start from VerifyCore), so the arguments can only reach Zenith's own direct start.
+    /// an invalid set throws <see cref="ArgumentException"/>. The arguments reach only Zenith's own direct player start: a
+    /// bootstrapper's own executable (R-launch-17) is started with exactly the official request, whatever is passed here, and
+    /// the launcher never gets a prepared start.
     /// </summary>
     public Task<WindowsNativeHandoffPreparation> PrepareAsync(ClientInstallationCandidate candidate, IReadOnlyList<string>? extraArguments, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(candidate); ct.ThrowIfCancellationRequested();
-        string[] extra = CopyExtraArguments(extraArguments);
+        string[] extra = BootstrapperProducts.IsBootstrapper(candidate.Product) ? Array.Empty<string>() : CopyExtraArguments(extraArguments);
         lock (_gate)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
@@ -50,7 +51,7 @@ public sealed partial class WindowsClientExecutableTrust
                 {
                     var trust = VerifyCore(candidate, operation.Stop.Token, out held);
                     operation.Stop.Token.ThrowIfCancellationRequested();
-                    if (trust.Status != ClientExecutableTrustStatus.VerifiedRobloxPublisher || held is null)
+                    if (trust.Status is not (ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher) || held is null)
                         return new WindowsNativeHandoffPreparation(trust);
                     var prepared = new PreparedNativeHandoffStart(this, operation, held, _starter, extra, operation.Stop.Token);
                     lock (_gate)

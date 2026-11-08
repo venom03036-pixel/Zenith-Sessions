@@ -23,11 +23,13 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
 
     /// <param name="extraArguments">Where each account's saved extra client arguments (R-launch-16) are read at preparation time;
     /// null passes none. Only the direct player this provider accepts ever receives them, never a bootstrapper.</param>
+    /// <param name="acceptedPublishers">Where the publisher the user accepted for each bootstrapper (R-launch-17) is read when the
+    /// selected bootstrapper's executable is verified; null accepts none, so no bootstrapper is ever started.</param>
     public WindowsConfiguredNativeLaunchProvider(IRobloxNativeHandoffPreparer preparer, IRobloxNativeHandoffCapture capture,
-        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null)
+        IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null)
     {
         ArgumentNullException.ThrowIfNull(preparer); ArgumentNullException.ThrowIfNull(capture); ArgumentNullException.ThrowIfNull(dispatchVault);
-        var trust = new WindowsClientExecutableTrust(); _trustOwner = trust;
+        var trust = new WindowsClientExecutableTrust(acceptedPublishers); _trustOwner = trust;
         _factory = candidate => new RealChild(new(candidate, trust, preparer, capture, dispatchVault, extraArguments));
     }
     // The injected owner is transferred to this wrapper. Factories/children must not own borrowed
@@ -52,8 +54,11 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
 
     /// <summary>
     /// True when <see cref="Configure"/> would accept this candidate as the trial installation. It runs the
-    /// same check (direct-player filename, Roblox-only evidence, safe full path, readable metadata), so a
-    /// caller can tell an inspect-only row (the launcher, a bootstrapper-managed player) from a real change.
+    /// same check (the direct-player filename with Roblox-only evidence, or since R-launch-17 a bootstrapper's own
+    /// executable with that bootstrapper's evidence; safe full path; readable metadata), so a caller can tell an
+    /// inspect-only row (the launcher, a bootstrapper-managed player) from a real change. Whether a bootstrapper's
+    /// publisher is accepted is not a shape question: the Shell checks it before configuring, and the trust
+    /// verifier again before any start.
     /// </summary>
     public static bool CanSelect(ClientInstallationCandidate? candidate)
     {
@@ -355,13 +360,16 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     }
     private static ClientInstallationCandidate CopySelection(ClientInstallationCandidate candidate)
     {
-        const string invalid = "Select a present, unverified native Roblox player installation. Bootstrapper and unsafe paths are unsupported.";
+        const string invalid = "Select a present, unverified native Roblox player installation, or a bootstrapper's own executable (Bloxstrap, Fishstrap, Froststrap or Voidstrap). Bootstrapper-managed players and unsafe paths are unsupported.";
         string? supplied = candidate.ExecutablePath;
-        if (candidate.Product != ClientInstallationProduct.Roblox || candidate.FileState != ClientInstallationFileState.PresentUnverified
+        bool bootstrapper = BootstrapperProducts.IsBootstrapper(candidate.Product);
+        // Every evidence item must name the row's own product: a Roblox player under a bootstrapper's folder carries that
+        // bootstrapper's evidence and is refused; a bootstrapper row with Roblox evidence is not its own executable.
+        if (!Enum.IsDefined(candidate.Product) || candidate.FileState != ClientInstallationFileState.PresentUnverified
             || supplied is not { Length: > 3 and <= WindowsClientExecutableTrust.MaximumPathCharacters }
             || supplied.Any(char.IsControl) || supplied.Contains('"') || !Readable(supplied)
             || candidate.Evidence is null || candidate.Evidence.Count is < 1 or > 32
-            || candidate.Evidence.Any(item => item is null || !Enum.IsDefined(item.Source) || item.Product != ClientInstallationProduct.Roblox)
+            || candidate.Evidence.Any(item => item is null || !Enum.IsDefined(item.Source) || item.Product != candidate.Product)
             || candidate.Evidence.Distinct().Count() != candidate.Evidence.Count) throw new ArgumentException(invalid);
         string path = supplied.Replace('/', '\\');
         if (!char.IsAsciiLetter(path[0]) || path[1] != ':' || path[2] != '\\' || path.AsSpan(2).Contains(':')
@@ -369,7 +377,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         try
         {
             if (!Path.IsPathFullyQualified(path) || !Path.GetFullPath(path).Equals(path, StringComparison.OrdinalIgnoreCase)) throw new ArgumentException(invalid);
-            if (!RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
+            if (bootstrapper ? !BootstrapperProducts.IsOwnExecutable(candidate.Product, path) : !RobloxNativePlayerFiles.IsDirectPlayer(path)) throw new ArgumentException(invalid);
         }
         catch (Exception error) when (error is ArgumentException or NotSupportedException or PathTooLongException) { throw new ArgumentException(invalid); }
         if (!Metadata(candidate.ProductName) || !Metadata(candidate.FileVersion)) throw new ArgumentException(invalid);

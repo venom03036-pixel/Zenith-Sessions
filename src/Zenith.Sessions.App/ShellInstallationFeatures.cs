@@ -130,7 +130,7 @@ public sealed partial class ShellViewModel
     private InstallationCandidateRow? _selectedInstallation;
     public ObservableCollection<InstallationCandidateRow> InstallationCandidates { get; } = [];
     public ObservableCollection<string> InstallationIssues { get; } = [];
-    public InstallationCandidateRow? SelectedInstallation { get => _selectedInstallation; set { if (Set(ref _selectedInstallation, value)) { CancelPublisherVerificationWork(); ConfigureNativeTrialInstallation(); Raise(nameof(CanVerifyInstallationPublisher)); } } }
+    public InstallationCandidateRow? SelectedInstallation { get => _selectedInstallation; set { if (Set(ref _selectedInstallation, value)) { CancelPublisherVerificationWork(); ConfigureNativeTrialInstallation(); Raise(nameof(CanVerifyInstallationPublisher)); RefreshBootstrapperLaunch(); } } }
     public string InstallationStatus { get => _installationStatus; private set => Set(ref _installationStatus, value); }
     public string InstallationObserved { get => _installationObserved; private set => Set(ref _installationObserved, value); }
     public string InstallationReleaseStatus { get => _installationReleaseStatus; private set => Set(ref _installationReleaseStatus, value); }

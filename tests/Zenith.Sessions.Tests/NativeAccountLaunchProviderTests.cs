@@ -412,11 +412,15 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         public readonly ClientInstallationCandidate Installation;
         public readonly LaunchIntent Intent = new(Guid.NewGuid(), Guid.NewGuid(), 5, 123, 1818, 7, DateTimeOffset.UtcNow, 4, SyntheticHandoff.Job, RobloxServerKind.Public, true);
         public LaunchPreparationContext Context { get; }
-        public Fixture(string root, NativeClientTrustOutcome outcome = NativeClientTrustOutcome.VerifiedCached, IExtraClientArgumentsSource? arguments = null)
+        /// <param name="product">Roblox (the direct player) by default; a bootstrapper product names its own executable (R-launch-17).</param>
+        /// <param name="acceptedPublishers">The accepted bootstrapper publishers the trust verifier reads; null accepts none.</param>
+        public Fixture(string root, NativeClientTrustOutcome outcome = NativeClientTrustOutcome.VerifiedCached, IExtraClientArgumentsSource? arguments = null,
+            ClientInstallationProduct product = ClientInstallationProduct.Roblox, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null)
         {
-            Directory.CreateDirectory(root); Executable = Path.Combine(root, "RobloxPlayerBeta.exe"); File.WriteAllText(Executable, "Synthetic ordinary bytes, never executed");
-            Installation = new(ClientInstallationProduct.Roblox, Executable, "Synthetic", "1", ClientInstallationFileState.PresentUnverified, []);
-            Policy = new(outcome); Trust = new(Policy, starter: Starter); Context = new(Intent);
+            Directory.CreateDirectory(root); Executable = Path.Combine(root, product == ClientInstallationProduct.Roblox ? "RobloxPlayerBeta.exe" : product + ".exe");
+            File.WriteAllText(Executable, "Synthetic ordinary bytes, never executed");
+            Installation = new(product, Executable, "Synthetic", "1", ClientInstallationFileState.PresentUnverified, []);
+            Policy = new(outcome); Trust = new(Policy, starter: Starter, acceptedPublishers: acceptedPublishers); Context = new(Intent);
             Provider = new(Installation, Trust, Preparer, Capture, Vault, arguments);
         }
         public void AssertPinned() => Assert.Throws<IOException>(() => File.Open(Executable, FileMode.Open, FileAccess.Write, FileShare.None).Dispose());

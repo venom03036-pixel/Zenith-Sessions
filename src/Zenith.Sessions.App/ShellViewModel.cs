@@ -356,8 +356,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _queueStore=new(root);
         // One capture for the provider: the official page by default, or the direct ticket request once that mode is saved (R-api-7).
         _nativeCapture=new SelectableNativeHandoffCapture(new OwnedRobloxNativeHandoffCapture(root,dispatcher),new DirectTicketNativeHandoffCapture(_launchTicketClient));
-        // An injected development provider transfers ownership; it must remain Unverified.
-        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this));
+        // An injected development provider transfers ownership; it must remain Unverified. The real one reads each account's saved
+        // extra arguments (R-launch-16) and each bootstrapper's accepted publisher (R-launch-17) from saved state at preparation time.
+        _nativeLaunch=nativeProvider??new(_linkService,_nativeCapture,_vault,new SavedExtraClientArguments(this),new SavedAcceptedBootstrapperPublishers(this));
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;
@@ -433,7 +434,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;_defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
-            LoadNativeLaunchModeDraft();
+            LoadNativeLaunchModeDraft(); RefreshBootstrapperLaunch();
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);

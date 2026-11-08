@@ -37,7 +37,8 @@ public sealed record NativeLaunchDiagnosticPresentation
     private bool DirectTicket=>Snapshot?.LaunchMode==NativeLaunchMode.DirectTicket;
     private string RequestSource=>DirectTicket?"Direct ticket":"Official page";
     public string Trust=>Snapshot is {TrustReason:{ } reason} value?"Publisher: "+(value.TrustStatus switch
-    {ClientExecutableTrustStatus.VerifiedRobloxPublisher=>"verified · ",ClientExecutableTrustStatus.Rejected=>"rejected · ",ClientExecutableTrustStatus.Deferred=>"deferred · ",_=>"unknown · "})+TrustReason(reason)
+    {ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher=>"verified · ",ClientExecutableTrustStatus.Rejected=>"rejected · ",ClientExecutableTrustStatus.Deferred=>"deferred · ",_=>"unknown · "})
+        +TrustReason(reason,value.TrustStatus)
         :"Publisher: not reached or not recorded.";
     public string Preparation=>Snapshot?.PreparationStatus is { } status?"Preparation: "+(status switch
     {
@@ -151,10 +152,14 @@ public sealed record NativeLaunchDiagnosticPresentation
     }
     private static string At(DateTimeOffset at)=>at.ToUniversalTime().ToString("yyyy-MM-dd HH:mm:ss 'UTC'",CultureInfo.InvariantCulture);
     private static string Observed(DateTimeOffset? at)=>at is { } value?At(value):"not recorded";
-    private static string TrustReason(ClientExecutableTrustReason reason)=>reason switch
+    private static string TrustReason(ClientExecutableTrustReason reason,ClientExecutableTrustStatus? status)=>reason switch
     {
+        // R-launch-17: a bootstrapper's own executable verified by the certificate the user accepted for that product.
+        ClientExecutableTrustReason.Verified when status==ClientExecutableTrustStatus.VerifiedAcceptedPublisher=>"the bootstrapper's signature verified with cached Windows evidence and its publisher is the one you accepted; the bootstrapper applies its own client settings; no launch authority.",
         ClientExecutableTrustReason.Verified=>"exact Roblox publisher signature verified with cached Windows evidence; no launch authority.",
-        ClientExecutableTrustReason.BootstrapperNotEvaluated=>"bootstrapper publisher policy has not been evaluated.",
+        ClientExecutableTrustReason.BootstrapperNotEvaluated=>"the Roblox launcher is not evaluated; select the player or a bootstrapper's own executable.",
+        ClientExecutableTrustReason.PublisherNotAccepted=>"the bootstrapper's signature verified, but its publisher is not accepted for that product; nothing was started.",
+        ClientExecutableTrustReason.AcceptedPublisherChanged=>"the bootstrapper's signature verified, but its signer is not the one you accepted for that product; nothing was started.",
         ClientExecutableTrustReason.InvalidCandidate=>"the selected native executable was invalid.",
         ClientExecutableTrustReason.UnsupportedPlatform=>"publisher verification is unavailable on this platform.",
         ClientExecutableTrustReason.UnsafePath=>"the selected path was unsafe or redirected.",

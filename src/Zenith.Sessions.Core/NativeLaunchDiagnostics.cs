@@ -39,8 +39,9 @@ public sealed record NativeLaunchDiagnosticSnapshot(Guid OperationId, long Revis
             || TrustStatus.HasValue != TrustReason.HasValue
             || TrustStatus.HasValue && !Enum.IsDefined(TrustStatus.Value)
             || TrustReason.HasValue && !Enum.IsDefined(TrustReason.Value)
-            || TrustStatus == ClientExecutableTrustStatus.VerifiedRobloxPublisher && TrustReason != ClientExecutableTrustReason.Verified
-            || TrustReason == ClientExecutableTrustReason.Verified && TrustStatus != ClientExecutableTrustStatus.VerifiedRobloxPublisher
+            // Verified pairs only with a verified status: the Roblox player's publisher, or a bootstrapper's accepted publisher (R-launch-17).
+            || TrustStatus is ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher && TrustReason != ClientExecutableTrustReason.Verified
+            || TrustReason == ClientExecutableTrustReason.Verified && TrustStatus is not (ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher)
             || PreparationStatus.HasValue && !Enum.IsDefined(PreparationStatus.Value)
             || BrowserOutcome.HasValue && !Enum.IsDefined(BrowserOutcome.Value)
             || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value)

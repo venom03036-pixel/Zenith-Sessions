@@ -25,7 +25,7 @@ These held before this work and still hold.
 | Logs | Binds a log to an exact process by asking Windows which process holds it; refuses ambiguous evidence; hard read limits | Reads every candidate log's head every second, with no size cap |
 | Privacy | No telemetry, no third-party hosts | Online counter and Discord presence on by default |
 | Games | Public game search, favorites, a detail-page media gallery and batched game art | None of these |
-| Client changes | Never writes the client's settings or FFlag files, never changes a window's style, installs no global hook | Writes settings and FFlag files, rewrites window styles, uses a global mouse hook |
+| Client changes | Never writes the client's settings or FFlag files, never changes a window's style, installs no global hook (since R-launch-17 a user may choose to launch through an installed bootstrapper, which applies its own settings; Zenith still writes nothing) | Writes settings and FFlag files, rewrites window styles, uses a global mouse hook |
 
 ## RoALT advantages Zenith adopted in this pass
 
@@ -95,6 +95,7 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | ID | RoALT capability | Zenith's version | Commit |
 |---|---|---|---|
 | R-api-7 (also covers R-launch-13) | RoALT launches the native client as the selected account by requesting a Roblox authentication ticket, with no window per account: one assertion GET and one ticket POST, then the process spawn. | Direct ticket, a selectable native launch mode next to the official-page capture (which stays the default until the live trial): one assertion GET and one ticket POST with the saved sign-in under the share-link resolver's discipline, Zenith's own User-Agent and no Referer or Origin, a one-use pinned ticket, and a request Zenith builds for the frozen destination through the same grammar the page capture validates; no page opens and no click is needed, and every other check stays. | lane4/D1 |
+| R-launch-17 | RoALT starts the protocol handler it finds, a bootstrapper (Bloxstrap, Fishstrap, Froststrap, Voidstrap) included, with the launch URI as its first argument and no check of the executable. | Launch through an installed bootstrapper, off by default: the bootstrapper's own installation row becomes the trial installation only after the user verifies its Authenticode signature and accepts its publisher once per product (pinned by certificate thumbprint in settings.json; unsigned refused, a changed signer refused until accepted again), through the same trust path and held-file start as the player. The request is the only argument; the bootstrapper applies its own client settings and Zenith never writes client files, which the UI says plainly. Voidstrap is now discovered too. | lane4/D1 |
 
 ## Not copied: techniques Zenith excludes
 
@@ -116,7 +117,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Theme | Items | What deciding yes would mean |
 |---|---|---|
 | Hands-free batch launching | R-launch-0, R-launch-2 | Enable ordinary single and group launches end to end (after the planned live trial), and shorten waits when the previous client reports joining |
-| Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Launch through Bloxstrap-style tools (they write client settings files on Zenith's behalf), pass extra client arguments, or preselect an installation automatically |
+| Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Decided 2026-11-08 and built in lane4/D1: launch through Bloxstrap-style tools only after accepting that tool's publisher once (they write client settings files, Zenith does not), pass extra client arguments on Zenith's own direct start, and preselect the one native player the hints single out |
 | Roblox updates | R-launch-9, R-shell-19 | Check for and install the official Roblox update from inside Zenith (download and run a signed installer) |
 | Presence and account data | R-api-6, R-accounts-9, R-instances-2, R-api-13, R-accounts-14 | Ask Roblox, with each account's own session, whether it is online or in game, and show account details (Robux, Premium, verification); keep in-game state visible past 5 minutes |
 | Signed-in server browsing | R-launch-12, R-api-8, R-api-14 | Send a saved session to the server list for Recommended and latency sorts, friend counts, and listing or buying the account's private servers (spends Robux) |

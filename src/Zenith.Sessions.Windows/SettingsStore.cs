@@ -21,19 +21,20 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
     bool MuteArrivingClients = false, string DefaultClientArguments = "", bool ShortenWaitAfterJoin = false,
-    string NativeLaunchMode = NativeLaunchModes.OfficialPageValue)
+    string NativeLaunchMode = NativeLaunchModes.OfficialPageValue, IReadOnlyList<AcceptedBootstrapperPublisher>? AcceptedBootstrapperPublishers = null)
 {
     // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients, DefaultClientArguments,
-    // ShortenWaitAfterJoin and NativeLaunchMode are optional within schema 1: files without them load unchanged, and older builds
-    // ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the tray; without IdleLockMinutes
-    // (or with 0) the manager never locks itself after idle time; without PanicShortcut the global panic shortcut is F12; without
-    // MuteArrivingClients no client is muted when it appears; without DefaultClientArguments (or with "") Zenith's direct player start
-    // passes no extra arguments (R-launch-16); without ShortenWaitAfterJoin the full startup stabilization wait stays after every
-    // reported start (R-launch-2); without NativeLaunchMode a native trial captures the official page's own request ("official-page";
-    // "direct-ticket" asks Roblox for a launch ticket instead, R-api-7). A
+    // ShortenWaitAfterJoin, NativeLaunchMode and AcceptedBootstrapperPublishers are optional within schema 1: files without them load
+    // unchanged, and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the tray;
+    // without IdleLockMinutes (or with 0) the manager never locks itself after idle time; without PanicShortcut the global panic shortcut
+    // is F12; without MuteArrivingClients no client is muted when it appears; without DefaultClientArguments (or with "") Zenith's direct
+    // player start passes no extra arguments (R-launch-16); without ShortenWaitAfterJoin the full startup stabilization wait stays after
+    // every reported start (R-launch-2); without NativeLaunchMode a native trial captures the official page's own request ("official-page";
+    // "direct-ticket" asks Roblox for a launch ticket instead, R-api-7); without AcceptedBootstrapperPublishers (or with []) no
+    // bootstrapper is ever started, since launching through one needs the publisher the user accepted for that product (R-launch-17). A
     // PanicShortcut that earlier builds saved but that is no longer allowed (such as Ctrl+Alt+Q, which is AltGr+Q) is read as F12
-    // with a notice by SettingsStore; any other refused value, including extra arguments that break a rule or a launch mode that is
-    // not one of the two names, makes the settings invalid.
+    // with a notice by SettingsStore; any other refused value, including extra arguments that break a rule, a launch mode that is
+    // not one of the two names, or an accepted publisher with an unknown product or a malformed thumbprint, makes the settings invalid.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
@@ -46,7 +47,8 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
         (Performance ?? new()).Validated();
         ManagerWindow?.Validated();
         return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated(),
-            DefaultClientArguments = string.Join(' ', defaultArguments), NativeLaunchMode = NativeLaunchModes.ToSettingsValue(launchMode) };
+            DefaultClientArguments = string.Join(' ', defaultArguments), NativeLaunchMode = NativeLaunchModes.ToSettingsValue(launchMode),
+            AcceptedBootstrapperPublishers = AcceptedBootstrapperPublisher.Validate(AcceptedBootstrapperPublishers) };
     }
 }
 

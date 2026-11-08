@@ -20,9 +20,10 @@ public sealed partial class ShellViewModel
     public string NativeTrialSelection=>ServerBrowser.HasDestinationDraft?"Search / Use the pending destination draft before reviewing a trial.":SelectedAccount is {KnownUserId:>0} row&&ServerBrowser.ReadyDestination is { } destination
         ?$"{row.Label} · expected player {row.KnownUserId} · place {destination.PlaceId}"+(destination.JobId is { } job?$" · server {job}":" · any server")
         :"Select a saved, signed-in account and an explicit game or server in Sessions → Join a game.";
-    // Only the file the provider accepted is the trial installation; a rejected row is never shown as one.
+    // Only the file the provider accepted is the trial installation (the native player, or since R-launch-17 an accepted
+    // bootstrapper's own executable); a rejected row is never shown as one.
     public string NativeTrialInstallation=>SelectedInstallation?.Candidate is not { } candidate?"Choose a native Roblox installation in Settings first."
-        :candidate.Product==ClientInstallationProduct.Roblox&&_nativeLaunch.Selected?candidate.ExecutablePath
+        :_nativeLaunch.Selected?candidate.ExecutablePath
         :"The selected installation is not usable for a native trial; see the trial status.";
     public bool CanRunNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
         &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
@@ -57,10 +58,16 @@ public sealed partial class ShellViewModel
             Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;Mode=mode;
             SelectionSummary=$"{row.Label} · expected player {PlayerId} · place {Destination.PlaceId}"
                 +(Destination.JobId is { } job?$" · server {job}":" · any server");
-            InstallationSummary=installation.ExecutablePath;
-            ArgumentsSummary=ExtraClientArgumentPolicy.Describe(row.Profile.ExtraClientArguments,defaultClientArguments);
+            // A bootstrapper installation (R-launch-17): Zenith starts the bootstrapper, which starts the player with its own settings.
+            bool bootstrapper=BootstrapperProducts.IsBootstrapper(installation.Product);
+            InstallationSummary=bootstrapper
+                ?$"{installation.ExecutablePath} (launch through {installation.Product}: it starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files)"
+                :installation.ExecutablePath;
+            ArgumentsSummary=bootstrapper?$"Extra client arguments: not passed (the start goes through {installation.Product})"
+                :ExtraClientArgumentPolicy.Describe(row.Profile.ExtraClientArguments,defaultClientArguments);
+            string started=bootstrapper?$"start {installation.Product} with that request":"start the selected native player itself";
             LaunchModeSummary="Native launch mode: "+NativeLaunchModes.Label(mode)+". "+(mode==NativeLaunchMode.DirectTicket
-                ?"Zenith will request a launch ticket with this account's saved sign-in and start the selected native player itself; no Roblox page opens. This may start a real Roblox client."
+                ?$"Zenith will request a launch ticket with this account's saved sign-in and {started}; no Roblox page opens. This may start a real Roblox client."
                 :"Continue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.");
         }
         public override string ToString()=>"Selected-account native trial review";
@@ -110,8 +117,10 @@ public sealed partial class ShellViewModel
         // only a row that is still selected may be described as unsupported.
         var selection=SelectedInstallation?.Candidate;
         // The provider's own acceptance rule, not a looser copy: the launcher and bootstrapper-managed
-        // players are present Roblox rows that Configure would reject, so they are never eligible.
-        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)?selection:null;
+        // players are present Roblox rows that Configure would reject, so they are never eligible. A
+        // bootstrapper's own row (R-launch-17) is eligible only while its publisher is accepted in the saved
+        // settings; the trust verifier checks the file against that acceptance again before any start.
+        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)&&(selection!.Product==ClientInstallationProduct.Roblox||IsAcceptedBootstrapper(selection))?selection:null;
         // Revoke trial permission (and pause the queue) only when the trial installation can
         // actually change: off a selected native file, or onto a row the provider accepts. Moving
         // between rows that can never be the trial installation only updates the status text.
@@ -126,7 +135,9 @@ public sealed partial class ShellViewModel
         try
         {
             _nativeLaunch.Configure(eligible);
-            NativeTrialStatus=_nativeLaunch.Selected?"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified."
+            NativeTrialStatus=_nativeLaunch.Selected?(BootstrapperProducts.IsBootstrapper(eligible!.Product)
+                    ?$"Launch through {eligible.Product} selected for an explicit trial. {eligible.Product} starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files. Its signature is checked against the publisher you accepted, and the account and destination are checked again, before any start; compatibility remains unverified."
+                    :"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified.")
                 :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation(SelectedInstallation);
         }
         catch(ArgumentException)
@@ -147,7 +158,11 @@ public sealed partial class ShellViewModel
             or LaunchState.Launching or LaunchState.Stabilizing)&&_launchQueue.IsTrialOperation(operation.Intent.OperationId));
     private const string NoNativeInstallationSelected="No native installation is selected. In Settings, choose Refresh installation, then select a present native Roblox player file.";
     private static string UnsupportedNativeInstallation(InstallationCandidateRow? row)=>row?.ManagedBy is { } owner
-        ?$"This Roblox player is managed by {owner}. Native trials are not supported for players managed by a bootstrapper; select a Roblox player that Roblox installed itself. The inventory row remains available for inspection."
+        ?$"This Roblox player is managed by {owner}. Native trials are not supported for players managed by a bootstrapper; select a Roblox player that Roblox installed itself, or select the {owner} row itself to launch through {owner} once its publisher is accepted. The inventory row remains available for inspection."
+        :row?.Candidate is { } candidate&&BootstrapperProducts.IsBootstrapper(candidate.Product)
+        ?(BootstrapperProducts.IsOwnExecutable(candidate.Product,candidate.ExecutablePath)&&candidate.FileState==ClientInstallationFileState.PresentUnverified
+            ?$"This row is the {candidate.Product} bootstrapper. Launching through it is not supported until you verify its publisher and choose Accept publisher for {candidate.Product} in Settings → Roblox installation. {candidate.Product} then starts the Roblox player and applies its own client settings and FFlags; Zenith never writes client files. The inventory row remains available for inspection."
+            :$"This {candidate.Product} row is not supported for a native trial: only {candidate.Product}'s own present executable ({BootstrapperProducts.ExecutableName(candidate.Product)}) can start it. The inventory row remains available for inspection.")
         :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
     private void FenceNativeTrial(string reason)
     {

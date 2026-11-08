@@ -80,6 +80,7 @@ public sealed class WindowsClientInstallationInventorySource : IClientInstallati
         ClientInstallationRegistryHint.BloxstrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Bloxstrap","InstallLocation"),
         ClientInstallationRegistryHint.FishstrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Fishstrap","InstallLocation"),
         ClientInstallationRegistryHint.FroststrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Froststrap","InstallLocation"),
+        ClientInstallationRegistryHint.VoidstrapInstallLocation=>(@"Software\Microsoft\Windows\CurrentVersion\Uninstall\Voidstrap","InstallLocation"),
         _=>throw new ArgumentOutOfRangeException(nameof(hint))
     };
     /// <summary>Returns at most <paramref name="maximumEntries"/> plain version-* folder names, newest last-write time first (name breaks ties).

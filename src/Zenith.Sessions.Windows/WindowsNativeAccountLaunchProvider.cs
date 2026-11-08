@@ -76,8 +76,9 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
         {
             // Saved extra arguments are read first, from saved state only; a read failure or an invalid saved value is a
             // Rejected preparation (no browser, account or file work follows), and no argument text is retained anywhere.
+            // They are for Zenith's own direct player start only: a bootstrapper installation (R-launch-17) never reads them.
             IReadOnlyList<string>? extra = null;
-            if (_extraArguments is not null)
+            if (_extraArguments is not null && !BootstrapperProducts.IsBootstrapper(_installation.Product))
             {
                 extra = await _extraArguments.ResolveAsync(owner.Context.OriginalIntent.ProfileId, owner.Token).ConfigureAwait(false);
                 owner.Token.ThrowIfCancellationRequested();
@@ -87,7 +88,7 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
             UpdateDiagnostic(owner, value => value with { TrustStatus = trust.Status,
                 TrustReason = trust.Reason, ExecutableObservedUtc = trust.ObservedUtc });
             owner.Token.ThrowIfCancellationRequested();
-            if (executable.Trust.Status == ClientExecutableTrustStatus.VerifiedRobloxPublisher && executable.Prepared is not null)
+            if (executable.Trust.Status is ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher && executable.Prepared is not null)
             {
                 UpdateDiagnostic(owner, value => value with { Stage = NativeLaunchDiagnosticStage.PreparingHandoff });
                 handoffEntered = true;

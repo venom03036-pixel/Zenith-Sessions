@@ -11,9 +11,10 @@ namespace Zenith.Sessions.Windows;
 public static class ClientInstallationSuggestion
 {
     /// <summary>
-    /// The candidate to preselect, or null when the hints do not single one out. Only a row the trial provider would
-    /// accept is ever suggested: a present native direct player with Roblox-only evidence, so never the launcher, a
-    /// bootstrapper-managed player, a missing or denied file, or a Microsoft Store build (a WindowsApps path). With one
+    /// The candidate to preselect, or null when the hints do not single one out. Only a native Roblox row the trial
+    /// provider would accept is ever suggested: a present native direct player with Roblox-only evidence, so never the
+    /// launcher, a bootstrapper-managed player, a bootstrapper's own executable (launching through one needs the user's
+    /// own acceptance, R-launch-17), a missing or denied file, or a Microsoft Store build (a WindowsApps path). With one
     /// such row it is suggested. With several (leftover version folders), the one the roblox or roblox-player registration
     /// names is suggested, because Roblox itself writes that registration when it installs or updates; the folders alone
     /// cannot say which player would start. Registrations that disagree, or an unavailable or deferred snapshot, suggest
@@ -28,7 +29,8 @@ public static class ClientInstallationSuggestion
         ClientInstallationCandidate? only = null, registered = null; int eligible = 0, registrations = 0;
         foreach (var candidate in snapshot.Candidates)
         {
-            if (candidate is null || !WindowsConfiguredNativeLaunchProvider.CanSelect(candidate) || RobloxNativePlayerFiles.IsPackagedPath(candidate.ExecutablePath)) continue;
+            if (candidate is null || candidate.Product != ClientInstallationProduct.Roblox || !WindowsConfiguredNativeLaunchProvider.CanSelect(candidate)
+                || RobloxNativePlayerFiles.IsPackagedPath(candidate.ExecutablePath)) continue;
             eligible++; only = candidate;
             if (IsRegistered(candidate)) { registrations++; registered = candidate; }
         }
