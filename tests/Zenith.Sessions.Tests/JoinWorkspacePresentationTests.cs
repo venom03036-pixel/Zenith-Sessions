@@ -189,6 +189,20 @@ public sealed class JoinWorkspacePresentationTests
     }
 
     [Fact]
+    public void ReviewOffersSpreadingTheBatchAcrossLoadedServersAndBothCaptionsSayWhichRuleApplies()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var spread=join.Descendants(Ui+"CheckBox").Single(box=>(string?)box.Attribute("IsChecked")=="{Binding SpreadAcrossServers}");
+        Assert.Equal("Give each account its own listed server",(string?)spread.Attribute("Content"));
+        Assert.Contains("Browse public servers first",(string?)spread.Attribute("ToolTip"));
+        Assert.Equal("{Binding ServerBrowser}",(string?)spread.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext"));
+        var captions=join.Descendants(Ui+"TextBlock").Where(text=>(string?)text.Attribute("Text")=="{Binding BatchDestinationCaption}").ToArray();
+        Assert.Equal(2,captions.Length);
+        Assert.All(captions,caption=>Assert.Equal("{Binding ServerBrowser}",(string?)caption.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext")));
+        Assert.DoesNotContain(join.Descendants(Ui+"TextBlock"),text=>(string?)text.Attribute("Text") is "Same destination for everyone" or "One destination for every account in the batch");
+    }
+
+    [Fact]
     public Task PublicServerListDrawsEachRowsFillMeterAndReportedFps()=>SearchTest.OnUi(async()=>
     {
         var join=Page(Source(),"JoinGamePage");

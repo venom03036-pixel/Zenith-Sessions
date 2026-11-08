@@ -114,4 +114,73 @@ public sealed class RequestedServerSelectionTests
         Assert.Throws<ArgumentNullException>(() => RequestedServerSelection.ChooseForBatch(Place, null!, 1, Now));
         Assert.Throws<ArgumentOutOfRangeException>(() => RequestedServerSelection.ChooseForBatch(0, [Row(1, 1)], 1, Now));
     }
+
+    private static ServerSpread Spread(int count, params RobloxPublicServer[] page)
+        => RequestedServerSelection.SpreadServers(Place, page, count, Now, shuffle: false, random: null);
+
+    [Fact]
+    public void SpreadingHandsEachServerWithRoomForOneMoreAndASpareSeatOutOnceThenFallsBackToThePlace()
+    {
+        // 18/20 and 0/20 leave two or more open seats. 19/20 leaves one, 20/20 none and 21/20 is overfull; a stale row, another
+        // place's row and a malformed row are never used, and a second copy of server 1 is the same server.
+        var page = new[]
+        {
+            Row(1, 18), Row(2, 19), Row(3, 20), Row(4, 21), Row(5, 0), Row(6, 0, when: Now.AddMinutes(-6)), Row(7, 0, place: Place + 1),
+            Row(8, 0) with { JobId = "not-a-server" }, Row(1, 18) with { JobId = Job(1).ToUpperInvariant() },
+        };
+        var spread = Spread(4, page);
+        Assert.Equal(new[] { Job(1), Job(5), null, null }, spread.Destinations.Select(destination => destination.JobId));
+        Assert.All(spread.Destinations, destination => Assert.Equal(Place, destination.PlaceId));
+        Assert.Equal(new[] { RobloxServerKind.Public, RobloxServerKind.Public, RobloxServerKind.Unknown, RobloxServerKind.Unknown },
+            spread.Destinations.Select(destination => destination.ServerKind));
+        Assert.Equal(2, spread.SpreadCount); Assert.Equal(2, spread.PlaceOnlyCount); Assert.Equal(5, spread.UsableCount);
+        Assert.Contains("2 of 4 accounts got their own listed server", spread.Explanation);
+        Assert.Contains("the other 2 will join the place without a chosen server", spread.Explanation);
+        Assert.Contains("not reserved", spread.Explanation);
+
+        var everyone = Spread(2, page);
+        Assert.Equal(new[] { Job(1), Job(5) }, everyone.Destinations.Select(destination => destination.JobId));
+        Assert.Equal(0, everyone.PlaceOnlyCount); Assert.Contains("Each of the 2 accounts got its own listed server", everyone.Explanation);
+        Assert.Contains("The account got its own listed server", Spread(1, page).Explanation);
+    }
+
+    [Fact]
+    public void TheNewestCopyOfARepeatedServerDecidesWhetherItHasRoom()
+    {
+        var filledSince = Spread(2, Row(1, 5, when: Now.AddSeconds(-30)), Row(1, 19));
+        Assert.Equal(new string?[] { null, null }, filledSince.Destinations.Select(destination => destination.JobId));
+        Assert.Contains("None of the loaded servers had room for one more player and a spare seat, so 2 accounts will join the place without a chosen server", filledSince.Explanation);
+        var emptiedSince = Spread(2, Row(1, 19, when: Now.AddSeconds(-30)), Row(1, 5));
+        Assert.Equal(new[] { Job(1), null }, emptiedSince.Destinations.Select(destination => destination.JobId));
+        var none = Spread(3);
+        Assert.Equal(3, none.PlaceOnlyCount); Assert.Equal(0, none.UsableCount);
+        Assert.Contains("No fresh public server is loaded, so 3 accounts will join the place without a chosen server", none.Explanation);
+    }
+
+    [Fact]
+    public void ShufflingIsASeededPermutationOfTheServersWithRoom()
+    {
+        var page = Enumerable.Range(1, 8).Select(id => Row(id, id)).Append(Row(9, 19)).ToArray();
+        var first = RequestedServerSelection.SpreadServers(Place, page, 8, Now, shuffle: true, new Random(20261107));
+        var again = RequestedServerSelection.SpreadServers(Place, page, 8, Now, shuffle: true, new Random(20261107));
+        var listed = Enumerable.Range(1, 8).Select(Job).ToArray();
+        var shuffled = first.Destinations.Select(destination => destination.JobId!).ToArray();
+        Assert.Equal(again.Destinations.Select(destination => destination.JobId), shuffled);
+        Assert.Equal(listed.Order(), shuffled.Order());
+        Assert.NotEqual(listed, shuffled);
+        // Fewer accounts than servers: each still gets a different server.
+        var three = RequestedServerSelection.SpreadServers(Place, page, 3, Now, shuffle: true, new Random(5));
+        Assert.Equal(3, three.Destinations.Select(destination => destination.JobId).Distinct().Count());
+        Assert.All(three.Destinations, destination => Assert.Contains(destination.JobId, listed));
+    }
+
+    [Fact]
+    public void SpreadingValidatesItsArguments()
+    {
+        Assert.Throws<ArgumentNullException>(() => RequestedServerSelection.SpreadServers(Place, null!, 1, Now, false, null));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RequestedServerSelection.SpreadServers(0, [], 1, Now, false, null));
+        Assert.Throws<ArgumentOutOfRangeException>(() => RequestedServerSelection.SpreadServers(Place, [], -1, Now, false, null));
+        Assert.Throws<ArgumentNullException>(() => RequestedServerSelection.SpreadServers(Place, [], 1, Now, true, null));
+        Assert.Empty(RequestedServerSelection.SpreadServers(Place, [Row(1, 1)], 0, Now, false, null).Destinations);
+    }
 }

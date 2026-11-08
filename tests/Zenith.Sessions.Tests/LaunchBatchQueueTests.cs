@@ -582,6 +582,56 @@ public sealed class LaunchBatchQueueTests
         finally { Directory.Delete(root, recursive: true); }
     }
 
+    [Fact]
+    public async Task ASpreadReviewFreezesItsOwnServerForEachAccountAndThePlaceForTheRest()
+    {
+        var store = new Store();
+        var provider = new Provider();
+        await using var queue = Queue(store, provider);
+        await queue.InitializeAsync(default);
+        var now = DateTimeOffset.UtcNow;
+        string[] jobs = ["21111111-2222-4333-8444-000000000001", "21111111-2222-4333-8444-000000000002", "21111111-2222-4333-8444-000000000003"];
+        var servers = new List<RobloxPublicServer>
+        {
+            new(Place, jobs[0], 3, 10, null, null, now), new(Place, jobs[1], 9, 10, null, null, now), new(Place, jobs[2], 0, 10, null, null, now),
+        };
+        var (first, second, third) = (Profile(), Profile(), Profile());
+        // The repeated account is one recipient, so it takes one server, not two.
+        var review = queue.CaptureSpreadBatchReview(Place, servers,
+            [(first, Binding()), (second, Binding(2)), (first, Binding()), (third, Binding(3))], new Random(11));
+        servers.Clear(); // Captured, not read again when the review is submitted.
+        Assert.Equal(3, review.Recipients.Count);
+        var spread = Assert.IsType<ServerSpread>(review.Spread);
+        Assert.Equal(2, spread.SpreadCount); Assert.Equal(1, spread.PlaceOnlyCount);
+        Assert.Equal(Place, review.Destination.PlaceId); Assert.Null(review.Destination.JobId);
+        Assert.Equal(spread.Destinations, review.Recipients.Select(member => member.Destination));
+
+        int before = store.Writes.Count;
+        var rows = await queue.EnqueueBatchAsync(review);
+        Assert.Equal(before + 1, store.Writes.Count);
+        Assert.Equal(new[] { first.Id, second.Id, third.Id }, rows.Select(row => row.ProfileId));
+        var intents = rows.Select(row => Assert.IsType<LaunchOperation>(row.Operation).Intent).ToArray();
+        Assert.All(intents, intent => { Assert.Equal(Place, intent.PlaceId); Assert.True(intent.HasExplicitDestination); });
+        Assert.Equal(spread.Destinations.Select(destination => destination.JobId), intents.Select(intent => intent.RequestedJobId));
+        var pinned = intents.Where(intent => intent.RequestedJobId is not null).ToArray();
+        Assert.Equal(2, pinned.Select(intent => intent.RequestedJobId).Distinct().Count());
+        Assert.All(pinned, intent => { Assert.Contains(intent.RequestedJobId, new[] { jobs[0], jobs[2] }); Assert.Equal(RobloxServerKind.Public, intent.RequestedServerKind); });
+        Assert.Equal(RobloxServerKind.Unknown, Assert.Single(intents, intent => intent.RequestedJobId is null).RequestedServerKind);
+        Assert.Empty(provider.Calls);
+    }
+
+    [Fact]
+    public async Task AnOrdinaryReviewFreezesTheOneDestinationForEveryAccount()
+    {
+        await using var queue = Queue(new Store(), new Provider());
+        await queue.InitializeAsync(default);
+        var review = queue.CaptureBatchReview(Target, [(Profile(), Binding()), (Profile(), Binding(2))]);
+        Assert.Null(review.Spread);
+        Assert.All(review.Recipients, member => Assert.Same(Target, member.Destination));
+        Assert.Throws<ArgumentNullException>(() => queue.CaptureSpreadBatchReview(Place, null!, [(Profile(), Binding())], new Random(1)));
+        Assert.Throws<ArgumentNullException>(() => queue.CaptureSpreadBatchReview(Place, [], [(Profile(), Binding())], null!));
+    }
+
     private static LaunchOperation Rejected(AccountProfile profile, LaunchAccountBinding? binding = null)
     {
         binding ??= Binding();

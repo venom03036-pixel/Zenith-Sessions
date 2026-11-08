@@ -65,6 +65,26 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
             }
         }
     }
+    private bool _spreadAcrossServers;
+    /// <summary>
+    /// Off by default. When on and the destination names no server, a queued batch gives each account a different loaded
+    /// server with room for it and a spare seat, and the rest the place alone. A pinned server still goes to everyone.
+    /// </summary>
+    public bool SpreadAcrossServers
+    {
+        get=>_spreadAcrossServers;
+        set {if(Set(ref _spreadAcrossServers,value)) Raise(nameof(BatchDestinationCaption));}
+    }
+    /// <summary>Whether a batch spreads (see <see cref="SpreadAcrossServers"/>) for this requested destination.</summary>
+    public bool SpreadsFor(RobloxRequestedDestination destination)=>SpreadAcrossServers && destination.JobId is null;
+    public string BatchDestinationCaption=>!SpreadAcrossServers?"Same destination for everyone"
+        :_destination?.JobId is not null?"A server is pinned, so everyone goes to it":"Each account gets its own listed server";
+    /// <summary>
+    /// The loaded public server observations of <paramref name="placeId"/>, newest copy of each server, as a copy. Empty while
+    /// no usable page of that place is loaded or the browser is stopping.
+    /// </summary>
+    public IReadOnlyList<RobloxPublicServer> LoadedServers(long placeId)=>_rowsUsable && !_stopping && !_lifetime.IsCancellationRequested
+        && _canUse() && _destination?.PlaceId==placeId?Array.ConvertAll(_pageRows,row=>row.Server):[];
     public bool HideFull
     {
         get=>_hideFull;
@@ -373,7 +393,7 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     private void InvalidatePage()
     {_rowsUsable=false;Interlocked.Increment(ref _generation);_requestStop?.Cancel();}
     private void RaiseDestination()
-    {Raise(nameof(Destination));Raise(nameof(DestinationSummary));Raise(nameof(HasDestination));}
+    {Raise(nameof(Destination));Raise(nameof(DestinationSummary));Raise(nameof(HasDestination));Raise(nameof(BatchDestinationCaption));}
     private void RaiseDestinationAvailability()
     {Raise(nameof(HasDestinationDraft));Raise(nameof(CanUseDestination));Raise(nameof(CanNext));Raise(nameof(CanUseServer));}
     private void ReportFailure(Exception _)
