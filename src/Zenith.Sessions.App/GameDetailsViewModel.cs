@@ -95,7 +95,7 @@ public sealed class GameDetailsViewModel : Observable, IAsyncDisposable
             if (!Current()) return;
             ObserveRetry(result.RetryAfter);
             if (result.State != PublicDirectoryState.Success || result.Value is not { } game)
-            { Status = result.State == PublicDirectoryState.Deferred ? "Public game details are deferred. Try again after the service cooldown." : "Public game details are unavailable. The destination request was preserved."; return; }
+            { Status = UnsuccessfulStatus(result.State, result.Message); return; }
             if (!ValidGame(game, placeId)) throw new InvalidDataException("The public game response did not match the requested place.");
             _game = game; _status = "Public details loaded. Loading the optional icon…";
             RaiseGame(); Raise(nameof(Status));
@@ -135,6 +135,12 @@ public sealed class GameDetailsViewModel : Observable, IAsyncDisposable
         return encoded.State == PublicDirectoryState.Success && encoded.Value is { } bytes && Fresh(bytes.RetrievedUtc)
             ? await Task.Run(() => PublicAccountPresentation.DecodePublicPng(bytes.Bytes, bytes.MediaType, ct), CancellationToken.None) : null;
     }
+    // Unknown is the directory's own answer (directory messages are app-owned, never provider text), such as a place ID
+    // that no game uses, so it is shown as written. Failure and unusable text keep the generic line.
+    private static string UnsuccessfulStatus(PublicDirectoryState state, string? message) =>
+        state == PublicDirectoryState.Deferred ? "Public game details are deferred. Try again after the service cooldown."
+        : state == PublicDirectoryState.Unknown && SafeText(message?.Trim(), 200) ? message!.Trim() + " The destination request was preserved."
+        : "Public game details are unavailable. The destination request was preserved.";
     private bool Fresh(DateTimeOffset time) => time <= _clock.GetUtcNow().AddMinutes(5) && _clock.GetUtcNow() - time <= TimeSpan.FromMinutes(30);
     private bool ValidGame(PublicRobloxGame game, long requested) => game.RequestedPlaceId == requested && game.UniverseId > 0 && game.RootPlaceId > 0
         && game.CreatorId > 0 && Enum.IsDefined(game.CreatorKind) && game.Playing >= 0 && game.MaxPlayers > 0 && (game.Visits is null or >= 0) && Fresh(game.RetrievedUtc)

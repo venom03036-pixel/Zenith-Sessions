@@ -174,6 +174,32 @@ public sealed class GameDetailsViewModelTests
         await vm.LoadAsync(); Assert.Equal(2, directory.Lookups); Assert.NotNull(vm.Game);
     }
 
+    private const string GenericUnavailable = "Public game details are unavailable. The destination request was preserved.";
+
+    // An Unknown answer is the directory's own app-owned explanation (for example a place ID no game uses), so the user
+    // sees it. A Failure, or an Unknown without usable text, keeps the generic line.
+    [Theory]
+    [InlineData(PublicDirectoryState.Unknown, "No Roblox game uses this place ID. Check the number and try again.",
+        "No Roblox game uses this place ID. Check the number and try again. The destination request was preserved.")]
+    [InlineData(PublicDirectoryState.Unknown, "The requested public game information is unavailable or restricted.",
+        "The requested public game information is unavailable or restricted. The destination request was preserved.")]
+    [InlineData(PublicDirectoryState.Unknown, " ", GenericUnavailable)]
+    [InlineData(PublicDirectoryState.Unknown, "Synthetic\aanswer", GenericUnavailable)]
+    [InlineData(PublicDirectoryState.Failure, "Synthetic failure detail", GenericUnavailable)]
+    public async Task UnknownLookupShowsTheDirectoryAnswerWhileFailureStaysGeneric(PublicDirectoryState state, string message, string expected)
+    {
+        var answer = new TaskCompletionSource<PublicDirectoryResult<PublicRobloxGame>>();
+        answer.SetResult(new(state, null, message));
+        var clock = new Clock(); var directory = new Games(clock) { Pending = answer };
+        await using var browser = new ServerBrowserViewModel(new Servers(), clock: clock);
+        await using var vm = new GameDetailsViewModel(directory, browser, () => true, clock: clock);
+        browser.UsePreferredPlace(Place);
+        await vm.LoadAsync();
+        Assert.Equal(expected, vm.Status);
+        Assert.Null(vm.Game); Assert.False(vm.HasIcon); Assert.Equal(0, directory.IconRequests);
+        Assert.Equal(Place, browser.Destination!.PlaceId); Assert.False(vm.IsBusy); Assert.True(vm.CanLoad);
+    }
+
     [Fact]
     public async Task UnavailableOrLockedDirectoryDoesNotPretendThatInformationWasLoaded()
     {
