@@ -30,3 +30,11 @@ Portable password-protected backup remains the next independent implementation. 
 ## Integrated checkpoint
 
 Integration retained all existing account observations, update, diagnostics, News and process-control owners while adding password lock/disposal. Dashboard unlock still restores the saved update-check schedule. The merged password/idle-lock/shutdown checks passed **85/85**, no skips (`artifacts/completion-integration/password-integrated.trx`). Follow-up review of legacy envelopes and the Lock/dispatch boundary remains separate from this checkpoint.
+
+## Review follow-up
+
+The legacy v1 format is readable only as sign-in-required metadata with credential fields removed and no verified contextual identity. It cannot be promoted into a usable v3 grant. A valid legacy record now produces a typed, actionable reauthenticate/remove-first result before the migration marker is written; its bytes remain unchanged. This deliberately preserves the existing legacy trust boundary.
+
+Dispatch acceptance is recorded under the same short key gate as Lock. A request accepted before Lock is already owned; the native owner still handles cancellation and returns its actual receipt. A request that loses the acceptance race cannot invoke the callback. The key gate is released before native code, so Lock never waits for a blocked starter. Deterministic held-lease and blocked-callback fixtures prove both orderings, retained receipts and immediate key locking. Disposal also joins password work in a finally block even when its stop callback throws.
+
+`password-review-acceptance.trx`: 65/65 focused password, presentation and dispatch cases passed. A preceding mixed-format fixture raced a transient file-sharing denial during atomic replacement; its bounded reader retry and unconditional owner drain now preserve the original assertion outcome instead of masking it with disposal failure. No actual native process was started.

@@ -40,6 +40,66 @@ public sealed class VaultMasterPasswordTests : IDisposable
     }
 
     [Fact]
+    public async Task AValidLegacyV1FileNeedsExplicitReauthenticationWithoutInventingVerifiedIdentity()
+    {
+        var id = Guid.NewGuid(); Directory.CreateDirectory(VaultRoot);
+        var old = new AuthorizationRecord(id, RobloxOAuthIdentity.Provider, 123, 1, "synthetic-access", "synthetic-refresh", DateTimeOffset.UtcNow.AddHours(1));
+        byte[] clear = System.Text.Json.JsonSerializer.SerializeToUtf8Bytes(old);
+        byte[] entropy = Encoding.UTF8.GetBytes("ZenithSessions/Personal/roblox-oauth/v1/" + id.ToString("N"));
+        byte[] cipher;
+        try { cipher = ProtectedData.Protect(clear, entropy, DataProtectionScope.CurrentUser); }
+        finally { CryptographicOperations.ZeroMemory(clear); CryptographicOperations.ZeroMemory(entropy); }
+        File.WriteAllBytes(RecordPath(id), cipher);
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.ReadAsync(id, default))!.Health);
+        await Assert.ThrowsAsync<VaultPasswordLegacyMigrationException>(() => vault.EnableMasterPasswordAsync(Password, default));
+        Assert.False(File.Exists(ControlPath)); Assert.Equal(cipher, File.ReadAllBytes(RecordPath(id)));
+        Assert.Equal(AuthorizationHealth.SignInRequired, (await vault.ReadAsync(id, default))!.Health);
+    }
+
+    [Fact]
+    public async Task LockWhileDispatchWaitsPreventsTheNativeCallbackAndSuccessfulUnlockNeedsANewRequest()
+    {
+        using var vault = new ProtectedCredentialVault(_root); var record = Session(Guid.NewGuid());
+        await vault.SaveAsync(record, default); await vault.EnableMasterPasswordAsync(Password, default);
+        var snapshot = await vault.ReadWriteSnapshotAsync(record.ProfileId, default);
+        using var held = new FileStream(Path.Combine(VaultRoot, ProtectedCredentialVault.WriterLockFileName), FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        bool called = false;
+        var dispatch = vault.TryDispatchCurrentAsync(snapshot, () => { called = true; return null!; }, default);
+        vault.LockMasterPassword(); held.Dispose();
+        await Assert.ThrowsAsync<VaultPasswordRequiredException>(() => dispatch); Assert.False(called);
+        await vault.UnlockMasterPasswordAsync(Password, default);
+        Assert.False(called); Assert.Equal(VaultPasswordMode.Unlocked, (await vault.GetPasswordStatusAsync(default)).Mode);
+    }
+
+    [Fact]
+    public async Task AcceptedDispatchDrainsAfterLockWithoutBlockingItOrDiscardingTheActualReceipt()
+    {
+        using var vault = new ProtectedCredentialVault(_root); var record = Session(Guid.NewGuid());
+        await vault.SaveAsync(record, default); await vault.EnableMasterPasswordAsync(Password, default);
+        var snapshot = await vault.ReadWriteSnapshotAsync(record.ProfileId, default);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        using var release = new ManualResetEventSlim();
+        var receipt = new LaunchProcessReceipt(700001, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, DateTimeOffset.UtcNow);
+        var dispatch = vault.TryDispatchCurrentAsync(snapshot, () =>
+        {
+            entered.TrySetResult(); release.Wait();
+            return new(NativeHandoffDispatchOutcome.StartedUnverified, receipt);
+        }, default);
+        try
+        {
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal((true, false), vault.PasswordDispatchState);
+            await Task.Run(vault.LockMasterPassword).WaitAsync(TimeSpan.FromSeconds(3));
+            Assert.False(dispatch.IsCompleted); Assert.Equal((true, true), vault.PasswordDispatchState);
+        }
+        finally { release.Set(); await dispatch; }
+        var result = await dispatch;
+        Assert.Same(receipt, result.Dispatch!.ProcessReceipt); Assert.Equal((false, false), vault.PasswordDispatchState);
+        Assert.Equal(VaultPasswordMode.Locked, (await vault.GetPasswordStatusAsync(default)).Mode);
+    }
+
+    [Fact]
     public async Task LockBlocksSecretsButKeepsMetadataAndWrongPasswordDoesNotUnlock()
     {
         using var vault = new ProtectedCredentialVault(_root); var record = Session(Guid.NewGuid());
@@ -153,11 +213,24 @@ public sealed class VaultMasterPasswordTests : IDisposable
         using var blocked = new FileStream(RecordPath(record.ProfileId), FileMode.Open, FileAccess.Read, FileShare.Read);
         using var stop = new CancellationTokenSource();
         var migration = vault.EnableMasterPasswordAsync(Password, stop.Token);
-        for (int i = 0; i < 500 && Envelope(first.ProfileId)["Version"]!.GetValue<int>() != 3; i++) await Task.Delay(10);
-        Assert.Equal(3, Envelope(first.ProfileId)["Version"]!.GetValue<int>());
-        Assert.Equal(2, Envelope(record.ProfileId)["Version"]!.GetValue<int>());
-        Assert.True(File.Exists(ControlPath)); stop.Cancel();
-        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => migration);
+        bool firstConverted = false;
+        try
+        {
+            for (int i = 0; i < 500 && !firstConverted; i++)
+            {
+                try { firstConverted = Envelope(first.ProfileId)["Version"]!.GetValue<int>() == 3; }
+                catch (IOException) { } // Atomic replacement can briefly refuse this independent fixture reader.
+                if (!firstConverted) await Task.Delay(10);
+            }
+            Assert.True(firstConverted); Assert.Equal(2, Envelope(record.ProfileId)["Version"]!.GetValue<int>());
+            Assert.True(File.Exists(ControlPath)); stop.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => migration);
+        }
+        finally
+        {
+            stop.Cancel(); blocked.Dispose();
+            try { await migration; } catch (Exception) { } // Join the owner even if a fixture assertion fails.
+        }
         blocked.Dispose(); vault.LockMasterPassword();
         Assert.Equal(VaultPasswordMode.MigrationRequired, (await vault.GetPasswordStatusAsync(default)).Mode);
         await Assert.ThrowsAsync<VaultPasswordMigrationException>(() => vault.ReadAsync(record.ProfileId, default));

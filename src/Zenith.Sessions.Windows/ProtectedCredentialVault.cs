@@ -238,6 +238,7 @@ public sealed partial class ProtectedCredentialVault : IAccountCredentialVault, 
     public async Task<AuthorizationDispatchResult> TryDispatchCurrentAsync(AuthorizationWriteSnapshot expected,
         Func<NativeHandoffDispatchResult> dispatch, CancellationToken ct)
     {
+        long passwordEpoch = Volatile.Read(ref _passwordEpoch);
         ValidateSnapshot(expected); ArgumentNullException.ThrowIfNull(dispatch);
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         if (!MatchesSnapshotOwned(expected, ct) || expected.Record is not { } current
@@ -248,7 +249,9 @@ public sealed partial class ProtectedCredentialVault : IAccountCredentialVault, 
             return new(AuthorizationDispatchStatus.NotAuthorized);
         ct.ThrowIfCancellationRequested();
         NativeHandoffDispatchResult? result;
-        EnsureSecretAccess();
+        // Accept under the same short gate used by Lock, then release that gate before entering
+        // native code. This records which side won without making Lock wait for a native owner.
+        using var accepted = AcceptPasswordDispatch(passwordEpoch, ct);
         try { result = dispatch(); }
         catch (Exception)
         {
