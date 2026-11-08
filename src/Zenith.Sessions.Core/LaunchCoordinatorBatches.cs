@@ -47,7 +47,8 @@ public sealed partial class LaunchCoordinator
         return new(_batchReviewOwner, generation, destination, DistinctMembers(members));
     }
 
-    /// <summary>Review retries for rejected starts that originally requested the same exact server.</summary>
+    /// <summary>Review retries for requests that ended before any client started and all chose one destination:
+    /// the same exact server, or the same place with no server.</summary>
     public LaunchBatchReview CaptureBatchRetryReview(
         IReadOnlyList<(LaunchOperation Previous, AccountProfile Profile, LaunchAccountBinding Binding)> recipients)
     {
@@ -62,20 +63,32 @@ public sealed partial class LaunchCoordinator
             ArgumentNullException.ThrowIfNull(previous);
             ArgumentNullException.ThrowIfNull(binding);
             var member = CaptureBatchMember(profile, binding);
-            if (previous is not { State: LaunchState.Failed, Problem: LaunchProblem.StartupRejected, ProcessReceipt: null }
+            // A place taken from the profile's preference was never a reviewed destination, so only a
+            // chosen place (with or without an exact server) can be pinned again.
+            if (!EndedBeforeAnyClient(previous)
                 || previous.Intent is not { } intent
-                || !intent.HasExplicitDestination || intent.RequestedJobId is null || !HasValidDestination(intent)
+                || !intent.HasExplicitDestination || !HasValidDestination(intent)
                 || intent.OperationId == Guid.Empty || intent.ProfileId != member.ProfileId || intent.UserId != binding.UserId
                 || intent.AuthorizationGeneration <= 0)
-                throw new ArgumentException("Retry requires a rejected start for the same account and a known exact server.", nameof(recipients));
+                throw new ArgumentException("Retry requires a request for the same account that ended before any client started, with a chosen place.", nameof(recipients));
             if (destination is null) destination = new(intent.PlaceId, intent.RequestedJobId, intent.RequestedServerKind);
             else if (destination.PlaceId != intent.PlaceId || destination.JobId != intent.RequestedJobId
                 || destination.ServerKind != intent.RequestedServerKind)
-                throw new ArgumentException("A retry review must use one exact destination.", nameof(recipients));
+                throw new ArgumentException("A retry review must use one destination: the same place, and the same server or no server.", nameof(recipients));
             members[i] = member with { RetrySource = previous };
         }
         return new(_batchReviewOwner, generation, destination!, DistinctMembers(members));
     }
+
+    // Only a failure recorded before native startup qualifies: the provider refused the start, or
+    // preparation was refused or expired before dispatch. A process receipt or any other problem stays
+    // out, and so does every row that is not Failed: an Uncertain, ReviewRequired or
+    // ClientStartedUnverified row may have a client, and a Cancelled row was a user's or a stop's decision.
+    private static bool EndedBeforeAnyClient(LaunchOperation previous) => previous is
+    {
+        State: LaunchState.Failed, ProcessReceipt: null,
+        Problem: LaunchProblem.StartupRejected or LaunchProblem.PreparationRejected or LaunchProblem.PreparationExpired
+    };
 
     private static int RequireBatchCount(int count)
         => count is >= 1 and <= MaximumPendingOperations ? count : throw new ArgumentOutOfRangeException(nameof(count));

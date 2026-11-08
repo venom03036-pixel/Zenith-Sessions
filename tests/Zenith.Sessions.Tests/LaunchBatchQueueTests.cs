@@ -371,6 +371,12 @@ public sealed class LaunchBatchQueueTests
     [InlineData(LaunchState.Arrived, LaunchProblem.None)]
     [InlineData(LaunchState.Failed, LaunchProblem.ProfileChanged)]
     [InlineData(LaunchState.Failed, LaunchProblem.PreparationCleanupFailed)]
+    [InlineData(LaunchState.Failed, LaunchProblem.PreparationTimedOut)]
+    [InlineData(LaunchState.Failed, LaunchProblem.PreparationInterrupted)]
+    [InlineData(LaunchState.Failed, LaunchProblem.CancelledDuringStartup)]
+    [InlineData(LaunchState.Uncertain, LaunchProblem.PreparationRejected)]
+    [InlineData(LaunchState.ReviewRequired, LaunchProblem.PreparationExpired)]
+    [InlineData(LaunchState.Cancelled, LaunchProblem.None)]
     public async Task RetryRequiresProofThatTheRequestedStartWasRejected(LaunchState state, LaunchProblem problem)
     {
         var profile = Profile();
@@ -378,11 +384,72 @@ public sealed class LaunchBatchQueueTests
         var store = new Store();
         await using var queue = Queue(store, new Provider());
         Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(previous, profile, Binding())]));
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(PlaceOnly(previous), profile, Binding())]));
         Assert.Empty(store.Writes);
     }
 
+    [Theory]
+    [InlineData(LaunchProblem.PreparationRejected)]
+    [InlineData(LaunchProblem.PreparationExpired)]
+    public async Task RetryAcceptsAPreparationFailureRecordedBeforeAnyClientStarted(LaunchProblem problem)
+    {
+        var profile = Profile();
+        var prior = Rejected(profile) with { Problem = problem };
+        var store = new Store(seed: new(true, [prior]));
+        var provider = new Provider();
+        await using var queue = Queue(store, provider);
+        await queue.InitializeAsync(default);
+        var review = queue.CaptureBatchRetryReview([(prior, profile, Binding())]);
+        Assert.Equal(prior.Intent.OperationId, Assert.Single(review.Recipients).RetryOfOperationId);
+        Assert.Equal(Job, review.Destination.JobId);
+        var row = Assert.Single(await queue.EnqueueBatchAsync(review));
+        Assert.Equal(LaunchBatchDisposition.Recorded, row.Disposition);
+        var retry = Assert.IsType<LaunchOperation>(row.Operation);
+        Assert.Equal(LaunchState.Queued, retry.State);
+        Assert.Equal(prior.Intent with { OperationId = retry.Intent.OperationId, RequestedUtc = retry.Intent.RequestedUtc }, retry.Intent);
+        Assert.Equal(new[] { prior, retry }, store.Last.Operations);
+        Assert.True(store.Last.Paused);
+        Assert.Empty(provider.Calls);
+
+        var withProcess = prior with { ProcessReceipt = new(42, prior.UpdatedUtc.UtcTicks, prior.UpdatedUtc) };
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(withProcess, profile, Binding())]));
+    }
+
     [Fact]
-    public async Task RetryRejectsIdentityChangesAndDifferentOrUnspecifiedServers()
+    public async Task RetryKeepsAPlaceOnlyRequestPlaceOnlyWhenEveryAccountSharesThatPlace()
+    {
+        var first = Profile();
+        var second = Profile();
+        var rejected = PlaceOnly(Rejected(first));
+        var expired = PlaceOnly(Rejected(second, Binding(2)) with { Problem = LaunchProblem.PreparationExpired });
+        var store = new Store(seed: new(true, [rejected, expired]));
+        var provider = new Provider();
+        await using var queue = Queue(store, provider);
+        await queue.InitializeAsync(default);
+        var review = queue.CaptureBatchRetryReview([(rejected, first, Binding()), (expired, second, Binding(2))]);
+        Assert.Equal(Place, review.Destination.PlaceId);
+        Assert.Null(review.Destination.JobId);
+        Assert.Equal(RobloxServerKind.Unknown, review.Destination.ServerKind);
+        Assert.Equal(new Guid?[] { rejected.Intent.OperationId, expired.Intent.OperationId }, review.Recipients.Select(member => member.RetryOfOperationId));
+        int writes = store.Writes.Count;
+        var rows = await queue.EnqueueBatchAsync(review);
+        Assert.Equal(writes + 1, store.Writes.Count);
+        Assert.All(rows, row => Assert.Equal(LaunchBatchDisposition.Recorded, row.Disposition));
+        Assert.All(rows, row =>
+        {
+            var intent = Assert.IsType<LaunchOperation>(row.Operation).Intent;
+            Assert.Equal(Place, intent.PlaceId);
+            Assert.Null(intent.RequestedJobId);
+            Assert.Equal(RobloxServerKind.Unknown, intent.RequestedServerKind);
+            Assert.True(intent.HasExplicitDestination);
+        });
+        Assert.Equal(4, store.Last.Operations.Count);
+        Assert.True(store.Last.Paused);
+        Assert.Empty(provider.Calls);
+    }
+
+    [Fact]
+    public async Task RetryRejectsIdentityChangesMixedDestinationsAndProfileDefaultPlaces()
     {
         var account = Profile();
         var other = Profile();
@@ -392,14 +459,23 @@ public sealed class LaunchBatchQueueTests
         {
             Intent = otherHistory.Intent with { RequestedJobId = "23456789-1234-4234-8234-123456789abc" }
         };
-        var withoutJob = history with { Intent = history.Intent with { RequestedJobId = null, RequestedServerKind = RobloxServerKind.Unknown } };
+        var withoutJob = PlaceOnly(history);
+        var otherWithoutJob = PlaceOnly(otherHistory);
+        var otherPlace = otherWithoutJob with { Intent = otherWithoutJob.Intent with { PlaceId = 123456 } };
+        var profileDefault = withoutJob with { Intent = withoutJob.Intent with { HasExplicitDestination = false } };
         var withProcess = history with { ProcessReceipt = new(42, history.UpdatedUtc.UtcTicks, history.UpdatedUtc) };
+        var placeOnlyWithProcess = PlaceOnly(withProcess);
         await using var queue = Queue(new Store(), new Provider());
         Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(history, other, Binding())]));
         Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(history, account, Binding(2))]));
         Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(history, account, Binding()), (wrongJob, other, Binding(2))]));
-        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(withoutJob, account, Binding())]));
+        // A place-only request and an exact server, or two different places, are two destinations.
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(history, account, Binding()), (otherWithoutJob, other, Binding(2))]));
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(withoutJob, account, Binding()), (otherPlace, other, Binding(2))]));
+        // A place taken from the profile's preference was never a reviewed destination.
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(profileDefault, account, Binding())]));
         Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(withProcess, account, Binding())]));
+        Assert.Throws<ArgumentException>(() => queue.CaptureBatchRetryReview([(placeOnlyWithProcess, account, Binding())]));
     }
 
     [Fact]
@@ -513,6 +589,9 @@ public sealed class LaunchBatchQueueTests
         return new(new(Guid.NewGuid(), profile.Id, profile.Revision, binding.UserId, Place, profile.Priority, now,
             binding.AuthorizationGeneration, Job, RobloxServerKind.Public, true), LaunchState.Failed, LaunchProblem.StartupRejected, now);
     }
+
+    private static LaunchOperation PlaceOnly(LaunchOperation operation)
+        => operation with { Intent = operation.Intent with { RequestedJobId = null, RequestedServerKind = RobloxServerKind.Unknown } };
 
     private sealed class Provider(CapabilityState capability = CapabilityState.Supported,
         Func<LaunchIntent, ProviderLaunchResult>? result = null) : ILaunchProvider
