@@ -213,6 +213,44 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(!disconnect, shell.Accounts.All(row => row.Profile.Id != other.Profile.Id));
     });
 
+    // While a trial is still being reviewed (before it is enqueued) the provider owns nothing yet, so only
+    // the running trial command shows it. Unfenced, a review step that finishes after the removal's stop
+    // would enqueue the trial under the queue's new stop generation and start it anyway. Selecting another
+    // row already ends the review, so Remove saved sign-in can reach this only for the selected trial account.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task RemovingASavedAccountWhileATrialIsStillBeingReviewedFencesItAndNeverEnqueuesIt(bool disconnect) => OnUi(async () =>
+    {
+        var repository = new NativeReviewRepository(_root); var child = new NativeEvidenceChild();
+        await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor(), repository);
+        var trial = shell.SelectedAccount!; var other = shell.Accounts.Single(row => row.Profile.Id != trial.Profile.Id);
+        var review = Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview());
+        repository.BlockFind = true;
+        shell.StartNativeTrial.Execute(review);
+        Task removing;
+        try
+        {
+            await repository.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            Assert.False(shell.StartNativeTrial.Execution.IsCompleted);
+            Assert.True(shell.CanRunNativeTrial); // The provider is not busy yet.
+            if (disconnect) { shell.DisconnectAccount.Execute(null); removing = shell.DisconnectAccount.Execution; }
+            else removing = shell.DeleteAccountsAsync([other]);
+        }
+        finally { repository.FindRelease.TrySetResult(); } // The review step may now finish after the removal's stop.
+        await removing.WaitAsync(TimeSpan.FromSeconds(6));
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(4));
+        Assert.Empty(shell.Launches); Assert.Equal(0, child.Preparations); Assert.Equal(0, child.Starts);
+        Assert.StartsWith(disconnect ? "Trial stopped because a saved sign-in was removed." : "Trial stopped because a profile was removed.", shell.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.StartsWith(disconnect ? "Saved sign-in removed from Zenith." : "Removed 1 profile(s).", shell.Notice, StringComparison.Ordinal);
+        Assert.EndsWith(" The native trial in progress was stopped and the launch queue was paused. Review the queue and choose Resume queue when ready.", shell.Notice, StringComparison.Ordinal);
+        // Resuming runs the queue under its new stop generation; the fenced trial left no request there.
+        Assert.Equal("Resume queue", shell.QueuePauseLabel);
+        shell.ToggleQueuePause.Execute(null); await shell.ToggleQueuePause.Execution;
+        Assert.Equal("Pause queue", shell.QueuePauseLabel);
+        Assert.Empty(shell.Launches); Assert.Equal(0, child.Preparations);
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
