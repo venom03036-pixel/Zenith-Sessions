@@ -319,14 +319,16 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         await Task.Run(()=>vm.RestoreListenerFaulted(typeof(IOException),stopped:false));
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         Assert.Contains(vm.DiagnosticRows,r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch && r.ErrorType=="IOException" && r.Subsystem=="Repeat launch");
-        Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
-        // Then again when the run stops the listener: from here on a new launch only says "already starting".
+        Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
+        // Then again when the run stops the listener: from here on a new launch only says "already starting". The
+        // header is one trimmed line, so the fact is read without hovering and the remedy in the tooltip.
         await Task.Run(()=>vm.RestoreListenerFaulted(typeof(IOException),stopped:true));
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         Assert.Equal(2,vm.DiagnosticRows.Count(r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch));
-        Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+        Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,VisibleDiagnosticsHeaderText(vm.DiagnosticsStatus),StringComparison.OrdinalIgnoreCase);
+        Assert.EndsWith(ShellViewModel.RepeatLaunchStoppedRemedy,vm.DiagnosticsStatus,StringComparison.Ordinal);
         // A later status refresh keeps saying so.
-        vm.RefreshDiagnostics.Execute(null);Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+        vm.RefreshDiagnostics.Execute(null);Assert.Contains(ShellViewModel.RepeatLaunchStoppedStatus,VisibleDiagnosticsHeaderText(vm.DiagnosticsStatus),StringComparison.OrdinalIgnoreCase);
     });
     [Fact]
     public Task AHealthyMonitorKeepsTheLiveDiagnosticsWording()=>OnUi(async ()=>
@@ -368,25 +370,64 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Equal(monitoringStopped?$"Monitoring stopped · {unwritten} · diagnostics still recording · view updates when refreshed"
             :$"Diagnostics active · {unwritten}",vm.DiagnosticsStatus);
     });
+    // The longest disk-writer text ManagerDiagnostics.WriteFailureText can set.
+    private const string DiskFullFailure="Diagnostics could not be written: the disk is full. Zenith retries on the next event.";
     [Theory]
-    [InlineData(true,false,false,0L,"Diagnostics active")]
-    [InlineData(true,false,false,1L,"Diagnostics active")]
-    [InlineData(true,false,false,123456L,"Diagnostics active")]
-    [InlineData(false,false,false,0L,"Diagnostics starting")]
-    [InlineData(false,true,false,0L,"monitoring stopped")]
-    [InlineData(false,true,false,1L,"monitoring stopped")]
-    [InlineData(false,true,false,123456L,"monitoring stopped")]
-    [InlineData(false,false,true,123456L,"startup needs attention")]
-    public Task TheDiagnosticsHeaderShowsTheStateAndTheSkipCountBeforeItIsTrimmed(bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,string state)=>OnUi(()=>
+    [InlineData(true,false,false,0L,false,null,"Diagnostics active")]
+    [InlineData(true,false,false,1L,false,null,"Diagnostics active")]
+    [InlineData(true,false,false,123456L,false,null,"Diagnostics active")]
+    [InlineData(false,false,false,0L,false,null,"Diagnostics starting")]
+    [InlineData(false,true,false,0L,false,null,"monitoring stopped")]
+    [InlineData(false,true,false,1L,false,null,"monitoring stopped")]
+    [InlineData(false,true,false,123456L,false,null,"monitoring stopped")]
+    [InlineData(false,false,true,123456L,false,null,"startup needs attention")]
+    // A stopped restore listener is the only place the user learns why a new launch shows nothing, so it is read without hovering too.
+    [InlineData(true,false,false,0L,true,null,"Diagnostics active")]
+    [InlineData(true,false,false,123456L,true,null,"Diagnostics active")]
+    [InlineData(false,false,false,0L,true,null,"Diagnostics starting")]
+    [InlineData(false,true,false,0L,true,null,"monitoring stopped")]
+    [InlineData(false,true,false,123456L,true,null,"monitoring stopped")]
+    [InlineData(false,false,true,123456L,true,null,"startup needs attention")]
+    // A disk-writer failure replaces the skip count, not the stopped state or the restore-listener notice.
+    [InlineData(true,false,false,5L,false,DiskFullFailure,"Diagnostics could not be written")]
+    [InlineData(false,true,false,5L,false,DiskFullFailure,"monitoring stopped")]
+    [InlineData(false,false,true,5L,false,DiskFullFailure,"startup needs attention")]
+    [InlineData(true,false,false,5L,true,DiskFullFailure,"Diagnostics could not be written")]
+    [InlineData(false,true,false,5L,true,DiskFullFailure,"monitoring stopped")]
+    public Task TheDiagnosticsHeaderShowsTheStateAndTheSkipCountBeforeItIsTrimmed(bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,bool restoreListenerStopped,string? failure,string state)=>OnUi(()=>
     {
-        // The page header is one trimmed caption line and only its tooltip holds the rest, so the state (a stopped
-        // monitor above all) and the count of events missing from the disk log must both be readable without hovering.
-        string status=ShellViewModel.DiagnosticsStatusText(null,live,monitorStopped,startupNeedsAttention,dropped,restoreListenerStopped:false);
+        // The page header is one trimmed caption line and only its tooltip holds the rest, so the facts are read in this
+        // order without hovering: a stopped monitor or startup, a stopped restore listener, then the disk writer's failure
+        // or its skip count. The footer repeats the last two, so the count is the one that may fall behind the ellipsis.
+        string status=ShellViewModel.DiagnosticsStatusText(failure,live,monitorStopped,startupNeedsAttention,dropped,restoreListenerStopped);
         string visible=VisibleDiagnosticsHeaderText(status);
         string[] parts=status.Split(" · ");
         string Fact(string text)=>parts.Single(part=>part.Contains(text,StringComparison.OrdinalIgnoreCase)).TrimEnd('.');
-        Assert.Contains(Fact(state),visible,StringComparison.Ordinal);
-        if(dropped>0) Assert.Contains(Fact($"{dropped} event"),visible,StringComparison.Ordinal);
+        bool stoppedState=monitorStopped || startupNeedsAttention;
+        // A stopped monitor or startup leads the line whatever else is set; the other states are read where they fit.
+        if(stoppedState) {Assert.StartsWith(Fact(state),status,StringComparison.Ordinal);Assert.Contains(Fact(state),visible,StringComparison.Ordinal);}
+        else {Assert.Contains(state,status,StringComparison.OrdinalIgnoreCase);if(!restoreListenerStopped) Assert.Contains(state,visible,StringComparison.OrdinalIgnoreCase);}
+        if(restoreListenerStopped)
+        {
+            Assert.Contains(Fact(ShellViewModel.RepeatLaunchStoppedStatus),visible,StringComparison.Ordinal);
+            // The remedy is read in the tooltip and the Guide, and the fact is stated once.
+            Assert.EndsWith(ShellViewModel.RepeatLaunchStoppedRemedy,status,StringComparison.Ordinal);
+            Assert.Equal(1,parts.Count(part=>part.Contains("new launch",StringComparison.OrdinalIgnoreCase) && part!=ShellViewModel.RepeatLaunchStoppedRemedy));
+        }
+        else Assert.DoesNotContain("new launch",status,StringComparison.OrdinalIgnoreCase);
+        if(failure is not null)
+        {
+            // The header agrees with the storage footer, and the mixed-cause skip count is left to that footer.
+            Assert.Contains(failure,status,StringComparison.Ordinal);Assert.DoesNotContain("not saved to disk",status,StringComparison.Ordinal);
+        }
+        else if(dropped>0)
+        {
+            if(restoreListenerStopped) Assert.Contains(Fact($"{dropped} event"),status,StringComparison.Ordinal);
+            else Assert.Contains(Fact($"{dropped} event"),visible,StringComparison.Ordinal);
+        }
+        // The first fact decides the capital; nothing else in the line starts with one except the writer's own sentence.
+        Assert.True(char.IsUpper(status[0]),status);
+        Assert.All(parts.Skip(1).Where(part=>!part.StartsWith("Diagnostics could not",StringComparison.Ordinal)),part=>Assert.True(char.IsLower(part[0]) || char.IsDigit(part[0]),status));
         return Task.CompletedTask;
     });
     // What the Diagnostics header draws before its ellipsis: the shipped CaptionLine style within MainWindow's MaxWidth.

@@ -302,7 +302,7 @@ public sealed class ViewModelTests : IDisposable
             Assert.Equal("Error",row.Level); Assert.Equal("InvalidOperationException",row.ErrorType);
             Assert.DoesNotContain("PRIVATE-FIXTURE-TEXT",vm.BuildDiagnosticReport());
             // The listener survived this fault, so Diagnostics does not claim later launches are cut off.
-            Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+            Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
         }
         finally { await owner.StopAsync(); }
     }).WaitAsync(TimeSpan.FromSeconds(15));
