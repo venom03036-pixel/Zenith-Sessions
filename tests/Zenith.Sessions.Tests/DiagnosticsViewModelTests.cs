@@ -199,6 +199,36 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         vm.Unlock.Execute(null);
         Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
     });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnExportThatFailsAfterPanicOrLockKeepsTheStopNoticeAndTheOldReport(bool locking)=>OnUi(async ()=>
+    {
+        // PanicOrLockDuringExportKeepsTheStopNotice covers a write that succeeds; this one fails after the stop has landed.
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        string stop=locking?"Controls locked":"Panic stop";
+        try
+        {
+            using var removal=new StagedReportRemoval(folder);
+            // The write has already failed, but its continuation waits for this UI step, so the stop lands first.
+            vm.ExportDiagnostics.Execute(report);removal.Wait();
+            if(locking) vm.Lock.Execute(null);else vm.Panic.Execute(null);
+            await vm.ExportDiagnostics.Execution;
+        }
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        // The stop owns the message: no error beside it and no failure line after it in the activity list.
+        Assert.StartsWith(stop,vm.Notice);
+        Assert.False(vm.HasErrorNotice,"An export that failed after the stop showed an error beside the stop notice.");
+        Assert.DoesNotContain(vm.Events,line=>line.Contains("Operation failed",StringComparison.Ordinal));
+        Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+        // The failure is still journaled once, by its cause, against Diagnostics.
+        if(locking) vm.Unlock.Execute(null);
+        vm.RefreshDiagnostics.Execute(null);
+        var failure=Assert.Single(vm.DiagnosticRows,row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==ManagerSubsystem.Diagnostics);
+        Assert.Equal("UnauthorizedAccessException",failure.Event.ErrorType);
+    });
     private static string? LatestFailureType(ShellViewModel vm,ManagerSubsystem subsystem)
     {
         vm.RefreshDiagnostics.Execute(null);
