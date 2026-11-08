@@ -512,7 +512,7 @@
         "Zenith.Sessions.Tests.ClientProcessPriorityTests.ACpuCapShareOutsideFiveToNinetyFivePercentIsRefusedBeforeAnyWork",
         "Zenith.Sessions.Tests.ClientProcessCpuCapNativeTests.CapPutsATestOwnedHelperInAJobOnlyThisRunCanReachAndARestartNamesWhatACrashLeaves",
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.CapCpuPassesTheChosenShareOfAllCpusWithThePinnedClientsAndDefaultsToAQuarter",
-        "Zenith.Sessions.Tests.ClientPreviewPresentationTests.StartupNamesTheClientsAnEarlierRunLeftCappedOrSaysWhatItCouldNotCheck",
+        "Zenith.Sessions.Tests.ClientPreviewPresentationTests.StartupNamesPossibleLeftoverCapsOrSaysWhatItCouldNotCheck",
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.StartupChecksForCapsAnEarlierRunLeftAndStaysQuietWhenThereAreNone",
         "Zenith.Sessions.Tests.SettingsSearchTests.CpuCapSearchPointsToTheSessionsPriorityControlFirst",
         "Zenith.Sessions.Tests.PerformanceProfileTests.PendingCapabilitiesSeparateUnavailableClientCpuPoliciesFromTheExistingPriorityControl"
