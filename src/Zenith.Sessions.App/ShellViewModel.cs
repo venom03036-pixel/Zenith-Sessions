@@ -1093,7 +1093,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // failure itself updates the status and, when the tab is open, the visible rows.
         RefreshDiagnosticsView();
     }
-    // A chosen-report failure is recorded by its cause, so a denied, held or missing target stays distinguishable in Diagnostics.
+    // A chosen-report failure is recorded by its cause, not by the ReportFileException wrapper, so a denied target
+    // (UnauthorizedAccessException) or a path failure (Win32Exception) is not journaled as a plain IOException.
+    // A held file and a missing folder are both still journaled as IOException by ManagerDiagnostics' closed type list;
+    // only the activity line names the exact cause type.
     private static Type FailureType(Exception exception)=>exception is ReportFileException report?report.CauseType:exception.GetType();
     // Raised even when the text is unchanged, so the footer's live region announces a repeated failure again.
     private void ShowError(string message) { _errorNotice=message; Raise(nameof(ErrorNotice)); Raise(nameof(HasErrorNotice)); }
