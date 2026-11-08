@@ -115,11 +115,13 @@ public sealed class DesktopSamplingCadence(TimeProvider? timeProvider = null)
     }
 }
 
-public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,IClientWindowControl,IClientWindowArranger,IClientWindowBatchControl,IClientWindowResizer,IDisposable
+public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,IClientWindowControl,IClientWindowArranger,IClientWindowBatchControl,IClientWindowResizer,IClientCloseControl,IDisposable
 {
     private readonly SemaphoreSlim _sampling = new(1);
     private readonly SemaphoreSlim _windowControl = new(1,1);
     private readonly ClientWindowOperations _windowOperations;
+    // Closes do not take the window lane: a close waits seconds for an exit and must not hold up tiling or minimize.
+    private readonly ClientCloseOperations _closeOperations;
     private ulong _idle, _kernel, _user;
     private bool _cpuInitialized;
     private bool _disposed;
@@ -154,6 +156,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         _gpu = gpuReader ?? new(_clock);
         _sampleSystem = SampleSystem; _sampleProcesses = SampleProcesses;
         _windowOperations = new(_windowControl, new NativeClientWindowAdapter());
+        _closeOperations = new(new NativeClientCloseAdapter(), _clock);
     }
 
     public void ConfigurePerformance(ManagerPerformancePolicy policy)
@@ -318,11 +321,19 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         bool requested = Native.SetForegroundWindow(session.Window);
         return Task.FromResult(requested && Native.GetForegroundWindow() == session.Window);
     }
+    /// <summary>One WM_CLOSE to the identity-checked window and no wait. The shell uses <see cref="CloseAsync"/> instead; this stays for callers of the plain monitor contract.</summary>
     public Task<bool> RequestCloseAsync(SessionObservation session, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); if (!SameInstance(session)) return Task.FromResult(false);
-        return Task.FromResult(Native.PostMessage(session.Window, 0x10, 0, 0)); // Normal WM_CLOSE; never force-kill.
+        return Task.FromResult(Native.PostMessage(session.Window, 0x10, 0, 0)); // Normal WM_CLOSE; this call never ends the process.
     }
+    /// <summary>R-instances-12: WM_CLOSE, again after 400 ms for Roblox's leave prompt, then a bounded wait for the exact process to exit. Never ends the process.</summary>
+    public Task<ClientCloseResult> CloseAsync(SessionObservation session, CancellationToken ct)
+    { ObjectDisposedException.ThrowIf(_disposed, this); return _closeOperations.CloseAsync(session, ct); }
+    /// <summary>R-instances-12: TerminateProcess on a handle checked against the observation's PID and start time. Only after the user's explicit confirmation.</summary>
+    public Task<ClientForceCloseResult> ForceCloseAsync(SessionObservation session, CancellationToken ct)
+    { ObjectDisposedException.ThrowIf(_disposed, this); return _closeOperations.ForceCloseAsync(session, ct); }
+    public void CancelCloseOperations() => _closeOperations.CancelCloseOperations();
 
     public Task<WindowActionResult> ChangeAsync(SessionObservation session,ClientWindowAction action,CancellationToken ct)
     {
@@ -344,7 +355,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
     public void Dispose()
     {
         if (_disposed) return;
-        _windowOperations.Cancel();
+        _windowOperations.Cancel(); _closeOperations.CancelCloseOperations();
         _disposed = true; _cadence.Clear(); _processTimes.Clear(); _ioRates.Clear(); _gpu.Dispose();
         _sampling.Dispose(); _windowControl.Dispose();
     }

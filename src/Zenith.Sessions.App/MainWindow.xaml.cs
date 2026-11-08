@@ -497,8 +497,18 @@ public partial class MainWindow : Window
     {
         if (sender is not FrameworkElement { DataContext: SessionRow row }) return;
         var session = row.Observation;
-        if (MessageBox.Show(this, $"Ask Roblox process {session.ProcessId} to close? Unsaved game activity may be lost. Account identity is unverified.", "Close selected client", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
+        if (MessageBox.Show(this, $"Ask Roblox process {session.ProcessId} to close? Zenith asks its window to close, asks again for Roblox's leave prompt and waits a few seconds for it to exit. Unsaved game activity may be lost. Account identity is unverified.", "Close selected client", MessageBoxButton.YesNo, MessageBoxImage.Question) != MessageBoxResult.Yes) return;
         try { await _vm.RequestCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.ClientWindows); }
+    }
+    // R-instances-12: offered on a row only after Close left that client open. The confirmation names the exact client; No is the default.
+    private async void ForceCloseSession(object sender, RoutedEventArgs e)
+    {
+        if (_vm.IsLocked || sender is not FrameworkElement { DataContext: SessionRow row } || !row.ForceCloseOffered) return;
+        var session = row.Observation;
+        string started = new DateTimeOffset(session.ProcessStartUtcTicks, TimeSpan.Zero).ToLocalTime().ToString("T");
+        if (MessageBox.Show(this, $"End Roblox process {session.ProcessId} (started {started}) by force? It stayed open after Zenith asked it to close. Windows ends it at once: unsaved game activity is lost and Roblox cannot save or sign out first. Account identity is unverified. Recent clients will record a forced end.",
+            "Force close selected client", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) != MessageBoxResult.Yes) return;
+        try { await _vm.ForceCloseAsync(session); } catch (Exception ex) { _vm.Fail(ex, ManagerSubsystem.ClientWindows); }
     }
     private async void ReviewLaunch(object sender,RoutedEventArgs e)
     {

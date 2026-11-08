@@ -19,9 +19,11 @@ public sealed record RecentClientHistoryRow(RecentClientHistoryEntry Entry)
         ClientEndCause.LeftGame => $" · Roblox logged the player leaving (reason {Entry.DisconnectReason})",
         ClientEndCause.LaunchedElsewhere => $" · Roblox logged that the account launched in another client (reason {Entry.DisconnectReason})",
         ClientEndCause.PossibleCrash => " · possible crash: a Roblox crash dump was written as it ended",
+        ClientEndCause.ForcedEnd => " · Zenith ended it by force at your confirmation",
         _ => " · cause unknown"
     };
-    public string CloseRequest => Entry.CloseRequestedUtc is { } time ? "Zenith requested a normal close at " + time.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "No Zenith close request was recorded. This does not establish a crash or deliberate user closure.";
+    public string CloseRequest => (Entry.CloseRequestedUtc is { } time ? "Zenith requested a normal close at " + time.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) : "No Zenith close request was recorded. This does not establish a crash or deliberate user closure.")
+        + (Entry.ForcedEndUtc is { } forced ? " Zenith ended it by force at " + forced.ToLocalTime().ToString("g", CultureInfo.CurrentCulture) + ", after you confirmed it." : "");
     public string CrashRecords => Entry.FaultCheck switch
     {
         null => "Crash records were not checked for this client.",
@@ -141,6 +143,14 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
         if (!_loaded || _stopping || _trackingFailed) return;
         try
         { if (_history.RecordCloseRequest(process, requestedUtc)) { Publish(); StartSaveIfNeeded(); } }
+        catch (Exception error) when(error is InvalidOperationException or ArgumentException) { PauseTracking(error); }
+    }
+    /// <summary>Records the force close Windows accepted for the exact client (R-instances-12); the entry may already have ended.</summary>
+    public void RecordForcedEnd(SessionProcessKey process, DateTimeOffset endedUtc)
+    {
+        if (!_loaded || _stopping || _trackingFailed) return;
+        try
+        { if (_history.RecordForcedEnd(process, endedUtc)) { Publish(); StartSaveIfNeeded(); } }
         catch (Exception error) when(error is InvalidOperationException or ArgumentException) { PauseTracking(error); }
     }
     private void Publish()

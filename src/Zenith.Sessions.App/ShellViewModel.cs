@@ -94,6 +94,9 @@ public sealed class SessionRow(SessionObservation observation) : Observable
 {
     private bool _checked;
     public bool IsChecked { get => _checked; set => Set(ref _checked, value); }
+    private bool _forceCloseOffered;
+    /// <summary>R-instances-12: true only after Close left this exact client open. Panic, Lock, exit, a force close and the client's exit withdraw it.</summary>
+    public bool ForceCloseOffered { get => _forceCloseOffered; internal set => Set(ref _forceCloseOffered, value); }
     private SessionLogView _log = SessionLogView.Unknown;
     public SessionLogView Log => _log;
     public void UpdateLog(SessionLogView value) { if (_log != value) { _log = value; Raise(nameof(Log)); } }
@@ -375,6 +378,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
         InitializeClientSoundFeatures(clientSound);
+        InitializeClientCloseFeatures();
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
@@ -1046,13 +1050,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// or nothing when null). Automation, the launch queue and monitoring therefore never wait on a settings write.
     /// </summary>
     internal Task ExitAsync(ManagerWindowPlacement? placement)=>_disposeTask??=DisposeCoreAsync(placement);
-    public async Task RequestCloseAsync(SessionObservation session)
-    {
-        var requestedAt=DateTimeOffset.UtcNow;
-        bool requested=await _monitor.RequestCloseAsync(session,_lifetime.Token);
-        if(requested) RecentClients.RecordCloseRequest(new(null,session.ProcessId,session.ProcessStartUtcTicks),requestedAt);
-        Notice=requested?"Normal close requested. The request does not prove that the process exited.":"Close was not sent because the window changed or Windows rejected the request.";
-    }
+    // RequestCloseAsync and ForceCloseAsync live in ShellClientCloseFeatures.cs (R-instances-12).
     public void LockDashboard()=>LockControls("Controls locked. Monitoring continues; automation requires explicit restart.");
     private void LockControls(string reason)=>StopOperations(reason,ManagerEventKind.ControlsLocked);
     /// <summary>
@@ -1072,7 +1070,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientCloseOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
         Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1162,6 +1160,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopClientPriorityOperations();
         StopClientTrimOperations();
         StopClientSoundOperations();
+        StopClientCloseOperations();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
@@ -1195,6 +1194,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await DisposeClientSoundFeaturesAsync();
+        await DisposeClientCloseFeaturesAsync();
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
