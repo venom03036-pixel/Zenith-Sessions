@@ -25,7 +25,8 @@ public sealed record SessionLogDiscoverySnapshot(long Revision, DateTimeOffset O
 
 /// <summary>
 /// A launch to look for in client log heads: its operation, the validated browser tracker its native request carried
-/// and the start of the process its receipt names. A log created before that start cannot be this launch's.
+/// and the start of the process its receipt names. A log created before that start cannot be this launch's, and one
+/// created once a later offered launch with the same tracker had started is taken to be that later launch's.
 /// The tracker is not a secret, unlike the ticket, and is corroboration only (HANDOFF.md): it proves neither the account nor arrival.
 /// </summary>
 public readonly record struct LaunchLogExpectation(Guid OperationId, long BrowserTrackerId, long NotBeforeUtcTicks)
@@ -51,11 +52,14 @@ public readonly record struct LaunchLogExpectation(Guid OperationId, long Browse
 
 public enum LaunchLogLinkStatus
 {
-    /// <summary>No client log created since the launch began names its tracker in the part read so far.</summary>
+    /// <summary>
+    /// No client log names its tracker in the part read so far that was created since the launch began and before any
+    /// later offered launch with the same tracker began.
+    /// </summary>
     NotLinked,
-    /// <summary>Exactly one such log names it, and no other offered launch carries the same tracker or links to that log.</summary>
+    /// <summary>Exactly one such log names it, no other offered launch with the same tracker began at the same instant, and no other launch links to that log.</summary>
     Linked,
-    /// <summary>More than one log names it, another offered launch carries the same tracker, or the log names another launch's tracker too.</summary>
+    /// <summary>More than one such log names it, another offered launch with the same tracker began at the same instant, or the log names another launch's tracker too.</summary>
     Ambiguous,
     /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>
     Unavailable
@@ -479,9 +483,11 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 
     /// <summary>
     /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one has
-    /// had its head read at least once and exactly one, created since it began, names its tracker; and no other offered
-    /// launch shares that tracker or links to the same log. Process is that log's holder only while the holder binding is
-    /// current and unique, exactly as the per-process rows report it.
+    /// had its head read at least once and exactly one names its tracker and is this launch's (OwnerOf: created since it
+    /// began, and before any later offered launch with that tracker began); no other launch with that tracker began at the
+    /// same instant; and no other launch links to the same log. A relaunch with the same tracker therefore links each
+    /// launch to its own log. Process is that log's holder only while the holder binding is current and unique, exactly as
+    /// the per-process rows report it.
     /// </summary>
     private static LaunchLogLink[] LinkLaunches(Input input, Reader[] readers, Dictionary<SessionProcessKey, Reader?> matches, bool unavailable)
     {
@@ -492,17 +498,17 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         for (int index = 0; index < launches.Length; index++)
         {
             var launch = launches[index];
-            bool shared = false, pending = false; int named = 0; Reader? found = null;
-            foreach (var other in launches)
-                shared |= other.OperationId != launch.OperationId && other.BrowserTrackerId == launch.BrowserTrackerId;
+            bool tied = false, pending = false; int named = 0; Reader? found = null;
             foreach (var reader in readers)
             {
                 if (reader.Candidate.ModifiedUtc.UtcTicks < launch.NotBeforeUtcTicks) continue;
                 if (reader.HeadAt is null) pending = true;
                 else if (reader.Head is { } head && head.CreatedUtcTicks >= launch.NotBeforeUtcTicks
-                    && Array.IndexOf(head.Trackers, launch.BrowserTrackerId) >= 0) { named++; found = reader; }
+                    && Array.IndexOf(head.Trackers, launch.BrowserTrackerId) >= 0
+                    && OwnerOf(launches, index, head.CreatedUtcTicks) is var owner and not LogOwner.Later)
+                { named++; found = reader; tied |= owner == LogOwner.Tied; }
             }
-            if (shared || named > 1) links[index] = new(launch.OperationId, LaunchLogLinkStatus.Ambiguous);
+            if (tied || named > 1) links[index] = new(launch.OperationId, LaunchLogLinkStatus.Ambiguous);
             else if (named == 1 && !pending) linked[index] = found;
             else links[index] = new(launch.OperationId, unavailable ? LaunchLogLinkStatus.Unavailable : LaunchLogLinkStatus.NotLinked);
         }
@@ -516,6 +522,28 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                     reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null);
         }
         return links;
+    }
+
+    private enum LogOwner { This, Tied, Later }
+
+    // A log naming a tracker belongs to the offered launch with that tracker that began last at or before the log was
+    // created, so a relaunch with the same tracker leaves the earlier launch's own log with it. Later: another launch with
+    // the tracker began after this one and no later than the log, so the log is that one's. Tied: another began at the same
+    // instant, so the log could be either's. Tradeoff: an earlier launch whose client created its log only after the
+    // relaunch began would have that log taken for the relaunch's (the link stays corroboration only). Bounded: at most
+    // MaximumLaunches comparisons per log, and no allocation.
+    private static LogOwner OwnerOf(LaunchLogExpectation[] launches, int index, long createdUtcTicks)
+    {
+        var launch = launches[index];
+        var owner = LogOwner.This;
+        for (int other = 0; other < launches.Length; other++)
+        {
+            if (other == index || launches[other].BrowserTrackerId != launch.BrowserTrackerId) continue;
+            long began = launches[other].NotBeforeUtcTicks;
+            if (began > launch.NotBeforeUtcTicks && began <= createdUtcTicks) return LogOwner.Later;
+            if (began == launch.NotBeforeUtcTicks) owner = LogOwner.Tied;
+        }
+        return owner;
     }
 
     private void Reset(Reader reader, SessionLogCorrelationStatus status, bool keepQuery = false)

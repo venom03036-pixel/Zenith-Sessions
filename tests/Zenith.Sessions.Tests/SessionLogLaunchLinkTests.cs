@@ -61,6 +61,7 @@ public sealed partial class SessionLogCorrelatorTests
         LaunchLogExpectation[] launches = shape switch
         {
             "two-logs" => [Launch()],
+            // Both began at the same instant, so the log could be either's.
             "two-launches" => [Launch(), Launch()],
             _ => [Launch(), Launch(Tracker + 1)]
         };
@@ -68,6 +69,33 @@ public sealed partial class SessionLogCorrelatorTests
         worker.Offer(Desktop(client), client.HostId, launches);
         var links = (await After(worker)).Launches;
         Assert.Equal(launches.Select(launch => new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Ambiguous)), links);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARelaunchWithTheSameTrackerLinksEachLogToTheLatestLaunchThatBeganBeforeIt(bool previousLogKept)
+    {
+        // One browser tracker, launched two hours ago and again an hour ago. The log created since the second launch began
+        // is the second's; one created between the two launches can only be the first's. Neither makes the other ambiguous.
+        var client = Key(77); var now = DateTimeOffset.UtcNow;
+        Write(TrackerLine());
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now)] };
+        if (previousLogKept)
+        {
+            var previous = Candidate("previous", TrackerLine());
+            File.SetCreationTimeUtc(previous.Path, now.AddMinutes(-90).UtcDateTime);
+            probe.Files = [probe.Files[0], previous with { ModifiedUtc = now.AddMinutes(-80) }];
+        }
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        LaunchLogExpectation first = Launch(notBefore: now.AddHours(-2).UtcTicks), second = Launch(notBefore: now.AddHours(-1).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [second, first]);
+        Assert.Equal(new[]
+        {
+            new LaunchLogLink(second.OperationId, LaunchLogLinkStatus.Linked, client),
+            new LaunchLogLink(first.OperationId, previousLogKept ? LaunchLogLinkStatus.Linked : LaunchLogLinkStatus.NotLinked)
+        }, (await After(worker)).Launches);
     }
 
     [Theory]
