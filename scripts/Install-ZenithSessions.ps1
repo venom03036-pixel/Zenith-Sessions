@@ -24,11 +24,14 @@ if(-not (Test-ZenithWebView2)){
                 while(($read=$input.Read($buffer,0,$buffer.Length)) -gt 0){$count+=$read;if($count -gt 10485760 -or $clock.Elapsed.TotalSeconds -gt 120){throw 'WebView2 bootstrapper exceeded the download budget.'};$output.Write($buffer,0,$read)}
             }finally{$output.Dispose();$input.Dispose()}
         }finally{$response.Dispose()}
+        $bootstrapLock=[IO.File]::Open($bootstrap,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
+        try {
         $signature=Get-AuthenticodeSignature -LiteralPath $bootstrap
         if($signature.Status -ne 'Valid' -or $signature.SignerCertificate.Subject -notmatch '(^|,\s*)O=Microsoft Corporation(,|$)'){throw 'The WebView2 bootstrapper is not validly signed by Microsoft.'}
         $process=Start-Process -FilePath $bootstrap -ArgumentList '/install' -PassThru -WindowStyle Hidden
         if(-not $process.WaitForExit(180000)){throw 'WebView2 setup is still running. Finish it manually, then retry.'}
         if($process.ExitCode -ne 0 -or -not (Test-ZenithWebView2)){throw 'WebView2 setup did not complete successfully.'}
+        } finally { $bootstrapLock.Dispose() }
     }finally{if(Test-Path -LiteralPath $bootstrap){Remove-Item -LiteralPath $bootstrap -Force}}
 }
 [void](Assert-ZenithDistributionPath $ReleaseTool)
@@ -47,7 +50,18 @@ if(-not ([IO.Path]::GetFullPath($stage.Directory)).StartsWith($expectedRoot,[Str
 $choice=Read-Host ('Install Zenith Sessions '+$stage.Version+' to '+$paths.Install+'? Type INSTALL to continue')
 if($choice -cne 'INSTALL'){Write-Output 'Verified files were staged; installation was not changed.';return}
 Assert-ZenithClosed
-$manifest=Promote-ZenithRelease (Join-Path $stage.Directory 'content') $paths.Install $paths.Pending $paths.Previous
+$stageLocks=New-Object 'Collections.Generic.List[IO.FileStream]'
+try {
+    [void](Assert-ZenithDistributionPath $stage.Directory)
+    $stageLocks.Add([IO.File]::Open([IO.Path]::GetFullPath($ReleaseTool),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))
+    Assert-ZenithPublisher $ReleaseTool $PublisherCertificateSha256
+    foreach($file in Get-ChildItem -LiteralPath $stage.Directory -File -Recurse -Force){$stageLocks.Add([IO.File]::Open($file.FullName,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read))}
+    $proof=& $ReleaseTool verify-stage $stage.Directory $version
+    if($LASTEXITCODE -ne 0){throw 'Staged content failed signed ZIP revalidation. The installed application was preserved.'}
+    $inventory=$proof | ConvertFrom-Json
+    if($inventory.Version -ne $stage.Version){throw 'The verified release version changed after approval.'}
+    $manifest=Promote-ZenithRelease (Join-Path $stage.Directory 'content') $paths.Install $paths.Pending $paths.Previous $inventory.ManifestSha256
+} finally { foreach($handle in $stageLocks){$handle.Dispose()} }
 $shell=New-Object -ComObject WScript.Shell
 try{$shortcut=$shell.CreateShortcut($paths.Shortcut);$shortcut.TargetPath=Join-Path $paths.Install 'Zenith.Sessions.App.exe';$shortcut.WorkingDirectory=$paths.Install;$shortcut.Save()}finally{[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
 New-Item -Path $paths.Registry -Force | Out-Null

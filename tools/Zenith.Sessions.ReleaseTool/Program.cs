@@ -43,11 +43,17 @@ try
         using var output = new FileStream(args[4], FileMode.CreateNew, FileAccess.Write, FileShare.None);
         await JsonSerializer.SerializeAsync(output, envelope, cancellationToken: stop.Token);
     }
-    else if (args.Length == 4 && args[0] == "stage")
+    else if ((args.Length == 4 && args[0] == "stage") || (args.Length == 3 && args[0] == "verify-stage"))
     {
         using var trust = Assembly.GetExecutingAssembly().GetManifestResourceStream("Zenith.Sessions.ReleaseTool.trusted-update-keys.json")!;
         var keys = await JsonSerializer.DeserializeAsync<UpdateSigningKey[]>(trust, cancellationToken: stop.Token) ?? [];
         if (keys.Length == 0) throw new InvalidOperationException("Updates are disabled: this build contains no approved release signing keys.");
+        if (args[0] == "verify-stage")
+        {
+            var verified = await new SignedUpdateStager(new LocalUpdateFeed(), new(keys), new WindowsUpdatePublisherVerifier())
+                .VerifyStageAsync(args[1], Version.Parse(args[2]), stop.Token);
+            Console.WriteLine(JsonSerializer.Serialize(verified)); return 0;
+        }
         var uri = new Uri(args[1]);
         using var network = new HttpUpdateFeed();
         IUpdateFeed feed = uri.IsFile ? new LocalUpdateFeed() : network;

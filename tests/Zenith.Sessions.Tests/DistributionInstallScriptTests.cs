@@ -14,7 +14,7 @@ public sealed class DistributionInstallScriptTests : IDisposable
     private string Install => Path.Combine(_root, "programs", "Zenith Sessions");
     private string Pending => Install + ".pending";
     private string Previous => Install + ".previous";
-    private string Promote(string source) => "Promote-ZenithRelease " + string.Join(" ", new[] { source, Install, Pending, Previous }.Select(Quote));
+    private string Promote(string source, string? trustedInventoryHash = null) => "Promote-ZenithRelease " + string.Join(" ", new[] { source, Install, Pending, Previous, trustedInventoryHash ?? Convert.ToHexString(SHA256.HashData(File.ReadAllBytes(Path.Combine(source,"release-manifest.json")))) }.Select(Quote));
     private async Task<string> Package(string folder, string version = "2.0.0.0", bool ready = true)
     {
         string path = Path.Combine(_root, folder); Directory.CreateDirectory(path);
@@ -65,6 +65,18 @@ public sealed class DistributionInstallScriptTests : IDisposable
         Directory.CreateDirectory(Pending); await File.WriteAllTextAsync(Path.Combine(Pending, "partial"), "recover");
         result = await Run("try { " + Promote(next) + "; exit 99 } catch { $_.Exception.Message; exit 0 }");
         Assert.Equal(0, result.ExitCode); Assert.Contains("pending installation", result.Output); Assert.True(File.Exists(Path.Combine(Pending, "partial")));
+    }
+    [Fact]
+    public async Task ChangingAStagedDllAndItsLocalInventoryCannotReplaceTheSignedInventoryProvenance()
+    {
+        string stage=await Package("stage");string manifestPath=Path.Combine(stage,"release-manifest.json");
+        string signedInventoryHash=Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(manifestPath)));
+        string dll=Path.Combine(stage,"Zenith.Sessions.Core.dll");await File.WriteAllTextAsync(dll,"tampered DLL");
+        var node=System.Text.Json.Nodes.JsonNode.Parse(await File.ReadAllTextAsync(manifestPath))!;
+        foreach(var entry in node["Files"]!.AsArray())if(entry!["Path"]!.GetValue<string>()=="Zenith.Sessions.Core.dll")
+        {entry["Length"]=new FileInfo(dll).Length;entry["Sha256"]=Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(dll)));}
+        await File.WriteAllTextAsync(manifestPath,node.ToJsonString());
+        var result=await Run(Promote(stage,signedInventoryHash));Assert.NotEqual(0,result.ExitCode);Assert.False(Directory.Exists(Install));
     }
     [Fact]
     public async Task ProductionEntryScriptsParseUnderStockWindowsPowerShell()

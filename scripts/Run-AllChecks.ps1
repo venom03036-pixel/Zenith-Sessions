@@ -77,11 +77,8 @@ foreach($step in $steps){
                 if($code -eq 0 -and $step.Name.EndsWith(' tests')){
                     $trx=Join-Path $output (($step.Name -replace ' tests$','')+'.trx')
                     if(-not (Test-Path -LiteralPath $trx -PathType Leaf)){throw 'The test runner did not produce its expected TRX.'}
-                    [xml]$result=Get-Content -LiteralPath $trx -Raw
-                    $counter=$result.TestRun.ResultSummary.Counters
-                    if([int]$counter.executed -le 0 -or [int]$counter.failed -ne 0){throw 'The TRX reported no executed tests or a failure.'}
-                    $step['Passed']=[int]$counter.passed;$step['Failed']=[int]$counter.failed;$step['NotExecuted']=[int]$counter.notExecuted
-                    if(@($result.TestRun.Results.UnitTestResult | Where-Object {$_.testName -like '*AIVision_CloudProvider_ClicksGreenTargetButton_WhenKeyConfigured*'}).Count -ne 0){throw 'The excluded paid test appeared in the results.'}
+                    $summary=& (Join-Path $PSScriptRoot 'Read-ZenithTestResults.ps1') -Path $trx
+                    foreach($name in @('Total','Executed','Passed','Failed','NotExecuted','SkippedNames','ReportedNotExecuted')){$step[$name]=$summary.$name}
                 }
             }
             'Luau' {
