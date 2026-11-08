@@ -221,6 +221,7 @@ public sealed partial class ShellViewModel
         catch(Exception error){_diagnostics.RecordFailure(ManagerSubsystem.Library,error.GetType());NativeTrialStatus="Refresh the account list to see the latest saved sign-in state. Existing files were preserved.";}
     }
     private bool IsNativeTrialReviewCurrent(NativeTrialReview review)=>(review.Destination.PrivateServer is not null?CanRunPrivateNativeTrial:CanRunNativeTrial)
+        &&review.Mode==SavedNativeLaunchMode
         &&review.Epoch==Interlocked.Read(ref _nativeTrialEpoch)&&review.Version==Interlocked.Read(ref _nativeReviewVersion)
         &&SelectedAccount is { } selected && Accounts.Contains(selected) && selected.Profile==review.Profile
         &&selected.KnownUserId==review.PlayerId&&selected.AuthorizationGeneration==review.AuthorizationGeneration

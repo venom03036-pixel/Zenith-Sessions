@@ -336,6 +336,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     private sealed class TrustOwner : IAsyncDisposable { public ValueTask DisposeAsync() => ValueTask.CompletedTask; }
     private sealed class Child(int pid, Action? entered = null, Action? left = null) : IConfiguredNativeLaunchChild
     {
+        public NativeLaunchMode? PreparedMode => NativeLaunchMode.OfficialPage;
         public Handle? Handle;
         public NativeLaunchExecutableIdentity? IdentityValue = Identity;
         public NativeLaunchExecutableIdentity? ExecutableIdentity => IdentityValue;

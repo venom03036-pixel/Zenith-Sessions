@@ -48,7 +48,15 @@ public sealed partial class ShellViewModel
     // decides which recorded trial, if any, turns ordinary launching on (R-launch-0), so that state is refreshed with it.
     private void ApplySavedNativeLaunchMode()
     {
-        _nativeCapture.Mode = SavedNativeLaunchMode;
+        var mode = SavedNativeLaunchMode;
+        if (_nativeCapture.Mode != mode && _ready)
+        {
+            // Revoke the old review/queue epoch before another capture can observe the new mode. Reverting the
+            // preference later cannot revive a review or an in-flight preparation (including a release check).
+            FenceNativeTrial("The native launch mode changed and the launch queue was paused. Review a new trial before starting; existing clients remain open.");
+            _launchQueue.SignalPanic();
+        }
+        _nativeCapture.Mode = mode;
         Raise(nameof(NativeLaunchModeStatus));
         RefreshNativeLaunchVerification();
     }

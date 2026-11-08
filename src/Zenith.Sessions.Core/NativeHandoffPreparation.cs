@@ -12,7 +12,7 @@ public sealed class NativeBrowserCapture : IDisposable
     private RobloxSessionCredential? _credential;
     public RobloxHandoffProbeOutcome Outcome { get; }
     public NativeHandoffCaptureStatus? ShapeStatus { get; }
-    /// <summary>Which mode produced this result; a fixed fact for Launch evidence, never authority.</summary>
+    /// <summary>Which mode produced this result. This fact binds later qualification; it grants no launch authority by itself.</summary>
     public NativeLaunchMode Mode { get; }
     [JsonIgnore] public NativeHandoffCandidate? Candidate => Volatile.Read(ref _candidate);
     [JsonIgnore] public RobloxSessionCredential? CurrentCredential => Volatile.Read(ref _credential);
@@ -51,8 +51,14 @@ public sealed class NativeHandoffPreparation : IDisposable
     [JsonIgnore] public NativeHandoffCandidate Candidate { get; }
     [JsonIgnore] public AuthorizationWriteSnapshot FinalGrant { get; }
     public LaunchIntent Intent { get; }
-    public NativeHandoffPreparation(NativeHandoffCandidate candidate, AuthorizationWriteSnapshot finalGrant, LaunchIntent intent)
-    { Candidate = candidate; FinalGrant = finalGrant; Intent = intent; }
+    /// <summary>The mode of the owned capture that produced this exact request; not a mutable setting or a diagnostic projection.</summary>
+    public NativeLaunchMode Mode { get; }
+    public NativeHandoffPreparation(NativeHandoffCandidate candidate, AuthorizationWriteSnapshot finalGrant, LaunchIntent intent,
+        NativeLaunchMode mode = NativeLaunchMode.OfficialPage)
+    {
+        if (!Enum.IsDefined(mode)) throw new ArgumentOutOfRangeException(nameof(mode));
+        Candidate = candidate; FinalGrant = finalGrant; Intent = intent; Mode = mode;
+    }
     public void Dispose() => Candidate.Dispose();
     public override string ToString() => "NativeHandoffPreparation { Handoff = [redacted], Grant = [protected], Native identity = unverified }";
 }

@@ -39,6 +39,7 @@ public sealed partial class ShellViewModel
         && !IsNativeLaunchVerified && _nativeLaunch.Selected && _lastTrialStart is { } start
         && SelectedInstallation?.Candidate is { } candidate && candidate.Product == start.Product
         && candidate.Product == ClientInstallationProduct.Roblox
+        && _nativeLaunch.GetStartedLaunchMode(start.OperationId) == start.Mode
         && _nativeLaunch.GetStartedExecutableIdentity(start.OperationId) is { } identity && _nativeLaunch.MatchesSelectedExecutable(identity)
         && SelectedLaunchEvidence is { View: { } view } row && row.Id == start.OperationId
         && NativeLaunchVerification.CanRecord(row.Operation, view);
@@ -103,8 +104,9 @@ public sealed partial class ShellViewModel
         // The evidence is the latest projection (at most one presentation tick old, and itself bounded to fresh process and log facts).
         if (!CanRecordNativeLaunchVerification || _lastTrialStart is not { } start || SelectedLaunchEvidence is not { View: { } view } row) return;
         var identity = _nativeLaunch.GetStartedExecutableIdentity(start.OperationId);
-        if (identity is null || !_nativeLaunch.MatchesSelectedExecutable(identity)) return;
-        var entry = NativeLaunchVerification.Record(start.Mode, start.Product, row.Operation, view, DateTimeOffset.UtcNow, identity);
+        var mode = _nativeLaunch.GetStartedLaunchMode(start.OperationId);
+        if (identity is null || mode != start.Mode || !_nativeLaunch.MatchesSelectedExecutable(identity)) return;
+        var entry = NativeLaunchVerification.Record(mode.Value, start.Product, row.Operation, view, DateTimeOffset.UtcNow, identity);
         var kept = Volatile.Read(ref _savedSettings).NativeLaunchVerifications ?? Array.Empty<NativeLaunchVerification>();
         var list = kept.Where(item => !item.IsFor(start.Mode, start.Product)).Append(entry).ToArray();
         // One settings write of the saved values plus this entry; unsaved drafts of other preferences stay unsaved.

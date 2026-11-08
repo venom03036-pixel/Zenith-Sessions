@@ -152,7 +152,7 @@ public sealed partial class RobloxSessionLinkService
             Ensure(operation);
             candidate = captured.TakeCandidate()!;
             var finalIntent = intent with { ProfileRevision = finalProfile.Revision, AuthorizationGeneration = finalRecord.Generation };
-            return new(NativeHandoffPreparationStatus.Ready, new(candidate, finalGrant, finalIntent));
+            return new(NativeHandoffPreparationStatus.Ready, new(candidate, finalGrant, finalIntent, captured.Mode));
         }
     }
 }

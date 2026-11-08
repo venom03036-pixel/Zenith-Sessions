@@ -60,6 +60,7 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         var result=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
         Assert.Equal(NativeHandoffPreparationStatus.Ready,result.Status);using var prepared=Assert.IsType<NativeHandoffPreparation>(result.Preparation);
         Assert.Equal(RobloxHandoffProbeOutcome.TicketIssued,result.BrowserFacts?.Outcome);Assert.Equal(NativeLaunchMode.DirectTicket,result.BrowserFacts?.Mode);
+        Assert.Equal(NativeLaunchMode.DirectTicket,prepared.Mode);
         Assert.Equal(new[]{Current},f.Client.Seen);var saved=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
         Assert.Equal(Current,saved.Record!.SessionCookie);Assert.Equal(3,saved.Record.Generation);Assert.Equal(saved,prepared.FinalGrant);
         // A typed ticket refusal is a rejected capture: no grant is restored and the pending record stays fenced.
