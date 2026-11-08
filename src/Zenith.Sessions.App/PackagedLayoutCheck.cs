@@ -146,6 +146,11 @@ internal static class PackagedLayoutCheck
                 || window.FindName("DeleteClientLogsButton") is not System.Windows.Controls.Button { IsEnabled: false }
                 || vm.CanDeleteClientLogs || vm.IsCleaningClientLogs || vm.ClientLogCleanupConfirmation.Length != 0)
                 throw new InvalidOperationException("The packaged Roblox client log cleanup controls lost their command binding or sample-mode boundary.");
+            // Diagnostics > Include Roblox client log entries: present, off by default, and unavailable in sample mode (no injected
+            // reader), so the sample profile never reads the real Roblox logs into a report.
+            if (window.FindName("IncludeClientLogTailsOption") is not System.Windows.Controls.CheckBox { IsChecked: false } tailsOption
+                || tailsOption.IsEnabled || vm.CanIncludeClientLogTails || vm.IncludeClientLogTails)
+                throw new InvalidOperationException("The packaged client log entries option lost its binding, its off default or its sample-mode boundary.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
