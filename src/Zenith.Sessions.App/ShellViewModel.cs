@@ -662,7 +662,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             foreach(var row in rows)await _launchQueue.InvalidateAuthorizationAsync(row.Profile.Id,_lifetime.Token);
         }
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
-        if(_linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
+        // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
+        // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
+        using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
+        if(removal.StoppedOperation || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();

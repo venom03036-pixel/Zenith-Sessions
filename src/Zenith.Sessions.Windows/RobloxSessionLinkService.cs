@@ -390,8 +390,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
     }
     /// <summary>
     /// Moves this owned add to the saved row of the same verified player. The move happens under the
-    /// state gate, so a later Disconnect, Cancel or Dispose for that row reaches this operation; like
-    /// Begin, it refuses while a disconnect is waiting. The commit stays conditional on the row's snapshot.
+    /// state gate, so a later Disconnect, Cancel, Dispose or profile removal for that row reaches this operation; like
+    /// Begin, it refuses while a disconnect is waiting, and it refuses a row that is being removed. The commit stays
+    /// conditional on the row's snapshot.
     /// </summary>
     private async Task<AuthorizationWriteSnapshot> AdoptSavedSessionAsync(Operation operation, Guid profileId, LinkedIdentity identity)
     {
@@ -401,6 +402,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             if (_disposed || operation.Invalidated || !ReferenceEquals(_active, operation)) throw new OperationCanceledException(operation.Token);
             if (_disconnect is not null)
                 throw new AccountLinkException("A saved sign-in is being removed, so this account's saved sign-in was not refreshed. Add the account again after that finishes.");
+            // A removal holds its rows from before it decides whether an operation owns one until they are gone (BeginProfileRemovalAsync).
+            if (_removing.ContainsKey(profileId))
+                throw new AccountLinkException("This account is being removed from your library, so its saved sign-in was not refreshed. Add the account again after the removal finishes.");
             operation.ProfileId = profileId;
         }
         var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
