@@ -29,6 +29,31 @@ public sealed partial class DirectoryIntegrationTests
         Assert.Single(games.Places); // The reloaded row reuses the name; no second request.
     });
 
+    [Fact]
+    public Task FoundNameLabelsEveryRowWithThatPlaceAndSurvivesReloadsWithoutAnotherRequest()=>OnUi(async ()=>
+    {
+        var games=new PreferredGames();games.Names[FischPlace]="Fisch";games.Names[OtherPlace]="Synthetic obby";
+        await using var vm=await OpenAccountsAsync(games);
+        vm.Navigate.Execute("Overview");
+        await vm.SaveAccountAsync(AccountProfile.Create("First") with {PreferredPlaceId=FischPlace});
+        await vm.SaveAccountAsync(AccountProfile.Create("Other") with {PreferredPlaceId=OtherPlace});
+        await vm.SaveAccountAsync(AccountProfile.Create("Second") with {PreferredPlaceId=FischPlace});
+        Assert.Empty(games.Places);Assert.Equal("Second",vm.SelectedAccount!.Alias);
+        vm.Navigate.Execute("Accounts");await vm.PreferredGameNameOperation;
+        Assert.Equal(new[]{FischPlace},games.Places); // Only the selected row asks.
+        AssertNamed(vm,"after the lookup");
+        vm.Refresh.Execute(null);await vm.Refresh.Execution;await vm.PreferredGameNameOperation;
+        AssertNamed(vm,"after a reload");
+        Assert.Equal(new[]{FischPlace},games.Places); // Reloaded rows reuse the remembered name; nothing else is asked.
+
+        static void AssertNamed(ShellViewModel vm,string when)
+        {
+            var shown=vm.Accounts.Select(row=>$"{row.Alias}: {row.Destination}").OrderBy(text=>text,StringComparer.Ordinal).ToArray();
+            Assert.True(shown.SequenceEqual(new[]{$"First: Fisch · Place {FischPlace}",$"Other: Place {OtherPlace}",$"Second: Fisch · Place {FischPlace}"}),
+                $"Rows {when}: {string.Join(" | ",shown)}");
+        }
+    });
+
     [Theory]
     [InlineData("offline by default")]
     [InlineData("directory failure")]

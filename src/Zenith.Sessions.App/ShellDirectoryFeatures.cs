@@ -293,7 +293,9 @@ public sealed partial class ShellViewModel
     /// <summary>
     /// Name the selected account's preferred game through the public game directory, as Join a game does. Only the selected
     /// row asks, one place at a time, under the automatic headshot rule: runtime composition, Accounts page and window
-    /// visible, not after Panic or Lock. Found names stay in memory until Lock or Panic; a failure keeps "Place {id}".
+    /// visible, not after Panic or Lock. A found name labels every row on the page with that place, and rows published by a
+    /// reload reuse it without asking (<see cref="ApplyKnownPreferredGameName"/>). Found names stay in memory until Lock or
+    /// Panic; a failure keeps "Place {id}".
     /// </summary>
     private void RefreshPreferredGameName()
     {
@@ -310,6 +312,11 @@ public sealed partial class ShellViewModel
         _preferredGameRuns.RemoveAll(run=>run.IsCompleted);
         _preferredGameRuns.Add(LookupPreferredGameAsync(_preferredGameDirectory,place,_directoryGeneration,stop));
     }
+    /// <summary>A row being published shows the name already found for its preferred place. Memory only; no request is made.</summary>
+    private void ApplyKnownPreferredGameName(AccountRow row)
+    {
+        if(row.Profile.PreferredPlaceId is { } place && _preferredGameNames.TryGetValue(place,out var name)) row.SetPreferredGameName(place,name);
+    }
     private void StopPreferredGameLookup()
     {
         var stop=_preferredGameStop;_preferredGameStop=null;_preferredGamePlace=0;
@@ -324,7 +331,7 @@ public sealed partial class ShellViewModel
                 || result.State!=PublicDirectoryState.Success || result.Value is not { } game || game.RequestedPlaceId!=place || string.IsNullOrWhiteSpace(game.Name)) return;
             if(_preferredGameNames.Count>=MaximumPreferredGameNames) _preferredGameNames.Clear();
             _preferredGameNames[place]=game.Name;
-            if(SelectedAccount is { } row && Accounts.Contains(row) && row.Profile.PreferredPlaceId==place) row.SetPreferredGameName(place,game.Name);
+            foreach(var row in Accounts) row.SetPreferredGameName(place,game.Name); // Every row on the page with this place; others ignore it.
         }
         catch(OperationCanceledException) when(stop.IsCancellationRequested) { }
         catch(Exception error) {_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType());} // The name is decoration; "Place {id}" stands without it.
