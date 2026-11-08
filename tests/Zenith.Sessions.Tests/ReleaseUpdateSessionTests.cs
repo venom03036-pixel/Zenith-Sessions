@@ -71,6 +71,28 @@ public sealed class ReleaseUpdateSessionTests : IDisposable
         await dispose.WaitAsync(TimeSpan.FromSeconds(5));await check;Assert.Null(session.State.Pending);
     }
     [Fact]
+    public async Task PanicWhileConfigurationWaitsCannotBeOverwrittenByItsLateSave()
+    {
+        var clock=new Clock();var backend=new Backend{Gate=new(TaskCreationOptions.RunContinuationsAsynchronously)};
+        await using var session=new ReleaseUpdateSession(_root,backend,time:clock);
+        await session.InitializeAsync(default);await session.ConfigureAsync(Settings(),default);
+        var check=session.CheckNowAsync(default);await backend.Started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        var save=session.ConfigureAsync(Settings(true),default);Assert.False(save.IsCompleted);
+        session.CancelWork();backend.Gate.SetResult();await save;await check;
+        var timer=await clock.Next();Assert.Equal(1,backend.Calls);
+        clock.Fire(timer);await clock.Next();Assert.Equal(1,backend.Calls);
+    }
+    [Fact]
+    public async Task PersistedDailyChecksDoNotRunWhileTheShellIsLockedAtStartup()
+    {
+        var clock=new Clock();var backend=new Backend();Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Path.Combine(_root,"release-updates.json"),JsonSerializer.Serialize(new ReleaseUpdateState(Settings(true))));
+        await using var session=new ReleaseUpdateSession(_root,backend,time:clock,canCheck:()=>false);
+        await session.InitializeAsync(default);var timer=await clock.Next();Assert.Equal(0,backend.Calls);
+        clock.Fire(timer);await clock.Next();Assert.Equal(0,backend.Calls);
+        await session.CheckNowAsync(default);Assert.Equal(0,backend.Calls);
+    }
+    [Fact]
     public async Task DiscardOnlyDeletesAnOwnedStageAndPreservesPotentialUserData()
     {
         string stage=Path.Combine(_root,"Updates","update-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(stage);

@@ -17,6 +17,7 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
     private readonly IReleaseUpdateBackend _backend;
     private readonly TimeProvider _time;
     private readonly Func<CancellationToken, Task> _changed;
+    private readonly Func<bool> _canCheck;
     private readonly SemaphoreSlim _serial = new(1, 1);
     private readonly object _gate = new();
     private readonly CancellationTokenSource _stop = new();
@@ -24,11 +25,12 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
     private Task _schedule = Task.CompletedTask, _check = Task.CompletedTask;
     private volatile bool _paused, _disposed;
     private bool _initialized;
+    private long _stopGeneration;
     public ReleaseUpdateState State { get; private set; } = new(new());
     public string Status { get; private set; } = "Updates are off until a release feed and publisher are configured.";
     public bool IsChecking { get; private set; }
-    public ReleaseUpdateSession(string root, IReleaseUpdateBackend backend, Func<CancellationToken, Task>? changed = null, TimeProvider? time = null)
-    { _path = Path.Combine(root, "release-updates.json"); _backend = backend; _time = time ?? TimeProvider.System; _changed = changed ?? (_ => Task.CompletedTask); }
+    public ReleaseUpdateSession(string root, IReleaseUpdateBackend backend, Func<CancellationToken, Task>? changed = null, TimeProvider? time = null, Func<bool>? canCheck = null)
+    { _path = Path.Combine(root, "release-updates.json"); _backend = backend; _time = time ?? TimeProvider.System; _changed = changed ?? (_ => Task.CompletedTask); _canCheck = canCheck ?? (() => true); }
     public async Task InitializeAsync(CancellationToken ct)
     {
         await _serial.WaitAsync(ct).ConfigureAwait(false);
@@ -46,12 +48,15 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
     }
     public async Task ConfigureAsync(ReleaseUpdateSettings settings, CancellationToken ct)
     {
-        Validate(settings); CancelWork(); await _check.ConfigureAwait(false); await StopScheduleAsync().ConfigureAwait(false);
+        Validate(settings); long requestedAt = StopAndCaptureGeneration();
+        await _check.ConfigureAwait(false); await StopScheduleAsync().ConfigureAwait(false);
         await _serial.WaitAsync(ct).ConfigureAwait(false);
         try
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            var next = new ReleaseUpdateState(settings); Save(next); State = next; _paused = false;
+            var next = new ReleaseUpdateState(settings); Save(next); State = next;
+            // A later Panic/Lock wins over this save even when an old helper delays configuration.
+            lock (_gate) if (_stopGeneration == requestedAt && _canCheck()) _paused = false;
             Status = Configured(settings) ? "Update settings saved. Installation always requires approval." : "Updates are off.";
         }
         finally { _serial.Release(); }
@@ -64,6 +69,7 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
         {
             if (!resume && (_disposed || _paused)) return Task.CompletedTask;
             ObjectDisposedException.ThrowIf(_disposed, this);
+            if (!_canCheck()) return Task.CompletedTask;
             if (!_check.IsCompleted) return _check;
             if (resume) _paused = false;
             return _check = CheckAsync(ct);
@@ -81,6 +87,8 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
             IsChecking = true; Status = "Checking the configured signed release feed…";
             var attempt = State with { LastAttemptUtc = _time.GetUtcNow() }; Save(attempt); State = attempt;
             await _changed(stop.Token).ConfigureAwait(false);
+            stop.Token.ThrowIfCancellationRequested();
+            if (!_canCheck()) { Status = "Update checks are paused while the dashboard is unavailable or locked."; return; }
             var staged = await _backend.StageAsync(State.Settings, stop.Token).ConfigureAwait(false);
             stop.Token.ThrowIfCancellationRequested();
             var ready = State with { Pending = staged, InstallOnNextStart = false }; Save(ready); State = ready;
@@ -139,7 +147,9 @@ public sealed class ReleaseUpdateSession : IAsyncDisposable
         finally { _serial.Release(); }
         await _changed(ct).ConfigureAwait(false);
     }
-    public void CancelWork() { lock (_gate) { _paused = true; _checkStop?.Cancel(); } }
+    public void CancelWork() => StopAndCaptureGeneration();
+    private long StopAndCaptureGeneration()
+    { lock (_gate) { _paused = true; _checkStop?.Cancel(); return ++_stopGeneration; } }
     private void StartSchedule()
     {
         if (_disposed || !Configured(State.Settings) || !State.Settings.CheckDaily) return;

@@ -568,17 +568,7 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,true));
 
             stage="Bounded typed diagnostics journal";
-            var diagnostics=new ManagerDiagnostics(root);
-            await SelfCheckOwners.UseAsync(diagnostics, journal =>
-            {
-                for(int index=0;index<520;index++) journal.RecordFailure(ManagerSubsystem.Diagnostics,typeof(IOException));
-                var snapshot=journal.GetSnapshot();
-                if(snapshot.Events.Count!=512 || snapshot.TotalEvents!=520 || snapshot.ErrorCount!=520 || snapshot.Events[0].Sequence!=9 || snapshot.Events[^1].Sequence!=520
-                    || snapshot.Events.Any(entry=>entry.Subsystem!=ManagerSubsystem.Diagnostics))
-                    throw new InvalidDataException("The packaged diagnostic journal exceeded its bound, lost sequence coherence or dropped the failing subsystem.");
-                return Task.CompletedTask;
-            });
-            if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
+            await VerifyDiagnosticsAsync(new ManagerDiagnostics(root));
             cases.Add(new(stage,true));
 
             stage="Bounded diagnostic session projection";
@@ -802,6 +792,21 @@ internal static class DistributionSelfCheck
         if(!owned) { Console.WriteLine("Distribution self-check refused an unowned data folder."); return 2; }
         return await WriteReportAsync(report,cases,new(sqliteVersion,elapsed.ElapsedMilliseconds,gpuEvidence,publisherEvidence,cleanupPhase,cleanupPending,cleanupRemaining,cleanupErrorType),
             AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies());
+    }
+
+    // Extracted unchanged so the actual packaged stage can be exercised with a held writer in offline tests.
+    internal static async Task VerifyDiagnosticsAsync(ManagerDiagnostics diagnostics,TimeSpan? shutdownBound=null)
+    {
+        await SelfCheckOwners.UseAsync(diagnostics,journal =>
+        {
+            for(int index=0;index<520;index++) journal.RecordFailure(ManagerSubsystem.Diagnostics,typeof(IOException));
+            var snapshot=journal.GetSnapshot();
+            if(snapshot.Events.Count!=512 || snapshot.TotalEvents!=520 || snapshot.ErrorCount!=520 || snapshot.Events[0].Sequence!=9 || snapshot.Events[^1].Sequence!=520
+                || snapshot.Events.Any(entry=>entry.Subsystem!=ManagerSubsystem.Diagnostics))
+                throw new InvalidDataException("The packaged diagnostic journal exceeded its bound, lost sequence coherence or dropped the failing subsystem.");
+            return Task.CompletedTask;
+        },shutdownBound??SelfCheckOwners.ShutdownBound);
+        if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
     }
 
     // A stalled owner can still hold a vault/projection/repository lease. Leave all its shared resources

@@ -26,7 +26,7 @@ public sealed class ReleaseUpdatesViewModel : Observable, IAsyncDisposable
     public ReleaseUpdatesViewModel(string root, Dispatcher dispatcher, Func<bool> queueIdle, IReleaseUpdateBackend? backend = null, Func<bool>? canOperate = null)
     {
         _session = new(root, backend ?? new ReleaseToolUpdateBackend(Path.Combine(AppContext.BaseDirectory, "Zenith.Sessions.ReleaseTool.exe"), Path.Combine(root, "Updates"), typeof(App).Assembly.GetName().Version ?? new(0, 0)),
-            ct => dispatcher.InvokeAsync(Refresh, DispatcherPriority.Background, ct).Task);
+            ct => dispatcher.InvokeAsync(Refresh, DispatcherPriority.Background, ct).Task, canCheck: canOperate);
         Save = new(async _ => { if(canOperate?.Invoke()==false)return; _problem = ""; await _session.ConfigureAsync(new(FeedUri.Trim(), PublisherCertificateSha256.Trim(), CheckDaily), _stop.Token); }, Failed);
         CheckNow = new(async _ => { if(canOperate?.Invoke()==false)return; _problem = ""; await _session.CheckNowAsync(_stop.Token); }, Failed);
         ApproveNextStart = new(_ => canOperate?.Invoke()==false?Task.CompletedTask:_session.ApproveNextStartAsync(queueIdle(), _stop.Token), Failed);

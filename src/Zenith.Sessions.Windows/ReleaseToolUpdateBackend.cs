@@ -10,6 +10,7 @@ public sealed class ReleaseToolUpdateBackend(string toolPath, string stagingRoot
     public async Task<StagedUpdate> StageAsync(ReleaseUpdateSettings settings, CancellationToken ct)
     {
         ReleaseUpdateSession.Validate(settings);
+        ct.ThrowIfCancellationRequested();
         SignedUpdateStager.AssertNoRedirects(toolPath);
         using var lockedTool = new FileStream(toolPath, FileMode.Open, FileAccess.Read, FileShare.Read);
         new WindowsUpdatePublisherVerifier().Verify(lockedTool, settings.PublisherCertificateSha256!, ct);
@@ -17,6 +18,7 @@ public sealed class ReleaseToolUpdateBackend(string toolPath, string stagingRoot
         var start = new ProcessStartInfo(Path.GetFullPath(toolPath))
         { UseShellExecute = false, CreateNoWindow = true, RedirectStandardOutput = true, RedirectStandardError = true, WorkingDirectory = Path.GetDirectoryName(Path.GetFullPath(toolPath))! };
         start.ArgumentList.Add("stage"); start.ArgumentList.Add(settings.FeedUri!); start.ArgumentList.Add(currentVersion.ToString()); start.ArgumentList.Add(Path.GetFullPath(stagingRoot));
+        stop.Token.ThrowIfCancellationRequested();
         using var process = Process.Start(start) ?? throw new IOException("The verified update helper could not start.");
         Task<string> output = ReadBoundedAsync(process.StandardOutput, stop.Token), error = ReadBoundedAsync(process.StandardError, stop.Token);
         try
