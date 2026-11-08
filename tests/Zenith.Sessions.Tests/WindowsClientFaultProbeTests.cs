@@ -42,6 +42,12 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
         Assert.NotNull(check.FaultRecordedUtc); Assert.Equal(0x80131623u, check.ExceptionCode);
         Assert.InRange(check.FaultRecordedUtc!.Value, lastSeen, check.CheckedUtc);
         Assert.Equal(ClientEndCause.Crashed, (Ended(key, lastSeen, check.CheckedUtc) with { FaultCheck = check }).Validated(ended: true).EndCause);
+        // A check made just before Windows wrote that record must not report it: a fault later than the check time would
+        // make the result inconsistent with the end it was asked about.
+        var before = check.FaultRecordedUtc!.Value.AddTicks(-1);
+        var early = probe.Check(Ended(key, lastSeen, before), before, default);
+        (Ended(key, lastSeen, before) with { FaultCheck = early }).Validated(ended: true);
+        Assert.Null(early.FaultRecordedUtc); Assert.Null(early.ExceptionCode);
         // The same pid with any other creation time is a different process.
         var later = DateTimeOffset.UtcNow;
         var other = probe.Check(Ended(key with { ProcessStartUtcTicks = started + 1 }, lastSeen.AddTicks(1), later), later, default);

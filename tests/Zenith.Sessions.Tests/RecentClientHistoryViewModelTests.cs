@@ -202,9 +202,33 @@ public sealed class RecentClientHistoryViewModelTests
         Assert.True(other.Disposed); Assert.True(blocking.Cancelled);
     }
 
+    [Fact]
+    public async Task AnInconsistentCrashRecordResultLeavesOnlyThatClientIncompleteAndLaterClientsAreStillChecked()
+    {
+        // A fault time after the check time cannot be recorded as found; it must not switch checks off for later clients.
+        var store = new Store(); var probe = new Probe { FaultAfterCheckFor = 10001 }; List<Exception> failures = [];
+        await using var vm = new RecentClientHistoryViewModel(store, () => true, failures.Add, probe);
+        await vm.InitializeAsync();
+        vm.Observe(Frame(1, At, Client(), Client(10002)), [], At);
+        vm.Observe(Frame(2, At.AddSeconds(1), Client(10002)), [], At.AddSeconds(1));
+        vm.Observe(Frame(3, At.AddSeconds(7), Client(10002)), [], At.AddSeconds(7)); await vm.ActiveFaultCheck; await vm.ActiveSave;
+        var first = Assert.Single(vm.Rows);
+        Assert.Equal(new ClientFaultCheck(At.AddSeconds(7), false), first.Entry.FaultCheck);
+        Assert.Contains("Crash records could not be fully read.", first.Details);
+        Assert.Equal(ClientEndCause.Unknown, first.Entry.EndCause);
+        Assert.Equal(first.Entry, Assert.Single(store.Stored.Entries));
+        Assert.IsType<ArgumentException>(Assert.Single(failures));
+        vm.Observe(Frame(4, At.AddSeconds(8)), [], At.AddSeconds(8));
+        vm.Observe(Frame(5, At.AddSeconds(14)), [], At.AddSeconds(14)); await vm.ActiveFaultCheck; await vm.ActiveSave;
+        Assert.Equal(2, probe.Checked.Count); Assert.Equal(2, vm.Rows.Count);
+        Assert.Equal(ClientEndCause.Crashed, vm.Rows.Single(item => item.Entry.Process.ProcessId == 10002).Entry.EndCause);
+        Assert.Single(failures);
+    }
+
     private sealed class Probe : IClientFaultProbe
     {
         public bool Fail, Block, Cancelled;
+        public int? FaultAfterCheckFor;
         public List<RecentClientHistoryEntry> Checked { get; } = [];
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public ClientFaultCheck Check(RecentClientHistoryEntry ended, DateTimeOffset now, CancellationToken ct)
@@ -213,6 +237,7 @@ public sealed class RecentClientHistoryViewModelTests
             Started.TrySetResult();
             if (Block) { ct.WaitHandle.WaitOne(TimeSpan.FromSeconds(10)); Cancelled = ct.IsCancellationRequested; ct.ThrowIfCancellationRequested(); }
             if (Fail) throw new InvalidOperationException("Synthetic probe failure");
+            if (FaultAfterCheckFor == ended.Process.ProcessId) return new(now, true, now.AddMilliseconds(500), 0xC0000005);
             return new(now, true, ended.LastObservedUtc, 0xC0000005);
         }
     }

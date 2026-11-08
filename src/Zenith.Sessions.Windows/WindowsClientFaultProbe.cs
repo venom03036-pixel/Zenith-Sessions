@@ -55,8 +55,9 @@ public sealed class WindowsClientFaultProbe : IClientFaultProbe
         out DateTimeOffset? fault, out uint? code)
     {
         fault = null; code = null;
+        // The window is exactly [process start, check time]: a later record would be inconsistent with the check.
         string query = "*[System[Provider[@Name='Application Error'] and (EventID=1000) and TimeCreated[@SystemTime>='"
-            + XPathTime(from.AddSeconds(-1)) + "' and @SystemTime<='" + XPathTime(until.AddSeconds(1)) + "']]]";
+            + XPathTime(from) + "' and @SystemTime<='" + XPathTime(until) + "']]]";
         using var results = Native.EvtQuery(0, _channel, query, Native.QueryChannelPath | Native.QueryReverseDirection);
         if (results.IsInvalid) return false;
         var events = new nint[16]; var buffer = new byte[8192];
@@ -71,7 +72,14 @@ public sealed class WindowsClientFaultProbe : IClientFaultProbe
                 for (int index = 0; index < returned && fault is null; index++)
                 {
                     if (Render(events[index], ref buffer) is not { } xml) { skipped = true; continue; }
-                    try { if (Matches(xml, process, out var time, out var exception)) { fault = time; code = exception; } }
+                    try
+                    {
+                        if (!Matches(xml, process, out var time, out var exception)) continue;
+                        // The query's bounds are whole milliseconds, so after a clock step a record for this process can
+                        // still fall just outside the window. It cannot be placed, so the check is incomplete.
+                        if (time < from || time > until) skipped = true;
+                        else { fault = time; code = exception; }
+                    }
                     catch (XmlException) { skipped = true; }
                 }
             }
