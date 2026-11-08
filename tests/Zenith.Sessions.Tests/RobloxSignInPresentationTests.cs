@@ -86,17 +86,35 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.True(frame, "A status line that could not be updated left the roblox-player: frame uncancelled.");
     }
 
+    // Only a frame that names an app's protocol is an app launch, so only it gets the launch message.
     [Theory]
     [InlineData("roblox-player:1+launchmode:play")]
+    [InlineData("roblox:")]
     [InlineData("ms-settings:")]
-    [InlineData("javascript:x")]
-    [InlineData("http://www.roblox.com/")]
-    [InlineData(null)]
-    public void RefusedFrameIsCancelledBeforeTheWindowSaysWhy(string? uri)
+    public void RefusedAppLaunchFrameIsCancelledBeforeTheWindowSaysWhy(string uri)
     {
         var calls = new List<string>();
         OwnedRobloxSignIn.GuardFrameNavigation(uri, () => calls.Add("cancel"), text => calls.Add(text));
         Assert.Equal(new[] { "cancel", OwnedRobloxSignIn.ExternalLaunchRefused }, calls);
+    }
+
+    // A blocked web page, local file, browser page or script frame opens no app, so the window does not say it refused one.
+    [Theory]
+    [InlineData("http://www.roblox.com/")]
+    [InlineData("HTTP://www.roblox.com/")]
+    [InlineData("file:///C:/Windows/test.html")]
+    [InlineData("about:settings")]
+    [InlineData("javascript:x")]
+    [InlineData("JavaScript:x")]
+    [InlineData("edge://settings")]
+    [InlineData("not a uri")]
+    [InlineData(null)]
+    public void RefusedWebOrDocumentFrameIsCancelledBeforeTheWindowSaysItWasBlocked(string? uri)
+    {
+        var calls = new List<string>();
+        OwnedRobloxSignIn.GuardFrameNavigation(uri, () => calls.Add("cancel"), text => calls.Add(text));
+        Assert.Equal(new[] { "cancel", OwnedRobloxSignIn.FrameRefused }, calls);
+        Assert.DoesNotContain("apps", OwnedRobloxSignIn.FrameRefused);
     }
 
     [Theory]

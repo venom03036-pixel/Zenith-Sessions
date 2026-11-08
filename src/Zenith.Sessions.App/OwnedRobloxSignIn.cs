@@ -24,6 +24,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     internal static readonly TimeSpan BrowserExitLimit = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
     internal const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
+    internal const string FrameRefused = "Part of this page was blocked because it is not a secure web page. You can keep signing in on this page.";
     private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
     private const string FolderKept = "A previous private browser's cleanup failed, and its folder in signin-browser-data is kept until Zenith Sessions closes, so no sign-in can start before then. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private const string FolderNeedsReview = "Private sign-in storage needs review: a leftover folder in signin-browser-data was not recognized or could not be removed, and it was preserved. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
@@ -260,10 +261,13 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     }
 
     /// <summary>The body of the FrameNavigationStarting handler. A child frame that <see cref="RobloxSignInNavigation.IsAllowedFrame"/>
-    /// refuses, such as the hidden roblox-player: frame behind Roblox's Play button, is cancelled first and then explained.</summary>
+    /// refuses is cancelled first and then explained: an app's protocol, such as the hidden roblox-player: frame behind
+    /// Roblox's Play button, as a refused launch; a web page, file, browser page or script that is not allowed, as a blocked part of the page.</summary>
     internal static void GuardFrameNavigation(string? uri, Action cancel, Action<string> showStatus)
     {
-        if (!RobloxSignInNavigation.IsAllowedFrame(uri)) RefuseExternalLaunch(cancel, showStatus);
+        if (RobloxSignInNavigation.IsAllowedFrame(uri)) return;
+        cancel();
+        showStatus(RobloxSignInNavigation.IsAppLaunch(uri) ? ExternalLaunchRefused : FrameRefused);
     }
 
     internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
