@@ -163,8 +163,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private CancellationTokenSource? _authorizationStop;
     private Guid? _linkingProfile;
     private bool _preserveStopNotice;
-    // UI-thread only: set by ReportPresentationFault, cleared when a sample presentation completes.
+    // UI-thread only: set by ReportPresentationFault, cleared when a sample presentation completes. So it says whether the
+    // newest sample taken by any dispatcher step is on screen, which is what a manual Refresh reports.
     private bool _presentationFaulted;
+    private const string RefreshPresentationFailed="Refresh could not show the latest measurements, so the dashboard may be out of date. Monitoring and launch safety checks continue.";
     private readonly Dispatcher _dispatcher;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
@@ -382,7 +384,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         ToggleQueuePause=new(_=>ToggleQueuePausePresentationAsync(),error=>Fail(error,ManagerSubsystem.Queue));
         CancelLaunch=new(async p=> { if(!IsLocked && QueueReady && p is LaunchRow row) await _launchQueue.CancelAsync(row.Id,_lifetime.Token); },error=>Fail(error,ManagerSubsystem.Queue));
         SetAsideInterruptedQueueWrite=new(_=>SetAsideInterruptedQueueWriteAsync(),error=>Fail(error,ManagerSubsystem.Queue));
-        Refresh = new(async _ => { if(!_ready) throw new AccountLinkException("Resolve the startup error and restart Zenith Sessions before refreshing the library."); await LoadAccountsAsync(_lifetime.Token); await SampleAsync(_lifetime.Token,forcePresentation:true); Notice = "Latest available observations shown. Measurement times are listed."; }, error => Fail(error,ManagerSubsystem.Library));
+        Refresh = new(async _ => { if(!_ready) throw new AccountLinkException("Resolve the startup error and restart Zenith Sessions before refreshing the library."); await LoadAccountsAsync(_lifetime.Token);
+            // A display fault was already recorded by type and reported once by the step that met it; the refresh only says it is not current.
+            if(await SampleAsync(_lifetime.Token,forcePresentation:true)) Notice = "Latest available observations shown. Measurement times are listed.";
+            else ShowError(RefreshPresentationFailed); }, error => Fail(error,ManagerSubsystem.Library));
         LinkAccount=new(_=>AuthorizeSelectedAsync(false),error=>Fail(error,ManagerSubsystem.SignIn));
         AddRobloxAccount=new(_=>AddRobloxAccountAsync(),error=>Fail(error,ManagerSubsystem.SignIn));
         RefreshAuthorization=new(_=>AuthorizeSelectedAsync(true),error=>Fail(error,ManagerSubsystem.SignIn));
@@ -809,7 +814,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private DesktopSnapshot? _pendingSampleContext;
     private SamplePresentation? _pendingSamplePresentation;
     private int _sampleUiScheduled;
-    private async Task SampleAsync(CancellationToken ct,bool forcePresentation=false)
+    /// <returns>For a forced presentation, whether the newest sample is on screen once its dispatcher step has run; otherwise true.</returns>
+    private async Task<bool> SampleAsync(CancellationToken ct,bool forcePresentation=false)
     {
         // The safety half never waits for the dispatcher: the loop runs it on the pool, so a busy UI cannot stretch the
         // 1 Hz essential samples past the pressure tracker's three-second continuity limit and restart recovery.
@@ -843,9 +849,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             Volatile.Write(ref _pendingSamplePresentation,new SamplePresentation(snapshot,capacity,projection,pressure,now));
         }
         finally {_sampleSerial.Release();}
-        if(!forcePresentation) {ScheduleSampleUi();return;}
-        // A manual refresh waits for the newest presentation and surfaces its own failure through its command.
-        await _dispatcher.InvokeAsync(()=>ApplySampleUi(reportFault:false),DispatcherPriority.Background,ct);
+        if(!forcePresentation) {ScheduleSampleUi();return true;}
+        // A manual refresh waits for the newest presentation and reports whether it is shown. The loop's already queued step
+        // can run first and take it, so the answer is the shared presentation state, not whichever step happened to show it.
+        return await _dispatcher.InvokeAsync(()=>{ApplySampleUi();return !_presentationFaulted;},DispatcherPriority.Background,ct);
     }
     // One coalesced dispatcher step at a time, as QueueChanged does. A busy UI skips intermediate samples, never the newest.
     private void ScheduleSampleUi()
@@ -854,22 +861,22 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>
         {
             Interlocked.Exchange(ref _sampleUiScheduled,0);
-            ApplySampleUi(reportFault:true);
+            ApplySampleUi();
         }));
     }
-    private void ApplySampleUi(bool reportFault)
+    private void ApplySampleUi()
     {
         var snapshot=Interlocked.Exchange(ref _pendingSampleContext,null);
         var presentation=Interlocked.Exchange(ref _pendingSamplePresentation,null);
         if(_shuttingDown) return;
         // The sample, pressure and admission are already published. A display defect here must not end the safety
-        // sampler, so the loop's step reports it once and sampling continues.
+        // sampler, so whichever step meets it (the loop's or a manual refresh's) reports it once and sampling continues.
         try
         {
             if(snapshot is not null) ObserveClientPreviewContext(snapshot);
             if(presentation is not null) PresentSample(presentation);
         }
-        catch(Exception ex) when(reportFault) {ReportPresentationFault(ex);}
+        catch(Exception ex) {ReportPresentationFault(ex);}
     }
     private void PresentSample(SamplePresentation sample)
     {
