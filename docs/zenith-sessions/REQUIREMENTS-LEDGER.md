@@ -832,3 +832,7 @@ VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity c
 ### D4 0.72 — preserve private observations through account-row publication
 
 **VA-06-03, VA-07-03, CAP-02-03.** Actual WPF ListBox binding reproduced a completed private refresh erasing its own results during transient deselection: two intended red assertions, with two deliberate-selection cancellation controls already passing. Reconciliation now runs after row publication and checks the exact profile/player/generation context returned by the owned reads. Intentional deselection, final removal and later sign-in generation changes still clear data. **4 focused and 387 affected tests passed, 0 failures/skips**; [exact evidence and limits](PRIVATE-DETAILS-BINDING-REPAIR.md). No real account/network/client work; live and release readiness remain unchanged.
+
+## Native audio fixture baseline repair (0.74)
+
+**CAP-14-01, CAP-14-03, PROD-QA-03.** The final gate exposed an invalid unmuted-first-helper assumption. A deterministic exact-helper muted seed reproduced the original failure; only that first helper now normalizes its baseline before the production control exists. Concurrent/later inheritance, restoration assertions and pre-cleanup readback are preserved, and all helper cleanup is attempted. **1 genuine red → 20 final passes, zero skips**, with production audio unchanged; [evidence](AUDIO-FIXTURE-BASELINE-REPAIR.md). Integrated final gates remain pending, and no Roblox client was used.
