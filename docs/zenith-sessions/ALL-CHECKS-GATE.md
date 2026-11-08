@@ -1,0 +1,17 @@
+# Unified Windows verification gate
+
+R-research-12, checkpoint `0.60-d9gate`: run `powershell -NoProfile -File scripts/Run-AllChecks.ps1` from a Windows checkout with .NET 8 and 10 SDKs/desktop runtimes. The default restore source is the local NuGet cache and cached, hash-verified Luau tools. `-AllowRestoreDownloads -AcquireLuau` explicitly permits fetching dependencies and the pinned official Luau 0.745 archive. `-NoRestore` reuses existing project assets; the packaged check still performs its own guarded restore. `-PlanOnly` writes the exact plan with Status=Planned and executes nothing. A fresh output folder is used for every run; `-OutputDirectory` can select another fresh evidence folder.
+
+The same command is prepared in `.github/workflows/all-checks.yml` for push, pull request and manual dispatch on a Windows runner. It installs .NET 8/10, permits prerequisite downloads, grants only read access to repository contents and retains evidence. No host was configured or workflow dispatched in this cycle. The action interfaces follow the official [checkout](https://github.com/actions/checkout), [setup-dotnet](https://github.com/actions/setup-dotnet) and [upload-artifact](https://github.com/actions/upload-artifact) documentation.
+
+The gate:
+
+1. Verifies `luau.exe` and `luau-compile.exe` against pinned SHA-256 values; missing tools fail rather than skipping the verifier. Download is opt-in and the archive hash is pinned before reading its two fixed entries.
+2. Restores, builds Release with `-warnaserror`, and runs all six test projects serially with `-m:2 -nr:false`. A changed project inventory fails until the gate is updated. A failed build never runs stale test binaries.
+3. Every test invocation excludes exactly `MacroSuite.Infrastructure.Tests.AI.AIVisionLiveActionTests.AIVision_CloudProvider_ClicksGreenTargetButton_WhenKeyConfigured`. There is no parameter that removes this exclusion, no historical environment-failure exclusions, and the output is checked for accidental inclusion of the paid test.
+4. Checks each TRX for actual executed tests and failures, and records passed/failed/not-executed counts. Any test-defined skip remains visible and is not relabeled as passed.
+5. Runs the owned-experience Luau fixture and the existing guarded packaged self-check, requiring all 43 stages. It uses `-StageOnly` and does not promote a preview or install anything. An earlier failure prevents a misleading package-success claim.
+
+`checks.json` and per-step logs/TRX files are saved under `artifacts/all-checks/<unique-run>/`, including failures. A nonzero gate result must be investigated, not bypassed. Successful offline checks keep ReleaseReady=false: attended account/client, installation and performance trials remain separate acceptance evidence. The Windows integration suites may use their own isolated native helper windows and input fixtures, so run the full gate in the intended test environment.
+
+Validation in this cycle: `artifacts/sessions-tests-0.60-d9gate/gate-script.trx` contains **7 passing checks, zero failures/skips**. Those include a real Windows PowerShell 5.1 plan run, coverage of all six projects and the fixed paid-test exclusion, a fake-build failure run that verifies terminal failure records/no stale tests/no packaged success, and the five stock PowerShell/Luau checks. This is script-contract evidence, not a full all-suite run; the parent integration pass will run the gate once on its final combined commit. No paid test or hosted workflow ran.
