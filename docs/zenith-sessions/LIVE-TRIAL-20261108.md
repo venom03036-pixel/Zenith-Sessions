@@ -46,6 +46,12 @@ After exact source restoration, the combined affected suite passed **478 tests, 
 
 Neither repair is a successful live launch. Final acceptance of the follow-up is the separate immutable review and two complete clean-commit gate records, not these focused runs. Original failures and compile/setup mistakes remain recorded and are not counted as passing evidence.
 
+### Queue ordering found by independent review (0.78-queue)
+
+Review of the first follow-up commit `bf193748` found an important incomplete-recovery case. The UI tail recursively called `QueueChanged` with an older pending snapshot. A worker could already have published `Preparing` into the producer history while the UI replayed `Queued`; the subsequent failure then missed the required preparation transition. The actual grant check still refused launch, but the displayed health could remain stale.
+
+`CoalescedQueuePresentationCannotReplayAnOlderProducerSnapshot` uses dispatcher and producer barriers around the actual snapshot callback, with synthetic operations and no client start. Against unchanged `bf193748`, it failed **expected Preparing, actual Queued** in `artifacts/completion-integration/live4-queue-before/queue-ordering-before.trx`. Display scheduling is now separate from producer ingestion; the UI tail cannot overwrite producer history. The identical test and affected integration/coordinator/parser cases passed **482/482**, zero skips, in `artifacts/completion-integration/live4-queue-after/queue-ordering-after.trx`. The replacement needs a new immutable review and two fresh full gates.
+
 ## Evidence and next live steps
 
 Detailed local observations and sanitized exports are under `wt/Completion/artifacts/live-trials/20261108-01/`:
@@ -66,3 +72,5 @@ After the follow-up candidate passes its offline gates:
 5. Only after one successful, verified native trial, assess an additional supported client. Report refusal/replacement honestly. Do not manipulate singleton enforcement or infer cross-account isolation from two windows.
 
 Other observed follow-ups: the game icon loaded but the gallery reported pictures unavailable; Settings installation lists had light surfaces with low-contrast text under the dark theme; the failed trial banner retained its queued wording. These observations are not complete visual or gallery acceptance. This trial does not change the 93 round-4 item dispositions or establish ReleaseReady.
+
+A source-review minor remains: a delayed local metadata-read error can replace the trial's Panic/Lock status text. The stopped notice, cleared installation and independent launch fences remain intact. This is a message-priority issue, not resumed launch authority.

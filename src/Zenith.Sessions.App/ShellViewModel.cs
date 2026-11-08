@@ -1594,6 +1594,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             &&!(old.TryGetValue(row.Intent.OperationId,out var prior)&&prior.ProcessReceipt is {IsValid:true})))
             NoteQueueClientStarted();
         Volatile.Write(ref _pendingQueue,snapshot);
+        ScheduleQueuePresentation();
+    }
+    private void ScheduleQueuePresentation()
+    {
         if(Interlocked.Exchange(ref _queueUiScheduled,1)!=0 || _dispatcher.HasShutdownStarted) return;
         _dispatcher.BeginInvoke(DispatcherPriority.Background,new Action(()=>
         {
@@ -1621,7 +1625,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             RefreshNativeTrialFeatures();
             RefreshLaunchEvidence();
             ShowLaunchReleaseStarted();
-            if(Volatile.Read(ref _pendingQueue) is { } pending) QueueChanged(pending);
+            // Scheduling is not a new producer observation. Re-ingesting a captured pending value
+            // here can overwrite a newer _latestQueue while its producer is still publishing it.
+            if(Volatile.Read(ref _pendingQueue) is not null) ScheduleQueuePresentation();
         }));
     }
     private void QueueFaulted(Exception error)
