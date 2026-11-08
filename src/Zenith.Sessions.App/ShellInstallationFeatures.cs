@@ -104,9 +104,10 @@ public sealed partial class ShellViewModel
     private const string LaunchReleaseStartedNote = "A Roblox client was started from the selected player after it was compared, so Roblox may have updated it as it started. Starts from it are no longer held for that release; refresh installations to compare it again.";
     // A start asks Roblox again only when its last answer is older than PublicClientReleaseCache.Lifetime, and waits at most this.
     private static readonly TimeSpan LaunchReleaseReadLimit = TimeSpan.FromSeconds(5);
-    // The trial card while that start waits for Roblox's answer; declared after LaunchReleaseReadLimit, which it names.
+    // The trial card while that start waits for Roblox's answer; declared after LaunchReleaseReadLimit, which it names. Stop trial
+    // is the queue's Panic signal, which pauses every queued request, not only this trial, so the line says so before it is chosen.
     private static readonly string LaunchReleaseChecking = "Checking Roblox's current release before this trial is queued; this takes at most "
-        + ((int)LaunchReleaseReadLimit.TotalSeconds).ToString(CultureInfo.InvariantCulture) + " seconds. Choose Stop trial to cancel it.";
+        + ((int)LaunchReleaseReadLimit.TotalSeconds).ToString(CultureInfo.InvariantCulture) + " seconds. Choose Stop trial to cancel it; that also pauses the launch queue.";
     private CancellationTokenSource? _installationStop;
     // Set only while the local list is shown and Roblox's answer is still awaited: Cancel check then stops that request alone.
     private CancellationTokenSource? _installationReleaseStop;

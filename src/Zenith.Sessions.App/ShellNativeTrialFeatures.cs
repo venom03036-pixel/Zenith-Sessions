@@ -67,7 +67,7 @@ public sealed partial class ShellViewModel
     private void InitializeNativeTrialFeatures()
     {
         StartNativeTrial=new(StartNativeTrialAsync,error=>Fail(error,ManagerSubsystem.Launch));
-        CancelNativeTrial=new(_=>{FenceNativeTrial("Trial stopped. Review any process-start receipt before retrying; existing Roblox clients remain open.");_launchQueue.SignalPanic();});
+        CancelNativeTrial=new(_=>{FenceNativeTrial(NativeTrialStoppedByUser);_launchQueue.SignalPanic();});
         PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;
         InitializeLaunchEvidenceFeatures();
     }
@@ -128,6 +128,9 @@ public sealed partial class ShellViewModel
         RefreshNativeTrialFeatures();
     }
     private const string NativeTrialStoppedBySelection="Trial stopped because the installation selection changed, and the launch queue is paused. Review any process-start receipt in the queue before retrying; existing Roblox clients remain open.";
+    // Stop trial signals the queue's Panic, which pauses every queued request (other accounts' too), not only this trial; the
+    // card says so and names Resume queue, since the checking line sends users here just to cancel a release check (O-C9-3).
+    private const string NativeTrialStoppedByUser="Trial stopped, and the launch queue is paused. Review any process-start receipt in the queue before retrying, then choose Resume queue when ready; existing Roblox clients remain open.";
     // Read before the fence: the queue's Panic signal ends IsTrialOperation for the current request.
     private bool HasNativeTrialInProgress()=>_nativeLaunch.IsBusy||StartNativeTrial is {Execution.IsCompleted:false}
         ||Volatile.Read(ref _latestQueue).Operations.Any(operation=>(operation.State is LaunchState.Queued or LaunchState.Validating or LaunchState.Preparing

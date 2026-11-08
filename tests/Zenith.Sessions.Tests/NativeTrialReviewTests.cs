@@ -411,7 +411,7 @@ public sealed partial class ClientWindowIntegrationTests
         await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
         switch(change)
         {
-            case "stop":Assert.StartsWith("Trial stopped.",shell.NativeTrialStatus,StringComparison.Ordinal);break;
+            case "stop":Assert.StartsWith("Trial stopped, and the launch queue is paused.",shell.NativeTrialStatus,StringComparison.Ordinal);break;
             case "panic":case "lock":Assert.StartsWith("Trial stopped by Panic or Lock.",shell.NativeTrialStatus,StringComparison.Ordinal);break;
             default:
                 Assert.Equal("Trial not started: the selected account or destination changed while it was being checked. Review the selected account and destination again before starting.",shell.NativeTrialStatus);
@@ -421,6 +421,34 @@ public sealed partial class ClientWindowIntegrationTests
         }
         Assert.DoesNotContain("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
         Assert.Empty(shell.Launches);
+    });
+
+    // O-C9-3: Stop trial pauses the whole launch queue (the queue's Panic signal), not only the trial it stops, so other accounts'
+    // queued requests wait too. The checking line that sends the user to Stop trial says so before they choose it, and the stopped
+    // card confirms it and names Resume queue, as the installation-change stop and the removal notices already do.
+    [Fact]
+    public Task StopTrialSaysItAlsoPausesTheLaunchQueueBeforeAndAfterItIsChosen()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        // The queue starts paused; run it first so the stop below is what pauses it.
+        shell.ToggleQueuePause.Execute(null);await shell.ToggleQueuePause.Execution;
+        Assert.Equal("Pause queue",shell.QueuePauseLabel);
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.EndsWith(" Choose Stop trial to cancel it; that also pauses the launch queue.",shell.NativeTrialStatus,StringComparison.Ordinal);
+            shell.CancelNativeTrial.Execute(null);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal("Trial stopped, and the launch queue is paused. Review any process-start receipt in the queue before retrying, then choose Resume queue when ready; existing Roblox clients remain open.",shell.NativeTrialStatus);
+        // The queue publishes its stop on the dispatcher after the signal; the footer must then read paused, as the card says.
+        using(var settle=new CancellationTokenSource(TimeSpan.FromSeconds(6)))
+            while(shell.QueuePauseLabel!="Resume queue")await Task.Delay(5,settle.Token);
+        Assert.Empty(shell.Launches);Assert.False(shell.HasErrorNotice);
     });
 
     // A release request that is still finishing after its cancellation: it returns only when the test lets it.
