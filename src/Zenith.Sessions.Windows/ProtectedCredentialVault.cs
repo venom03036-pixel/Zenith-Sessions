@@ -13,7 +13,7 @@ namespace Zenith.Sessions.Windows;
 /// instances for a directory share one writer. Callers cancel/await operations before disposing.
 /// Metadata reads never decrypt credentials. There is no token cache or automatic backup restore.
 /// </summary>
-public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthorizationMetadataReader, IAuthorizationGenerationStore, IRobloxAuthorizationIdentityReader, ISnapshotAuthorizationVault, IAuthorizationDispatchVault, IDisposable
+public sealed partial class ProtectedCredentialVault : IAccountCredentialVault, IAuthorizationMetadataReader, IAuthorizationGenerationStore, IRobloxAuthorizationIdentityReader, ISnapshotAuthorizationVault, IAuthorizationDispatchVault, IDisposable
 {
     public const string WriterLockFileName = ".writer.lock";
     public const int MaximumPendingOperations = 4;
@@ -84,6 +84,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     // conditional caller supplies its exact reservation owner; ordinary Save cannot adopt it.
     private async Task SaveOwnedAsync(AuthorizationRecord durable, Guid mutationId, CancellationToken ct)
     {
+        EnsureSecretAccess();
         string path = PathFor(durable.ProfileId);
         byte[] clear = [], cipher = [], envelopeBytes = [], entropy = Entropy(durable.ProfileId, Version);
         try
@@ -123,11 +124,9 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             clear = JsonSerializer.SerializeToUtf8Bytes(new ProtectedPayload(Version, credentialRef, durable, savedUtc), JsonOptions);
             if (clear.Length > 65536) throw InvalidRecord();
             cipher = ProtectedData.Protect(clear, entropy, DataProtectionScope.CurrentUser);
-            byte[] json = JsonSerializer.SerializeToUtf8Bytes(new VaultEnvelope(Version, MetadataFor(durable, credentialRef, savedUtc), Digest(cipher), cipher), JsonOptions);
-            envelopeBytes = new byte[Magic.Length + json.Length];
-            Magic.CopyTo(envelopeBytes, 0);
-            json.CopyTo(envelopeBytes, Magic.Length);
-            if (envelopeBytes.Length > MaximumFileBytes) throw InvalidRecord();
+            var envelope = SealPayloadOwned(MetadataFor(durable, credentialRef, savedUtc), cipher);
+            try { envelopeBytes = EnvelopeBytes(envelope); }
+            finally { ClearEnvelopeCipher(envelope); }
             // Claims reserve identity only; a claim without a complete credential fails closed.
             await AtomicWriteAsync(PointerPath(durable.ProfileId), JsonSerializer.SerializeToUtf8Bytes(pointer, JsonOptions), ct).ConfigureAwait(false);
             await ReserveClaimAsync(pointer.IdentityKey, durable, ct).ConfigureAwait(false);
@@ -213,6 +212,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             throw new ArgumentException("The snapshot replacement must retain its selected profile and verified contextual identity at the next generation.");
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
         if (!MatchesSnapshotOwned(expected, ct)) return new(AuthorizationMutationStatus.Conflict);
+        EnsureSecretAccess();
         if (expected.HighestMutationId == mutationId) throw new ArgumentException("Use a fresh conditional mutation identity for each operation.");
         // Validate known identity claims before reserving anything. A failed comparison or an
         // incompatible identity must not fence the current owner's otherwise valid authority.
@@ -248,6 +248,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             return new(AuthorizationDispatchStatus.NotAuthorized);
         ct.ThrowIfCancellationRequested();
         NativeHandoffDispatchResult? result;
+        EnsureSecretAccess();
         try { result = dispatch(); }
         catch (Exception)
         {
@@ -474,7 +475,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         finally { CryptographicOperations.ZeroMemory(bytes); }
     }
 
-    private static AuthorizationRecord ReadProtected(string path, Guid profileId, out bool legacy)
+    private AuthorizationRecord ReadProtected(string path, Guid profileId, out bool legacy)
     {
         // Only selected credential use tightens an existing/legacy secret file. Card metadata and
         // identity-index reads below never rewrite per-file ACLs.
@@ -486,14 +487,17 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         finally { CryptographicOperations.ZeroMemory(bytes); }
     }
 
-    private static AuthorizationRecord ReadProtectedBytes(byte[] bytes, Guid profileId, out bool legacy)
+    private AuthorizationRecord ReadProtectedBytes(byte[] bytes, Guid profileId, out bool legacy, bool allowMigration = false)
     {
         byte[] cipher = [], clear = [], entropy = [];
+        VaultEnvelope? envelope = null;
         try
         {
+            EnsureSecretAccess(allowMigration);
             legacy = !HasMagic(bytes);
-            VaultEnvelope? envelope = legacy ? null : ParseEnvelope(bytes, profileId);
-            cipher = envelope?.ProtectedPayload ?? bytes;
+            if (legacy && _passwordRequired) throw PasswordFailure();
+            envelope = legacy ? null : ParseEnvelope(bytes, profileId);
+            cipher = envelope is null ? bytes.ToArray() : UnsealPayloadOwned(envelope, allowMigration);
             entropy = Entropy(profileId, legacy ? 1 : Version);
             try { clear = ProtectedData.Unprotect(cipher, entropy, DataProtectionScope.CurrentUser); }
             catch (CryptographicException) { throw new CryptographicException("The protected authorization could not be decrypted. The original is preserved; sign in or review recovery options."); }
@@ -520,6 +524,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             CryptographicOperations.ZeroMemory(clear);
             CryptographicOperations.ZeroMemory(entropy);
             CryptographicOperations.ZeroMemory(cipher);
+            if (envelope is not null) ClearEnvelopeCipher(envelope);
         }
     }
 
@@ -528,7 +533,9 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         VaultEnvelope envelope;
         try { envelope = JsonSerializer.Deserialize<VaultEnvelope>(bytes.AsSpan(Magic.Length), JsonOptions) ?? throw InvalidRecord(); }
         catch (JsonException) { throw InvalidRecord(); }
-        if (envelope.Version != Version || envelope.Metadata is null || envelope.ProtectedPayload is not { Length: > 0 and <= 65536 }
+        if (envelope.Version is not (Version or 3) || envelope.Metadata is null || envelope.ProtectedPayload is not { Length: > 0 and <= 65536 }
+            || envelope.Version == 3 && (envelope.KeyId == Guid.Empty || envelope.Nonce is not { Length: 12 } || envelope.Tag is not { Length: 16 })
+            || envelope.Version == Version && (envelope.KeyId != Guid.Empty || envelope.Nonce is not null || envelope.Tag is not null)
             || envelope.PayloadDigest is not { Length: 64 } || Digest(envelope.ProtectedPayload) != envelope.PayloadDigest) throw InvalidRecord();
         AuthorizationMetadata metadata = envelope.Metadata;
         if (metadata.ProfileId != expectedProfile || metadata.CredentialRef != expectedProfile.ToString("N")
@@ -823,7 +830,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
         File.Delete(path);
     }
 
-    private async Task<WriterLease> EnterAsync(CancellationToken ct)
+    private async Task<WriterLease> EnterAsync(CancellationToken ct, bool skipPasswordControl = false)
     {
         // Public callers force an asynchronous continuation off their UI context: DPAPI, ACL
         // operations, and the bounded local reads below use synchronous Windows primitives.
@@ -847,7 +854,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
                 var processLease = await AcquireProcessLeaseAsync(deadline.Token).ConfigureAwait(false);
                 // The full check runs once, under the lease, for every operation. A directory
                 // changed while this call waited for another holder is therefore still caught.
-                try { EnsurePrivateDirectories(); }
+                try { EnsurePrivateDirectories(); if (!skipPasswordControl) RefreshPasswordControlOwned(); }
                 catch { processLease.Dispose(); throw; }
                 return new(this, processLease);
             }
@@ -901,6 +908,7 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             if (_activeCalls != 0) throw new InvalidOperationException("Cancel and await pending vault operations before disposing the vault.");
             _disposed = true;
         }
+        LockMasterPassword();
         lock (RegistryGate) { if (--_writer.Owners == 0) { Writers.Remove(_directory); _writer.Semaphore.Dispose(); } }
     }
     private sealed class SharedWriter { public readonly SemaphoreSlim Semaphore = new(1, 1); public int Owners, PendingCalls; }
@@ -913,7 +921,10 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
             try { processLease.Dispose(); } finally { owner.Leave(); }
         }
     }
-    private sealed record VaultEnvelope(int Version, AuthorizationMetadata Metadata, string PayloadDigest, byte[] ProtectedPayload);
+    private sealed record VaultEnvelope(int Version, AuthorizationMetadata Metadata, string PayloadDigest, byte[] ProtectedPayload,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] Guid KeyId = default,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] byte[]? Nonce = null,
+        [property: System.Text.Json.Serialization.JsonIgnore(Condition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingDefault)] byte[]? Tag = null);
     private sealed record ProtectedPayload(int Version, string CredentialRef, AuthorizationRecord Authorization, DateTimeOffset SavedUtc);
     private sealed record ProfilePointer(int Version, Guid ProfileId, string IdentityKey, string UserKey);
     private sealed record IdentityClaim(int Version, Guid ProfileId, string Provider, string Issuer, string Subject, long VerifiedUserId);

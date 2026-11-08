@@ -1661,6 +1661,8 @@
               </StackPanel>
             </Border>
             <TextBlock x:Name="SettingsSignInAnchor" Text="Saved Roblox sign-ins" Style="{StaticResource SectionTitle}" Margin="0,26,0,8" Focusable="True" AutomationProperties.Name="Saved Roblox sign-in settings" />
+            <TextBlock Text="{Binding VaultPasswordStatusText}" Style="{StaticResource Muted}" Margin="0,0,0,10" />
+            <WrapPanel Margin="0,0,0,12"><Button Content="{Binding VaultPasswordPrimaryLabel}" Click="UseVaultPasswordPrimary" IsEnabled="{Binding CanUseVaultPasswordPrimary}" /><Button Content="Disable master password…" Click="DisableVaultPassword" IsEnabled="{Binding CanDisableVaultPassword}" Margin="8,0,0,0" /><Button Content="Forget protected sign-ins…" Click="ForgetProtectedSignIns" IsEnabled="{Binding CanForgetProtectedSignIns}" Margin="8,0,0,0" /></WrapPanel>
             <TextBlock Text="No developer registration is needed. On Accounts, select a profile and choose Sign in with Roblox. Finish sign-in on Roblox’s own page, then explicitly save that account’s session. Each session is encrypted for your Windows account and verified against its Roblox user ID." Style="{StaticResource Muted}" Margin="0,0,0,10" />
             <TextBlock Text="Microsoft Edge WebView2 Runtime is required. Password saving, autofill, downloads and pop-ups are disabled. Navigation permits Roblox and the exact Google or Apple sign-in hosts; saving remains on Roblox. Browser data is removed after sign-in unless the option below is saved on." Style="{StaticResource Muted}" Margin="0,0,0,10" />
             <CheckBox Content="Keep sign-in browser device data" IsChecked="{Binding KeepSignInBrowserData}" Margin="0,0,0,8" />
@@ -1880,6 +1882,8 @@
           <TextBlock Text="Controls are locked" Style="{StaticResource PageTitle}" Margin="0,20,0,10" />
           <TextBlock Text="Account details are hidden. Monitoring continues; automation requires an explicit restart after unlocking." Style="{StaticResource Muted}" />
           <Button Content="Unlock dashboard" Command="{Binding Unlock}" Style="{StaticResource PrimaryButton}" HorizontalAlignment="Left" Margin="0,22,0,0" />
+          <TextBlock Text="{Binding VaultPasswordStatusText}" Style="{StaticResource Muted}" Margin="0,12,0,0" />
+          <Button Content="Forgot password: forget saved sign-ins…" Click="ForgetProtectedSignIns" IsEnabled="{Binding CanForgetProtectedSignIns}" HorizontalAlignment="Left" Margin="0,10,0,0" />
           <Expander Header="Close a running client safely" Margin="0,20,0,0">
             <ScrollViewer MaxHeight="220" VerticalScrollBarVisibility="Auto">
               <ItemsControl ItemsSource="{Binding Sessions}">
