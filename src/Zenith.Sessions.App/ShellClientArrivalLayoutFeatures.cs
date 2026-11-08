@@ -13,7 +13,9 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // the existing window lane: Arrange tiles every connected client in launch order on the saved monitor; Minimize minimizes
 // the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
 // Clients that connect while a request runs wait for one follow-up request, never one each. Panic and Lock cancel the
-// request and drop the waiting clients (Rule 11); while locked nothing is queued. One tracked task, awaited on dispose (Rule 12).
+// request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
+// the user chooses Resume automatic layout. Clients that connect meanwhile count as seen, so they never arrive later. One
+// tracked task, awaited on dispose (Rule 12).
 public sealed partial class ShellViewModel
 {
     private readonly ClientArrivalTracker _clientArrivals = new();
@@ -21,6 +23,8 @@ public sealed partial class ShellViewModel
     private List<SessionObservation>? _arrivedClients;
     private CancellationTokenSource? _arrivalStop;
     private Task _arrivalWork = Task.CompletedTask;
+    private bool _arrivalLayoutStopped;
+    private Command? _resumeClientArrivalLayout;
     public IReadOnlyList<ClientArrivalChoice> ClientArrivalChoices { get; } =
     [
         new(ClientArrivalWindowAction.None, "Leave windows alone"),
@@ -31,17 +35,39 @@ public sealed partial class ShellViewModel
     public ClientArrivalWindowAction ClientArrivalAction { get => _clientArrivalAction; set { if (Set(ref _clientArrivalAction, value)) PreferencesEdited(); } }
     /// <summary>Tests: the automatic window request in flight, or a completed task.</summary>
     internal Task ClientArrivalWork => _arrivalWork;
+    /// <summary>Panic or Lock stopped automatic layout, the saved choice acts on windows, and the dashboard is unlocked.</summary>
+    public bool CanResumeClientArrivalLayout => _arrivalLayoutStopped && SavedArrivalAction != ClientArrivalWindowAction.None
+        && !IsLocked && !_shuttingDown && _ready;
+    /// <summary>The explicit start after Panic or Lock. It acts on nothing by itself; the next client that connects does.</summary>
+    public Command ResumeClientArrivalLayout => _resumeClientArrivalLayout ??= new(_ =>
+    {
+        if (!CanResumeClientArrivalLayout) return;
+        _arrivalLayoutStopped = false; Raise(nameof(CanResumeClientArrivalLayout));
+        ClientWindowStatus = "Automatic layout resumed. Zenith acts again when the next client connects.";
+    });
 
     // Dispatcher thread, from the presentation step, with the same scan and evidence the rows show.
     private void ObserveClientArrivals(DesktopSnapshot snapshot, IReadOnlyList<SessionEvidenceSnapshot> evidence)
     {
         // The tracker always observes, so a client that connected while this was off or locked never arrives again later.
         var arrived = _clientArrivals.Observe(snapshot, evidence);
-        if (arrived.Count == 0 || SavedArrivalAction == ClientArrivalWindowAction.None || IsSample || IsLocked || _shuttingDown || !_ready) return;
+        if (arrived.Count == 0 || SavedArrivalAction == ClientArrivalWindowAction.None || IsSample || _shuttingDown || !_ready) return;
+        if (_arrivalLayoutStopped || IsLocked)
+        {
+            // A manual window operation owns the report while it runs.
+            if (!_arranging) ClientWindowStatus = "A client connected, but automatic layout is stopped by Panic or Lock, so Zenith left its window alone. Choose Resume automatic layout to start it again.";
+            return;
+        }
         (_arrivedClients ??= []).AddRange(arrived);
         if (_arrivalWork.IsCompleted) _arrivalWork = RunClientArrivalWorkAsync();
     }
     private ClientArrivalWindowAction SavedArrivalAction => _savedSettings.WindowLayout?.ArrivalAction ?? ClientArrivalWindowAction.None;
+    // A StopOperations step for Panic and Lock. Only ResumeClientArrivalLayout clears it; Unlock and Save all settings do not.
+    private void StopClientArrivalLayout()
+    {
+        _arrivalLayoutStopped = true; _arrivedClients = null;
+        Raise(nameof(CanResumeClientArrivalLayout));
+    }
 
     private async Task RunClientArrivalWorkAsync()
     {
@@ -56,7 +82,7 @@ public sealed partial class ShellViewModel
             }
         }
         finally { if (ReferenceEquals(_arrivalStop, stop)) _arrivalStop = null; }
-        bool Stopped() => stop.IsCancellationRequested || generation != _windowOperationsGeneration || IsLocked || _shuttingDown;
+        bool Stopped() => stop.IsCancellationRequested || generation != _windowOperationsGeneration || _arrivalLayoutStopped || IsLocked || _shuttingDown;
     }
 
     private async Task ApplyClientArrivalAsync(List<SessionObservation> arrived, CancellationToken ct, Func<bool> stopped)

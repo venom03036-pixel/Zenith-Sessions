@@ -105,7 +105,7 @@ public sealed partial class ShellViewModel
     private void ClientWindowShellStateChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName is nameof(HasSelectedSession) or nameof(IsReady) or nameof(IsLocked))
-        { Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); }
+        { Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); Raise(nameof(CanResumeClientArrivalLayout)); }
     }
     private void SessionSelectionChanged(object? sender, PropertyChangedEventArgs args)
     { if (!_updatingSessionChecks && args.PropertyName == nameof(SessionRow.IsChecked)) NotifyClientSelection(); }

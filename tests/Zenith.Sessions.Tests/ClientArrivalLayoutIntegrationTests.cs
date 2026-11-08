@@ -65,13 +65,15 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
-    public Task PanicCancelsAnAutomaticArrangementAndLockKeepsLaterArrivalsAlone() => OnUi(async () =>
+    public Task PanicCancelsAnAutomaticArrangementAndLaterArrivalsWaitForAnExplicitResume() => OnUi(async () =>
     {
         var monitor = new Monitor();
         await using var shell = await Ready(monitor);
         shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        Assert.False(shell.CanResumeClientArrivalLayout);
         var log = new ArrivalLog(shell, monitor);
-        var first = log.Client(800, minutesAgo: 3); var second = log.Client(801, minutesAgo: 2); var third = log.Client(802, minutesAgo: 1);
+        var first = log.Client(800, minutesAgo: 4); var second = log.Client(801, minutesAgo: 3);
+        var third = log.Client(802, minutesAgo: 2); var fourth = log.Client(803, minutesAgo: 1);
         monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
         await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
         try
@@ -90,19 +92,60 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("Stopped operation report", shell.ClientWindowStatus);
         Assert.Equal("Cancelled", Assert.Single(shell.ClientPlacementResults).Outcome);
         monitor.Pending = null;
+        // Panic without Lock: clients the launch queue had already started keep joining, and none of them re-tiles anything.
+        Assert.True(shell.CanResumeClientArrivalLayout);
+        await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.Arrangements);
+        Assert.Contains("automatic layout is stopped", shell.ClientWindowStatus);
+        Assert.Contains("Resume automatic layout", shell.ClientWindowStatus);
+        // Resuming acts on nothing by itself; clients that connected while stopped count as seen.
+        shell.ResumeClientArrivalLayout.Execute(null);
+        Assert.False(shell.CanResumeClientArrivalLayout);
+        Assert.Contains("Automatic layout resumed", shell.ClientWindowStatus);
+        await log.PresentAsync([first, second, third]);
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.Arrangements);
+        // The next client that connects arranges every connected client again, in launch order.
+        await log.PresentAsync([first, second, third, fourth], (fourth, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.Arrangements);
+        Assert.Equal(new[] { 800, 801, 802, 803 }, monitor.Requested.Select(client => client.ProcessId));
+    });
+
+    [Fact]
+    public Task LockLeavesArrivalsAloneAfterUnlockUntilAnExplicitResume() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        var first = log.Client(900, minutesAgo: 4); var second = log.Client(901, minutesAgo: 3);
+        var third = log.Client(902, minutesAgo: 2); var fourth = log.Client(903, minutesAgo: 1);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.StateChanges);
         shell.LockDashboard();
         await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
         await shell.ClientArrivalWork;
-        Assert.Equal(1, monitor.Arrangements);
-        // A client that connected while locked has been seen; only a client that connects after unlocking is arranged.
+        // Locked: resuming is not offered and an attempt changes nothing.
+        Assert.False(shell.CanResumeClientArrivalLayout);
+        shell.ResumeClientArrivalLayout.Execute(null);
         shell.Unlock.Execute(null);
-        await log.PresentAsync([first, second]);
-        await shell.ClientArrivalWork;
-        Assert.Equal(1, monitor.Arrangements);
+        Assert.Contains("Automation remains stopped", shell.Notice);
+        Assert.True(shell.CanResumeClientArrivalLayout);
         await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
         await shell.ClientArrivalWork;
-        Assert.Equal(2, monitor.Arrangements);
-        Assert.Equal(new[] { 800, 801, 802 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Equal(1, monitor.StateChanges);
+        Assert.Contains("automatic layout is stopped", shell.ClientWindowStatus);
+        shell.ResumeClientArrivalLayout.Execute(null);
+        await log.PresentAsync([first, second, third, fourth], (fourth, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.StateChanges);
+        Assert.Equal(new[] { 903 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Equal(ClientWindowAction.Minimize, monitor.StateAction);
     });
 
     /// <summary>
