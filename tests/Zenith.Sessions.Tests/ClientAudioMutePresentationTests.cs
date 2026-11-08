@@ -85,6 +85,44 @@ public sealed partial class ClientPreviewPresentationTests
     });
 
     [Fact]
+    public Task ArrivalMuteLeavesAloneAClientTheFirstScanCouldNotRead()=>OnUi(async ()=>
+    {
+        // Zenith starts with the preference already saved on, and its first scan cannot read client 2, which is already running.
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Path.Combine(_root,"settings.json"),"""{"Version":1,"MuteArrivingClients":true}""");
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=2,Unreadable=2};
+        await using var shell=await ReadySound(monitor,control);
+        Assert.True(shell.MuteArrivingClients);
+        monitor.Unreadable=0;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls); // It was running before Zenith started, so it is not an arrival.
+        Assert.Empty(shell.ClientSoundResults);
+        // A client that really appears afterwards is still muted.
+        monitor.Count=3;await Refresh(shell);
+        Assert.Equal(3,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+    });
+
+    [Fact]
+    public Task ArrivalMuteLeavesAloneAClientThatAppearedUnreadBeforeItWasSavedOn()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        // Client 2 appears while the preference is off, and no scan can read it before the preference is saved on.
+        monitor.Count=2;monitor.Unreadable=2;await Refresh(shell);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        await Refresh(shell);
+        monitor.Unreadable=0;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls); // It was already running when the preference was saved on.
+        Assert.Empty(shell.ClientSoundResults);
+        // A client that appears while watching is still muted once a scan reads it, even when the first scan to list it cannot.
+        monitor.Count=3;monitor.Unreadable=3;await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls);
+        monitor.Unreadable=0;await Refresh(shell);
+        Assert.Equal(3,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>shell.ClientSoundResults.Count==1);
+        Assert.Equal(3,shell.ClientSoundResults[0].Session.ProcessId);
+    });
+
+    [Fact]
     public Task ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt()=>OnUi(async ()=>
     {
         var control=new SoundControlProbe{NoSoundFirst=true};var monitor=new SoundDesktopMonitor{Count=1};

@@ -25,9 +25,11 @@ public sealed partial class ShellViewModel
     private sealed record ClientSoundRequest(long Generation, SessionObservation[] Processes, string Refusal);
     private string _clientSoundStatus = "Choose clients to mute or unmute their sound in Windows.";
     // Arrival muting, on the dispatcher only: the exact instances in the last usable scan (with those it could not read kept
-    // by PID), and the new ones still waiting for Windows to list their sound. Both hold at most one entry per PID in a scan,
-    // so at most 128.
+    // by PID), the PIDs that scan could not read and that were first listed while nothing was watched (the instance behind
+    // one is already running, so it is never an arrival once it reads), and the new ones still waiting for Windows to list
+    // their sound. Each holds at most one entry per PID in a scan, so at most 128.
     private readonly HashSet<SessionProcessKey> _soundSeenClients = [];
+    private readonly HashSet<int> _soundUnreadClients = [];
     private readonly Dictionary<SessionProcessKey, DateTimeOffset> _soundArrivals = [];
     private bool _soundBaseline, _arrivalMutePaused;
 
@@ -108,7 +110,10 @@ public sealed partial class ShellViewModel
     /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per waiting client per scan (up to four on the scan that mutes it) on
     /// the sound worker. No timer or thread is added: this rides the existing sample cadence. A row Windows could not read
     /// names a PID that is still running but not which instance, so a client already known under that PID stays known (and a
-    /// waiting arrival keeps waiting) instead of counting as new when a later scan reads it again.
+    /// waiting arrival keeps waiting) instead of counting as new when a later scan reads it again. A PID that no known
+    /// instance explains and that a scan could not read while nothing was watched (the first scan, the preference off, or
+    /// paused) is already running, so its instance is known, not new, when a later scan first reads it; one first listed
+    /// unreadable while watching did appear, and is muted once a scan reads it.
     /// </summary>
     private void ObserveClientSoundArrivals(DesktopSnapshot snapshot)
     {
@@ -124,8 +129,18 @@ public sealed partial class ShellViewModel
             else (unreadable ??= []).Add(row.ProcessId);
         if (unreadable is not null)
             foreach (var key in _soundSeenClients) if (unreadable.Contains(key.ProcessId)) current.Add(key);
-        if (watching) foreach (var key in current) if (!_soundSeenClients.Contains(key)) _soundArrivals.TryAdd(key, now);
+        if (watching)
+            foreach (var key in current)
+                if (!_soundSeenClients.Contains(key) && !_soundUnreadClients.Contains(key.ProcessId)) _soundArrivals.TryAdd(key, now);
         _soundSeenClients.Clear(); _soundSeenClients.UnionWith(current); _soundBaseline = true;
+        // Keep only PIDs this scan still could not read, so the set never outgrows one scan (at most 128): a PID that now reads
+        // is known through _soundSeenClients, and one that is gone may be reused by a genuinely new client.
+        if (unreadable is null) _soundUnreadClients.Clear();
+        else
+        {
+            _soundUnreadClients.IntersectWith(unreadable);
+            if (!watching) _soundUnreadClients.UnionWith(unreadable);
+        }
         foreach (var key in _soundArrivals.Keys.ToArray())
             if (!watching || !current.Contains(key)) _soundArrivals.Remove(key);
         if (_soundArrivals.Count == 0 || IsChangingClientSound) return;
