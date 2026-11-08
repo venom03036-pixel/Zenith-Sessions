@@ -104,6 +104,9 @@ public sealed partial class ShellViewModel
     private const string LaunchReleaseStartedNote = "A Roblox client was started from the selected player after it was compared, so Roblox may have updated it as it started. Starts from it are no longer held for that release; refresh installations to compare it again.";
     // A start asks Roblox again only when its last answer is older than PublicClientReleaseCache.Lifetime, and waits at most this.
     private static readonly TimeSpan LaunchReleaseReadLimit = TimeSpan.FromSeconds(5);
+    // The trial card while that start waits for Roblox's answer; declared after LaunchReleaseReadLimit, which it names.
+    private static readonly string LaunchReleaseChecking = "Checking Roblox's current release before this trial is queued; this takes at most "
+        + ((int)LaunchReleaseReadLimit.TotalSeconds).ToString(CultureInfo.InvariantCulture) + " seconds. Choose Stop trial to cancel it.";
     private CancellationTokenSource? _installationStop;
     // Set only while the local list is shown and Roblox's answer is still awaited: Cancel check then stops that request alone.
     private CancellationTokenSource? _installationReleaseStop;
@@ -282,15 +285,19 @@ public sealed partial class ShellViewModel
     // before it releases the HTTP client this read borrows). A failed or slow answer keeps the last valid one, which holds
     // only a row compared with it in the same refresh (a player that differed from a release read after it was observed is
     // still older, as releases only move forward); a row that answer predates stays "Not checked" and never holds (Rule 16).
-    // Only the exception type is recorded, never its text.
+    // Only the exception type is recorded, never its text. Dispatcher: while Roblox is asked the trial card says the start is
+    // waiting and for how long; afterwards it shows what it said before, unless Stop trial, Panic, Lock or a selection change
+    // replaced the line meanwhile, whose reason is kept.
     private async Task ReadLaunchReleaseAsync(CancellationToken ct)
     {
         if (_releaseCache is null || _releaseCache.IsFresh) return;
         using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
         bounded.CancelAfter(LaunchReleaseReadLimit);
+        string shown = NativeTrialStatus; NativeTrialStatus = LaunchReleaseChecking;
         try { await _releaseCache.ReadAsync(bounded.Token); }
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { _diagnostics.RecordFailure(ManagerSubsystem.Installation, typeof(TimeoutException)); }
         catch (Exception error) when (error is not OperationCanceledException) { _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType()); }
+        finally { if (string.Equals(NativeTrialStatus, LaunchReleaseChecking, StringComparison.Ordinal)) NativeTrialStatus = shown; }
         PublishLaunchRelease();
     }
     private static string ReleaseSummary(PublicDirectoryResult<PublicRobloxClientRelease>? result, PublicRobloxClientRelease? latest, IReadOnlyList<InstallationCandidateRow> rows)

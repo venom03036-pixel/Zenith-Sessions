@@ -357,6 +357,53 @@ public sealed partial class ClientWindowIntegrationTests
         }
     });
 
+    // N-B8-5: a start whose last release answer is old asks Roblox again and waits for it (at most five seconds) before it
+    // re-checks the review and queues. The trial card says so while it waits, and the next status replaces that line.
+    [Fact]
+    public Task ATrialStartSaysItIsCheckingRobloxsReleaseWhileItWaitsForTheAnswer()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release before this trial is queued",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.Contains("at most 5 seconds",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.Contains("Stop trial",shell.NativeTrialStatus,StringComparison.Ordinal);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.StartsWith("Trial queued for ",shell.NativeTrialStatus,StringComparison.Ordinal);
+        Assert.Equal(1,releases.Calls);
+    });
+
+    // The waiting line is only this start's own: Stop trial (or Panic, Lock, a selection change) replaces it with its reason,
+    // which is kept, and a review change that cancels the check puts back what the card said before the start.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task AStoppedReleaseCheckNeverLeavesTheTrialCardSayingItIsChecking(bool stopTrial)=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        string before=shell.NativeTrialStatus;
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            var read=await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
+            if(stopTrial)shell.CancelNativeTrial.Execute(null);
+            else shell.SelectedAccount=shell.Accounts.Single(row=>row.Profile.Label=="Other synthetic profile");
+            Assert.True(read.IsCancellationRequested);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        if(stopTrial)Assert.StartsWith("Trial stopped.",shell.NativeTrialStatus,StringComparison.Ordinal);
+        else Assert.Equal(before,shell.NativeTrialStatus);
+        Assert.Empty(shell.Launches);
+    });
+
     // A release request that is still finishing after its cancellation: it returns only when the test lets it.
     private sealed class HeldReleaseRead:IPublicRobloxClientReleaseDirectory
     {
