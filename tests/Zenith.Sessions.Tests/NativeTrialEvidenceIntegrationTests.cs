@@ -206,6 +206,24 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Empty(Directory.EnumerateFiles(_root, "settings.json.*.tmp", SearchOption.TopDirectoryOnly));
     });
 
+    // O-C9-4: no installation discovery is injected here, so without an injected release source the shell would ask Roblox's
+    // public version service over its anonymous client before every trial start, for up to 5 s, leaving each fixture in this
+    // family on the live network and its timing (Rule 16, testability). Every evidence shell therefore gets NativeEvidenceReleases
+    // unless a test passes its own (HeldReleaseRead). The selected player, listed as a refresh lists it, shows whose answer the
+    // start read: the synthetic release, never Roblox's; the trial still queues and starts, as a "Not compared" row never holds.
+    [Fact]
+    public Task AnEvidenceShellsTrialStartReadsTheSyntheticReleaseNotRobloxs() => OnUi(async () =>
+    {
+        var child = new NativeEvidenceChild(); await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
+        var player = shell.SelectedInstallation!; shell.InstallationCandidates.Add(player);
+        Assert.Equal(ClientReleaseMatch.NotChecked, player.Release); Assert.Equal("", shell.InstallationReleaseStatus);
+        shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
+        Assert.Contains("Roblox's current release is " + NativeEvidenceReleases.Named + ".", shell.InstallationReleaseStatus, StringComparison.Ordinal);
+        Assert.Equal(ClientReleaseMatch.NotCompared, player.Release); Assert.Equal(NativeEvidenceReleases.Upload, player.ComparedWith!.ClientVersionUpload);
+        Assert.StartsWith("Trial queued for ", shell.NativeTrialStatus, StringComparison.Ordinal);
+        await NativeEvidenceStartedAsync(shell); Assert.Equal(1, child.Starts);
+    });
+
     // Pure presentation-row fixtures: synthetic records only, no shell, process or log.
     private static readonly DateTimeOffset EvidenceRowAt = new(2026, 11, 7, 8, 0, 0, TimeSpan.Zero);
     private static LaunchOperation EvidenceRowOperation() => new(
@@ -282,8 +300,11 @@ public sealed partial class ClientWindowIntegrationTests
         IPublicRobloxClientReleaseDirectory? releases=null)
     {
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
+        // No installation discovery is injected, so a null release source would hand the shell its live public directory and
+        // every trial start would ask Roblox (O-C9-4). The synthetic source answers at once; a held read is injected explicitly.
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
-            signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity(), nativeProvider: provider,accounts:accounts,clientReleases:releases);
+            signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity(), nativeProvider: provider,accounts:accounts,
+            clientReleases:releases ?? new NativeEvidenceReleases());
         try
         {
             await shell.InitializeAsync();
@@ -361,6 +382,19 @@ public sealed partial class ClientWindowIntegrationTests
     }
     private sealed class NativeEvidenceTrustOwner : IAsyncDisposable
     { public ValueTask DisposeAsync() => ValueTask.CompletedTask; }
+    // O-C9-4: the release source every evidence shell uses unless a test injects its own (HeldReleaseRead holds the read). It
+    // answers at once with one fixed valid release, so no fixture here asks Roblox's public version service or waits on it.
+    private sealed class NativeEvidenceReleases : IPublicRobloxClientReleaseDirectory
+    {
+        public const string Version = "0.744.0.7441080", Upload = "version-0123456789abcdef";
+        public static readonly string Named = Version + " (" + Upload + ")";
+        public Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            return Task.FromResult(new PublicDirectoryResult<PublicRobloxClientRelease>(PublicDirectoryState.Success,
+                new(Version, Upload, DateTimeOffset.UtcNow), "Synthetic public release."));
+        }
+    }
     private sealed class NativeEvidenceExportFolder : IDisposable
     {
         private const string Prefix = "zenith-native-evidence-export-", Marker = ".zenith-evidence-export-fixture", Owner = "Zenith evidence export fixture v1";
