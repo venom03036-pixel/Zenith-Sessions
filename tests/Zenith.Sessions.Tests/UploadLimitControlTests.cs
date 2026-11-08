@@ -49,7 +49,8 @@ public sealed class UploadLimitControlTests : IDisposable
         Assert.Equal(Now, file.RootElement.GetProperty("atUtc").GetDateTimeOffset());
         Assert.Equal(Boot, file.RootElement.GetProperty("bootUtc").GetDateTimeOffset());
         Assert.False(file.RootElement.GetProperty("helperUnresolved").GetBoolean());
-        Assert.Equal(7, file.RootElement.EnumerateObject().Count());
+        Assert.Equal((Now - Boot).Ticks, file.RootElement.GetProperty("uptimeTicks").GetInt64());
+        Assert.Equal(8, file.RootElement.EnumerateObject().Count());
     }
 
     [Fact]

@@ -55,15 +55,19 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
     public UploadLimitRecord? Current { get { lock (_gate) return _current; } }
     public bool RecordUnreadable { get { lock (_gate) return _unreadable; } }
 
-    // Windows' own time since it started; two readings differ by far less than the tolerance a record is judged with.
-    private DateTimeOffset BootUtc() => _clock.GetUtcNow() - _uptime();
+    // The UTC estimate is display metadata only. Uptime is monotonic and unaffected by wall-clock correction.
+    private (DateTimeOffset BootUtc, TimeSpan Uptime) WindowsSession()
+    {
+        var uptime = _uptime();
+        return (_clock.GetUtcNow() - uptime, uptime);
+    }
 
     public Task<UploadLimitRecord?> LoadRecordAsync(CancellationToken ct) => Task.Run(() =>
     {
         ct.ThrowIfCancellationRequested();
         lock (_gate)
         {
-            var loaded = _file.Load(BootUtc());
+            var loaded = _file.Load(WindowsSession());
             _current = loaded.Record; _unreadable = loaded.Unreadable; _loaded = true;
             return loaded.Record;
         }
@@ -134,7 +138,7 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
             ct.ThrowIfCancellationRequested();
             if (!_loaded)
             {
-                var loaded = _file.Load(BootUtc()); _current = loaded.Record; _unreadable = loaded.Unreadable; _loaded = true;
+                var loaded = _file.Load(WindowsSession()); _current = loaded.Record; _unreadable = loaded.Unreadable; _loaded = true;
             }
             operation.Previous = _current; operation.PreviousUnreadable = _unreadable;
             if (_unreadable) return new(operation.Action, UploadLimitStatus.OwnershipUnavailable, operation.Rate, 0, _current, false);
@@ -215,7 +219,7 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
         _current = record;
         try
         {
-            if (record is null) _file.Delete(); else _file.Save(record, BootUtc());
+            if (record is null) _file.Delete(); else _file.Save(record, WindowsSession());
             _unreadable = false;
             return true;
         }
@@ -247,14 +251,14 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
 
 /// <summary>
 /// The record in one small JSON file: schema, the last action, the rate, when, whether Windows confirmed it, and when Windows
-/// had started. A file from an earlier Windows session describes a policy that is gone, so it is dropped. A damaged file is
+/// had started, plus observed monotonic uptime. A proven uptime reset drops the old record. Ambiguous restarts retain it. A damaged file is
 /// reported and blocks new changes because prior helper ownership cannot be established. Flushed through a temporary file.
 /// </summary>
 internal sealed class UploadLimitRecordFile(string path)
 {
     private static readonly JsonSerializerOptions Options = new() { WriteIndented = true };
 
-    public (UploadLimitRecord? Record, bool Unreadable) Load(DateTimeOffset bootUtc)
+    public (UploadLimitRecord? Record, bool Unreadable) Load((DateTimeOffset BootUtc, TimeSpan Uptime) session)
     {
         if (!File.Exists(path)) return (null, Directory.Exists(path));
         FileShape? shape;
@@ -265,25 +269,36 @@ internal sealed class UploadLimitRecordFile(string path)
         }
         catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException) { return (null, true); }
         if (shape is not { Schema: 1, KilobitsPerSecond: >= 0, AtUtc: { } at, BootUtc: { } boot }
-            || !Enum.TryParse(shape.LastAction, false, out UploadLimitAction action) || !Enum.IsDefined(action))
+            || !Enum.TryParse(shape.LastAction, false, out UploadLimitAction action) || !Enum.IsDefined(action)
+            || shape.UptimeTicks is < 0 || session.Uptime < TimeSpan.Zero)
             return (null, true);
-        if (!UploadLimitPolicy.SameWindowsSession(boot, bootUtc))
+        // Old unconfirmed records cannot prove that their former helper stopped.
+        bool unresolved = shape.HelperUnresolved ?? !shape.Confirmed;
+        if (unresolved && shape.Confirmed) return (null, true);
+        // A UTC correction can change the apparent boot time while the old process is still alive.
+        // Only a decrease in monotonic uptime proves that a reboot occurred after our observation.
+        if (shape.UptimeTicks is { } observedUptime && session.Uptime.Ticks < observedUptime)
         {
             try { Delete(); } catch (Exception error) when (error is IOException or UnauthorizedAccessException) { }
             return (null, false);
         }
-        // Old unconfirmed records cannot prove that their former helper stopped.
-        bool unresolved = shape.HelperUnresolved ?? !shape.Confirmed;
-        if (unresolved && shape.Confirmed) return (null, true);
-        return (new(action, shape.KilobitsPerSecond, at, shape.Confirmed, unresolved), false);
+
+        var record = new UploadLimitRecord(action, shape.KilobitsPerSecond, at, shape.Confirmed, unresolved);
+        if (shape.UptimeTicks is null)
+        {
+            // Upgrade observation metadata without releasing the hold. A later uptime reset can then prove restart.
+            try { Save(record, session); }
+            catch (Exception error) when (error is IOException or UnauthorizedAccessException) { return (record, true); }
+        }
+        return (record, false);
     }
 
-    public void Save(UploadLimitRecord record, DateTimeOffset bootUtc)
+    public void Save(UploadLimitRecord record, (DateTimeOffset BootUtc, TimeSpan Uptime) session)
     {
         var shape = new FileShape
         {
             LastAction = record.LastAction.ToString(), KilobitsPerSecond = record.KilobitsPerSecond,
-            AtUtc = record.AtUtc, BootUtc = bootUtc, Confirmed = record.Confirmed, HelperUnresolved = record.HelperUnresolved
+            AtUtc = record.AtUtc, BootUtc = session.BootUtc, UptimeTicks = session.Uptime.Ticks, Confirmed = record.Confirmed, HelperUnresolved = record.HelperUnresolved
         };
         Directory.CreateDirectory(Path.GetDirectoryName(Path.GetFullPath(path))!);
         string temporary = path + ".tmp";
@@ -305,6 +320,7 @@ internal sealed class UploadLimitRecordFile(string path)
         [JsonPropertyName("kilobitsPerSecond")] public int KilobitsPerSecond { get; set; }
         [JsonPropertyName("atUtc")] public DateTimeOffset? AtUtc { get; set; }
         [JsonPropertyName("bootUtc")] public DateTimeOffset? BootUtc { get; set; }
+        [JsonPropertyName("uptimeTicks")] public long? UptimeTicks { get; set; }
         [JsonPropertyName("confirmed")] public bool Confirmed { get; set; }
         [JsonPropertyName("helperUnresolved")] public bool? HelperUnresolved { get; set; }
     }
