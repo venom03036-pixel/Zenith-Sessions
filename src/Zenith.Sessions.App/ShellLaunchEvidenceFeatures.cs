@@ -214,12 +214,15 @@ public sealed partial class ShellViewModel
         var stages=diagnostic.Snapshot;
         // The launch-evidence report's own format counter (2 added NativeDiagnostics), separate from the Diagnostics report's, which is also 2:
         // only Scope and the fields tell the two apart, so add a fixed, allowlisted report-kind field the next time either format changes.
+        // The browser tracker number stays out of the export, as it stays out of view: the queue's receipt keeps it
+        // only to link a launch to its client log. Leaving it out keeps the FormatVersion 2 receipt (PID, start, recorded time).
+        var exported=view.ProcessReceipt is {BrowserTrackerId:not null} receipt?view with{ProcessReceipt=receipt with{BrowserTrackerId=null}}:view;
         var report=new
         {
             FormatVersion=2,Product="Zenith Sessions Personal",CreatedUtc=DateTimeOffset.UtcNow,
             Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),Scope="Unverified launch diagnostics; expected values never replace observations.",
             ProviderCapability=CapabilityState.Unverified,selected.Operation.Intent.OperationId,selected.Operation.State,selected.Operation.Problem,
-            Evidence=view,Pacing=_launchQueue.ReadPacing(),AccountVerified=false,ArrivalVerified=false,InputAuthorized=false,
+            Evidence=exported,Pacing=_launchQueue.ReadPacing(),AccountVerified=false,ArrivalVerified=false,InputAuthorized=false,
             NativeDiagnostics=new
             {
                 diagnostic.OperationId,diagnostic.Available,Revision=stages?.Revision,StartedUtc=stages?.StartedUtc,UpdatedUtc=stages?.UpdatedUtc,

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using Xunit;
 using Zenith.Sessions.Core;
@@ -106,15 +107,54 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
         Assert.Equal(RobloxClientFolders.LogRoots(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)), logs.Roots);
     }
 
+    private static string FaultEvent(string pid, string creation, string systemTime = "2026-11-07T20:13:17.6672502Z")
+        => "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>"
+            + "<Provider Name='Application Error'/><EventID>1000</EventID><TimeCreated SystemTime='" + systemTime + "'/></System><EventData>"
+            + "<Data Name='AppName'>SYNTHETIC_APP.exe</Data><Data Name='ExceptionCode'>c0000005</Data><Data Name='ProcessId'>" + pid + "</Data>"
+            + "<Data Name='ProcessCreationTime'>" + creation + "</Data><Data Name='AppPath'>C:\\SYNTHETIC_SECRET_PATH\\x.exe</Data><Data Name='PackageFullName'></Data></EventData></Event>";
+
+    [Fact]
+    public void FaultQueryAndPlacementKeepRecordsToExactlyProcessStartThroughCheckTime()
+    {
+        // The default run never crashes a process, so the window M-L7-3 narrowed from one second either side to exactly
+        // [process start, check time] is pinned here without the Event Log.
+        var from = new DateTimeOffset(2026, 11, 7, 20, 13, 17, TimeSpan.Zero).AddTicks(1997408);
+        var until = new DateTimeOffset(2026, 11, 7, 20, 15, 2, TimeSpan.Zero).AddTicks(6672502);
+        const string Head = "*[System[Provider[@Name='Application Error'] and (EventID=1000) and TimeCreated[@SystemTime>='";
+        // Event Log bounds are whole milliseconds. They round outward, so a record in the last part-millisecond before the
+        // check is still read, and no wider.
+        Assert.Equal(Head + "2026-11-07T20:13:17.199Z' and @SystemTime<='2026-11-07T20:15:02.668Z']]]", WindowsClientFaultProbe.FaultQuery(from, until));
+        var whole = new DateTimeOffset(2026, 11, 7, 20, 15, 2, 667, TimeSpan.Zero);
+        Assert.Equal(Head + "2026-11-07T20:13:17.199Z' and @SystemTime<='2026-11-07T20:15:02.667Z']]]",
+            WindowsClientFaultProbe.FaultQuery(from.ToOffset(TimeSpan.FromHours(-5)), whole.ToOffset(TimeSpan.FromHours(9))));
+
+        // Each record the query returns is then placed against the exact window.
+        string fileTime = "0x" + from.UtcDateTime.ToFileTimeUtc().ToString("x");
+        var key = new SessionProcessKey(null, 0x1f6c, from.UtcTicks);
+        string At(DateTimeOffset time) => FaultEvent("0x1f6c", fileTime, time.UtcDateTime.ToString("yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'", CultureInfo.InvariantCulture));
+        WindowsClientFaultProbe.FaultRecordFit Place(string xml, out DateTimeOffset time, out uint? code)
+            => WindowsClientFaultProbe.Place(xml, key, from, until, out time, out code);
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.InWindow, Place(At(from), out var first, out var code));
+        Assert.Equal(from, first); Assert.Equal(0xC0000005u, code);
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.InWindow, Place(At(until), out var last, out _));
+        Assert.Equal(until, last);
+        // This process's record inside the rounded query bounds but outside the window cannot be placed, so the check is
+        // incomplete rather than reporting a fault after the check time or claiming none.
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.CannotPlace, Place(At(from.AddTicks(-1)), out _, out _));
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.CannotPlace, Place(At(until.AddTicks(1)), out _, out _));
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.CannotPlace, Place(At(until.AddSeconds(1)), out _, out _));
+        // Another process's record is skipped wherever it falls; an unreadable record cannot be placed.
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.OtherProcess, Place(FaultEvent("0x1f6d", fileTime, "2026-11-07T20:15:03.0000000Z"), out _, out _));
+        Assert.Equal(WindowsClientFaultProbe.FaultRecordFit.CannotPlace, Place("<Event><EventData><Data Name='ProcessId'>0x1f6c", out _, out var none));
+        Assert.Null(none);
+    }
+
     [Fact]
     public void FaultRecordMatchingNeedsTheExactPidAndCreationTime()
     {
         long created = new DateTime(2026, 11, 7, 20, 13, 17, DateTimeKind.Utc).AddTicks(1997408).Ticks;
         string fileTime = "0x" + new DateTime(created, DateTimeKind.Utc).ToFileTimeUtc().ToString("x");
-        string Event(string pid, string creation) => "<Event xmlns='http://schemas.microsoft.com/win/2004/08/events/event'><System>"
-            + "<Provider Name='Application Error'/><EventID>1000</EventID><TimeCreated SystemTime='2026-11-07T20:13:17.6672502Z'/></System><EventData>"
-            + "<Data Name='AppName'>SYNTHETIC_APP.exe</Data><Data Name='ExceptionCode'>c0000005</Data><Data Name='ProcessId'>" + pid + "</Data>"
-            + "<Data Name='ProcessCreationTime'>" + creation + "</Data><Data Name='AppPath'>C:\\SYNTHETIC_SECRET_PATH\\x.exe</Data><Data Name='PackageFullName'></Data></EventData></Event>";
+        string Event(string pid, string creation) => FaultEvent(pid, creation);
         var key = new SessionProcessKey(null, 0x1f6c, created);
         Assert.True(WindowsClientFaultProbe.Matches(Event("0x1f6c", fileTime), key, out var time, out var code));
         Assert.Equal(new DateTimeOffset(2026, 11, 7, 20, 13, 17, TimeSpan.Zero).AddTicks(6672502), time); Assert.Equal(0xC0000005u, code);

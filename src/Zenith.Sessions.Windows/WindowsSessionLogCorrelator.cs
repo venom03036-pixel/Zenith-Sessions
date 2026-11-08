@@ -25,7 +25,8 @@ public sealed record SessionLogDiscoverySnapshot(long Revision, DateTimeOffset O
 
 /// <summary>
 /// A launch to look for in client log heads: its operation, the validated browser tracker its native request carried
-/// and the start of the process its receipt names. A log created before that start cannot be this launch's.
+/// and the start of the process its receipt names. A log created before that start cannot be this launch's, and one
+/// created once a later offered launch with the same tracker had started is taken to be that later launch's.
 /// The tracker is not a secret, unlike the ticket, and is corroboration only (HANDOFF.md): it proves neither the account nor arrival.
 /// </summary>
 public readonly record struct LaunchLogExpectation(Guid OperationId, long BrowserTrackerId, long NotBeforeUtcTicks)
@@ -51,11 +52,18 @@ public readonly record struct LaunchLogExpectation(Guid OperationId, long Browse
 
 public enum LaunchLogLinkStatus
 {
-    /// <summary>No client log created since the launch began names its tracker in the part read so far.</summary>
+    /// <summary>
+    /// No client log names its tracker in the part read so far that was created since the launch began and before any
+    /// later offered launch with the same tracker began; or one does, but another log written since the launch began has
+    /// not yet had a successful head read.
+    /// </summary>
     NotLinked,
-    /// <summary>Exactly one such log names it, and no other offered launch carries the same tracker or links to that log.</summary>
+    /// <summary>
+    /// Every log written since the launch began has had a successful head read, exactly one such log names it, no other
+    /// offered launch with the same tracker began at the same instant, and that log names no other offered launch's tracker.
+    /// </summary>
     Linked,
-    /// <summary>More than one log names it, another offered launch carries the same tracker, or the log names another launch's tracker too.</summary>
+    /// <summary>More than one such log names it, another offered launch with the same tracker began at the same instant, or the log names another launch's tracker too.</summary>
     Ambiguous,
     /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>
     Unavailable
@@ -123,11 +131,16 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private sealed class Reader(ClientLogCandidate candidate)
     {
         public readonly ClientLogCandidate Candidate = candidate;
-        // Launch-to-log: the last head read of this file (null before the first, or after a failed read), when it was
-        // attempted, and the rotation order of head reads. A complete head is never read again for the same file.
+        // Launch-to-log: the last head read of this file (null before the first, or after a failed read, and then the
+        // launches it could belong to stay unlinked), when a read was last attempted (it paces retries only), and the
+        // rotation order of head reads. A complete head is never read again for the same file, and nor is a settled one
+        // (HeadSettled): Unheld says the last holder query found no process holding the log, and HeadUnchanged counts
+        // the head checks in a row, while it was unheld, that found the same file at the same length.
         public IncrementalClientLogReader.ClientLogHead? Head;
         public long? HeadAt;
         public long LastHead;
+        public bool Unheld;
+        public int HeadUnchanged;
         public IncrementalClientLogReader? Log;
         public List<ClientLogObservation>? Facts;
         public ClientLogBatch? Batch;
@@ -153,9 +166,15 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
     // The fifth failed pass in a row ends the worker, so a persistent fault still reaches DisposeAsync.
     private const int MaximumConsecutivePassFailures = 5;
-    // At most 4 x 64 KiB of head bytes per pass, only while some log written since a launch began is unread or still
-    // growing. A head still being written is read again no sooner than HeadRecheck, and only when its length changed.
+    // At most 4 x 64 KiB of head bytes per pass, only while some log written since a launch began is unread or may still
+    // grow. An incomplete head is checked again no sooner than HeadRecheck: each check opens the file and reads its final
+    // path, identity and length, and its bytes are read again only when that length changed. Checks stop once the last
+    // holder query found no process holding the log and SettledHeadChecks checks in a row since then found it unchanged,
+    // because nothing can still be writing it (a log that ended before its first join line is never complete). They
+    // resume when a holder query finds a process holding it again or the file is replaced; the regular holder visits
+    // (at most ReadsPerPass per pass, each opening the log for its identity) see both.
     private const int HeadReadsPerPass = 4;
+    private const int SettledHeadChecks = 2;
     private static readonly TimeSpan HeadRecheck = TimeSpan.FromSeconds(2);
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
@@ -381,14 +400,18 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         {
             var before = IncrementalClientLogReader.ProbeIdentity(reader.Candidate.Path);
             // A replaced file's head is read again before it can link anything.
-            if (reader.Head is { } head && head.Identity != before) { reader.Head = null; reader.HeadAt = null; }
+            if (reader.Head is { } head && head.Identity != before) { reader.Head = null; reader.HeadAt = null; reader.HeadUnchanged = 0; }
             if (reader.Identity is { } identity && before != identity) Reset(reader, SessionLogCorrelationStatus.SourceChanged);
             bool refreshed = QueryDue(reader);
             if (refreshed)
             {
                 reader.QueryAt = _clock.GetTimestamp();
+                reader.Unheld = false;
                 var result = _probe.QueryHolders(reader.Candidate.Path, ct);
                 reader.QueryUtc = _clock.GetUtcNow(); reader.LeaseUntil = reader.QueryUtc + HolderLease;
+                // Launch-to-log: only a successful query that found no holder at all lets the head settle (HeadSettled).
+                reader.Unheld = result.Status == SessionLogCorrelationStatus.ResourceHolderObserved && result.Holders.Count == 0;
+                if (!reader.Unheld) reader.HeadUnchanged = 0;
                 if (result.Status != SessionLogCorrelationStatus.ResourceHolderObserved)
                 { Reset(reader, result.Status, keepQuery: true); return; }
                 if (result.Holders.Count != 1)
@@ -467,21 +490,31 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         || _clock.GetElapsedTime(queried) >= TimeSpan.FromSeconds(5);
 
     private bool HeadDue(Reader reader, long notBefore) => reader.Candidate.ModifiedUtc.UtcTicks >= notBefore
-        && reader.Head is not { Complete: true } && (reader.HeadAt is not { } at || _clock.GetElapsedTime(at) >= HeadRecheck);
+        && reader.Head is not { Complete: true } && !HeadSettled(reader)
+        && (reader.HeadAt is not { } at || _clock.GetElapsedTime(at) >= HeadRecheck);
+
+    // Nothing held the log at the last holder query, and at least SettledHeadChecks checks in a row since then, HeadRecheck
+    // apart, each found the same file at the same length as the check before, so it is not opened for its head again.
+    private static bool HeadSettled(Reader reader) => reader.Head is not null && reader.Unheld && reader.HeadUnchanged >= SettledHeadChecks;
 
     private static void ReadHead(Reader reader, CancellationToken ct)
     {
-        try { reader.Head = IncrementalClientLogReader.ReadHead(reader.Candidate.Path, reader.Head, ct); }
+        var previous = reader.Head;
+        try { reader.Head = IncrementalClientLogReader.ReadHead(reader.Candidate.Path, previous, ct); }
         // A head that cannot be read names nothing and is tried again later; like a failed read above, it is not a pass failure.
         catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
         { reader.Head = null; }
+        // ReadHead returns the previous head itself when the file's identity and length are unchanged.
+        reader.HeadUnchanged = reader.Unheld && previous is not null && ReferenceEquals(reader.Head, previous) ? reader.HeadUnchanged + 1 : 0;
     }
 
     /// <summary>
-    /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one has
-    /// had its head read at least once and exactly one, created since it began, names its tracker; and no other offered
-    /// launch shares that tracker or links to the same log. Process is that log's holder only while the holder binding is
-    /// current and unique, exactly as the per-process rows report it.
+    /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one's
+    /// head has been read and its last read succeeded, and exactly one names its tracker and is this launch's (OwnerOf: created since it
+    /// began, and before any later offered launch with that tracker began); no other launch with that tracker began at the
+    /// same instant; and that log names no other offered launch's tracker. A relaunch with the same tracker therefore links each
+    /// launch to its own log. Process is that log's holder only while the holder binding is current and unique, exactly as
+    /// the per-process rows report it.
     /// </summary>
     private static LaunchLogLink[] LinkLaunches(Input input, Reader[] readers, Dictionary<SessionProcessKey, Reader?> matches, bool unavailable)
     {
@@ -492,30 +525,58 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         for (int index = 0; index < launches.Length; index++)
         {
             var launch = launches[index];
-            bool shared = false, pending = false; int named = 0; Reader? found = null;
-            foreach (var other in launches)
-                shared |= other.OperationId != launch.OperationId && other.BrowserTrackerId == launch.BrowserTrackerId;
+            bool tied = false, pending = false; int named = 0; Reader? found = null;
             foreach (var reader in readers)
             {
                 if (reader.Candidate.ModifiedUtc.UtcTicks < launch.NotBeforeUtcTicks) continue;
-                if (reader.HeadAt is null) pending = true;
-                else if (reader.Head is { } head && head.CreatedUtcTicks >= launch.NotBeforeUtcTicks
-                    && Array.IndexOf(head.Trackers, launch.BrowserTrackerId) >= 0) { named++; found = reader; }
+                // No head yet, or the last head read failed (HeadAt is set either way): this log could name the tracker.
+                if (reader.Head is not { } head) pending = true;
+                else if (head.CreatedUtcTicks >= launch.NotBeforeUtcTicks
+                    && Array.IndexOf(head.Trackers, launch.BrowserTrackerId) >= 0
+                    && OwnerOf(launches, index, head.CreatedUtcTicks) is var owner and not LogOwner.Later)
+                { named++; found = reader; tied |= owner == LogOwner.Tied; }
             }
-            if (shared || named > 1) links[index] = new(launch.OperationId, LaunchLogLinkStatus.Ambiguous);
+            if (tied || named > 1) links[index] = new(launch.OperationId, LaunchLogLinkStatus.Ambiguous);
             else if (named == 1 && !pending) linked[index] = found;
             else links[index] = new(launch.OperationId, unavailable ? LaunchLogLinkStatus.Unavailable : LaunchLogLinkStatus.NotLinked);
         }
         for (int index = 0; index < launches.Length; index++)
         {
-            if (linked[index] is not { } reader) continue;
+            if (linked[index] is not { Head: { } head } reader) continue;
+            // Exclusive: the log names no other offered launch's tracker, whether or not that launch could link itself
+            // (Ambiguous or pending), and no other launch links to it. Same-tracker launches are settled by OwnerOf.
+            // Bounded: at most MaximumLaunches x 4 tracker comparisons per linked launch, and no allocation.
             bool exclusive = true;
-            for (int other = 0; other < launches.Length; other++) exclusive &= other == index || !ReferenceEquals(linked[other], reader);
+            for (int other = 0; other < launches.Length; other++)
+                exclusive &= other == index || !ReferenceEquals(linked[other], reader)
+                    && (launches[other].BrowserTrackerId == launches[index].BrowserTrackerId || Array.IndexOf(head.Trackers, launches[other].BrowserTrackerId) < 0);
             links[index] = !exclusive ? new(launches[index].OperationId, LaunchLogLinkStatus.Ambiguous)
                 : new(launches[index].OperationId, LaunchLogLinkStatus.Linked,
                     reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null);
         }
         return links;
+    }
+
+    private enum LogOwner { This, Tied, Later }
+
+    // A log naming a tracker belongs to the offered launch with that tracker that began last at or before the log was
+    // created, so a relaunch with the same tracker leaves the earlier launch's own log with it. Later: another launch with
+    // the tracker began after this one and no later than the log, so the log is that one's. Tied: another began at the same
+    // instant, so the log could be either's. Tradeoff: an earlier launch whose client created its log only after the
+    // relaunch began would have that log taken for the relaunch's (the link stays corroboration only). Bounded: at most
+    // MaximumLaunches comparisons per log, and no allocation.
+    private static LogOwner OwnerOf(LaunchLogExpectation[] launches, int index, long createdUtcTicks)
+    {
+        var launch = launches[index];
+        var owner = LogOwner.This;
+        for (int other = 0; other < launches.Length; other++)
+        {
+            if (other == index || launches[other].BrowserTrackerId != launch.BrowserTrackerId) continue;
+            long began = launches[other].NotBeforeUtcTicks;
+            if (began > launch.NotBeforeUtcTicks && began <= createdUtcTicks) return LogOwner.Later;
+            if (began == launch.NotBeforeUtcTicks) owner = LogOwner.Tied;
+        }
+        return owner;
     }
 
     private void Reset(Reader reader, SessionLogCorrelationStatus status, bool keepQuery = false)

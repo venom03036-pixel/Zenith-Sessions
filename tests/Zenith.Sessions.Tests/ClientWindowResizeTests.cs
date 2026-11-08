@@ -211,13 +211,14 @@ public sealed class ClientWindowResizeTests
         Task<WindowActionResult>? minimize = null;
         try
         {
+            // Every wait here (and the adapter's gate) is positive: the awaited step must happen. 30 s tolerates a loaded parallel run.
             await adapter.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             minimize = operations.ChangeAsync(Session(3), ClientWindowAction.Minimize, default);
             operations.Cancel(); Assert.False(resize.IsCompleted); Assert.False(minimize.IsCompleted);
             adapter.Release.Set();
-            var result = await resize.WaitAsync(TimeSpan.FromSeconds(3));
+            var result = await resize.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.True(result.Cancelled); Assert.All(result.Results, row => Assert.Equal(ClientWindowPlacementStatus.Cancelled, row.Status));
-            Assert.False((await minimize.WaitAsync(TimeSpan.FromSeconds(3))).Applied);
+            Assert.False((await minimize.WaitAsync(TimeSpan.FromSeconds(30))).Applied);
             Assert.Single(adapter.Posts); Assert.Equal(0, adapter.StateChanges);
         }
         finally { adapter.Release.Set(); await resize; if (minimize is not null) await minimize; }
@@ -284,7 +285,9 @@ public sealed class ClientWindowResizeTests
             if (Geometry(session) != expected) return WindowPostStatus.Changed;
             if (stopped()) return WindowPostStatus.Cancelled;
             Posts.Add((session, bounds)); Entered.TrySetResult();
-            if (Block && !Release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Synthetic resize gate timed out.");
+            // Positive wait: every Block test releases the gate (also in its finally). The limit only stops a broken test from
+            // hanging, so it matches the 30 s start-signal waits rather than racing a test continuation on a loaded machine.
+            if (Block && !Release.Wait(TimeSpan.FromSeconds(30))) throw new TimeoutException("Synthetic resize gate timed out.");
             var content = expected.ContentBounds; var outer = expected.OuterBounds;
             Geometries[session.Window] = expected with
             {

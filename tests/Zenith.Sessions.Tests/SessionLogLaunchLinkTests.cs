@@ -61,6 +61,7 @@ public sealed partial class SessionLogCorrelatorTests
         LaunchLogExpectation[] launches = shape switch
         {
             "two-logs" => [Launch()],
+            // Both began at the same instant, so the log could be either's.
             "two-launches" => [Launch(), Launch()],
             _ => [Launch(), Launch(Tracker + 1)]
         };
@@ -68,6 +69,81 @@ public sealed partial class SessionLogCorrelatorTests
         worker.Offer(Desktop(client), client.HostId, launches);
         var links = (await After(worker)).Launches;
         Assert.Equal(launches.Select(launch => new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Ambiguous)), links);
+    }
+
+    [Fact]
+    public async Task ALogWhoseHeadCouldNotBeReadKeepsTheLaunchUnlinkedUntilItsHeadIsRead()
+    {
+        // A second log written since the launch began is locked by another writer, so its head read fails. It could name
+        // the tracker too, so the readable log that does is not linked until that head has been read.
+        var client = Key(77); var clock = new Clock(); Write(TrackerLine());
+        var probe = new Probe(Log, client);
+        var locked = Candidate("locked", SyntheticClientLogFixtures.Line("FLog::SyntheticStartup", "starting"));
+        probe.Files = [probe.Files[0], locked];
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        var launch = Launch();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        SessionLogDiscoverySnapshot first;
+        using (new FileStream(locked.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            worker.Offer(Desktop(client), client.HostId, [launch]);
+            first = await After(worker);
+        }
+        Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.NotLinked), Assert.Single(first.Launches));
+        clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, [launch]);
+        Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single((await After(worker, first.Revision)).Launches));
+    }
+
+    [Theory]
+    [InlineData("second-ambiguous")]
+    [InlineData("second-pending")]
+    public async Task ALogThatAlsoNamesAnotherLaunchsTrackerLinksNeitherEvenWhenThatLaunchCannotLink(string shape)
+    {
+        // The held log names both launches' trackers. The second launch, which began earlier, cannot link: another log
+        // written since it began names its tracker too, or one could not be read. The held log is still no more the
+        // first launch's than the second's.
+        var client = Key(77); var now = DateTimeOffset.UtcNow;
+        Write(TrackerLine() + TrackerLine(Tracker + 1, "BTID is overriden to "));
+        var other = Candidate("other", shape == "second-ambiguous" ? TrackerLine(Tracker + 1) : "");
+        File.SetCreationTimeUtc(other.Path, now.AddMinutes(-100).UtcDateTime);
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now), other with { ModifiedUtc = now.AddMinutes(-90) }] };
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        using var hold = shape == "second-pending" ? new FileStream(other.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None) : null;
+        LaunchLogExpectation first = Launch(notBefore: now.AddHours(-1).UtcTicks), second = Launch(Tracker + 1, now.AddHours(-2).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [first, second]);
+        Assert.Equal(new[]
+        {
+            new LaunchLogLink(first.OperationId, LaunchLogLinkStatus.Ambiguous),
+            new LaunchLogLink(second.OperationId, shape == "second-pending" ? LaunchLogLinkStatus.NotLinked : LaunchLogLinkStatus.Ambiguous)
+        }, (await After(worker)).Launches);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task ARelaunchWithTheSameTrackerLinksEachLogToTheLatestLaunchThatBeganBeforeIt(bool previousLogKept)
+    {
+        // One browser tracker, launched two hours ago and again an hour ago. The log created since the second launch began
+        // is the second's; one created between the two launches can only be the first's. Neither makes the other ambiguous.
+        var client = Key(77); var now = DateTimeOffset.UtcNow;
+        Write(TrackerLine());
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now)] };
+        if (previousLogKept)
+        {
+            var previous = Candidate("previous", TrackerLine());
+            File.SetCreationTimeUtc(previous.Path, now.AddMinutes(-90).UtcDateTime);
+            probe.Files = [probe.Files[0], previous with { ModifiedUtc = now.AddMinutes(-80) }];
+        }
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        LaunchLogExpectation first = Launch(notBefore: now.AddHours(-2).UtcTicks), second = Launch(notBefore: now.AddHours(-1).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [second, first]);
+        Assert.Equal(new[]
+        {
+            new LaunchLogLink(second.OperationId, LaunchLogLinkStatus.Linked, client),
+            new LaunchLogLink(first.OperationId, previousLogKept ? LaunchLogLinkStatus.Linked : LaunchLogLinkStatus.NotLinked)
+        }, (await After(worker)).Launches);
     }
 
     [Theory]
@@ -112,6 +188,40 @@ public sealed partial class SessionLogCorrelatorTests
         File.AppendAllText(Log, TrackerLine());
         clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, [launch]);
         Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single((await After(worker, first.Revision)).Launches));
+    }
+
+    [Theory]
+    [InlineData("ended")]
+    [InlineData("still-held")]
+    [InlineData("held-again")]
+    public async Task AnIncompleteHeadIsNoLongerReopenedOnceNothingHoldsItsLogAndItsLengthSettled(string shape)
+    {
+        // A second log, written since the launch began, ended before any join line, so its short head never completes.
+        // Once a holder query finds no process holding it and two checks since then find it unchanged, it is not opened
+        // again: a later exclusive lock on it (which a reopen would fail on, leaving the launch pending) changes nothing.
+        // While any process holds it, or once one holds it again, it is still checked.
+        var client = Key(77); var clock = new Clock(); Write(TrackerLine() + SyntheticClientLogFixtures.Joining);
+        var probe = new Probe(Log, client);
+        var ended = Candidate("ended", SyntheticClientLogFixtures.Line("FLog::SyntheticStartup", "starting"));
+        probe.Files = [probe.Files[0], ended];
+        bool held = shape == "still-held";
+        probe.HolderFor = path => path == Log ? HeldBy(client) : held ? HeldBy(Key(99)) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        var launch = Launch();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        var snapshot = new SessionLogDiscoverySnapshot(0, DateTimeOffset.MinValue, [], 0, false);
+        async Task Pass(int advance)
+        {
+            clock.Advance(advance); worker.Offer(Desktop(client), client.HostId, [launch]);
+            snapshot = await After(worker, snapshot.Revision);
+            Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single(snapshot.Launches));
+        }
+        await Pass(0); await Pass(2500); await Pass(2500);
+        if (shape == "held-again") held = true;
+        await Pass(5000);
+        using var hold = new FileStream(ended.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None);
+        clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, [launch]);
+        Assert.Equal(new LaunchLogLink(launch.OperationId, shape == "ended" ? LaunchLogLinkStatus.Linked : LaunchLogLinkStatus.NotLinked, shape == "ended" ? client : null),
+            Assert.Single((await After(worker, snapshot.Revision)).Launches));
     }
 
     [Fact]
