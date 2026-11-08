@@ -175,10 +175,14 @@ public sealed partial class ShellViewModel
         &&SelectedInstallation?.Candidate==review.Installation
         &&ServerBrowser.ReadyDestination is { } destination&&destination.PlaceId==review.Destination.PlaceId
         &&destination.JobId==review.Destination.JobId&&destination.ServerKind==review.Destination.ServerKind;
-    private void RejectNativeTrialReview()
+    private const string NativeTrialReviewUnavailable="This trial review changed or is no longer available. Review the selected account and destination again before starting.";
+    // A review change cancelled a start that was still checking Roblox's release or the saved sign-in: the user has just read
+    // that the trial is being checked, so the card must say it was not queued rather than show what it said before the start.
+    private const string NativeTrialNotStartedReviewChanged="Trial not started: the selected account or destination changed while it was being checked. Review the selected account and destination again before starting.";
+    private void RejectNativeTrialReview(string reason=NativeTrialReviewUnavailable)
     {
         if(IsLocked||_shuttingDown||_preserveStopNotice)return;
-        NativeTrialStatus=Notice="This trial review changed or is no longer available. Review the selected account and destination again before starting.";
+        NativeTrialStatus=Notice=reason;
     }
     private async Task StartNativeTrialAsync(object? parameter)
     {
@@ -207,6 +211,13 @@ public sealed partial class ShellViewModel
                 ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))
             {await CancelAbandonedNativeTrialAsync(request);return;}
         }
+        // A review change (another account or destination, a reloaded user id or grant) cancels this start through `stop` while it
+        // is still reading Roblox's release, the profile or the grant, and sets no line of its own, so the start says the trial
+        // was not queued (O-C9-2). Stop trial, an installation change, Panic and Lock advance the epoch and set their own reason,
+        // which is kept; shutdown cancels the lifetime and says nothing. AsyncCommand would otherwise swallow this cancellation.
+        catch(OperationCanceledException) when(stop.IsCancellationRequested&&!_lifetime.IsCancellationRequested
+            &&review.Epoch==Interlocked.Read(ref _nativeTrialEpoch))
+        {RejectNativeTrialReview(NativeTrialNotStartedReviewChanged);return;}
         finally {if(ReferenceEquals(_nativeReviewStop,stop))_nativeReviewStop=null;}
         if(IsLocked||_shuttingDown||_lifetime.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch))return;
         _preferredEvidenceOperation=request.Intent.OperationId;RefreshLaunchEvidence();

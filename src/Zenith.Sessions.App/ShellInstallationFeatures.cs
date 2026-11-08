@@ -287,7 +287,8 @@ public sealed partial class ShellViewModel
     // still older, as releases only move forward); a row that answer predates stays "Not checked" and never holds (Rule 16).
     // Only the exception type is recorded, never its text. Dispatcher: while Roblox is asked the trial card says the start is
     // waiting and for how long; afterwards it shows what it said before, unless Stop trial, Panic, Lock or a selection change
-    // replaced the line meanwhile, whose reason is kept.
+    // replaced the line meanwhile, whose reason is kept. A review change (another account or destination) cancels `ct` and
+    // sets no line: the cancellation reaches the start, which then says the trial was not started (StartNativeTrialAsync).
     private async Task ReadLaunchReleaseAsync(CancellationToken ct)
     {
         if (_releaseCache is null || _releaseCache.IsFresh) return;
