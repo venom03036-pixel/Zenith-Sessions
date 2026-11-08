@@ -4,6 +4,7 @@ namespace Zenith.Sessions.Core;
 /// Mute turns off the sound of the client's own Windows audio sessions (the Volume mixer entry), and Zenith unmutes it again
 /// on Unmute, Restore or Exit. Unmute turns the sound on, also for a client Zenith did not mute, for example one that started
 /// muted because Windows remembered an earlier mute; that unmute is never undone. RestoreOriginal unmutes only what Zenith muted.
+/// Unmute and RestoreOriginal turn every one of the client's sessions on, also when only some are muted; Mute leaves such a client as found.
 /// Nothing in the client's files, settings or memory is read or changed.
 /// </summary>
 public enum ClientAudioMuteAction { Mute, Unmute, RestoreOriginal }
@@ -12,7 +13,7 @@ public enum ClientAudioMuteStatus
     Applied, Restored, Unchanged, InvalidClient, AccessDenied, NoAudioSession, Conflict, CapacityReached, Cancelled, NotConfirmed, Busy, Closed
 }
 
-/// <param name="Previous">Whether the client's sound was muted before this operation; null when Windows did not report it.</param>
+/// <param name="Previous">Whether the client's sound was muted before this operation; null when Windows did not report it or only part of it was muted.</param>
 /// <param name="Current">Whether the client's sound was muted after this operation; null when Windows did not report it.</param>
 public sealed record ClientAudioMuteResult(SessionObservation Session, ClientAudioMuteAction Action, ClientAudioMuteStatus Status,
     bool? Previous, bool? Current, bool RestorePending)

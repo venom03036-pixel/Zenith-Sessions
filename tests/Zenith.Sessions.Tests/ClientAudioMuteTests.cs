@@ -141,6 +141,57 @@ public sealed class ClientAudioMuteTests
     }
 
     [Fact]
+    public async Task UnmuteTurnsOnEverySessionOfAPartlyMutedClient()
+    {
+        // For example, a muted client opened a second session, on another output device, that started with its sound on.
+        var native = new Native(); native.Add(1, true, false);
+        var control = Control(native);
+        var row = Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Unmute, default)).Results);
+        Assert.True(row.Status == ClientAudioMuteStatus.Applied, row.Status + ": " + row.Explanation);
+        Assert.Equal(((bool?)null, (bool?)false), (row.Previous, row.Current)); // Neither muted nor on before: only part of it was.
+        Assert.False(row.RestorePending);
+        Assert.Equal(new[] { false, false }, native.Clients[1].Sessions);
+        await control.DisposeAsync();
+        Assert.Equal(new[] { false, false }, native.Clients[1].Sessions);
+    }
+
+    [Fact]
+    public async Task RestoreAndExitTurnOnEverySessionOfAClientZenithMutedThatIsNowPartlyMuted()
+    {
+        var native = new Native(); native.Add(1, false); native.Add(2, false);
+        var control = Control(native);
+        var muted = await control.ChangeAsync([Session(1), Session(2)], ClientAudioMuteAction.Mute, default);
+        Assert.All(muted.Results, row => Assert.Equal(ClientAudioMuteStatus.Applied, row.Status));
+        // Each muted client then opens a second session, on another output device, that starts with its sound on.
+        native.Clients[1].Sessions = [true, false];
+        native.Clients[2].Sessions = [true, false];
+
+        var restored = Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.RestoreOriginal, default)).Results);
+        Assert.True(restored.Status == ClientAudioMuteStatus.Restored, restored.Status + ": " + restored.Explanation);
+        Assert.False(restored.RestorePending);
+        Assert.Equal(new[] { false, false }, native.Clients[1].Sessions);
+        Assert.Equal(1, control.PendingRestoreCount);
+
+        await control.DisposeAsync(); // Exit throws ClientAudioMuteCleanupException when it cannot unmute a client Zenith muted.
+        Assert.Equal(new[] { false, false }, native.Clients[2].Sessions);
+        Assert.Equal(0, control.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task AnUnmuteThatFindsPartOfTheSoundTurnedOnJustBeforeTheWriteStillTurnsItAllOn()
+    {
+        var native = new Native(); native.Add(1, false, false);
+        var control = Control(native);
+        await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Mute, default);
+        native.BeforeSet = client => client.Sessions[1] = false; // Turned on in Volume mixer between the read and the write.
+        var row = Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Unmute, default)).Results);
+        Assert.True(row.Status == ClientAudioMuteStatus.Applied, row.Status + ": " + row.Explanation);
+        Assert.Equal(new[] { false, false }, native.Clients[1].Sessions);
+        Assert.Equal(0, control.PendingRestoreCount);
+        await control.DisposeAsync();
+    }
+
+    [Fact]
     public async Task UnmuteOfAClientZenithMutedEndsItsOwnership()
     {
         var native = new Native(); native.Add(1, false);
@@ -238,13 +289,13 @@ public sealed class ClientAudioMuteTests
             AfterSessionRead?.Invoke(client);
             return states;
         }
-        public ClientAudioNativeWrite SetSessions(int processId, bool expected, bool desired)
+        public ClientAudioNativeWrite SetSessions(int processId, bool? expected, bool desired)
         {
             var client = Clients[processId];
             SetCalls++;
             BeforeSet?.Invoke(client);
             int count = client.Sessions.Length;
-            if (client.Sessions.Any(muted => muted != expected)) return new(count, true, 0, 0);
+            if (expected is { } state && client.Sessions.Any(muted => muted != state)) return new(count, true, 0, 0);
             if (DenySet) return new(count, false, 0, unchecked((int)0x80070005));
             for (int index = 0; index < count; index++) client.Sessions[index] = desired;
             return new(count, false, count, 0);

@@ -151,7 +151,7 @@ public sealed class ClientAudioMuteNativeTests
         {
             if (_disposed || _process.HasExited) return;
             var states = NativeApi().ReadSessions(_process.Id, out _);
-            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, true, false);
+            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, null, false);
         }
 
         // The adapter's production Core Audio calls, without its identity checks or the control's ownership map.
