@@ -2,7 +2,6 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
-using System.Runtime.ExceptionServices;
 using System.Threading;
 using System.Threading.Tasks;
 using Zenith.Sessions.Core;
@@ -12,11 +11,7 @@ namespace Zenith.Sessions.App;
 // The real packaged owner with an in-memory transport. No HWND, physical input or account is accessed.
 internal static class PackagedTargetedInputCheck
 {
-    // The self-check's 15 s deadline plus this bound stays inside the 20 s that
-    // Check-ZenithSessionsManager.ps1 waits, so the report is still written in time.
-    private static readonly TimeSpan OwnerShutdownBound = TimeSpan.FromSeconds(2);
-
-    public static Task VerifyAsync(CancellationToken ct) => VerifyAsync(static transport => transport, OwnerShutdownBound, ct);
+    public static Task VerifyAsync(CancellationToken ct) => VerifyAsync(static transport => transport, SelfCheckOwners.ShutdownBound, ct);
 
     // decorate sits between the owner and the controlled transport, so a test can stand in a stalled native call.
     internal static async Task VerifyAsync(Func<ITargetedInputTransport, ITargetedInputTransport> decorate, TimeSpan shutdownBound, CancellationToken ct)
@@ -26,16 +21,9 @@ internal static class PackagedTargetedInputCheck
             || !typeof(LaunchIntent).Assembly.GetForwardedTypes().Contains(typeof(TargetedInputRun)))
             throw new InvalidDataException("The packaged shared input runtime or compatibility forwards are unavailable.");
         var transport = new ControlledTransport();
-        var owner = new TargetedInputCoordinator(decorate(transport), new(MaximumRuns: 2));
-        Exception? failure = null;
-        try { await ExerciseAsync(owner, transport, ct); }
-        catch (Exception ex) { failure = ex; }
-        // Disposal takes no token and joins every worker the owner tracks, so the worker that outlived the
-        // stage deadline would hold it (and the report) too. A stalled owner fails the stage as a timeout,
-        // keeping any earlier failure as its cause, and is abandoned: its workers end with the process.
-        try { await owner.DisposeAsync().AsTask().WaitAsync(shutdownBound); }
-        catch (TimeoutException) { throw new TimeoutException("The packaged input owner did not shut down in time.", failure); }
-        if (failure is not null) ExceptionDispatchInfo.Throw(failure);
+        // Disposal takes no token and joins every worker the owner tracks; the helper bounds it.
+        await SelfCheckOwners.UseAsync(new TargetedInputCoordinator(decorate(transport), new(MaximumRuns: 2)),
+            owner => ExerciseAsync(owner, transport, ct), shutdownBound);
     }
 
     private static async Task ExerciseAsync(TargetedInputCoordinator owner, ControlledTransport transport, CancellationToken ct)

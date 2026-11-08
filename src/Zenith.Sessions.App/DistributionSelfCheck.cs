@@ -203,7 +203,7 @@ internal static class DistributionSelfCheck
             if((await vault.TryCommitSnapshotAsync(emptyNative,nativeRecord,Guid.NewGuid(),ct)).Status!=AuthorizationMutationStatus.Applied)
                 throw new InvalidDataException("Synthetic handoff preparation conflicted.");
             await using(var nativeFixture=new SyntheticNativePreparation())
-            await using(var nativeService=new RobloxSessionLinkService(repository,vault,nativeFixture,nativeFixture))
+            await SelfCheckOwners.UseAsync(new RobloxSessionLinkService(repository,vault,nativeFixture,nativeFixture),async nativeService=>
             {
                 var intent=new LaunchIntent(Guid.NewGuid(),saved.Id,saved.Revision,123,6564161046,0,DateTimeOffset.UtcNow,nativeRecord.Generation,HasExplicitDestination:true);
                 var preparation=await nativeService.PrepareNativeHandoffAsync(intent,nativeFixture,ct);
@@ -214,16 +214,16 @@ internal static class DistributionSelfCheck
                     throw new InvalidDataException("The fixed browser preparation facts were lost.");
                 using var ready=preparation.Preparation;
                 using var prepared=new SyntheticHandoffStart();
-                await using(var coordinator=new NativeHandoffCoordinator(vault))
+                await SelfCheckOwners.UseAsync(new NativeHandoffCoordinator(vault),async coordinator=>
                 {
                     var handoffAttempt=await coordinator.DispatchAsync(ready.Candidate,ready.FinalGrant,ready.Intent,prepared,new LaunchAuthorizationValidator(repository,vault).ValidateAsync,
                         ()=>true,()=>new(true,"Synthetic fixture reservation only"),ct);
                     if(handoffAttempt.Status!=NativeHandoffAttemptStatus.StartedUnverified||prepared.Calls!=1||handoffAttempt.ProcessReceipt!=prepared.Receipt||!ready.Candidate.IsConsumed)
                         throw new InvalidDataException("Synthetic final handoff boundary failed.");
-                }
+                });
                 if((await vault.TryDeleteSnapshotAsync(ready.FinalGrant,ct)).Status!=AuthorizationMutationStatus.Applied)
                     throw new InvalidDataException("Synthetic handoff cleanup conflicted.");
-            }
+            });
             cases.Add(new(stage,true));
 
             stage="Windows protected authorization round trip";
@@ -317,7 +317,7 @@ internal static class DistributionSelfCheck
             stage="Direct verified account creation";
             var setup = new SyntheticAccountSetup();
             using (var setupProjection = new AccountIdentityProjection(root, repository, vault))
-            await using (var setupService = new RobloxSessionLinkService(repository, vault, setup, setup, setupProjection))
+            await SelfCheckOwners.UseAsync(new RobloxSessionLinkService(repository, vault, setup, setup, setupProjection), async setupService =>
             {
                 var beforeAdd = await repository.ReadAsync(new(PageSize: 1), ct);
                 var added = await setupService.AddAsync(ct);
@@ -346,7 +346,7 @@ internal static class DistributionSelfCheck
                 if ((await cleanup.RunAsync(ct)).Remaining != 0 || await vault.ReadAsync(added.ProfileId, ct) is not null
                     || await repository.FindAsync(added.ProfileId, ct) is not null)
                     throw new InvalidDataException("The synthetic account cleanup did not finish.");
-            }
+            });
             cases.Add(new(stage,true));
 
             stage="Generation-owned identity recovery cleanup";
@@ -413,11 +413,13 @@ internal static class DistributionSelfCheck
             using(var store=new LaunchQueueStore(root))
             {
                 await store.SaveAsync(LaunchQueueSnapshot.Empty,ct);
-                await using var queue=new LaunchCoordinator(store,new UnavailableLaunchProvider(),(_,_)=>Task.FromResult(false),_=>new(false,"Self-check: no clients may start."));
-                await queue.InitializeAsync(ct);var blocked=await queue.EnqueueAsync(saved,ct);
-                if(blocked.State!=LaunchState.Blocked || blocked.Problem!=LaunchProblem.ProviderUnavailable || (await store.LoadAsync(ct)).Operations.Count!=1)
-                    throw new InvalidDataException("The guarded native queue round trip failed.");
-                await queue.CancelAsync(blocked.Intent.OperationId,ct);
+                await SelfCheckOwners.UseAsync(new LaunchCoordinator(store,new UnavailableLaunchProvider(),(_,_)=>Task.FromResult(false),_=>new(false,"Self-check: no clients may start.")),async queue=>
+                {
+                    await queue.InitializeAsync(ct);var blocked=await queue.EnqueueAsync(saved,ct);
+                    if(blocked.State!=LaunchState.Blocked || blocked.Problem!=LaunchProblem.ProviderUnavailable || (await store.LoadAsync(ct)).Operations.Count!=1)
+                        throw new InvalidDataException("The guarded native queue round trip failed.");
+                    await queue.CancelAsync(blocked.Intent.OperationId,ct);
+                });
             }
             cases.Add(new(stage,true));
 
@@ -441,25 +443,25 @@ internal static class DistributionSelfCheck
             {
                 await preparationStore.SaveAsync(LaunchQueueSnapshot.Empty,ct);
                 var provider=new SyntheticQueuePreparation();
-                await using(var queue=new LaunchCoordinator(preparationStore,provider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic admission"),
-                    startupDeadline:TimeSpan.FromSeconds(2),stabilization:TimeSpan.Zero,stagger:TimeSpan.Zero))
+                await SelfCheckOwners.UseAsync(new LaunchCoordinator(preparationStore,provider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic admission"),
+                    startupDeadline:TimeSpan.FromSeconds(2),stabilization:TimeSpan.Zero,stagger:TimeSpan.Zero),async queue=>
                 {
                     await queue.InitializeAsync(ct);await queue.EnqueueAsync(saved,ct,new(123,7));await queue.SetPausedAsync(false,ct);
                     while(provider.Disposed==0){await Task.Delay(5,ct);}
                     var snapshot=await preparationStore.LoadAsync(ct);var row=snapshot.Operations.Single();
                     if(provider.Calls!=1||provider.Dispatches!=1||row.State!=LaunchState.ClientStartedUnverified||row.Intent.AuthorizationGeneration!=9||row.ProcessReceipt is null)
                         throw new InvalidDataException("The synthetic prepared dispatch lost its owned intent or receipt.");
-                }
+                });
                 var at=DateTimeOffset.UtcNow;
                 var interrupted=new LaunchOperation(new(Guid.NewGuid(),saved.Id,saved.Revision,123,6564161046,0,at,7),LaunchState.Preparing,LaunchProblem.None,at);
                 await preparationStore.SaveAsync(new(false,[interrupted]),ct);
                 var recoveryProvider=new SyntheticQueuePreparation();
-                await using(var queue=new LaunchCoordinator(preparationStore,recoveryProvider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic admission")))
+                await SelfCheckOwners.UseAsync(new LaunchCoordinator(preparationStore,recoveryProvider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic admission")),async queue=>
                 {
                     await queue.InitializeAsync(ct);var recovered=await preparationStore.LoadAsync(ct);var row=recovered.Operations.Single();
                     if(!recovered.Paused||row.State!=LaunchState.Blocked||row.Problem!=LaunchProblem.PreparationInterrupted||LaunchDescriptions.NeedsReservation(row.State)||recoveryProvider.Calls!=0)
                         throw new InvalidDataException("Interrupted preparation was replayed or retained a client reservation.");
-                }
+                });
                 await preparationStore.SaveAsync(LaunchQueueSnapshot.Empty,ct);
             }
             cases.Add(new(stage,true));
@@ -471,30 +473,32 @@ internal static class DistributionSelfCheck
                 // runs. Reset its fixture intent, never append another account trial to history.
                 await trialStore.SaveAsync(LaunchQueueSnapshot.Empty,ct);
                 var provider=new SyntheticQueuePreparation(true);
-                await using var queue=new LaunchCoordinator(trialStore,provider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic capacity"),
-                    stabilization:TimeSpan.Zero,stagger:TimeSpan.Zero);
-                await queue.InitializeAsync(ct);
-                var request=await queue.EnqueueTrialAsync(saved,ct,new(123,7),new(6564161046));
-                if(!await queue.ResumeTrialAsync(request.Intent.OperationId,ct))throw new InvalidDataException("Synthetic trial consent was lost.");
-                while(provider.Disposed==0)await Task.Delay(5,ct);
-                var snapshot=await trialStore.LoadAsync(ct);var row=snapshot.Operations.Single();var at=DateTimeOffset.UtcNow;
-                if(row.State!=LaunchState.ClientStartedUnverified||row.ProcessReceipt is not { } receipt||provider.AccountLaunch.State!=CapabilityState.Unverified)
-                    throw new InvalidDataException("An explicit trial incorrectly upgraded capability or lost its receipt.");
-                var desktop=new DesktopSnapshot(new(at,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,10*CapacityPolicy.GiB,10),
-                    [new(receipt.ProcessId,receipt.ProcessStartUtcTicks,"synthetic",0,"synthetic",false,true,(long)CapacityPolicy.GiB,(long)CapacityPolicy.GiB,0,at,
-                        PrivateWorkingSetBytes:(long)CapacityPolicy.GiB)],ProcessObservedUtc:at,ProcessRevision:1,ProcessInventoryComplete:true);
-                var projected=LaunchReservationProjection.Evaluate(snapshot,desktop,new(),at);
-                if(projected.OccupiedForAdmission!=1||projected.CreditedReservations!=1||!projected.SafelyObservedOperationIds.Contains(request.Intent.OperationId))
-                    throw new InvalidDataException("Synthetic process consumption was not projected conservatively.");
-                var evidence=NativeTrialEvidence.Project(snapshot,request.Intent.OperationId,desktop,[],at);
-                if(evidence.Presence!=NativeTrialProcessPresence.Observed||evidence.ExpectedUserId!=123||evidence.RequestedPlaceId!=6564161046
-                    ||evidence.ReportedUser.UserId is not null||evidence.Outcome!=NativeTrialEvidenceOutcome.Unknown
-                    ||evidence.ArrivalVerified||evidence.CanAuthorizeAccountAction||evidence.CanRouteInput||!queue.ReadPacing().Ready)
-                    throw new InvalidDataException("Synthetic process evidence incorrectly established an account or arrival.");
-                queue.SignalPanic();if(queue.IsTrialOperation(request.Intent.OperationId))throw new InvalidDataException("Panic retained trial permission.");
-                await queue.AcknowledgeClientClosedAsync(request.Intent.OperationId,ct);
-                if((await trialStore.LoadAsync(ct)).Operations.Single().Problem!=LaunchProblem.ClientClosureAcknowledged)
-                    throw new InvalidDataException("Explicit closure acknowledgment was not persisted.");
+                await SelfCheckOwners.UseAsync(new LaunchCoordinator(trialStore,provider,(_,_)=>Task.FromResult(true),_=>new(true,"Synthetic capacity"),
+                    stabilization:TimeSpan.Zero,stagger:TimeSpan.Zero),async queue=>
+                {
+                    await queue.InitializeAsync(ct);
+                    var request=await queue.EnqueueTrialAsync(saved,ct,new(123,7),new(6564161046));
+                    if(!await queue.ResumeTrialAsync(request.Intent.OperationId,ct))throw new InvalidDataException("Synthetic trial consent was lost.");
+                    while(provider.Disposed==0)await Task.Delay(5,ct);
+                    var snapshot=await trialStore.LoadAsync(ct);var row=snapshot.Operations.Single();var at=DateTimeOffset.UtcNow;
+                    if(row.State!=LaunchState.ClientStartedUnverified||row.ProcessReceipt is not { } receipt||provider.AccountLaunch.State!=CapabilityState.Unverified)
+                        throw new InvalidDataException("An explicit trial incorrectly upgraded capability or lost its receipt.");
+                    var desktop=new DesktopSnapshot(new(at,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,10*CapacityPolicy.GiB,10),
+                        [new(receipt.ProcessId,receipt.ProcessStartUtcTicks,"synthetic",0,"synthetic",false,true,(long)CapacityPolicy.GiB,(long)CapacityPolicy.GiB,0,at,
+                            PrivateWorkingSetBytes:(long)CapacityPolicy.GiB)],ProcessObservedUtc:at,ProcessRevision:1,ProcessInventoryComplete:true);
+                    var projected=LaunchReservationProjection.Evaluate(snapshot,desktop,new(),at);
+                    if(projected.OccupiedForAdmission!=1||projected.CreditedReservations!=1||!projected.SafelyObservedOperationIds.Contains(request.Intent.OperationId))
+                        throw new InvalidDataException("Synthetic process consumption was not projected conservatively.");
+                    var evidence=NativeTrialEvidence.Project(snapshot,request.Intent.OperationId,desktop,[],at);
+                    if(evidence.Presence!=NativeTrialProcessPresence.Observed||evidence.ExpectedUserId!=123||evidence.RequestedPlaceId!=6564161046
+                        ||evidence.ReportedUser.UserId is not null||evidence.Outcome!=NativeTrialEvidenceOutcome.Unknown
+                        ||evidence.ArrivalVerified||evidence.CanAuthorizeAccountAction||evidence.CanRouteInput||!queue.ReadPacing().Ready)
+                        throw new InvalidDataException("Synthetic process evidence incorrectly established an account or arrival.");
+                    queue.SignalPanic();if(queue.IsTrialOperation(request.Intent.OperationId))throw new InvalidDataException("Panic retained trial permission.");
+                    await queue.AcknowledgeClientClosedAsync(request.Intent.OperationId,ct);
+                    if((await trialStore.LoadAsync(ct)).Operations.Single().Problem!=LaunchProblem.ClientClosureAcknowledged)
+                        throw new InvalidDataException("Explicit closure acknowledgment was not persisted.");
+                });
             }
             cases.Add(new(stage,true));
 
@@ -544,16 +548,18 @@ internal static class DistributionSelfCheck
                 var recoveryLoaded=await recoveryStore.LoadAsync(ct);
                 if(!recoveryLoaded.Paused||recoveryLoaded.Operations.Count!=1||recoveryLoaded.Operations[0]!=recoveryOperation||recoveryStore.RecoveryNotice is null||File.Exists(recoveryPrimary))
                     throw new InvalidDataException("A missing primary hid or resumed its verified backup.");
-                await using var restoredQueue=new LaunchCoordinator(recoveryStore,new UnavailableLaunchProvider(),
-                    (_,_)=>throw new InvalidDataException("Recovered intent must not request authorization."),_=>new(false,"Synthetic review only"));
-                await restoredQueue.InitializeAsync(ct);var recoveryReviewed=await recoveryStore.LoadAsync(ct);
-                byte[] recoveryRetainedBackup=await File.ReadAllBytesAsync(recoveryPrimary+".bak",ct);
-                // A receipted, budgeted started client stays that reviewable started client after
-                // restart (CAP-14-03), so only an exact fresh observation can reconcile it.
-                if(!recoveryReviewed.Paused||recoveryReviewed.Operations.Single()!=recoveryOperation
-                    ||!LaunchDescriptions.HasUnresolvedReservation(recoveryReviewed.Operations[0])
-                    ||!recoveryBackup.AsSpan().SequenceEqual(recoveryRetainedBackup))
-                    throw new InvalidDataException("Recovered receipt or forecast lost its review boundary.");
+                await SelfCheckOwners.UseAsync(new LaunchCoordinator(recoveryStore,new UnavailableLaunchProvider(),
+                    (_,_)=>throw new InvalidDataException("Recovered intent must not request authorization."),_=>new(false,"Synthetic review only")),async restoredQueue=>
+                {
+                    await restoredQueue.InitializeAsync(ct);var recoveryReviewed=await recoveryStore.LoadAsync(ct);
+                    byte[] recoveryRetainedBackup=await File.ReadAllBytesAsync(recoveryPrimary+".bak",ct);
+                    // A receipted, budgeted started client stays that reviewable started client after
+                    // restart (CAP-14-03), so only an exact fresh observation can reconcile it.
+                    if(!recoveryReviewed.Paused||recoveryReviewed.Operations.Single()!=recoveryOperation
+                        ||!LaunchDescriptions.HasUnresolvedReservation(recoveryReviewed.Operations[0])
+                        ||!recoveryBackup.AsSpan().SequenceEqual(recoveryRetainedBackup))
+                        throw new InvalidDataException("Recovered receipt or forecast lost its review boundary.");
+                });
             }
             cases.Add(new(stage,true));
 
@@ -706,11 +712,13 @@ internal static class DistributionSelfCheck
                     throw new InvalidDataException("The packaged metadata inventory lost the file's version or product name, or upgraded a filename hint to launch authority.");
                 cases.Add(new(stage,true));
                 stage="Selected-file publisher boundary";
-                await using var verifier=new WindowsClientExecutableTrust();
-                publisherEvidence=await verifier.VerifyAsync(candidate,ct);
-                if(publisherEvidence.NativeLaunchAuthorized || publisherEvidence.Status==ClientExecutableTrustStatus.VerifiedRobloxPublisher
-                    || publisherEvidence.Reason==ClientExecutableTrustReason.Verified)
-                    throw new InvalidDataException("An inert renamed Zenith fixture acquired Roblox publisher authority.");
+                await SelfCheckOwners.UseAsync(new WindowsClientExecutableTrust(),async verifier=>
+                {
+                    publisherEvidence=await verifier.VerifyAsync(candidate,ct);
+                    if(publisherEvidence.NativeLaunchAuthorized || publisherEvidence.Status==ClientExecutableTrustStatus.VerifiedRobloxPublisher
+                        || publisherEvidence.Reason==ClientExecutableTrustReason.Verified)
+                        throw new InvalidDataException("An inert renamed Zenith fixture acquired Roblox publisher authority.");
+                });
             }
             finally {if(File.Exists(inventoryFile)) File.Delete(inventoryFile);if(Directory.Exists(inventoryVersion)) Directory.Delete(inventoryVersion);}
             cases.Add(new(stage,true));
@@ -746,12 +754,12 @@ internal static class DistributionSelfCheck
             var winrt=AssemblyName.GetAssemblyName(Path.Combine(AppContext.BaseDirectory,"WinRT.Runtime.dll"));
             if(sdk.Name!="Microsoft.Windows.SDK.NET" || winrt.Name!="WinRT.Runtime") throw new InvalidDataException("Preview projection files are missing.");
             var invalidPreviewTarget=new ClientPreviewTarget(new(null,1,DateTimeOffset.UtcNow.UtcTicks),0);
-            await using(var previews=new WindowsClientPreviewProvider())
+            await SelfCheckOwners.UseAsync(new WindowsClientPreviewProvider(),async previews=>
             {
                 var preview=await previews.CaptureAsync([invalidPreviewTarget],1,ct);
                 if(preview.Count!=1 || preview[0].Target!=invalidPreviewTarget || preview[0].Status!=ClientPreviewStatus.InvalidClient || preview[0].Frame is not null)
                     throw new InvalidDataException("An invalid preview target was not rejected.");
-            }
+            });
             cases.Add(new(stage,true));
 
             stage="Controlled targeted input ownership";
@@ -794,13 +802,15 @@ internal static class DistributionSelfCheck
     // caused the one ErrorType names. An exception with an inner exception is usually a wrapper thrown by framework code
     // (reflection, XAML, a type initializer), so the root it wraps locates the failure. A timeout is the stage's own failure:
     // it is located where it was thrown, and an earlier failure it keeps (such as the deadline cancellation) is only its cause.
+    // An owner that did not shut down in time is located at that owner's DisposeAsync, not at the shared helper that timed it.
     internal static Case FailedCase(string stage,Exception ex,string? step)
     {
         var root=ex.GetBaseException();var located=ex is TimeoutException?ex:root;var method=located.TargetSite;
+        string? failingMethod=SelfCheckOwners.StalledOwner(ex) is { } owner?owner+".DisposeAsync"
+            :method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}";
         // Static phase/code/method/type names only: never persist exception messages, arguments,
         // raw paths, authorization material or a raw exception/stack dump.
-        return new(stage,false,ex.GetType().Name,$"0x{located.HResult:X8}",step,method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}",
-            ReferenceEquals(root,ex)?null:root.GetType().Name);
+        return new(stage,false,ex.GetType().Name,$"0x{located.HResult:X8}",step,failingMethod,ReferenceEquals(root,ex)?null:root.GetType().Name);
     }
 
     // What the stages gathered for the report: static values and counts only, never paths, messages or protected material.

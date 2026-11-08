@@ -25,7 +25,8 @@ public sealed class PackagedTargetedInputCheckTests
         var timeout = await StalledShutdownAfterTheDeadlineAsync();
         var failed = DistributionSelfCheck.FailedCase("Controlled targeted input ownership", timeout, null);
         Assert.Equal(nameof(TimeoutException), failed.ErrorType);
-        Assert.StartsWith(typeof(PackagedTargetedInputCheck).FullName + "+<VerifyAsync>", failed.FailingMethod);
+        // N-B10-3: the shared bounded-shutdown helper throws the timeout, so the method names the owner whose shutdown stalled.
+        Assert.Equal(typeof(TargetedInputCoordinator).FullName + ".DisposeAsync", failed.FailingMethod);
         Assert.Equal($"0x{timeout.HResult:X8}", failed.ErrorCode);
         Assert.Equal(timeout.InnerException!.GetType().Name, failed.CauseType);
     }
