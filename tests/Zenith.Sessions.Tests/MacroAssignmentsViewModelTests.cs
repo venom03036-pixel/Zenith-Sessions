@@ -1,12 +1,14 @@
 using System.IO;
+using System.Text.Json;
 using Xunit;
 using Zenith.MacroHost.Contracts;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
-/// <summary>Synthetic targets, host metadata and owned in-memory persistence only; no pipe, vault, capture or input.</summary>
+/// <summary>Synthetic targets, host metadata and owned in-memory persistence, plus one owned temporary bundle folder; no pipe, vault, capture or input.</summary>
 public sealed class MacroAssignmentsViewModelTests
 {
     private static readonly TimeSpan Deadline = TimeSpan.FromSeconds(5);
@@ -94,6 +96,50 @@ public sealed class MacroAssignmentsViewModelTests
         Assert.False(f.Vm.IsStale); Assert.True(f.Vm.CanAssign); Assert.Empty(f.Failures);
         f.Resolve = (_, _) => Task.FromResult<string?>("Main account"); await f.Vm.AssignAsync();
         Assert.Equal(1, f.Store.Saves); Assert.Contains(f.Store.Rows, row => row.TargetName == "Main account");
+    }
+
+    [Fact]
+    public async Task OlderBundleSavedWithCodeMarkerIsRefusedAtChooseAndAssignThenSavedOnceRenamed()
+    {
+        // Bundle names could contain "code=" before the shared name rule, and the real store still loads such a bundle.
+        string root = Path.Combine(Path.GetTempPath(), "zenith-assignment-bundle-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            var older = new RecipientBundle(Guid.NewGuid(), "Promo code=1", [Guid.NewGuid()], 1, Guid.NewGuid());
+            await File.WriteAllTextAsync(Path.Combine(root, "recipient-bundles.json"), JsonSerializer.Serialize(new
+            {
+                Version = 1, Revision = 1,
+                Items = new[] { new { older.Id, older.Name, older.ProfileIds, older.Revision, older.ChangeId } }
+            }));
+            using var bundles = new RecipientBundleStore(root);
+            var saved = Assert.Single((await bundles.LoadAsync(default)).Bundles); Assert.Equal("Promo code=1", saved.Name);
+            var target = new MacroAssignmentTarget(MacroAssignmentTargetKind.Bundle, saved.Id);
+            await using var f = await Fixture.Create();
+            // Resolved as the shell does: the bundle's current saved name, read from the store when assigning.
+            f.Resolve = async (reference, ct) => (await bundles.LoadAsync(ct)).Bundles.FirstOrDefault(item => item.Id == reference.Id)?.Validated().Name;
+            await f.Vm.RefreshAsync();
+
+            f.Choice = new(target, saved.Name); f.Vm.ChooseBundle.Execute(null);
+            Assert.Null(f.Vm.ChosenTarget); Assert.False(f.Vm.CanAssign); Assert.Equal(0, f.ResolveCalls);
+            Assert.Contains("link, access code or credential", f.Vm.Status); Assert.Contains("Rename it, then choose again", f.Vm.Status);
+            Assert.DoesNotContain("Promo code=1", f.Vm.Status); Assert.DoesNotContain("Promo code=1", f.Vm.TargetSummary);
+
+            // Captured under an earlier plain hint, but the name saved in the store is the older "code=" one.
+            f.Choice = new(target, "Promo night"); f.Vm.ChooseBundle.Execute(null); Assert.Equal(f.Choice, f.Vm.ChosenTarget);
+            int hostCalls = f.Client.Calls; await f.Vm.AssignAsync();
+            Assert.Equal(1, f.ResolveCalls); Assert.Equal(0, f.Store.Saves); Assert.Empty(f.Store.Rows); Assert.Equal(hostCalls, f.Client.Calls);
+            Assert.Contains("link, access code or credential", f.Vm.Status); Assert.Contains("Rename the target, then assign again", f.Vm.Status);
+            Assert.DoesNotContain("Promo code=1", f.Vm.Status); Assert.DoesNotContain("could not be confirmed", f.Vm.Status);
+            Assert.False(f.Vm.IsStale); Assert.True(f.Vm.CanAssign);
+
+            var renamed = await bundles.RenameAsync(saved.Id, saved.Revision, saved.ChangeId, "Promo night", default);
+            f.Choice = new(target, renamed.Name); f.Vm.ChooseBundle.Execute(null); Assert.Equal(f.Choice, f.Vm.ChosenTarget);
+            await f.Vm.AssignAsync();
+            var row = Assert.Single(f.Store.Rows); Assert.Equal(target, row.Target); Assert.Equal("Promo night", row.TargetName);
+            Assert.Equal(1, f.Store.Saves); Assert.Contains("Assignment saved", f.Vm.Status); Assert.Empty(f.Failures);
+        }
+        finally { Directory.Delete(root, true); }
     }
 
     [Fact]
