@@ -29,16 +29,7 @@ public sealed class SidebarTemplateTests
         {
             try
             {
-                using var input=typeof(SidebarTemplateTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
-                var document=XDocument.Load(input);XNamespace ui="http://schemas.microsoft.com/winfx/2006/xaml/presentation",x="http://schemas.microsoft.com/winfx/2006/xaml";
-                var rail=new XElement(document.Descendants(ui+"Border").Single(e=>(string?)e.Attribute(x+"Name")=="NavigationRail"));
-                rail.Attribute(x+"Name")!.Remove(); // A standalone resource has a key, not a window name scope.
-                rail.Add(new XAttribute(x+"Key","Rail"));
-                var dictionary=new XElement(ui+"ResourceDictionary",new XAttribute(XNamespace.Xmlns+"x",x.NamespaceName),
-                    new XElement(ui+"ResourceDictionary.MergedDictionaries",new XElement(ui+"ResourceDictionary",new XAttribute("Source","/Zenith.Sessions.App;component/Themes/ModernControls.xaml"))),
-                    document.Descendants(ui+"Style").Where(e=>(string?)e.Attribute(x+"Key") is "SessionNav" or "NavigationIcon" or "Muted").Select(e=>new XElement(e)),rail);
-                var resources=(ResourceDictionary)XamlReader.Parse(dictionary.ToString());ThemeManager.Apply(resources,theme);
-                var view=(Border)resources["Rail"];view.Resources=resources;
+                var (view,resources)=ProductionRail();ThemeManager.Apply(resources,theme);
                 view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
                 var buttons=Descendants(view).OfType<Button>().ToArray();
                 Assert.Equal(new[]{"Overview","Accounts","Sessions","Windows","Automation","Diagnostics","Settings","Guide"},buttons.Select(AutomationProperties.GetName));
@@ -62,6 +53,63 @@ public sealed class SidebarTemplateTests
             catch(Exception ex) {done.TrySetException(ex);}
             finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
         }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+    // Windows High Contrast Black and White, where the selection colour is the Highlight colour and every other text colour is the
+    // window text colour, plus a dark preset and Light. The current page must draw its name, icon and account count in the selection
+    // text colour, not in the window text colour, which is about 1.4:1 on the Highlight colour in both High Contrast themes.
+    [Theory]
+    [InlineData("high contrast black")]
+    [InlineData("high contrast white")]
+    [InlineData("graphite-mint")]
+    [InlineData("light")]
+    public Task TheCurrentPageDrawsItsNameIconAndCountReadablyOnTheSelectionColour(string palette)
+    {
+        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread=new Thread(()=>
+        {
+            try
+            {
+                var (view,resources)=ProductionRail();SessionsThemes.Apply(resources,SessionsThemesTests.Palette(palette));
+                view.DataContext=new RailModel();view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));
+                Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.DataBind);view.UpdateLayout();
+                Color selection=((SolidColorBrush)resources["SelectionBackground"]).Color;
+                foreach(var button in Descendants(view).OfType<Button>().ToArray())
+                {
+                    string page=AutomationProperties.GetName(button);
+                    button.Tag=true;Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.DataBind);view.UpdateLayout();
+                    var fill=(Border)button.Template.FindName("Fill",button);var image=RenderedInk.Render(view);
+                    Assert.Equal(selection,RenderedInk.At(image,view,fill,new Point(fill.ActualWidth/2,3)));
+                    var texts=Descendants(button).OfType<TextBlock>().Where(text=>text.Text.Length>0).ToArray();
+                    Assert.Equal(page=="Accounts"?2:1,texts.Length); // The Accounts page also shows the account count.
+                    foreach(var text in texts) RenderedInk.AssertReadable(image,view,text,selection,4.5,$"{palette}: the current page's '{text.Text}'");
+                    RenderedInk.AssertReadable(image,view,Descendants(button).OfType<System.Windows.Shapes.Path>().Single(),selection,3,$"{palette}: the current page's {page} icon");
+                    button.Tag=false;
+                }
+                done.TrySetResult();
+            }
+            catch(Exception ex) {done.TrySetException(ex);}
+            finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
+        }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(30));
+    }
+    // The production navigation rail with its own styles, over the shared controls; the caller applies a palette.
+    private static (Border View,ResourceDictionary Resources) ProductionRail()
+    {
+        using var input=typeof(SidebarTemplateTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var document=XDocument.Load(input);XNamespace ui="http://schemas.microsoft.com/winfx/2006/xaml/presentation",x="http://schemas.microsoft.com/winfx/2006/xaml";
+        var rail=new XElement(document.Descendants(ui+"Border").Single(e=>(string?)e.Attribute(x+"Name")=="NavigationRail"));
+        rail.Attribute(x+"Name")!.Remove();rail.Add(new XAttribute(x+"Key","Rail")); // A standalone resource has a key, not a window name scope.
+        var dictionary=new XElement(ui+"ResourceDictionary",new XAttribute(XNamespace.Xmlns+"x",x.NamespaceName),
+            new XElement(ui+"ResourceDictionary.MergedDictionaries",new XElement(ui+"ResourceDictionary",new XAttribute("Source","/Zenith.Sessions.App;component/Themes/ModernControls.xaml"))),
+            document.Descendants(ui+"Style").Where(e=>(string?)e.Attribute(x+"Key") is "SessionNav" or "NavigationIcon" or "Muted").Select(e=>new XElement(e)),rail);
+        var resources=(ResourceDictionary)XamlReader.Parse(dictionary.ToString());
+        var view=(Border)resources["Rail"];view.Resources=resources;
+        return (view,resources);
+    }
+    // The two values the rail shows from the shell; its commands and page flags are left unbound.
+    private sealed class RailModel
+    {
+        public int AccountCount=>12;
+        public string ProductLabel=>"Zenith Sessions · Personal";
     }
     [Fact]
     public void ControlDigitShortcutsFollowTheRailOrderAndGuideMatchesCurrentControls()

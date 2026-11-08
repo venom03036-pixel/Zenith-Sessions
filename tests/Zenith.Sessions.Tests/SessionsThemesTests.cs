@@ -266,7 +266,8 @@ public sealed class SessionsThemesTests : IDisposable
         return Task.CompletedTask;
     });
 
-    private static ThemePreset Palette(string name) => name switch
+    // Also used by the rendered selection tests (SidebarTemplateTests, AccountsWorkspaceTests), so they read the same colour sets.
+    internal static ThemePreset Palette(string name) => name switch
     {
         "follow-windows with Windows apps light" => SessionsThemes.Effective("follow-windows", new(true, null)),
         "follow-windows with Windows apps dark" => SessionsThemes.Effective("follow-windows", new(false, null)),

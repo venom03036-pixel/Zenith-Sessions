@@ -30,6 +30,17 @@
       <Setter Property="LineBrush" Value="{DynamicResource AccentPrimary}" /><Setter Property="GridBrush" Value="{DynamicResource BorderBrushLight}" />
     </Style>
     <Style x:Key="SessionNav" TargetType="Button" BasedOn="{StaticResource NavTabButton}">
+      <Style.Resources>
+        <!-- The app's implicit TextBlock style draws every label in TextPrimary, whatever the button's colour. On the current page the
+             label is drawn in the selection text colour instead, since under Windows High Contrast TextPrimary is the window text colour,
+             which does not read on the Highlight colour; hovering shows the hover fill, so it goes back to TextPrimary. -->
+        <Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+          <Style.Triggers>
+            <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Button}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource SelectionForeground}" /></DataTrigger>
+            <DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Button}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextPrimary}" /></DataTrigger>
+          </Style.Triggers>
+        </Style>
+      </Style.Resources>
       <Setter Property="MinHeight" Value="36" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
       <Setter Property="HorizontalAlignment" Value="Stretch" />
@@ -62,7 +73,8 @@
         <DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource Self}}" Value="True">
           <Setter Property="BorderBrush" Value="{DynamicResource AccentPrimary}" />
           <Setter Property="Background" Value="{DynamicResource SelectionBackground}" />
-          <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
+          <!-- The icon's colour; the labels follow the same rule in Style.Resources above. -->
+          <Setter Property="Foreground" Value="{DynamicResource SelectionForeground}" />
           <Setter Property="FontWeight" Value="SemiBold" />
         </DataTrigger>
       </Style.Triggers>
@@ -122,8 +134,11 @@
               <Trigger Property="IsMouseOver" Value="True">
                 <Setter TargetName="Row" Property="Background" Value="{DynamicResource HoverBackground}" />
               </Trigger>
+              <!-- The row templates also colour each label with SelectionForeground while selected: the app's implicit TextBlock style
+                   would otherwise draw them in TextPrimary, the window text colour under Windows High Contrast, on the Highlight colour. -->
               <Trigger Property="IsSelected" Value="True">
                 <Setter TargetName="Row" Property="Background" Value="{DynamicResource SelectionBackground}" />
+                <Setter Property="Foreground" Value="{DynamicResource SelectionForeground}" />
               </Trigger>
               <Trigger Property="IsKeyboardFocusWithin" Value="True">
                 <Setter TargetName="Rail" Property="Background" Value="{DynamicResource AccentPrimary}" />
@@ -152,13 +167,13 @@
           <Image Source="{Binding Avatar}" Width="32" Height="32" Stretch="UniformToFill" HorizontalAlignment="Center" VerticalAlignment="Center" RenderOptions.BitmapScalingMode="HighQuality" Visibility="{Binding HasAvatar, Converter={StaticResource VisibleIf}}" AutomationProperties.Name="Roblox avatar headshot" />
         </Grid>
         <StackPanel Grid.Column="2" VerticalAlignment="Center" Margin="2,0,8,0">
-          <TextBlock Text="{Binding Label}" ToolTip="{Binding Alias}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
+          <TextBlock x:Name="AccountName" Text="{Binding Label}" ToolTip="{Binding Alias}" FontWeight="SemiBold" TextTrimming="CharacterEllipsis" />
           <TextBlock x:Name="AccountIdentityGroups" Margin="0,2,0,0" ToolTip="{Binding Destination}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextMuted}" FontSize="12"><Run Text="{Binding Username, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding Group, Mode=OneWay}" /></TextBlock>
           <TextBlock x:Name="CompactAccountStatus" Visibility="Collapsed" Foreground="{DynamicResource TextSecondary}" FontSize="11" Margin="0,2,0,0" TextTrimming="CharacterEllipsis" ToolTip="{Binding LinkedAccount}"><Run Text="{Binding Identity, Mode=OneWay}" /><Run Text=" · " /><Run Text="{Binding LaunchStatus, Mode=OneWay}" /></TextBlock>
         </StackPanel>
-        <StackPanel x:Name="AccountStatus" Grid.Column="3" VerticalAlignment="Center" Margin="0,0,10,0"><ContentControl Content="{Binding Identity}" Style="{StaticResource SignInChip}" ToolTip="{Binding LinkedAccount}" /><TextBlock Text="{Binding LaunchStatus}" ToolTip="{Binding LaunchStatus}" Style="{StaticResource CaptionLine}" Margin="2,4,0,0" /></StackPanel>
+        <StackPanel x:Name="AccountStatus" Grid.Column="3" VerticalAlignment="Center" Margin="0,0,10,0"><ContentControl Content="{Binding Identity}" Style="{StaticResource SignInChip}" ToolTip="{Binding LinkedAccount}" /><TextBlock x:Name="AccountLaunchStatus" Text="{Binding LaunchStatus}" ToolTip="{Binding LaunchStatus}" Style="{StaticResource CaptionLine}" Margin="2,4,0,0" /></StackPanel>
         <Button Grid.Column="4" Content="{Binding PowerLabel}" ToolTip="{Binding PowerExplanation}" Command="{Binding DataContext.AccountPower, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="{Binding}" Style="{StaticResource RowActionButton}" VerticalAlignment="Center" MinHeight="36" Padding="10,0" Margin="0,0,6,0" AutomationProperties.Name="{Binding PowerLabel}" />
-        <Button Grid.Column="5" Style="{StaticResource IconButton}" Click="OpenMoreOptions" AutomationProperties.Name="Account actions" ToolTip="Account actions" VerticalAlignment="Center">
+        <Button Grid.Column="5" Style="{StaticResource RowIconButton}" Click="OpenMoreOptions" AutomationProperties.Name="Account actions" ToolTip="Account actions" VerticalAlignment="Center">
           <Path Style="{StaticResource Glyph}" StrokeThickness="2" Data="M3.5,8 L3.6,8 M8,8 L8.1,8 M12.5,8 L12.6,8" />
           <Button.ContextMenu><ContextMenu DataContext="{Binding PlacementTarget.DataContext, RelativeSource={RelativeSource Self}}"><MenuItem Header="Edit profile" Tag="Edit" Click="AccountRowMenu" /><MenuItem Header="Refresh public avatar" Tag="Avatar" Click="AccountRowMenu" /><MenuItem Header="Use preferred game" Tag="Preferred" Click="AccountRowMenu" /><Separator /><MenuItem Header="Disconnect account link" Tag="Disconnect" Click="AccountRowMenu" /><MenuItem Header="Remove saved profile" Tag="Remove" Click="AccountRowMenu" /></ContextMenu></Button.ContextMenu>
         </Button>
@@ -168,6 +183,13 @@
           <Setter TargetName="AccountStatusColumn" Property="Width" Value="0" />
           <Setter TargetName="AccountStatus" Property="Visibility" Value="Collapsed" />
           <Setter TargetName="CompactAccountStatus" Property="Visibility" Value="Visible" />
+        </DataTrigger>
+        <!-- Every label drawn on the selected row uses the selection text colour (see AccountItem). The chip and buttons draw their own fill. -->
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter TargetName="AccountName" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
+          <Setter TargetName="AccountIdentityGroups" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
+          <Setter TargetName="CompactAccountStatus" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
+          <Setter TargetName="AccountLaunchStatus" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
         </DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
@@ -191,7 +213,7 @@
           </Grid>
           <StackPanel Grid.Column="1" VerticalAlignment="Center">
             <TextBlock x:Name="DenseAccountName" Text="{Binding Label}" ToolTip="{Binding Alias}" TextTrimming="CharacterEllipsis" FontWeight="SemiBold" />
-            <TextBlock Text="{Binding Username}" ToolTip="{Binding Username}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,1,0,0" />
+            <TextBlock x:Name="DenseAccountUsername" Text="{Binding Username}" ToolTip="{Binding Username}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextMuted}" FontSize="11" Margin="0,1,0,0" />
           </StackPanel>
         </Grid>
         <TextBlock x:Name="DenseAccountGroup" Grid.Column="2" Text="{Binding Group}" ToolTip="{Binding Group}" VerticalAlignment="Center" Foreground="{DynamicResource TextSecondary}" TextTrimming="CharacterEllipsis" />
@@ -202,6 +224,12 @@
         <DataTrigger Binding="{Binding DataContext.CompactLayout, RelativeSource={RelativeSource AncestorType=Window}}" Value="True">
           <Setter TargetName="DenseGroupColumn" Property="Width" Value="0" />
           <Setter TargetName="DenseAccountGroup" Property="Visibility" Value="Collapsed" />
+        </DataTrigger>
+        <!-- As in AccountRow: the selected row's labels use the selection text colour. -->
+        <DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True">
+          <Setter TargetName="DenseAccountName" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
+          <Setter TargetName="DenseAccountUsername" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
+          <Setter TargetName="DenseAccountGroup" Property="Foreground" Value="{DynamicResource SelectionForeground}" />
         </DataTrigger>
       </DataTemplate.Triggers>
     </DataTemplate>
@@ -261,7 +289,7 @@
           <ScrollViewer VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
           <StackPanel>
             <Button Command="{Binding Navigate}" CommandParameter="Overview" Tag="{Binding IsOverview}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Overview"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M1,7 L8,1 15,7 M3,6 V15 H13 V6 M6,15 V10 H10 V15" /><TextBlock Text="Overview" Margin="10,0,0,0" /></StackPanel></Button>
-            <Button Command="{Binding Navigate}" CommandParameter="Accounts" Tag="{Binding IsAccounts}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Accounts"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="26" /><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><Path Style="{StaticResource NavigationIcon}" Data="M11,4 A3,3 0 1 1 5,4 A3,3 0 1 1 11,4 M2,15 V12 Q2,8 8,8 Q14,8 14,12 V15 Z" /><TextBlock Grid.Column="1" Text="Accounts" /><TextBlock Grid.Column="2" Text="{Binding AccountCount}" Foreground="{DynamicResource TextMuted}" FontSize="12" FontWeight="Normal" Margin="8,0,0,0" VerticalAlignment="Center" /></Grid></Button>
+            <Button Command="{Binding Navigate}" CommandParameter="Accounts" Tag="{Binding IsAccounts}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Accounts"><Grid><Grid.ColumnDefinitions><ColumnDefinition Width="26" /><ColumnDefinition /><ColumnDefinition Width="Auto" /></Grid.ColumnDefinitions><Path Style="{StaticResource NavigationIcon}" Data="M11,4 A3,3 0 1 1 5,4 A3,3 0 1 1 11,4 M2,15 V12 Q2,8 8,8 Q14,8 14,12 V15 Z" /><TextBlock Grid.Column="1" Text="Accounts" /><TextBlock Grid.Column="2" Text="{Binding AccountCount}" FontSize="12" FontWeight="Normal" Margin="8,0,0,0" VerticalAlignment="Center"><TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}"><Setter Property="Foreground" Value="{DynamicResource TextMuted}" /><Style.Triggers><DataTrigger Binding="{Binding Tag, RelativeSource={RelativeSource AncestorType=Button}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource SelectionForeground}" /></DataTrigger><DataTrigger Binding="{Binding IsMouseOver, RelativeSource={RelativeSource AncestorType=Button}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource TextMuted}" /></DataTrigger></Style.Triggers></Style></TextBlock.Style></TextBlock></Grid></Button>
             <Button Command="{Binding Navigate}" CommandParameter="Sessions" Tag="{Binding IsSessionWorkspace}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Sessions"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M1,1 H15 V11 H1 Z M8,11 V15 M4,15 H12" /><TextBlock Text="Sessions" Margin="10,0,0,0" /></StackPanel></Button>
             <Button Command="{Binding ShowWindowsOverview}" Tag="{Binding IsWindows}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Windows"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M1,1 H7 V7 H1 Z M9,1 H15 V7 H9 Z M1,9 H7 V15 H1 Z M9,9 H15 V15 H9 Z" /><TextBlock Text="Windows" Margin="10,0,0,0" /></StackPanel></Button>
             <Button Command="{Binding Navigate}" CommandParameter="Automation" Tag="{Binding IsAutomation}" Style="{StaticResource SessionNav}" AutomationProperties.Name="Automation"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M4,1 L14,8 4,15 Z" /><TextBlock Text="Automation" Margin="10,0,0,0" /></StackPanel></Button>
