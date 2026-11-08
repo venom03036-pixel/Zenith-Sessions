@@ -269,6 +269,8 @@ public partial class MainWindow : Window
                 "public-network-guard"=>SettingsPublicNetworkGuard,
                 // The on/off choice, never the masked URL field or a button that sends.
                 "discord-alerts"=>SettingsDiscordAlerts,
+                // The on/off choice, never the application ID field or Resume Discord status.
+                "discord-presence"=>SettingsDiscordPresence,
                 "panic-shortcut"=>SettingsPanicShortcut,
                 // The delay choice, never Schedule shutdown: search lands on a field, not on a button that starts work.
                 "scheduled-shutdown"=>SettingsShutdownDelay,

@@ -40,6 +40,7 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.DiscordWebhookSaved => "A Discord webhook URL was saved to protected storage.",
         ManagerEventKind.DiscordWebhookCleared => "The saved Discord webhook was removed.",
         ManagerEventKind.DiscordAlertSent => "Discord accepted an alert message.",
+        ManagerEventKind.DiscordPresenceConnected => "The Discord app on this PC accepted Zenith's status connection.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."
     };

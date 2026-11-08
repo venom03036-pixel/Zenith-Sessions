@@ -43,6 +43,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ScheduledShutdown=>"Scheduled shutdown",
         ManagerSubsystem.PublicNetwork=>"Public-network guard",
         ManagerSubsystem.DiscordAlerts=>"Discord alerts",
+        ManagerSubsystem.DiscordPresence=>"Discord status",
         _=>"Unrecognized subsystem"
     };
 }

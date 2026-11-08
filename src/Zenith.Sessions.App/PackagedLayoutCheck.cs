@@ -144,6 +144,11 @@ internal static class PackagedLayoutCheck
                 || window.FindName("SettingsDiscordWebhook") is not System.Windows.Controls.PasswordBox { Password.Length: 0 }
                 || window.FindName("SettingsSendTestAlert") is not System.Windows.Controls.Button { IsEnabled: false })
                 throw new InvalidOperationException("The packaged Discord alert controls lost their binding, their masked webhook field or their off default.");
+            if (window.FindName("SettingsDiscordPresence") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsDiscordPresenceActive
+                || window.FindName("SettingsDiscordPresenceGame") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("SettingsDiscordApplicationId") is not System.Windows.Controls.TextBox { Text.Length: 0 }
+                || window.FindName("SettingsResumeDiscordPresence") is not System.Windows.Controls.Button { IsEnabled: false })
+                throw new InvalidOperationException("The packaged Discord status controls lost their binding or their off default.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

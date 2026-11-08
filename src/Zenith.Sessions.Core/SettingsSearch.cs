@@ -68,6 +68,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "public network", "public wifi", "wifi", "wi-fi", "hotspot", "café", "cafe", "hotel", "airport", "network profile", "untrusted network", "guard", "security", "privacy"),
         E("discord-alerts", "Send Discord alerts", "Choose whether Zenith posts an alert to one saved Discord webhook when a client crashes, stops responding or is disconnected, and when a launch batch has finished. Off by default; the webhook URL is kept protected. Save settings to apply.",
             SettingsSearchTarget.Appearance, "discord", "webhook", "web hook", "alert", "alerts", "notification", "notifications", "notify", "crash", "hang", "disconnect", "batch finished", "message", "ping", "channel"),
+        E("discord-presence", "Show Zenith in your Discord status", "Choose whether the Discord app on this PC shows how many Roblox clients Zenith sees running and, if you also choose it, the game they are in. Off by default; needs a Discord application ID; cleared on Lock, Panic and exit. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "discord", "status", "rich presence", "presence", "playing", "activity", "game status", "show game", "client count", "application id", "now playing"),
 
         E("profile-maximum-efficiency", "Maximum Efficiency", "Choose the manager profile with less frequent process observations and wider eligible-start spacing.",
             SettingsSearchTarget.Performance, "performance preset", "monitoring", "cadence", "sampling"),
