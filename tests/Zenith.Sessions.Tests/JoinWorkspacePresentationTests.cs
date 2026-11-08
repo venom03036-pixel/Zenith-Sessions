@@ -103,6 +103,21 @@ public sealed class JoinWorkspacePresentationTests
     }
 
     [Fact]
+    public void GamePanelQuickJoinLabelFollowsTheRequestedServer()
+    {
+        // The game panel's primary launch queues ServerBrowser's destination, which can name an exact server
+        // (an invite, a gameInstanceId link or a used public server); its wording must come from that destination.
+        var join=Page(Source(),"JoinGamePage");
+        var quick=join.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Style")=="{StaticResource PrimaryButton}"
+            && (string?)button.Attribute("Command")=="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}"
+            && button.Ancestors().Any(ancestor=>(string?)ancestor.Attribute("DataContext")=="{Binding ServerBrowser}")
+            && button.ElementsAfterSelf(Ui+"Button").Any(next=>(string?)next.Attribute("Content")=="Browse servers"));
+        Assert.Equal("{Binding QuickJoinLabel}",(string?)quick.Attribute("Content"));
+        Assert.Equal("{Binding QuickJoinToolTip}",(string?)quick.Attribute("ToolTip"));
+        Assert.DoesNotContain(join.Descendants(Ui+"Button"),button=>((string?)button.Attribute("Content"))?.Contains("any server",StringComparison.Ordinal)==true);
+    }
+
+    [Fact]
     public void FavoritesRowShowsSavedAndRobloxChipsAndManageLink()
     {
         var join=Page(Source(),"JoinGamePage");

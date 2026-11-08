@@ -96,6 +96,12 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     public RequestedServerCapacityAssessment AssessRequestedCapacity(RobloxRequestedDestination? requested,int recipientCount)=>RequestedServerCapacity.Assess(
         requested,_stopping || !_canUse() || _lifetime.IsCancellationRequested?null:_requestedServerObservation,recipientCount,_clock.GetUtcNow());
     public string DestinationSummary=>_destination is null?"No requested destination":$"Place {_destination.PlaceId}"+(_destination.JobId is null?" · any eligible server":$" · server {_destination.JobId}");
+    // The primary launch queues this destination as-is, so its wording follows the job ID: an invite, a gameInstanceId
+    // link, a favorite or a used public server names one exact server; only a place-only request lets Roblox pick.
+    public string QuickJoinLabel=>_destination?.JobId is null?"Quick join · any server":"Join requested server";
+    public string QuickJoinToolTip=>_destination?.JobId is null
+        ?"Queue the checked accounts (or the selected account) for this game. Roblox picks the server."
+        :"Queue the checked accounts (or the selected account) for the requested server. Roblox decides whether it still has room; nothing is reserved.";
     public bool HasDestination=>_destination is not null;
     public bool CanNext=>CanUseDestination && _cursor is not null && !IsBusy;
     public ObservableCollection<PublicServerRow> Servers {get;}=[];
@@ -284,7 +290,7 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     private void InvalidatePage()
     {_rowsUsable=false;Interlocked.Increment(ref _generation);_requestStop?.Cancel();}
     private void RaiseDestination()
-    {Raise(nameof(Destination));Raise(nameof(DestinationSummary));Raise(nameof(HasDestination));}
+    {Raise(nameof(Destination));Raise(nameof(DestinationSummary));Raise(nameof(HasDestination));Raise(nameof(QuickJoinLabel));Raise(nameof(QuickJoinToolTip));}
     private void RaiseDestinationAvailability()
     {Raise(nameof(HasDestinationDraft));Raise(nameof(CanUseDestination));Raise(nameof(CanNext));Raise(nameof(CanUseServer));}
     private void ReportFailure(Exception _)

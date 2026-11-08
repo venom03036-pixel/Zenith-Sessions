@@ -92,6 +92,28 @@ public sealed class ServerBrowserViewModelTests
         Assert.Single(vm.Servers);
     }
     [Fact]
+    public async Task QuickJoinNamesTheRequestedServerWheneverTheDestinationHasAJobId()
+    {
+        var directory=new FakeDirectory {Result=new(RobloxPublicServerStatus.Complete,[Server()],null,null,"Synthetic public directory")};
+        await using var vm=new ServerBrowserViewModel(directory);
+        var raised=new List<string?>();vm.PropertyChanged+=(_,args)=>raised.Add(args.PropertyName);
+        vm.UsePreferredPlace(Place);
+        Assert.Equal("Quick join · any server",vm.QuickJoinLabel);Assert.Contains("Roblox picks the server",vm.QuickJoinToolTip);
+        // A checked friend invite names the inviter's exact server, so the launch button must not promise any server.
+        raised.Clear();vm.UseInvitedServer(Place,Job);
+        Assert.Equal("Join requested server",vm.QuickJoinLabel);
+        Assert.DoesNotContain("any server",vm.QuickJoinToolTip);Assert.DoesNotContain("Roblox picks the server",vm.QuickJoinToolTip);
+        Assert.Contains("requested server",vm.QuickJoinToolTip);Assert.Contains(nameof(vm.QuickJoinLabel),raised);Assert.Contains(nameof(vm.QuickJoinToolTip),raised);
+        vm.UsePreferredPlace(Place);Assert.Equal("Quick join · any server",vm.QuickJoinLabel);
+        // A pasted gameInstanceId link and a deliberately used public server are the same exact-server request.
+        vm.LinkInput=$"https://www.roblox.com/games/start?placeId={Place}&gameInstanceId={Job}";vm.Resolve.Execute(null);
+        Assert.Equal("Join requested server",vm.QuickJoinLabel);
+        vm.UsePreferredPlace(Place);vm.Browse.Execute(null);await vm.Browse.Execution;vm.SelectedServer=Assert.Single(vm.Servers);
+        raised.Clear();vm.UseServer.Execute(null);
+        Assert.Equal(Job,vm.Destination!.JobId);Assert.Equal("Join requested server",vm.QuickJoinLabel);Assert.Contains(nameof(vm.QuickJoinLabel),raised);
+        vm.CancelWork(true);Assert.Equal("Quick join · any server",vm.QuickJoinLabel);
+    }
+    [Fact]
     public async Task ChangingDestinationFencesACancellationIgnoringLatePageAndDoesNotOverlapRequests()
     {
         var response=new TaskCompletionSource<RobloxPublicServerResult>(TaskCreationOptions.RunContinuationsAsynchronously);
