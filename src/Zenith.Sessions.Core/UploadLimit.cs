@@ -61,7 +61,7 @@ public sealed record UploadLimitResult(UploadLimitAction Action, UploadLimitStat
         _ => "Upload limit controls are closed."
     };
     private const string AgainToBeSure = "choose Apply upload limit or Remove again to be sure.";
-    public const string PendingHelper = "An earlier administrator prompt or PowerShell may still change the upload limit. New changes are blocked until its no-start or exit is observed. If that owner was lost when Zenith closed, restart Windows before changing this limit.";
+    public const string PendingHelper = "An earlier administrator prompt or PowerShell may still change the upload limit. New changes are blocked until its no-start or exit is observed. If that owner was lost when Zenith closed, restart Windows and reopen Zenith promptly. Changes remain blocked if Zenith cannot establish the restart; review the record for recovery.";
     private const string Uncertain = "Whether a limit is in force is now uncertain; " + AgainToBeSure;
     private string UnsavedNote => RecordSaved ? "" : " Zenith could not save its record of this change (" + UploadLimitPolicy.RecordFileName
         + " in the data folder), so the next run of Zenith will not show it.";
@@ -84,7 +84,7 @@ public static class UploadLimitPolicy
     public const string RateRequirement = "Enter a whole number of kilobits per second from 100 to 10,000,000.";
     /// <summary>How long the administrator run may take once the prompt is answered; the scripts finish in seconds.</summary>
     public static readonly TimeSpan HelperTimeout = TimeSpan.FromSeconds(60);
-    /// <summary>A record belongs to the Windows session it was written in; two readings of the boot time differ by less than this.</summary>
+    /// <summary>Tolerance for comparing estimated UTC boot metadata; never proof that an unresolved helper has exited.</summary>
     public static readonly TimeSpan BootTolerance = TimeSpan.FromMinutes(2);
     /// <summary>The client executables Sessions observes, each the match condition of its own policy.</summary>
     public static IReadOnlyList<string> ClientExecutables { get; } = Array.AsReadOnly(new[] { "RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Roblox.exe" });
@@ -147,7 +147,7 @@ public static class UploadLimitPolicy
         _ => UploadLimitStatus.Refused
     };
 
-    /// <summary>Two readings of when Windows started name the same Windows session when they lie within <see cref="BootTolerance"/>.</summary>
+    /// <summary>Compares estimated UTC boot metadata for display only; clock changes invalidate it as an ownership boundary. Readings lie within <see cref="BootTolerance"/>.</summary>
     public static bool SameWindowsSession(DateTimeOffset recordedBootUtc, DateTimeOffset currentBootUtc)
         => (recordedBootUtc - currentBootUtc).Duration() <= BootTolerance;
 }
