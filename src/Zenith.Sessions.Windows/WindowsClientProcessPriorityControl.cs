@@ -175,7 +175,16 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, currentClass, desired.Class); }
         if (after.Retired) Forget(key);
         if (after.Status != ClientProcessPriorityStatus.Unchanged || after.Settings != desired)
+        {
+            // Windows accepted only part of the change. Own exactly what the readback shows, so a later Restore or Exit compares
+            // against Zenith's own partial write instead of calling it another change, and returns each original value.
+            // A change made elsewhere between the write and this readback cannot be told apart, so Restore would return it too.
+            // Values that read back as the original keep the reservation: Restore retires it without a write while they stay so.
+            var original = owned?.Original ?? current;
+            if (after.Status == ClientProcessPriorityStatus.Unchanged && after.Settings is { } actual && actual != original)
+                lock (_gate) _owned[key] = new(session, original, actual);
             return Result(session, action, ClientProcessPriorityStatus.NotConfirmed, currentClass, desired.Class, after.Current);
+        }
         if (desired == (owned?.Original ?? current)) Forget(key);
         return Result(session, action, action == ClientProcessPriorityAction.RestoreOriginal
             ? ClientProcessPriorityStatus.Restored : ClientProcessPriorityStatus.Applied, currentClass, desired.Class, after.Current);

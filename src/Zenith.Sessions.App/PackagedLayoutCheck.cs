@@ -128,7 +128,9 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
             if (window.FindName("MuteClientsButton") is not System.Windows.Controls.Button muteButton
                 || muteButton.Command != vm.MuteClients || muteButton.IsEnabled || vm.IsChangingClientSound || vm.CanChangeClientSound
-                || window.FindName("MuteArrivingClientsOption") is not System.Windows.Controls.CheckBox { IsChecked: false })
+                || window.FindName("MuteArrivingClientsOption") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("ResumeArrivalMuteButton") is not System.Windows.Controls.Button resumeButton
+                || resumeButton.Command != vm.ResumeArrivalMute || resumeButton.IsEnabled || vm.CanResumeArrivalMute)
                 throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
             if (soundTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged client sound controls could not be laid out.");

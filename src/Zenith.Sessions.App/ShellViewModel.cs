@@ -936,8 +936,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
+        bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
         await SaveCurrentSettingsAsync(requested);
         ShowSavedPanicShortcut(panicShortcut);
+        ArrivalMutePreferenceSaved(muteArrivalsWasOn);
     }
     private void PreferencesEdited()
     {

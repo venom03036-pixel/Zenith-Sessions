@@ -54,9 +54,50 @@ public sealed class ClientAudioMuteNativeTests
         Assert.All(helper.Sessions(), state => Assert.False(state));
     }
 
+    /// <summary>
+    /// Two helpers of the same program, as with several Roblox clients. Observed on Windows 11 (build 26200): a helper started
+    /// while another is muted starts with its sound on, but one started after a muted helper exited starts muted, because Windows
+    /// remembered that mute. Either way, a later instance Zenith mutes or finds muted that way is unmuted on Exit.
+    /// </summary>
+    [Fact]
+    public async Task LaterHelpersOfTheSameProgramAreUnmutedOnExitEvenWhenWindowsStartsOneMuted()
+    {
+        var first = await SilentHelper.StartAsync();
+        SilentHelper? concurrent = null, later = null;
+        var control = new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter("powershell.exe"));
+        try
+        {
+            var muted = Assert.Single((await control.ChangeAsync([first.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(muted.Status == ClientAudioMuteStatus.Applied, muted.Explanation);
+
+            concurrent = await SilentHelper.StartAsync();
+            var second = Assert.Single((await control.ChangeAsync([concurrent.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(second.RestorePending, second.Status + ": " + second.Explanation);
+            Assert.All(concurrent.Sessions(), state => Assert.True(state));
+
+            await first.DisposeAsync(); // Exits while muted, so Windows may remember the mute for the program.
+            later = await SilentHelper.StartAsync();
+            var third = Assert.Single((await control.ChangeAsync([later.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(third.RestorePending, third.Status + ": " + third.Explanation);
+            Assert.All(later.Sessions(), state => Assert.True(state));
+        }
+        finally
+        {
+            await control.DisposeAsync();
+            bool[] left = [.. concurrent?.Sessions() ?? [], .. later?.Sessions() ?? []];
+            concurrent?.UnmuteIfLeftMuted(); later?.UnmuteIfLeftMuted(); // Never leave a remembered mute behind.
+            await first.DisposeAsync();
+            if (concurrent is not null) await concurrent.DisposeAsync();
+            if (later is not null) await later.DisposeAsync();
+            Assert.All(left, state => Assert.False(state));
+        }
+        Assert.Equal(0, control.PendingRestoreCount);
+    }
+
     private sealed class SilentHelper : IAsyncDisposable
     {
         private readonly Process _process;
+        private bool _disposed;
         private SilentHelper(Process process)
         {
             _process = process;
@@ -108,7 +149,7 @@ public sealed class ClientAudioMuteNativeTests
 
         public void UnmuteIfLeftMuted()
         {
-            if (_process.HasExited) return;
+            if (_disposed || _process.HasExited) return;
             var states = NativeApi().ReadSessions(_process.Id, out _);
             if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, true, false);
         }
@@ -118,6 +159,8 @@ public sealed class ClientAudioMuteNativeTests
 
         public async ValueTask DisposeAsync()
         {
+            if (_disposed) return;
+            _disposed = true;
             try
             {
                 if (!_process.HasExited)

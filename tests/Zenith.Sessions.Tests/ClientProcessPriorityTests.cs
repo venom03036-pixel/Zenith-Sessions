@@ -511,9 +511,26 @@ public sealed class ClientProcessPriorityTests
         Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 1, 0xFF), client.State); // Memory accepted; nothing after the refusal.
         Assert.Equal(3, fixture.Native.Reads[1]); // The accepted part was still read back.
         Assert.All(fixture.Native.Handles, handle => Assert.True(handle.IsClosed));
-        // Owned in-memory fixture cleanup, not another controller mutation: back to the original so Exit retires ownership.
-        client.MemoryPriority = 5;
-        fixture.Native.LastSet.Remove(1);
+
+        // Zenith's own partial write is not "another change": Restore returns the value Windows accepted, and needs no throttling write.
+        var restored = await fixture.Control.RestoreAllAsync(default);
+        Assert.Equal(ClientProcessPriorityStatus.Restored, Assert.Single(restored.Results).Status);
+        Assert.Equal(0, restored.PendingRestoreCount);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 5, 0xFF), client.State);
+    }
+
+    [Fact]
+    public async Task ExitRestoresAnEfficiencyChangeWindowsRefusedPartway()
+    {
+        var fixture = new Fixture(1);
+        var client = fixture.Native.Clients[1];
+        fixture.Native.DenyThrottling = true;
+        Assert.Equal(ClientProcessPriorityStatus.NotConfirmed,
+            Assert.Single((await fixture.Change(ClientProcessPriorityAction.Efficiency, 1)).Results).Status);
+        await fixture.Control.DisposeAsync(); // The control itself, without the fixture's reset to what Zenith last set.
+        Assert.Equal(0, fixture.Control.PendingRestoreCount);
+        Assert.Equal(new ClientProcessSettings(0x20, new(0, 0), 5, 0xFF), client.State);
+        await fixture.DisposeAsync();
     }
 
     [Fact]

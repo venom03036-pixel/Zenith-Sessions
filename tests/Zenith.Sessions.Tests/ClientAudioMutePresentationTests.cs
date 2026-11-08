@@ -4,6 +4,7 @@ using System.Windows.Threading;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
@@ -70,21 +71,92 @@ public sealed partial class ClientPreviewPresentationTests
     [InlineData("panic")]
     [InlineData("lock")]
     [InlineData("cancel")]
-    public Task SoundStopCancelsTheActiveChangeAndDropsWaitingArrivals(string stop)=>OnUi(async ()=>
+    public Task SoundStopCancelsTheActiveChangeAndPausesArrivalMutingUntilItIsResumed(string stop)=>OnUi(async ()=>
     {
         var control=new SoundControlProbe{Defer=true};var monitor=new SoundDesktopMonitor{Count=1};
         await using var shell=await ReadySound(monitor,control);
         shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        Assert.False(shell.IsArrivalMutePaused);Assert.False(shell.CanResumeArrivalMute);Assert.Equal("",shell.ArrivalMuteStatus);
         monitor.Count=2;await Refresh(shell);
         var call=await control.NextAsync();
         Assert.True(shell.IsChangingClientSound);Assert.False(shell.CanChangeClientSound);
         if(stop=="lock")shell.LockDashboard();else if(stop=="panic")shell.Panic.Execute(null);else shell.CancelClientSound.Execute(null);
         Assert.True(call.Token.IsCancellationRequested);Assert.Equal(1,control.CancelCalls);
         call.Reply.TrySetResult(SoundReport(call,ClientAudioMuteStatus.NoAudioSession));
+        Assert.True(shell.IsArrivalMutePaused);Assert.Contains("paused",shell.ArrivalMuteStatus);
         await Until(()=>!shell.IsChangingClientSound);
-        if(stop=="lock")shell.Unlock.Execute(null);
-        await Refresh(shell);await Refresh(shell);
-        Assert.Equal(1,control.ChangeCalls); // The waiting arrival was dropped; only later clients are watched.
+        if(stop=="lock"){Assert.False(shell.CanResumeArrivalMute);shell.Unlock.Execute(null);}
+        control.Defer=false;
+        // Neither the waiting arrival nor a client that appears after the stop is muted: no automatic restart (Rule 11).
+        monitor.Count=3;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(1,control.ChangeCalls);Assert.True(shell.IsArrivalMutePaused);
+        // Saving the unchanged preference is not a restart either.
+        shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        monitor.Count=4;await Refresh(shell);
+        Assert.Equal(1,control.ChangeCalls);Assert.True(shell.IsArrivalMutePaused);
+
+        Assert.True(shell.CanResumeArrivalMute);
+        shell.ResumeArrivalMute.Execute(null);
+        Assert.False(shell.IsArrivalMutePaused);Assert.Equal("",shell.ArrivalMuteStatus);
+        await Refresh(shell);
+        Assert.Equal(1,control.ChangeCalls); // Clients that appeared while paused are already running, so they are left alone.
+        monitor.Count=5;await Refresh(shell);
+        Assert.Equal(5,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+    });
+
+    [Fact]
+    public Task SavingArrivalMuteOnAfterItWasOffStartsItAgainAfterAStop()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        shell.Panic.Execute(null);
+        Assert.True(shell.IsArrivalMutePaused);
+        shell.MuteArrivingClients=false;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        Assert.False(shell.IsArrivalMutePaused);Assert.Equal("",shell.ArrivalMuteStatus);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        Assert.False(shell.IsArrivalMutePaused);
+        await Refresh(shell);
+        monitor.Count=2;await Refresh(shell);
+        Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+    });
+
+    [Fact]
+    public Task ArrivalStatusCountsOnlyTheClientsZenithWillUnmute()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe{AlreadyMutedPid=3};var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        monitor.Count=3;await Refresh(shell);
+        Assert.Equal(2,(await control.NextAsync()).Targets.Count);
+        await Until(()=>shell.ClientSoundResults.Count==2);
+        Assert.Equal("1 of 2 new clients muted as they appeared. Unmute or Exit turns the sound Zenith muted on again. "
+            +"1 was already muted and stays muted on Exit.",shell.ClientSoundStatus);
+    });
+
+    [Fact]
+    public Task ExitKeepsTheCountOfMutedClientsWindowsDidNotConfirmUnmutedForItsWarning()=>OnUi(async ()=>
+    {
+        // The real control over a fake Core Audio: its Exit unmute is refused, so its dispose throws ClientAudioMuteCleanupException.
+        var native=new ClientAudioMuteTests.Native();native.Add(1,false);
+        var monitor=new SoundDesktopMonitor{Count=1};
+        native.Clients[1].Start=SoundDesktopMonitor.Start(1);
+        var control=new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter(native));
+        var shell=await ReadySound(monitor,control);
+        try
+        {
+            shell.SelectedSession=shell.Sessions[0];
+            shell.MuteClients.Execute(null);await shell.MuteClients.Execution;
+            Assert.Equal(ClientAudioMuteStatus.Applied,Assert.Single(shell.ClientSoundResults).Status);
+            Assert.Equal(1,shell.PendingSoundRestoreCount);
+            Assert.Null(shell.ExitSoundWarning);
+            native.DenySet=true;
+        }
+        finally{await shell.DisposeAsync();}
+        Assert.Equal(new[]{true},native.Clients[1].Sessions);
+        Assert.Equal(1,shell.PendingSoundRestoreCount);
+        Assert.Equal("Windows could not confirm that 1 client Zenith muted was unmuted. Turn its sound on in Volume mixer. "
+            +"Until then, Windows may start later clients of the same program muted.",shell.ExitSoundWarning);
     });
 
     [Fact]
@@ -96,29 +168,31 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Empty(shell.ClientSoundResults);Assert.Equal(0,shell.PendingSoundRestoreCount);
     });
 
-    private async Task<ShellViewModel> ReadySound(SoundDesktopMonitor monitor,SoundControlProbe? control,bool sample=false)
+    private async Task<ShellViewModel> ReadySound(SoundDesktopMonitor monitor,IClientAudioMuteControl? control,bool sample=false)
     {
         var shell=new ShellViewModel(_root,sample,Dispatcher.CurrentDispatcher,monitor,new NoPublicDirectory(),new NoServerDirectory(),
             previewProvider:new PreviewProvider(),clientPriority:new PriorityControlProbe(),clientSound:control);
         try{await shell.InitializeAsync();await Refresh(shell);Assert.True(shell.IsReady,shell.Notice);return shell;}
         catch{await shell.DisposeAsync();throw;}
     }
-    private static ClientAudioMuteBatchResult SoundReport(SoundCall call,ClientAudioMuteStatus status)=>new(call.Targets.Select(row=>
-        new ClientAudioMuteResult(row,call.Action,status,false,status==ClientAudioMuteStatus.Applied?call.Action==ClientAudioMuteAction.Mute:false,false)).ToArray(),false,0);
+    private static ClientAudioMuteBatchResult SoundReport(SoundCall call,ClientAudioMuteStatus status,int alreadyMutedPid=0)=>new(call.Targets.Select(row=>
+        row.ProcessId==alreadyMutedPid?new ClientAudioMuteResult(row,call.Action,ClientAudioMuteStatus.Unchanged,true,true,false)
+        :new ClientAudioMuteResult(row,call.Action,status,false,status==ClientAudioMuteStatus.Applied&&call.Action==ClientAudioMuteAction.Mute,
+            status==ClientAudioMuteStatus.Applied&&call.Action==ClientAudioMuteAction.Mute)).ToArray(),false,0);
     private sealed record SoundCall(IReadOnlyList<SessionObservation> Targets,ClientAudioMuteAction Action,CancellationToken Token)
     {internal TaskCompletionSource<ClientAudioMuteBatchResult> Reply {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);}
     private sealed class SoundControlProbe:IClientAudioMuteControl
     {
         private readonly Channel<SoundCall> _calls=Channel.CreateBounded<SoundCall>(8);
         internal bool Defer,NoSoundFirst;
-        internal int ChangeCalls,CancelCalls;
+        internal int ChangeCalls,CancelCalls,AlreadyMutedPid;
         public int PendingRestoreCount=>0;
         public async Task<ClientAudioMuteBatchResult> ChangeAsync(IReadOnlyList<SessionObservation> sessions,ClientAudioMuteAction action,CancellationToken ct)
         {
             ChangeCalls++;var call=new SoundCall(Array.AsReadOnly(sessions.ToArray()),action,ct);
             Assert.True(_calls.Writer.TryWrite(call));
             if(Defer)return await call.Reply.Task;
-            return SoundReport(call,NoSoundFirst && ChangeCalls==1?ClientAudioMuteStatus.NoAudioSession:ClientAudioMuteStatus.Applied);
+            return SoundReport(call,NoSoundFirst && ChangeCalls==1?ClientAudioMuteStatus.NoAudioSession:ClientAudioMuteStatus.Applied,AlreadyMutedPid);
         }
         internal Task<SoundCall> NextAsync()=>_calls.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         public void CancelOperations()=>CancelCalls++;
@@ -130,10 +204,11 @@ public sealed partial class ClientPreviewPresentationTests
     {
         internal volatile int Count;
         private long _revision;
+        internal static long Start(int pid)=>new DateTimeOffset(2026,1,1,0,0,pid,TimeSpan.Zero).UtcTicks;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();var now=DateTimeOffset.UtcNow;
-            var rows=Enumerable.Range(1,Count).Select(pid=>new SessionObservation(pid,new DateTimeOffset(2026,1,1,0,0,pid,TimeSpan.Zero).UtcTicks,
+            var rows=Enumerable.Range(1,Count).Select(pid=>new SessionObservation(pid,Start(pid),
                 "Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
             return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),
                 rows,null,now,Interlocked.Increment(ref _revision),true));

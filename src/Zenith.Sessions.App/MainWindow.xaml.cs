@@ -120,13 +120,15 @@ public partial class MainWindow : Window
             try { await _vm.SaveManagerWindowAsync(CaptureManagerWindow()); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
-            // and still give the priority warning and stop the instance coordinator.
+            // and still give the priority and sound warnings and stop the instance coordinator.
             try { await _vm.DisposeAsync(); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             if (_vm.PendingPriorityRestoreCount > 0)
                 MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
                     + " original client priorities. Review those clients in Task Manager. The settings last until you change them or the clients exit.",
                     "Client priority restoration", MessageBoxButton.OK, MessageBoxImage.Warning);
+            if (_vm.ExitSoundWarning is { } soundWarning)
+                MessageBox.Show(this, soundWarning, "Client sound restoration", MessageBoxButton.OK, MessageBoxImage.Warning);
             if (((App)Application.Current).Coordinator is { } coordinator) await coordinator.StopAsync();
         }
         finally { _exiting = true; Close(); }

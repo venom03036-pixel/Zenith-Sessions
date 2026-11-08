@@ -23,6 +23,8 @@ public sealed record ClientAudioMuteResult(SessionObservation Session, ClientAud
             => "Windows confirmed this client's sound is muted. Zenith unmutes it on Unmute or Exit. If the client closes while muted, Windows may start its next client muted too.",
         ClientAudioMuteStatus.Applied => "Windows confirmed this client's sound is on.",
         ClientAudioMuteStatus.Restored => "Windows confirmed the sound Zenith muted is on again.",
+        ClientAudioMuteStatus.Unchanged when Action == ClientAudioMuteAction.Mute && RestorePending
+            => "This client's sound was already muted, by Zenith or because Windows kept a mute Zenith made for an earlier client. Zenith unmutes it on Unmute or Exit.",
         ClientAudioMuteStatus.Unchanged when Action == ClientAudioMuteAction.Mute
             => "This client's sound was already muted. Zenith did not change it and will not unmute it on Exit.",
         ClientAudioMuteStatus.Unchanged when Action == ClientAudioMuteAction.RestoreOriginal && Previous is null

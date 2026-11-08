@@ -26,7 +26,7 @@ public sealed partial class ShellViewModel
     // Windows to list their sound. Both hold at most one entry per client in a scan, so at most 128.
     private readonly HashSet<SessionProcessKey> _soundSeenClients = [];
     private readonly Dictionary<SessionProcessKey, DateTimeOffset> _soundArrivals = [];
-    private bool _soundBaseline;
+    private bool _soundBaseline, _arrivalMutePaused;
 
     public ObservableCollection<ClientAudioMuteResult> ClientSoundResults { get; } = [];
     public bool CanChangeClientSound => _soundPermitted && _ready && !IsLocked && !_shuttingDown
@@ -39,6 +39,28 @@ public sealed partial class ShellViewModel
     public AsyncCommand MuteClients { get; private set; } = null!;
     public AsyncCommand UnmuteClients { get; private set; } = null!;
     public Command CancelClientSound { get; private set; } = null!;
+    public Command ResumeArrivalMute { get; private set; } = null!;
+    /// <summary>
+    /// For this run only: Panic, Lock and Cancel pause arrival muting, and it stays paused until Resume, or until the preference is
+    /// saved on after being off. Unlock and saving the unchanged preference never restart it (Rule 11).
+    /// </summary>
+    public bool IsArrivalMutePaused => _arrivalMutePaused && _savedSettings.MuteArrivingClients;
+    public bool CanResumeArrivalMute => IsArrivalMutePaused && _soundPermitted && _ready && !IsLocked && !_shuttingDown;
+    public string ArrivalMuteStatus => IsArrivalMutePaused
+        ? "Muting new clients is paused by Panic, Lock or Cancel. Clients that appear are not muted until you choose Resume muting new clients."
+        : "";
+    /// <summary>
+    /// Exit's warning, read after DisposeAsync: null until Exit starts, and then unless Windows did not confirm that every client
+    /// Zenith muted was unmuted.
+    /// </summary>
+    internal string? ExitSoundWarning => !_shuttingDown ? null : PendingSoundRestoreCount switch
+    {
+        <= 0 => null,
+        1 => "Windows could not confirm that 1 client Zenith muted was unmuted. Turn its sound on in Volume mixer. "
+            + "Until then, Windows may start later clients of the same program muted.",
+        var count => $"Windows could not confirm that {count} clients Zenith muted were unmuted. Turn their sound on in Volume mixer. "
+            + "Until then, Windows may start later clients of the same program muted."
+    };
 
     private void InitializeClientSoundFeatures(IClientAudioMuteControl? control)
     {
@@ -47,6 +69,7 @@ public sealed partial class ShellViewModel
         MuteClients = new(p => ChangeClientSoundAsync(ClientAudioMuteAction.Mute, p), ReportClientSoundFailure, CaptureClientSoundRequest);
         UnmuteClients = new(p => ChangeClientSoundAsync(ClientAudioMuteAction.Unmute, p), ReportClientSoundFailure, CaptureClientSoundRequest);
         CancelClientSound = new(_ => StopClientSoundOperations());
+        ResumeArrivalMute = new(_ => ResumeArrivalMuting());
         PropertyChanged += ClientSoundOwnerChanged;
     }
 
@@ -54,6 +77,7 @@ public sealed partial class ShellViewModel
     {
         if (args.PropertyName is nameof(HasSelectedSession) or nameof(CheckedClientCount) or nameof(IsReady) or nameof(IsLocked))
             Raise(nameof(CanChangeClientSound));
+        if (args.PropertyName is nameof(IsReady) or nameof(IsLocked)) Raise(nameof(CanResumeArrivalMute));
     }
 
     // The same pinned, fresh, exact-instance selection the priority and trim controls use.
@@ -84,7 +108,8 @@ public sealed partial class ShellViewModel
     {
         var now = DateTimeOffset.UtcNow;
         if (FreshClientInventory(snapshot, now) is not { } rows) return;
-        bool watching = _soundBaseline && _savedSettings.MuteArrivingClients && _soundPermitted && _ready && !IsLocked && !_shuttingDown;
+        bool watching = _soundBaseline && _savedSettings.MuteArrivingClients && !_arrivalMutePaused && _soundPermitted && _ready
+            && !IsLocked && !_shuttingDown;
         var current = new HashSet<SessionProcessKey>();
         foreach (var row in rows) if (row.Problem is null) current.Add(row.ProcessKey);
         if (watching) foreach (var key in current) if (!_soundSeenClients.Contains(key)) _soundArrivals.TryAdd(key, now);
@@ -173,17 +198,55 @@ public sealed partial class ShellViewModel
         if (final.Count == 0) return;
         ClientSoundResults.Clear();
         foreach (var row in final) ClientSoundResults.Add(row);
-        int muted = final.Count(row => row.Status is ClientAudioMuteStatus.Applied or ClientAudioMuteStatus.Unchanged);
-        ClientSoundStatus = $"{muted} of {final.Count} new clients muted as they appeared. Unmute or Exit turns the sound Zenith muted on again.";
+        // Only clients Zenith will unmute count as muted by it; one already muted for another reason is named separately.
+        int muted = final.Count(row => row.Status is ClientAudioMuteStatus.Applied or ClientAudioMuteStatus.Unchanged
+            && row.Current == true && row.RestorePending);
+        int kept = final.Count(row => row.Status == ClientAudioMuteStatus.Unchanged && row.Current == true && !row.RestorePending);
+        ClientSoundStatus = $"{muted} of {final.Count} new clients muted as they appeared. Unmute or Exit turns the sound Zenith muted on again."
+            + (kept == 0 ? "" : kept == 1 ? " 1 was already muted and stays muted on Exit." : $" {kept} were already muted and stay muted on Exit.");
     }
 
+    /// <summary>Panic, Lock, Cancel and Exit: stops the current change and pauses arrival muting for the rest of this run.</summary>
     private void StopClientSoundOperations()
     {
         _clientSoundGeneration++;
         _soundArrivals.Clear();
+        _arrivalMutePaused = true;
+        RaiseArrivalMute();
         _clientSoundStop?.Cancel();
         _clientSound.CancelOperations();
     }
+
+    /// <summary>
+    /// The explicit restart. Every fresh scan still records the clients it names while paused, so a client that appeared then is
+    /// already running, not an arrival; only clients that appear after this are muted.
+    /// </summary>
+    private void ResumeArrivalMuting()
+    {
+        if (!CanResumeArrivalMute) return;
+        ResetArrivalMute();
+        ClientSoundStatus = "Muting new clients resumed. Clients already running are left alone; use Mute for them.";
+    }
+
+    /// <summary>
+    /// After an explicit Save settings: saving the preference on after it was off is an explicit start and ends a pause, as does
+    /// saving it off. Saving it on again unchanged keeps the pause.
+    /// </summary>
+    private void ArrivalMutePreferenceSaved(bool wasOn)
+    {
+        if (!wasOn || !_savedSettings.MuteArrivingClients) ResetArrivalMute();
+        else RaiseArrivalMute();
+    }
+
+    private void ResetArrivalMute()
+    {
+        _arrivalMutePaused = false;
+        _soundArrivals.Clear();
+        RaiseArrivalMute();
+    }
+
+    private void RaiseArrivalMute()
+    { Raise(nameof(IsArrivalMutePaused)); Raise(nameof(CanResumeArrivalMute)); Raise(nameof(ArrivalMuteStatus)); }
 
     private void ReportClientSoundFailure(Exception error)
     {

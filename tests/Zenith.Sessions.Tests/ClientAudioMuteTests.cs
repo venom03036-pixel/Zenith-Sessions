@@ -9,7 +9,8 @@ namespace Zenith.Sessions.Tests;
 public sealed class ClientAudioMuteTests
 {
     private static readonly DateTimeOffset Now = new(2026, 11, 7, 12, 0, 0, TimeSpan.Zero);
-    private static SessionObservation Session(int pid) => new(pid, Now.AddMinutes(-1).UtcTicks, "Synthetic",
+    private static SessionObservation Session(int pid) => Session(pid, Now.AddMinutes(-1));
+    private static SessionObservation Session(int pid, DateTimeOffset start) => new(pid, start.UtcTicks, "Synthetic",
         0, "", false, false, 0, 0, null, Now);
 
     [Fact]
@@ -31,6 +32,48 @@ public sealed class ClientAudioMuteTests
         Assert.Equal(new[] { true }, native.Clients[2].Sessions); // Already muted before Zenith acted, so Exit leaves it muted.
         Assert.Equal(0, control.PendingRestoreCount);
         Assert.All(native.Handles, handle => Assert.True(handle.IsClosed));
+    }
+
+    [Fact]
+    public async Task AClientThatStartsMutedAfterZenithMutedAnotherIsOwnedAndUnmutedOnExit()
+    {
+        // Client 2 was muted before Zenith muted anything; client 3 started afterwards already muted, as Windows does for the next
+        // client of a program after a muted one closes.
+        var native = new Native(); native.Add(1, false); native.Add(2, true); native.Add(3, true, true);
+        var later = Session(3, Now.AddMinutes(1));
+        native.Clients[3].Start = later.ProcessStartUtcTicks;
+        var control = Control(native);
+        Assert.Equal(ClientAudioMuteStatus.Applied, Assert.Single((await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Mute, default)).Results).Status);
+
+        var result = await control.ChangeAsync([Session(2), later], ClientAudioMuteAction.Mute, default);
+        Assert.Equal(new[] { ClientAudioMuteStatus.Unchanged, ClientAudioMuteStatus.Unchanged }, result.Results.Select(row => row.Status));
+        Assert.False(result.Results[0].RestorePending);
+        Assert.Contains("will not unmute it on Exit", result.Results[0].Explanation);
+        Assert.True(result.Results[1].RestorePending);
+        Assert.Contains("Zenith unmutes it on Unmute or Exit", result.Results[1].Explanation);
+        Assert.Equal(2, result.PendingRestoreCount);
+        Assert.Equal(1, native.SetCalls); // Taking ownership writes nothing.
+
+        await control.DisposeAsync();
+        Assert.Equal(new[] { false }, native.Clients[1].Sessions);
+        Assert.Equal(new[] { true }, native.Clients[2].Sessions);
+        Assert.Equal(new[] { false, false }, native.Clients[3].Sessions);
+        Assert.Equal(0, control.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task AMutedClientIsNotOwnedBeforeZenithHasMutedAnything()
+    {
+        var native = new Native(); native.Add(1, true);
+        var later = Session(1, Now.AddMinutes(1));
+        native.Clients[1].Start = later.ProcessStartUtcTicks;
+        var control = Control(native);
+        var row = Assert.Single((await control.ChangeAsync([later], ClientAudioMuteAction.Mute, default)).Results);
+        Assert.Equal(ClientAudioMuteStatus.Unchanged, row.Status);
+        Assert.False(row.RestorePending);
+        await control.DisposeAsync();
+        Assert.Equal(new[] { true }, native.Clients[1].Sessions);
+        Assert.Equal(0, native.SetCalls);
     }
 
     [Fact]
@@ -149,7 +192,9 @@ public sealed class ClientAudioMuteTests
         Assert.Equal(new[] { true }, native.Clients[1].Sessions);
     }
 
-    private static WindowsClientAudioMuteControl Control(Native native) => new(new NativeClientAudioMuteAdapter(native));
+    // A fixed clock: Zenith's first mute happens at Now, after the synthetic clients started and before a "later" one.
+    private static WindowsClientAudioMuteControl Control(Native native) => new(new NativeClientAudioMuteAdapter(native), new Clock(Now));
+    private sealed class Clock(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
 
     internal sealed class Client(int pid, bool[] sessions)
     {
@@ -160,7 +205,8 @@ public sealed class ClientAudioMuteTests
         public bool[] Sessions = sessions;
     }
 
-    private sealed class Native : IClientAudioNativeApi
+    /// <summary>Also used by the shell's sound presentation tests to drive the real control.</summary>
+    internal sealed class Native : IClientAudioNativeApi
     {
         public string? CurrentUserSid => "S-1-5-21-current";
         public readonly Dictionary<int, Client> Clients = [];

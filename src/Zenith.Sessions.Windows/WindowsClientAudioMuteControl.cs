@@ -24,21 +24,28 @@ internal interface IClientAudioAdapter
 /// <summary>
 /// One actual worker and no queued requests. No native operation runs on the caller's thread. The restore map holds every exact
 /// client instance this owner muted, is bounded at 128 and never evicts one it still has to unmute: Windows may remember a mute for
-/// later clients of the same program, so Zenith unmutes what it muted on Unmute, Restore and Exit.
+/// later clients of the same program, so Zenith unmutes what it muted on Unmute, Restore and Exit. Windows does this when a muted
+/// client closes (a client started while another is muted starts with its sound on), so a client that started after this owner's
+/// first mute and is found already muted is owned too: Zenith's own mute may be why it is muted.
 /// </summary>
 public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
 {
     private readonly object _gate = new();
     private readonly IClientAudioAdapter _adapter;
+    private readonly TimeProvider _time;
     private readonly Dictionary<SessionProcessKey, SessionObservation> _muted = [];
+    private long _firstMuteUtcTicks = long.MaxValue; // Under _gate: when this owner's first possibly accepted mute was sent.
     private Task<ClientAudioMuteBatchResult>? _active;
     private Task? _dispose;
     private long _generation;
     private bool _closed;
 
     public WindowsClientAudioMuteControl() : this(new NativeClientAudioMuteAdapter()) { }
-    internal WindowsClientAudioMuteControl(IClientAudioAdapter adapter)
-        => _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
+    internal WindowsClientAudioMuteControl(IClientAudioAdapter adapter, TimeProvider? time = null)
+    {
+        _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
+        _time = time ?? TimeProvider.System;
+    }
 
     public int PendingRestoreCount { get { lock (_gate) return _muted.Count; } }
     public void CancelOperations() => Interlocked.Increment(ref _generation);
@@ -133,7 +140,21 @@ public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
         }
         bool desired = action == ClientAudioMuteAction.Mute; // Unmute and RestoreOriginal both turn the sound on.
         if (stopped()) return Result(session, action, ClientAudioMuteStatus.Cancelled, muted, muted);
-        if (muted == desired) return Result(session, action, ClientAudioMuteStatus.Unchanged, muted, muted);
+        if (muted == desired)
+        {
+            // Found muted after starting later than this owner's first mute: Windows may have kept Zenith's mute for it, so it is
+            // unmuted on Unmute and Exit like a client Zenith muted. Nothing is written.
+            if (desired && !owned)
+                lock (_gate)
+                    if (session.ProcessStartUtcTicks > _firstMuteUtcTicks)
+                    {
+                        if (_muted.Count == ClientAudioMuteBatchResult.MaximumProcesses)
+                            return Result(session, action, ClientAudioMuteStatus.CapacityReached, muted, muted);
+                        _muted[key] = session;
+                    }
+            return Result(session, action, ClientAudioMuteStatus.Unchanged, muted, muted);
+        }
+        long dispatched = _time.GetUtcNow().UtcTicks;
         if (desired)
         {
             lock (_gate)
@@ -146,7 +167,12 @@ public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
         }
         ClientAudioWrite write;
         try { write = handle.Change(muted, desired, stopped); }
-        catch (Exception) { return Result(session, action, ClientAudioMuteStatus.NotConfirmed, muted); }
+        catch (Exception)
+        {
+            if (desired) NoteMute(dispatched);
+            return Result(session, action, ClientAudioMuteStatus.NotConfirmed, muted);
+        }
+        if (desired && write.Accepted) NoteMute(dispatched);
         if (!write.Accepted)
         {
             // Nothing was written: a refused mute owns nothing, and a refused unmute keeps ownership unless the client is gone
@@ -179,6 +205,8 @@ public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
     private ClientAudioMuteBatchResult Refused(SessionObservation[] pinned, ClientAudioMuteAction action, ClientAudioMuteStatus status)
         => new(pinned.Select(session => Result(session, action, status)).ToArray(), false, _muted.Count, status);
     private void Forget(SessionProcessKey key) { lock (_gate) _muted.Remove(key); }
+    /// <summary>A mute Windows accepted, or may have accepted, was dispatched at <paramref name="utcTicks"/>.</summary>
+    private void NoteMute(long utcTicks) { lock (_gate) _firstMuteUtcTicks = Math.Min(_firstMuteUtcTicks, utcTicks); }
     private static SessionProcessKey Key(SessionObservation session) => new(null, session.ProcessId, session.ProcessStartUtcTicks);
     private static ClientAudioMuteStatus Failure(ClientAudioMuteStatus status)
         => status is ClientAudioMuteStatus.InvalidClient or ClientAudioMuteStatus.AccessDenied or ClientAudioMuteStatus.NoAudioSession

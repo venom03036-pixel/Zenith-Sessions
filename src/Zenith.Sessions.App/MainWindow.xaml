@@ -681,7 +681,11 @@
                   <CheckBox x:Name="MuteArrivingClientsOption" Content="Mute clients when they appear" IsChecked="{Binding MuteArrivingClients}" MinHeight="36" VerticalContentAlignment="Center" Margin="0,0,12,8" AutomationProperties.Name="Mute clients when they appear" />
                   <Button Content="Save all settings" Command="{Binding SaveSettings}" MinHeight="36" Margin="0,0,0,8" />
                 </WrapPanel>
-                <TextBlock Text="Off until you turn it on and save. Then each client that starts afterwards is muted as soon as Windows lists its sound, for up to 2 minutes after it appears. Clients already running are left alone; use Mute for them." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8" />
+                <TextBlock Text="Off until you turn it on and save. Then each client that starts afterwards is muted as soon as Windows lists its sound, for up to 2 minutes after it appears. Clients already running are left alone; use Mute for them. Panic, Lock and Cancel sound work pause it until you resume it." Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8" />
+                <WrapPanel>
+                  <Button x:Name="ResumeArrivalMuteButton" Content="Resume muting new clients" Command="{Binding ResumeArrivalMute}" IsEnabled="{Binding CanResumeArrivalMute}" MinHeight="36" Margin="0,0,12,8" />
+                  <TextBlock Text="{Binding ArrivalMuteStatus}" TextWrapping="Wrap" VerticalAlignment="Center" MaxWidth="640" Margin="0,0,0,8" />
+                </WrapPanel>
                 <TextBlock Text="{Binding ClientSoundStatus}" TextWrapping="Wrap" Margin="0,0,0,6" />
                 <ListView ItemsSource="{Binding ClientSoundResults}" MaxHeight="160" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Client sound results">
                   <ListView.View><GridView>
