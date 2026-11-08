@@ -304,7 +304,7 @@ public sealed record RobloxPublicServerQuery(long PlaceId, int PageSize = 10, in
     public override string ToString() => $"Public Roblox server query {{ PlaceId = {PlaceId}, PageSize = {PageSize}, MaxPages = {MaxPages}, SortOrder = {SortOrder}, ExcludeFullGames = {ExcludeFullGames}, Cursor = [omitted] }}";
 }
 
-public sealed record RobloxPublicServer(long PlaceId, string JobId, int Playing, int MaxPlayers, double? Fps, int? Ping, DateTimeOffset ObservedUtc)
+public sealed record RobloxPublicServer(long PlaceId, string JobId, int Playing, int MaxPlayers, double? Fps, int? Ping, DateTimeOffset ObservedUtc, int? FriendCount = null)
 {
     public bool HasOpenSlots => Playing < MaxPlayers;
     public RobloxRequestedDestination RequestedDestination => new(PlaceId, JobId, RobloxServerKind.Public);

@@ -385,6 +385,17 @@ public partial class MainWindow : Window
         try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link) {UseShellExecute=true});_vm.Inform("Opened the public game page in your browser. No account was launched or signed in.");}
         catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException) {_vm.Fail(ex,ManagerSubsystem.Directory,"The browser could not be opened. Use Copy link instead.");}
     }
+    private void RenameOwnedPrivateServerClick(object sender,RoutedEventArgs e)
+    {
+        var review=_vm.CapturePrivateServerRenameReview();
+        if(review is null) {_vm.Inform("Fetch the selected account's owned private servers and enter a short plain name first.");return;}
+        try
+        {
+            if(MessageBox.Show(this,$"Rename private server “{review.Server.Name}” (ID {review.Server.Id}) to “{review.Name}” for player {review.Context.UserId}?\n\nThis changes its name on Roblox. It does not buy, renew or change access to the server.",
+                "Rename owned private server",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes) _vm.RenameOwnedPrivateServer.Execute(review);
+        }
+        finally {_vm.DiscardPrivateServerRenameReview(review);}
+    }
     private void CopyGamePageLinkClick(object sender,RoutedEventArgs e)
     {
         var link=_vm.BuildRequestedGamePageLink();

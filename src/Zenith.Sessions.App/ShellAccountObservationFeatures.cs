@@ -173,6 +173,7 @@ public sealed partial class ShellViewModel
     }
     private void ClearPrivateAccountObservations()
     {
+        ClearSignedServerObservations();
         _friendshipReview = null; _serverPresence.Clear();
         // Clear backing data first; a failing presentation subscriber must not skip the remaining clears or shutdown.
         _privateAccountDetails = "Not refreshed for this account."; _friendshipResults = "No friendship results retained.";
