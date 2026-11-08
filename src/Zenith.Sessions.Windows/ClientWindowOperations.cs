@@ -113,8 +113,9 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
         long generation = Interlocked.Read(ref _generation);
         ArgumentNullException.ThrowIfNull(sessions); ArgumentNullException.ThrowIfNull(options); options.Validated();
         if (sessions.Count > 128) throw new ArgumentException("Select at most 128 clients in one arrangement request.", nameof(sessions));
-        var ordered = sessions.OrderBy(session => session.ProcessId).ThenBy(session => session.ProcessStartUtcTicks)
-            .ThenBy(session => session.Window.ToInt64()).ToArray();
+        // Copy before the first await, in the caller's slot order (ClientWindowSlotOrder): the first client gets the first cell.
+        // Later caller selection changes cannot redirect queued work.
+        var ordered = sessions.ToArray();
         if (ordered.Length == 0) return new(Array.Empty<ClientWindowPlacementResult>(), false, "Check the clients to arrange.");
         var results = new List<ClientWindowPlacementResult>(ordered.Length);
         bool acquired = false;

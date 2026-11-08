@@ -900,6 +900,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var evidence=_logProjection.EvidenceSnapshot(now);
         RefreshLaunchEvidenceWith(evidence);
         RecentClients.Observe(snapshot,evidence,now);
+        ObserveClientArrivals(snapshot,evidence);
         // Rows retained from a failed, partial or stale scan keep their log text but not Join same / Copy.
         var logViews = _logProjection.Snapshot(now, snapshot, logs);
         foreach (var row in Sessions)
