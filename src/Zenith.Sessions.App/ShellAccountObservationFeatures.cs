@@ -17,6 +17,7 @@ public sealed partial class ShellViewModel
     private readonly Dictionary<Guid, (RobloxAccountContext Context, string Text)> _serverPresence = [];
     private AccountFriendshipReview? _friendshipReview;
     private Guid? _observationSelection;
+    private RobloxAccountContext? _privateDetailsContext;
     private bool _readingPrivateDetails;
     private bool _observingAccountAction;
     public string CancelAccountActionLabel => _observingAccountAction ? "Cancel account action" : "Cancel account setup";
@@ -35,17 +36,25 @@ public sealed partial class ShellViewModel
         BefriendReviewedAccounts = new(p => RunFriendshipReviewAsync(p as AccountFriendshipReview), error => Fail(error, ManagerSubsystem.SignIn));
         PropertyChanged += (_, args) =>
         {
-            if (args.PropertyName != nameof(SelectedAccount)) return;
-            if (_observationSelection != SelectedAccount?.Profile.Id)
-            {
-                _observationSelection = SelectedAccount?.Profile.Id;
-                PrivateAccountDetails = "Not refreshed for this account.";
-                if (_readingPrivateDetails) _authorizationStop?.Cancel();
-            }
-            foreach (var row in Accounts)
-                if (_serverPresence.TryGetValue(row.Profile.Id, out var presence) && row.KnownUserId == presence.Context.UserId
-                    && row.AuthorizationGeneration == presence.Context.Generation) row.ServerPresenceText = presence.Text;
+            if (args.PropertyName == nameof(SelectedAccount)) ReconcileAccountObservationSelection();
         };
+    }
+    private void ReconcileAccountObservationSelection()
+    {
+        // WPF clears SelectedItem while the same account page is replaced. Reconcile once the replacement
+        // is published; a genuine deselection, removal or changed sign-in still invalidates the observation.
+        if (_publishingAccountRows) return;
+        if (_observationSelection != SelectedAccount?.Profile.Id
+            || _privateDetailsContext is { } observed && ObservationContext(SelectedAccount) != observed)
+        {
+            _observationSelection = SelectedAccount?.Profile.Id;
+            _privateDetailsContext = null;
+            PrivateAccountDetails = "Not refreshed for this account.";
+            if (_readingPrivateDetails) _authorizationStop?.Cancel();
+        }
+        foreach (var row in Accounts)
+            if (_serverPresence.TryGetValue(row.Profile.Id, out var presence) && row.KnownUserId == presence.Context.UserId
+                && row.AuthorizationGeneration == presence.Context.Generation) row.ServerPresenceText = presence.Text;
     }
     private static RobloxAccountContext? ObservationContext(AccountRow? row) => row is { NeedsSignIn: false, SignInStatusBusy: false,
         KnownUserId: > 0, AuthorizationGeneration: > 0 } ? new(row.Profile.Id, row.KnownUserId.Value, row.AuthorizationGeneration.Value) : null;
@@ -87,7 +96,7 @@ public sealed partial class ShellViewModel
         var fields = new[] { RobloxAccountRead.Robux, RobloxAccountRead.Premium, RobloxAccountRead.EmailVerified, RobloxAccountRead.TwoStepMethods,
             RobloxAccountRead.BanState, RobloxAccountRead.FriendsCount, RobloxAccountRead.FollowersCount };
         var values = new Dictionary<RobloxAccountRead, RobloxAccountObservation?>();
-        _readingPrivateDetails = true; PrivateAccountDetails = "Refreshing private details…";
+        _readingPrivateDetails = true; _privateDetailsContext = context; PrivateAccountDetails = "Refreshing private details…";
         try
         {
             await WithAccountObservationsAsync(async ct =>
@@ -99,6 +108,9 @@ public sealed partial class ShellViewModel
                     ct.ThrowIfCancellationRequested(); context = result.Context;
                     values[field] = result.Outcome == RobloxAccountOutcome.Success ? result.Observation : null;
                     if (SelectedAccount?.Profile.Id != context.ProfileId) return;
+                    // The owned read may rotate the saved session; its returned generation is the one
+                    // the final account-list reload must match, not the row from before the request.
+                    _privateDetailsContext = context;
                     PrivateAccountDetails = string.Join("\n", fields.Select(Describe));
                     if (result.Outcome is RobloxAccountOutcome.Challenge or RobloxAccountOutcome.RateLimited) break;
                     await Task.Delay(TimeSpan.FromMilliseconds(400), ct);
@@ -174,7 +186,7 @@ public sealed partial class ShellViewModel
     private void ClearPrivateAccountObservations()
     {
         ClearSignedServerObservations();
-        _friendshipReview = null; _serverPresence.Clear();
+        _friendshipReview = null; _privateDetailsContext = null; _serverPresence.Clear();
         // Clear backing data first; a failing presentation subscriber must not skip the remaining clears or shutdown.
         _privateAccountDetails = "Not refreshed for this account."; _friendshipResults = "No friendship results retained.";
         foreach (var row in Accounts) Notify(() => row.ServerPresenceText = "Not refreshed");

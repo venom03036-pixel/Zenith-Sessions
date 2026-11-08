@@ -828,3 +828,7 @@ VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity c
 ## CPU-cap recovery record repair (0.72)
 
 **CAP-14-01, CAP-14-03, PROD-QA-03.** Failed adjustments retain an existing cap record unless readback proves the held job inert; re-enabling a held inert job records ownership before mutation and refuses I/O/capacity failure. Clock-estimate changes no longer discard records; exact PID/start/liveness checks retire old instances, while denied queries retain uncertainty. Thirteen red-before-repair cases and **91/91 passing affected fake-native/presentation checks**, zero skips, are recorded in [the repair evidence](CPU-CAP-OWNER-REVIEW-REPAIR.md). No real client or native cap ran; integrated full gates and attended native trials remain pending.
+
+### D4 0.72 — preserve private observations through account-row publication
+
+**VA-06-03, VA-07-03, CAP-02-03.** Actual WPF ListBox binding reproduced a completed private refresh erasing its own results during transient deselection: two intended red assertions, with two deliberate-selection cancellation controls already passing. Reconciliation now runs after row publication and checks the exact profile/player/generation context returned by the owned reads. Intentional deselection, final removal and later sign-in generation changes still clear data. **4 focused and 387 affected tests passed, 0 failures/skips**; [exact evidence and limits](PRIVATE-DETAILS-BINDING-REPAIR.md). No real account/network/client work; live and release readiness remain unchanged.
