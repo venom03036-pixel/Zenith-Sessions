@@ -185,7 +185,7 @@ public sealed class AccountIdentityProjection : IDisposable
             || !AuthorizationIdentity.HasVerifiedContext(value.Provider, value.Issuer, value.Subject, value.VerifiedUserId)
             || value.VerifiedUserId <= 0 || value.Generation <= 0 || value.Health != AuthorizationHealth.Linked
             || value.VerifiedUsername is not { Length: > 0 and <= 20 }
-            || value.VerifiedUsername.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_'))
+            || !PublicRobloxUsername.HasValidCharacters(value.VerifiedUsername))
             throw Failure("The saved identity metadata is invalid or needs sign-in. No profile identity was changed.");
     }
 

@@ -148,7 +148,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
             JsonElement item = data[0];
             if (ReadId(item, "targetId") != universeId) throw new InvalidPublicResponseException();
             string state = ReadText(item, "state", 32);
-            if (state is "Pending" or "InReview")
+            if (MapThumbnailState(state) == PublicRobloxThumbnailState.Pending)
                 return Deferred<PublicRobloxGameIcon>("The public game icon is still being prepared.", TimeSpan.FromSeconds(30));
             if (state is "Blocked" or "Error") return Unknown<PublicRobloxGameIcon>("The public game icon is unavailable.");
             if (state != "Completed") return Unknown<PublicRobloxGameIcon>("The public game icon state is not supported.");

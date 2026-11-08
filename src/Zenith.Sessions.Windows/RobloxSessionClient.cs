@@ -55,7 +55,7 @@ public sealed class RobloxSessionClient : IRobloxSessionClient, IDisposable
             if (!root.TryGetProperty("id", out var idField) || !idField.TryGetInt64(out long id) || id <= 0
                 || !root.TryGetProperty("name", out var nameField) || nameField.ValueKind != JsonValueKind.String
                 || nameField.GetString() is not { Length: > 0 and <= 20 } name
-                || name.Any(c => !char.IsAsciiLetterOrDigit(c) && c != '_')) throw Failure(RobloxSessionFailure.InvalidResponse);
+                || !PublicRobloxUsername.HasValidCharacters(name)) throw Failure(RobloxSessionFailure.InvalidResponse);
             stop.Token.ThrowIfCancellationRequested();
             var identity = new LinkedIdentity(id, name, RobloxSessionIdentity.Issuer, id.ToString(CultureInfo.InvariantCulture));
             return new(identity, Rotation(response, credential, _time.GetUtcNow()));

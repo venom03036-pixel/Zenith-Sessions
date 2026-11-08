@@ -15,7 +15,7 @@ public sealed record AccountProfile(Guid Id, string Label, string Username, stri
         if(Label is null || Username is null || Group is null || Notes is null) throw new ArgumentException("Name, username, group and notes cannot be null.");
         string label = Label.Trim(), username = Username.Trim(), group = AccountGroups.ValidateName(Group);
         if (label.Length is < 1 or > 100 || label.Any(char.IsControl)) throw new ArgumentException("Name must contain 1–100 readable characters.");
-        if (username.Length > 20 || username.Any(c => !(char.IsAsciiLetterOrDigit(c) || c == '_')))
+        if (username.Length > 20 || !PublicRobloxUsername.HasValidCharacters(username))
             throw new ArgumentException("Username must use up to 20 letters, numbers, or underscores.");
         if (Priority is < 0 or > 100) throw new ArgumentException("Priority must be between 0 and 100.");
         if (PreferredPlaceId is <= 0 || RobloxUserId is <= 0) throw new ArgumentException("Roblox IDs must be positive numbers.");

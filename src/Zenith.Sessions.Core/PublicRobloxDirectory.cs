@@ -68,8 +68,8 @@ public static class PublicRobloxUsername
     public static bool IsValid(string? text) => text is { Length: >= MinimumLength and <= MaximumLength } && HasValidCharacters(text);
 
     /// <summary>
-    /// Only ASCII letters, digits or underscores; the length is the caller's rule. Typed names and the names in
-    /// Roblox's replies share this one check.
+    /// Only ASCII letters, digits or underscores; the length is the caller's rule. Typed names, the names in
+    /// Roblox's replies, saved profiles and signed-in identities share this one check.
     /// </summary>
     public static bool HasValidCharacters(string text)
     {
