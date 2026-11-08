@@ -17,6 +17,7 @@ public sealed class MacroCatalogPipeServer : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Task _beforeFirstAccept;
     private readonly Func<NamedPipeServerStream, CancellationToken, Task> _accept;
+    private readonly Func<NamedPipeServerStream, bool> _reset;
     private readonly Task _worker;
     private Task? _dispose;
     private int _stopped;
@@ -24,14 +25,16 @@ public sealed class MacroCatalogPipeServer : IAsyncDisposable
 
     public MacroCatalogPipeServer(IMacroCatalogSource source, string? pipeName = null) : this(source, pipeName, Task.CompletedTask) { }
 
-    /// <summary>Test seams: the worker waits for <paramref name="beforeFirstAccept"/> (or stop) before its first accept, and
-    /// <paramref name="accept"/> replaces the native accept so a test can force failures no client can cause.</summary>
+    /// <summary>Test seams: the worker waits for <paramref name="beforeFirstAccept"/> (or stop) before its first accept,
+    /// <paramref name="accept"/> replaces the native accept so a test can force failures no client can cause, and
+    /// <paramref name="reset"/> replaces the native reset after a failed accept (false means the reset failed).</summary>
     internal MacroCatalogPipeServer(IMacroCatalogSource source, string? pipeName, Task beforeFirstAccept,
-        Func<NamedPipeServerStream, CancellationToken, Task>? accept = null)
+        Func<NamedPipeServerStream, CancellationToken, Task>? accept = null, Func<NamedPipeServerStream, bool>? reset = null)
     {
         _source = source ?? throw new ArgumentNullException(nameof(source));
         _beforeFirstAccept = beforeFirstAccept ?? throw new ArgumentNullException(nameof(beforeFirstAccept));
         _accept = accept ?? (static (pipe, ct) => pipe.WaitForConnectionAsync(ct));
+        _reset = reset ?? (static pipe => DisconnectNamedPipe(pipe.SafePipeHandle));
         _pipe = new NamedPipeServerStream(MacroCatalogPipeCodec.PipeName(pipeName), PipeDirection.InOut, 1,
             PipeTransmissionMode.Byte, PipeOptions.Asynchronous | PipeOptions.CurrentUserOnly | PipeOptions.FirstPipeInstance, 4096, 4096);
         _worker = Task.Run(RunAsync); // No scheduling token: even a pre-start stop must run and own final cleanup.
@@ -78,7 +81,7 @@ public sealed class MacroCatalogPipeServer : IAsyncDisposable
     private void ResetUnacceptedInstance()
     {
         // NamedPipeServerStream.Disconnect rejects a stream that never connected, so reset the native instance directly.
-        if (!DisconnectNamedPipe(_pipe.SafePipeHandle))
+        if (!_reset(_pipe))
             throw new IOException("The macro metadata endpoint could not reset after a failed accept.", Marshal.GetHRForLastWin32Error());
     }
 

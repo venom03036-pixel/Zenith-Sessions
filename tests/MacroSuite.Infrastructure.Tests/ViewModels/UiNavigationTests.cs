@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -23,6 +24,7 @@ public partial class MacroEditorViewModelTests
     public Task UiNavigation_RetainsProductionEditorScrollSelectionAndDraft(int actions)
         => WpfTestApplication.RunAsync(async () =>
         {
+            var bodyCpu = ThreadCpuSample.Take();
             using var folder = new RoutingTempFolder();
             using var vm = CreateRecordingViewModel(new TestInputRecorder(), directory: folder.Library,
                 documents: new RecordingDocumentSpy(folder.Library));
@@ -67,6 +69,8 @@ public partial class MacroEditorViewModelTests
             baseline.Content = vm; await fixture.SettleAsync();
             FindNavigationVisual<MacroEditorView>(baseline).Should().NotBeSameAs(before);
             FindNavigationVisual<MacroEditorView>(baseline)!.DataContext = null;
+            var body = ThreadCpuBudget.Check($"UiNavigation retained body ({actions} actions)", NavigationBodyCpuBudget, bodyCpu);
+            Console.WriteLine($"UiNavigation retained CPU: body {body}; slowest layout pass {fixture.SlowestPass}.");
         });
 
     [Theory]
@@ -75,6 +79,7 @@ public partial class MacroEditorViewModelTests
     public Task UiNavigation_ThumbWinsOverPendingFollowAndExplicitJumpStillWorks(int actions)
         => WpfTestApplication.RunAsync(async () =>
         {
+            var bodyCpu = ThreadCpuSample.Take();
             using var folder = new RoutingTempFolder();
             using var vm = CreateRecordingViewModel(new TestInputRecorder(), directory: folder.Library,
                 documents: new RecordingDocumentSpy(folder.Library));
@@ -109,7 +114,51 @@ public partial class MacroEditorViewModelTests
             }
             finally { vm.IsRecording = false; view.DataContext = null; }
             Console.WriteLine($"UiNavigation rapid thumb: {actions} actions, 20 pending-scroll races; manual offset {manual:F1}; explicit Jump works; recording Follow pauses. Native-hidden routed-thumb verification only.");
+            var body = ThreadCpuBudget.Check($"UiNavigation rapid thumb body ({actions} actions)", NavigationBodyCpuBudget, bodyCpu);
+            Console.WriteLine($"UiNavigation rapid thumb CPU: body {body}; slowest layout pass {fixture.SlowestPass}.");
         });
+
+    [Fact]
+    public Task UiNavigationLayout_FailsALayoutPassThatComputesPastItsCpuBudget()
+        => WpfTestApplication.RunAsync(async () =>
+        {
+            using var fixture = new NavigationLayoutFixture(TimeSpan.FromMilliseconds(50));
+            fixture.Attach(new CpuBoundMeasure(TimeSpan.FromMilliseconds(300)));
+
+            var error = await Assert.ThrowsAsync<ThreadCpuBudgetExceededException>(() => fixture.SettleAsync());
+
+            error.Use.Cpu.Should().BeGreaterThanOrEqualTo(TimeSpan.FromMilliseconds(300));
+            error.Message.Should().Contain("Layout pass (" + nameof(UiNavigationLayout_FailsALayoutPassThatComputesPastItsCpuBudget))
+                .And.Contain("over its 50 ms CPU budget");
+        });
+
+    /// <summary>
+    /// Dispatcher-thread CPU one layout pass of the production editor may use. Measured on
+    /// 2026-11-08: the heaviest pass, the first layout of 10,000 actions, used 0.4-1.0 s and
+    /// allocated about 110 MB, most of it for the route-target lists (QUALITY_STATUS F-4). In a
+    /// loaded full run passes stayed under 0.52 s of CPU while their waits grew to 32 s, so the
+    /// budget counts CPU: a busy machine does not fail it, a pass that computes for 114 s does.
+    /// Some full runs put the editor in F-4's slow state (2.7-35 s per pass); these tests then
+    /// fail on purpose, naming the pass and its CPU, until F-4 is fixed.
+    /// </summary>
+    private static readonly TimeSpan LayoutPassCpuBudget = TimeSpan.FromSeconds(3);
+
+    /// <summary>
+    /// Dispatcher-thread CPU a whole navigation body may use, including editor work outside layout
+    /// passes such as selecting an action. Measured alone: 1.7-4.3 s; the most was the 10,000-action
+    /// rapid-thumb body, which allocated 673 MB (F-4).
+    /// </summary>
+    private static readonly TimeSpan NavigationBodyCpuBudget = TimeSpan.FromSeconds(15);
+
+    private sealed class CpuBoundMeasure(TimeSpan cpu) : FrameworkElement
+    {
+        private bool _burned;
+        protected override Size MeasureOverride(Size availableSize)
+        {
+            if (!_burned) { _burned = true; ThreadCpuBudget.Burn(cpu); }
+            return new Size(10, 10);
+        }
+    }
 
     private static void PopulateNavigationMacro(MacroEditorViewModel vm, int count)
     {
@@ -153,9 +202,13 @@ public partial class MacroEditorViewModelTests
         private readonly ResourceDictionary _styles = new() { Source = new Uri("pack://application:,,,/MacroSuite.App;component/Themes/ModernControls.xaml") };
         private readonly HwndSource _source;
         private readonly Grid _root = new();
+        private readonly TimeSpan _layoutPassCpuBudget;
         public object OtherPage { get; } = new NavigationOtherPage();
-        public NavigationLayoutFixture()
+        /// <summary>The layout pass that used the most dispatcher-thread CPU so far.</summary>
+        public ThreadCpuUse SlowestPass { get; private set; }
+        public NavigationLayoutFixture(TimeSpan? layoutPassCpuBudget = null)
         {
+            _layoutPassCpuBudget = layoutPassCpuBudget ?? LayoutPassCpuBudget;
             Application.Current.Resources.MergedDictionaries.Add(_styles);
             var editorTemplate = new DataTemplate(typeof(MacroEditorViewModel)) { VisualTree = new FrameworkElementFactory(typeof(MacroEditorView)) };
             _root.Resources[new DataTemplateKey(typeof(MacroEditorViewModel))] = editorTemplate;
@@ -165,11 +218,24 @@ public partial class MacroEditorViewModelTests
             _source.RootVisual = _root;
         }
         public void Attach(UIElement control) { _root.Children.Clear(); _root.Children.Add(control); }
-        public async Task SettleAsync()
+        /// <summary>
+        /// Lays the tree out, lets idle work run, then lays it out again. Each synchronous layout
+        /// pass is held to a dispatcher-thread CPU budget; the idle wait is not, because waiting is
+        /// not editor work (the shared dispatcher's hang guard bounds it).
+        /// </summary>
+        public async Task SettleAsync([CallerMemberName] string caller = "", [CallerLineNumber] int line = 0)
         {
-            _root.Measure(new Size(1320, 740)); _root.Arrange(new Rect(0, 0, 1320, 740)); _root.UpdateLayout();
+            Pass($"Layout pass ({caller}, line {line})", () =>
+            {
+                _root.Measure(new Size(1320, 740)); _root.Arrange(new Rect(0, 0, 1320, 740)); _root.UpdateLayout();
+            });
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
-            _root.UpdateLayout();
+            Pass($"Layout pass after idle ({caller}, line {line})", _root.UpdateLayout);
+        }
+        private void Pass(string what, Action pass)
+        {
+            var use = ThreadCpuBudget.Run(what, _layoutPassCpuBudget, pass);
+            if (use.Cpu >= SlowestPass.Cpu) SlowestPass = use;
         }
         public void Dispose()
         {

@@ -410,6 +410,98 @@ public sealed partial class TargetedMacroExecutionTests
         }
     }
 
+    // The final input snapshot says why the runner released the lease; only a user's Stop says the user stopped it.
+    [Theory]
+    [InlineData("completed", TargetedMacroResultStatus.Completed, "Macro completed; input lease released.")]
+    [InlineData("runtime-limit", TargetedMacroResultStatus.Stopped, "Macro reached its runtime limit; input lease released.")]
+    [InlineData("interpreter-fault", TargetedMacroResultStatus.Faulted, "Macro stopped after a failure; input lease released.")]
+    [InlineData("user", TargetedMacroResultStatus.Stopped, "Stopped by user.")]
+    [InlineData("runner-panic", TargetedMacroResultStatus.Stopped, "Stopped by emergency stop.")]
+    [InlineData("runner-closed", TargetedMacroResultStatus.Stopped, "Macro runner closed; input lease released.")]
+    public async Task FinalInputSnapshotSaysWhyTheRunnerReleasedTheLease(string ending, TargetedMacroResultStatus status, string expected)
+    {
+        var f = new Fixture();
+        try
+        {
+            var model = ending switch
+            {
+                "completed" => Model(Key()),
+                "interpreter-fault" => Model(Key(), Key()),
+                // No input, so the cap can only expire in the delay, never during a submission.
+                "runtime-limit" => Model(new DelayStep(TimeSpan.FromSeconds(2))),
+                _ => Model(Key(), new DelayStep(TimeSpan.FromSeconds(2)))
+            };
+            if (ending == "runtime-limit")
+                model.Settings.MaxRuntime = TimeSpan.FromMilliseconds(100);
+            if (ending == "interpreter-fault")
+                model.Settings.MaxIterations = 1; // The second step exceeds it inside the interpreter.
+            var run = Start(f, TargetedMacroPlan.Compile(model, TargetedMacroScope.OwnedWindowDiagnostic));
+            if (ending is "user" or "runner-panic" or "runner-closed")
+            {
+                await Until(() => f.Transport.Count(run.Id, TargetedInputKind.KeyUp) == 1);
+                if (ending == "user")
+                    _ = run.StopAsync();
+                else if (ending == "runner-panic")
+                    f.Runner.SignalPanic(); // The runner's own panic, without the input owner's SignalStopAll.
+                else
+                    _ = f.Runner.DisposeAsync().AsTask();
+            }
+
+            var result = await run.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(status, result.Status);
+            Assert.Equal(TargetedInputRunState.Stopped, result.Snapshot.Input.State);
+            Assert.Equal(expected, result.Snapshot.Input.Explanation);
+        }
+        finally
+        {
+            await f.DisposeAsync();
+        }
+    }
+
+    [Fact]
+    public async Task CompanionStopReleasesItsRunWithoutSayingTheUserStoppedIt()
+    {
+        await using var f = new Fixture();
+        var source = new HostDocument(Model(Key(), new DelayStep(TimeSpan.FromSeconds(2))));
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
+        var host = new HostInputOperationArbiter();
+        var operation = new CompanionMacroOperations(host, preparer, f.Runner);
+        var running = operation.RunAsync(source.Reference, [f.A], host.StopGeneration);
+        await Until(() => f.Transport.Commands.Count == 2);
+        host.SignalStop();
+        var result = await running.WaitAsync(TimeSpan.FromSeconds(5));
+        var recipient = Assert.Single(result.Recipients).Run!;
+        Assert.Equal(TargetedMacroResultStatus.Stopped, recipient.Status);
+        Assert.Equal("Its companion operation stopped; input lease released.", recipient.Snapshot.Input.Explanation);
+    }
+
+    [Fact]
+    public async Task RunThatCannotBeComposedReleasesItsInputLeaseAsNotStarted()
+    {
+        var f = new Fixture();
+        var runner = new TargetedMacroRunner(f.Input, new([65, 66], (TargetedMacroSignals)31), (_, _) => true, 32,
+            composing: static () => throw new InvalidOperationException("Synthetic composition failure."));
+        var host = new HostInputOperationArbiter();
+        Assert.True(host.TryAcquire(HostInputOperationKind.Companion, out var lease, out _));
+        try
+        {
+            Assert.True(runner.TryBindOperation(lease!, runner.StopGeneration));
+            var start = runner.TryPrepareBound(Plan(Key()), f.A, lease!, out var unstarted);
+            Assert.Equal(TargetedMacroStartStatus.Rejected, start.Status);
+            Assert.Null(start.Run);
+            var input = await Assert.IsType<UnstartedTargetedMacro>(unstarted).Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TargetedInputRunState.Stopped, input.State);
+            Assert.Equal("Run could not start; input lease released.", input.Explanation);
+            Assert.Empty(f.Transport.Commands);
+        }
+        finally
+        {
+            await lease!.CompleteAsync(true);
+            await runner.DisposeAsync();
+            await f.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task LegacySynchronousClearRetainsLeaseAndTheNextEventAwaitsItsActualRelease()
     {

@@ -121,6 +121,14 @@ public sealed partial class MiniToolbarHotkeyPreferenceTests
     [InlineData(1, "Register(hotkey: \"%Record%\");")]
     [InlineData(1, "void Register(string hotkey = \"%Record%\") { }")]
     [InlineData(1, "[DefaultValue(\"%Stop%\")] public string StopBind { get; set; } = string.Empty;")]
+    [InlineData(1, "private const string DefaultRecordKey = \"%Record%\";")]
+    [InlineData(1, "private string _recordKey = \"%Record%\";")]
+    [InlineData(1, "if (_panicKey == \"%Panic%\") ShowDefaultHint();")]
+    [InlineData(1, "string DefaultRecordHotkey() => \"%Record%\";")]
+    [InlineData(3, "string DefaultPanicKey()", "{", "    return \"%Panic%\";", "}")]
+    [InlineData(1, "Register(\"record\", \"%Record%\");")]
+    [InlineData(1, "case \"stop\": return \"%Stop%\";")]
+    [InlineData(1, "string key = action switch { \"record\" => \"%Record%\", _ => \"\" };")]
     public void DefaultShortcutGuard_ReportsEveryRoleThatHoldsADefault(int expectedLine, params string[] lines)
     {
         string source = ExpandDefaults(string.Join(Environment.NewLine, lines));
@@ -140,6 +148,9 @@ public sealed partial class MiniToolbarHotkeyPreferenceTests
     [InlineData("// _panicHotkey = \"%Panic%\" was the old hard-coded value.")]
     [InlineData("internal void SimulateKeyForTests(string key = \"%Record%\") => _keys.Press(key);")]
     [InlineData("_input.SendKeyForTests(\"%MiniClickThrough%\");")]
+    [InlineData("string canonical = typed switch { \"f12\" => \"%Panic%\", \"esc\" => \"Escape\", _ => typed };")]
+    [InlineData("case \"f6\": return \"%Record%\";")]
+    [InlineData("_aliases.Add(\"f1\", \"%AutoClicker%\");")]
     public void DefaultShortcutGuard_IgnoresUnrelatedUsesOfTheSameKeyNames(params string[] lines)
     {
         string source = ExpandDefaults(string.Join(Environment.NewLine, lines));
@@ -160,15 +171,35 @@ public sealed partial class MiniToolbarHotkeyPreferenceTests
         string literal = "\"(?:" + string.Join("|", typeof(TransportHotkeyDefaults).GetFields()
             .Where(field => field.IsLiteral && field.FieldType == typeof(string))
             .Select(field => Regex.Escape((string)field.GetRawConstantValue()!))) + ")\"";
-        // A field, property, local or parameter whose name says it holds a shortcut, with an optional { get; set; }.
-        const string target = @"\b\w*(?:[Hh]otkeys?|[Ss]hortcuts?|[Bb]inds?|[Dd]efaults?)\s*(?:\{[^{}]*\}\s*)?";
+        // A field, property, local, parameter or method whose name says it holds a shortcut.
+        const string shortcutName = @"\b\w*(?:[Hh]otkeys?|[Ss]hortcuts?|[Bb]inds?|[Dd]efaults?)";
+        // A qualified name ending in Key or Keys, as in _recordKey or DefaultPanicKey. A bare key or keys is the key being
+        // handled (a test hook), not a shortcut. Such a name holds one key, so its value is read only up to a [ or {:
+        // a key-name table such as FunctionKeys = new() { ... } or functionKeys = [ ... ] is not a default.
+        const string keyName = @"\b\w+Keys?";
+        const string accessors = @"\s*(?:\{[^{}]*\}\s*)?";
+        const string anyValue = @"(?<value>[^;]*)";
+        const string oneValue = @"(?<value>[^;\[{]*)";
+        // A method's result: its expression body, or the first return of its block body.
+        const string returns = @"\s*\([^()]*\)\s*(?:=>|\{[^{}]*?\breturn\b)";
+        // A quoted action name such as "record". A key name such as "F6" or "f12" is a key-name table's label instead.
+        const string action = @"""(?![Ff]\d{1,2}"")[A-Za-z_][\w.-]*""";
         const string entry = @"(?:""[^""\r\n]*""|[\w.]+)";
         Regex[] roles =
         [
             // The value given to or returned for a shortcut-named target, including ?: and ?? fallbacks and multi-line initializers.
-            new($@"{target}(?:=>|=(?![=>]))(?<value>[^;]*)"),
+            new($@"{shortcutName}{accessors}(?:=>|=(?![=>])){anyValue}"),
+            new($@"{keyName}{accessors}(?:=>|=(?![=>])){oneValue}"),
+            // The value a shortcut-named method returns, as in DefaultRecordHotkey() => "F6" or { return "F6"; }.
+            new($@"{shortcutName}{returns}{anyValue}"),
+            new($@"{keyName}{returns}{oneValue}"),
             // Compared with, or passed by name as, a shortcut-named value.
-            new($@"{target}(?:[!=]=|:(?!:))\s*(?<value>{literal})"),
+            new($@"(?:{shortcutName}|{keyName}){accessors}(?:[!=]=|:(?!:))\s*(?<value>{literal})"),
+            // The value a switch or a call pairs with an action name: "record" => "F6", case "record": return "F6"
+            // and Register("record", "F6").
+            new($@"{action}\s*=>\s*(?<value>{literal})"),
+            new($@"\bcase\s+{action}\s*:\s*return\b{anyValue}"),
+            new($@"\b\w+\s*\(\s*{action}\s*,\s*(?<value>{literal})"),
             // The repair fallback given to NormalizeBind, any ?? fallback, and a [DefaultValue].
             new($@"\bNormalizeBind\s*\((?<value>[^;]*)"),
             new($@"\?\?=?\s*(?<value>{literal})"),

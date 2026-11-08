@@ -100,7 +100,7 @@ public partial class MacroEditorViewModelTests
         public string GetLibraryPath(Guid id) => Path.Combine(directory,id+".zmacro");
         public void Save(MacroModel model,string path)
         {
-            Interlocked.Increment(ref Saves);if(Block) { Entered.TrySetResult();if(!Release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Test write was not released."); }
+            Interlocked.Increment(ref Saves);if(Block) { Entered.TrySetResult();if(!Release.Wait(WpfTestApplication.LivenessBound)) throw new TimeoutException("Test write was not released."); }
             if(Fail) throw new IOException("test write denied");
         }
         public void ExportBackup(IReadOnlyList<MacroModel> models,string path,string passphrase) => throw new NotSupportedException();
@@ -149,16 +149,23 @@ public partial class MacroEditorViewModelTests
             using var folder = new RoutingTempFolder();var documents = new RecordingDocumentSpy(folder.Library);var recorder = new TestInputRecorder();
             using var vm = CreateRecordingViewModel(recorder,directory:folder.Library,documents:documents);
             vm.Steps.ReplaceAll(Enumerable.Range(0,100_000).Select(_ => new DelayStep(TimeSpan.Zero)));
-            await vm.StartRecordingAsync();documents.Block = true;int restored = 0,heartbeats = 0;long restoredAfter = -1;var elapsed = Stopwatch.StartNew();
+            await vm.StartRecordingAsync();documents.Block = true;int restored = 0,heartbeats = 0,atSave = int.MaxValue;long restoredAfter = -1;var elapsed = Stopwatch.StartNew();
             vm.LeaveCompactOverlay = () => { restored++;restoredAfter = elapsed.ElapsedMilliseconds; };
+            var responsive = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             var timer = new System.Windows.Threading.DispatcherTimer { Interval = TimeSpan.FromMilliseconds(5) };
-            timer.Tick += (_,_) => heartbeats++;timer.Start();Task stopping = vm.StopRecordingAsync();
+            timer.Tick += (_,_) => { if(++heartbeats - atSave > 1) responsive.TrySetResult(); };timer.Start();Task stopping = vm.StopRecordingAsync();
             try
             {
-                await documents.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));restored.Should().Be(1);stopping.IsCompleted.Should().BeFalse();
-                await Task.Delay(80);heartbeats.Should().BeGreaterThan(1,"disk encryption must leave WPF's dispatcher responsive");
+                await documents.Entered.Task.WaitAsync(WpfTestApplication.LivenessBound);restored.Should().Be(1);stopping.IsCompleted.Should().BeFalse();
+                atSave = heartbeats;
+                // A briefly slow machine keeps the dispatcher busy for longer than any fixed observation
+                // window. Wait for the heartbeats themselves: only a dispatcher blocked by the save stops them.
+                _ = System.Windows.Threading.Dispatcher.CurrentDispatcher.InvokeAsync(() => Thread.Sleep(200));
+                await Task.WhenAny(responsive.Task, Task.Delay(TimeSpan.FromSeconds(30)));
+                (heartbeats - atSave).Should().BeGreaterThan(1,"disk encryption must leave WPF's dispatcher responsive");
+                stopping.IsCompleted.Should().BeFalse("the heartbeats must arrive while the encrypted save is still blocked");
                 restoredAfter.Should().BeLessThan(2000,"100,000-action finalization must remain bounded before restoring");
-                Console.WriteLine($"100,000 actions: restore callback after {restoredAfter} ms; {heartbeats} dispatcher heartbeats while encrypted save was blocked.");
+                Console.WriteLine($"100,000 actions: restore callback after {restoredAfter} ms; {heartbeats - atSave} dispatcher heartbeats while encrypted save was blocked.");
             }
             finally { documents.Release.Set();timer.Stop(); }
             await stopping;vm.Steps.Should().HaveCount(100_000);

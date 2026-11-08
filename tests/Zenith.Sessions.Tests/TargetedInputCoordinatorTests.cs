@@ -504,6 +504,53 @@ public sealed class TargetedInputCoordinatorTests
         Assert.Equal("Stopped by user.", (await Open(fixture, Target(2)).StopAsync().WaitAsync(Deadline)).Explanation);
     }
 
+    [Theory]
+    [InlineData("geometry", "The pinned target identity or geometry changed; reselect it before a new run.")]
+    [InlineData("uncertain", "Submission may have occurred.")]
+    [InlineData("restore", "Hold restoration or target validation failed.")]
+    public async Task StopPressedWhileAFaultIsStillReleasingItsHoldsKeepsOnlyTheFaultSummary(string fault, string summary)
+    {
+        // The stop lands while the fault's own release is still running (Pausing, not yet Faulted). The reason must
+        // survive, but not the fault's request for cleanup, which this stop then completes.
+        await using var fixture = new Fixture(); var gate = fixture.NewGate(); var run = Open(fixture); int ordinary = 0;
+        Task faulting;
+        if (fault == "restore")
+        {
+            await run.SubmitAsync(new[] { Down(16), Down(65) }).WaitAsync(Deadline); await run.PauseAsync().WaitAsync(Deadline);
+            // Restoration checks the target once up front and once per hold, so Down(16) is restored before the third check fails.
+            fixture.Transport.Validation = async (_, cleanup, _) =>
+            {
+                if (cleanup) { await gate.HoldAsync(); return TargetedInputValidation.Current; }
+                return Interlocked.Increment(ref ordinary) < 3 ? TargetedInputValidation.Current : TargetedInputValidation.GeometryChanged;
+            };
+            faulting = run.ResumeAsync();
+        }
+        else
+        {
+            fixture.Transport.Validation = async (_, cleanup, _) =>
+            {
+                if (cleanup) { await gate.HoldAsync(); return TargetedInputValidation.Current; }
+                return fault == "uncertain" || Interlocked.Increment(ref ordinary) == 1
+                    ? TargetedInputValidation.Current : TargetedInputValidation.GeometryChanged;
+            };
+            if (fault == "uncertain")
+                fixture.Transport.Submission = (command, admission, ct) => ValueTask.FromResult(command.Cleanup
+                    ? fixture.Transport.Accept(command, admission, ct) : TargetedInputSubmission.Uncertain);
+            faulting = run.SubmitAsync(new[] { Down(65), Down(66) });
+        }
+        await gate.EnteredAsync();
+        Assert.Equal(TargetedInputRunState.Pausing, run.Snapshot.State);
+        int releases = fixture.Transport.Accepted.Count(command => command.Cleanup);
+        var stopping = run.StopAsync(); Assert.False(stopping.IsCompleted);
+        Assert.Equal(TargetedInputRunState.Stopping, run.Snapshot.State);
+        gate.Open();
+        var stopped = await stopping.WaitAsync(Deadline); await faulting.WaitAsync(Deadline);
+        Assert.Equal(TargetedInputRunState.Stopped, stopped.State); Assert.Equal(0, stopped.SubmittedHolds);
+        Assert.Equal(releases + 1, fixture.Transport.Accepted.Count(command => command.Cleanup));
+        Assert.Equal(summary + " Stopped after the fault; its holds were released and the window lease is free.", stopped.Explanation);
+        Assert.NotNull(fixture.Owner.TryOpen(run.Target, TargetedInputPurpose.OwnedWindowDiagnostic).Run);
+    }
+
     [Fact]
     public async Task DefinitivelyGoneRegistrationNeedsNoReleaseToAReusedWindow()
     {

@@ -151,7 +151,7 @@ public partial class MacroEditorViewModelTests
     }
 
     [Fact]
-    public void ImageSearchArea_PreviewUsesUnsavedRegion_AndModeSummaryUpdates()
+    public async Task ImageSearchArea_PreviewUsesUnsavedRegion_AndModeSummaryUpdates()
     {
         using var vm = CreateImageSearchAreaEditor(new WaitUntilStep(new ImageCondition("target.png")));
         vm.ActionEditor.RepeatImageWhileVisible = true;
@@ -160,7 +160,9 @@ public partial class MacroEditorViewModelTests
         vm.ActionEditor.ImageSearchAreaSummary.Should().Contain("Automatic active window");
         var region = new Rectangle(-100, -200, 900, 700);
         vm.RegionPrompter = () => region;
-        vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        using (LateContinuations.Install())
+            vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        await WaitForEditorInputRetirementAsync(vm);
         Rectangle? previewArea = null;
         vm.ImageSearchAreaPreviewer = (area, _, _) => previewArea = area;
 
@@ -171,14 +173,16 @@ public partial class MacroEditorViewModelTests
     }
 
     [Fact]
-    public void ImageSearchArea_ReplacingTemplateKeepsChosenRegionAndRepeatSettings()
+    public async Task ImageSearchArea_ReplacingTemplateKeepsChosenRegionAndRepeatSettings()
     {
         var savedArea = new Rectangle(0, 0, 800, 600);
         var chosenArea = new Rectangle(100, 200, 900, 700);
         using var vm = CreateImageSearchAreaEditor(new WaitUntilStep(new ImageCondition(new byte[] { 1, 2, 3 }, searchRegion: savedArea))
         { RepeatWhileVisible = true, RepeatDelayMs = 950 });
         vm.RegionPrompter = () => chosenArea;
-        vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        using (LateContinuations.Install())
+            vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        await WaitForEditorInputRetirementAsync(vm);
         vm.ImagePrompter = () => new ImageTemplateSelection("replacement.png", 0.92, false, null);
 
         vm.ActionEditor.CaptureImageTemplateCommand.Execute(null);
@@ -271,6 +275,39 @@ public partial class MacroEditorViewModelTests
         vm.RegionPrompter = () => new Rectangle(1, 2, 0, 300);
         vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
         vm.ActionEditor.ImageSearchRegion.Should().Be(region);
+    }
+
+    /// <summary>
+    /// A finished picker retires its input activity on a later continuation. In the app the
+    /// dispatcher runs that continuation before the user's next click arrives; a test that calls
+    /// the next command directly on this thread must wait for it, as the dispatcher would.
+    /// </summary>
+    private static async Task WaitForEditorInputRetirementAsync(MacroEditorViewModel vm)
+    {
+        if (vm.InputOperations.Snapshot.OperationId is { } activity)
+            await vm.InputOperations.WaitForRetirementAsync(activity).WaitAsync(WpfTestApplication.LivenessBound);
+        vm.InputOperations.Snapshot.IsBusy.Should().BeFalse("the finished picker must have released the editor's input activity");
+    }
+
+    /// <summary>
+    /// Models a briefly slow machine for an editor that is not on a dispatcher: work the
+    /// editor posts to the current context (such as retiring a finished picker) runs late.
+    /// </summary>
+    private sealed class LateContinuations : SynchronizationContext, IDisposable
+    {
+        private static readonly TimeSpan Delay = TimeSpan.FromMilliseconds(150);
+        private readonly SynchronizationContext? _previous = Current;
+        private LateContinuations() { }
+        public static LateContinuations Install()
+        {
+            var context = new LateContinuations();
+            SetSynchronizationContext(context);
+            return context;
+        }
+        public override void Post(SendOrPostCallback callback, object? state)
+            => _ = Task.Delay(Delay).ContinueWith(_ => callback(state), CancellationToken.None,
+                TaskContinuationOptions.None, TaskScheduler.Default);
+        public void Dispose() => SetSynchronizationContext(_previous);
     }
 
     private MacroEditorViewModel CreateImageSearchAreaEditor(WaitUntilStep step)
