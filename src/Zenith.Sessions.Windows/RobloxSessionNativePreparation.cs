@@ -13,7 +13,8 @@ public sealed partial class RobloxSessionLinkService
             return new(NativeHandoffPreparationStatus.RequestChanged);
         Operation operation;
         try { operation = Begin(intent.ProfileId, SavedSessionOperationKind.NativeLaunchPreparation, ct); }
-        catch (AccountLinkException) { return new(NativeHandoffPreparationStatus.Busy); }
+        // Both refusals happen before any grant is reserved; a row being removed is reported as such, not as another preparation.
+        catch (AccountLinkException refused) { return new(refused.ProfileRemoved ? NativeHandoffPreparationStatus.ProfileRemoved : NativeHandoffPreparationStatus.Busy); }
         Guid pendingOwner = Guid.NewGuid(); bool pendingIssued = false, success = false;
         CancellationTokenRegistration preparationCancellation = default;
         NativeHandoffContext? context = null; NativeHandoffCandidate? candidate = null;

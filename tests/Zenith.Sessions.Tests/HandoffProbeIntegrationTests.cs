@@ -96,6 +96,7 @@ public sealed partial class ClientWindowIntegrationTests
     [Theory]
     [InlineData(RobloxHandoffProbeOutcome.Cancelled,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.Busy,"HandoffNotCompleted")]
+    [InlineData(RobloxHandoffProbeOutcome.ProfileRemoved,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.TimedOut,"HandoffNotCompleted")]
     [InlineData(RobloxHandoffProbeOutcome.OriginRejected,"OperationFailed")]
     public Task InspectionThatEndsWithoutAResultIsNotRecordedAsAnError(RobloxHandoffProbeOutcome outcome,string expectedKind)=>OnUi(async()=>
@@ -128,6 +129,15 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Contains("\"HandoffNotCompleted\"",shell.BuildDiagnosticReport());
         }
     });
+    // O-C1-3: an inspection refused because the selected account is being removed (N-B1a-1) says so; it is neither
+    // "another account operation" nor a failed inspection, and no page was opened.
+    [Fact]
+    public void AnInspectionRefusedForAnAccountBeingRemovedSaysTheAccountIsBeingRemoved()
+    {
+        string status=ShellViewModel.DescribeHandoffResult(new(RobloxHandoffProbeOutcome.ProfileRemoved),6564161046);
+        Assert.Contains("being removed",status);Assert.Contains("no page was opened",status);
+        Assert.DoesNotContain("Another account operation",status);Assert.DoesNotContain("failed",status);
+    }
     [Fact]
     public Task LockFencesLateBrowserInspectionAndKeepsItsStopMessage()=>OnUi(async()=>
     {

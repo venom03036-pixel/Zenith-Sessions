@@ -22,7 +22,8 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
         if (profileId == Guid.Empty) return new(RobloxShareLinkOutcome.Invalid);
         Operation operation;
         try { operation = Begin(profileId, SavedSessionOperationKind.ShareLinkCheck, ct); }
-        catch (AccountLinkException) { return new(RobloxShareLinkOutcome.Busy); }
+        // Both refusals happen before anything is read or sent; a row being removed is reported as such, not as another operation.
+        catch (AccountLinkException refused) { return new(refused.ProfileRemoved ? RobloxShareLinkOutcome.ProfileRemoved : RobloxShareLinkOutcome.Busy); }
         try
         {
             var profile = await profiles.FindAsync(profileId, operation.Token).ConfigureAwait(false); Ensure(operation);

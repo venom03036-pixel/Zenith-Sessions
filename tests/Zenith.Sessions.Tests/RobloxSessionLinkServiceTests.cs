@@ -165,6 +165,23 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         Assert.Equal(RobloxShareLinkOutcome.Unavailable, (await unwired.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
     }
 
+    // O-C1-3: a check on an account that is being removed is refused before its saved sign-in is read (N-B1a-1), and the
+    // outcome says the account is being removed, not that another account operation is running.
+    [Fact]
+    public async Task ShareLinkResolutionOnAProfileBeingRemovedSaysTheProfileIsRemovedWithoutARequest()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault(); var resolver = new ShareLinks();
+        vault.Records[profile.Id] = Saved(profile.Id, 456);
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.ExperienceDetails);
+        using (await service.BeginProfileRemovalAsync([profile.Id], default))
+        {
+            Assert.Equal(RobloxShareLinkOutcome.ProfileRemoved, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+            Assert.Equal(0, resolver.Calls); Assert.Equal(0, vault.Reads); Assert.Equal(0, vault.Saves);
+        }
+        Assert.Equal(RobloxShareLinkOutcome.Experience, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome); Assert.Equal(1, resolver.Calls);
+    }
+
     [Fact]
     public async Task ShareLinkUnauthorizedFencesTheSavedSessionToSignInRequired()
     {

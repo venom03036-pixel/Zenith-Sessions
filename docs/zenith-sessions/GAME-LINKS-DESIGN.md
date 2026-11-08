@@ -196,6 +196,11 @@ name, creator line, playing + rating, accent border and check when it is the cur
   sign-in, was removed. Paste the link again to check it with a signed-in account.", because the list then reloads with
   nothing selected and that momentary empty selection rightly restarts or stops nothing (O-C1-2). Leaving the page, Lock
   and Panic clear the panel instead. Every stop disposes the answer's codes.
+- A check started for an account whose removal is still running is refused inside the link service before its saved
+  sign-in is read (`RobloxShareLinkOutcome.ProfileRemoved`), and the panel says "The selected account is being removed
+  from your library, so the share link was not checked. Paste the link again to check it with another signed-in
+  account." Only another saved-session operation holding the service is reported as busy ("Another account operation is
+  running. Try again when it finishes.") (O-C1-3).
 - Runs only on the user's **Check link** click, for the account selected in Accounts. The credential is read from
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF

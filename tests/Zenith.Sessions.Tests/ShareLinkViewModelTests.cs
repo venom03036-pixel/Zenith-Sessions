@@ -359,6 +359,7 @@ public sealed class ShareLinkViewModelTests
     [InlineData(RobloxShareLinkOutcome.Invalid,"This share link is not valid for a game or private server.")]
     [InlineData(RobloxShareLinkOutcome.Unavailable,"The share link could not be checked right now. Try again later.")]
     [InlineData(RobloxShareLinkOutcome.Busy,"Another account operation is running. Try again when it finishes.")]
+    [InlineData(RobloxShareLinkOutcome.ProfileRemoved,"The selected account is being removed from your library, so the share link was not checked. Paste the link again to check it with another signed-in account.")]
     [InlineData(RobloxShareLinkOutcome.NotListed,"This link's game is restricted or not publicly listed, so it cannot be opened from Zenith.")]
     [InlineData(RobloxShareLinkOutcome.Cancelled,"Share link check cancelled.")]
     public Task OutcomesMapToStatusesWithoutCodes(RobloxShareLinkOutcome outcome,string status)=>SearchTest.OnUi(async()=>

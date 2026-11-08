@@ -271,6 +271,39 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Null(await vault.ReadAsync(sharedRow.Profile.Id, default)); Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(HealthRow(shell, 1).Profile.Id, default))!.Health);
     });
 
+    // O-C1-3: Sign in or Refresh clicked on a row whose removal is still running is refused by the saved-session service before
+    // anything is read or sent (N-B1a-1). That is a routine refusal: the shell shows it as a notice, not as an error, and
+    // records no SignIn failure.
+    [Fact]
+    public Task SignInOrRefreshOnARowBeingRemovedIsANoticeNotAnError() => OnUi(async () =>
+    {
+        using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var gate = new HealthRemovalGate(repository) { Hold = true };
+        await using var shell = await HealthShell(signIn, client, linked: 2, accounts: gate);
+        var keptRow = HealthRow(shell, 1); var removedRow = HealthRow(shell, 2);
+        int SignInFailures() { shell.RefreshDiagnostics.Execute(null); return shell.DiagnosticRows.Count(row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn); }
+        int failuresBefore = SignInFailures(); const string refused = "This account is being removed from your library. Its saved sign-in was not used or changed.";
+        shell.SelectedAccount = removedRow;
+        Task removing = shell.DeleteAccountsAsync([removedRow]);
+        try
+        {
+            await gate.DeleteEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); // The removal holds its row while the library deletes it.
+            shell.RefreshAuthorization.Execute(null); await shell.RefreshAuthorization.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("", shell.ErrorNotice); Assert.Equal(refused, shell.Notice);
+            shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("", shell.ErrorNotice); Assert.Equal(refused, shell.Notice);
+            Assert.False(shell.IsAuthorizing); Assert.Empty(client.Snapshot()); Assert.Empty(signIn.Snapshot());
+        }
+        finally { gate.Release(); await removing.WaitAsync(TimeSpan.FromSeconds(10)); }
+
+        Assert.Equal(failuresBefore, SignInFailures());
+        Assert.DoesNotContain(shell.Events, item => item.Contains("Operation failed (AccountLinkException)", StringComparison.Ordinal));
+        Assert.StartsWith("Removed 1 profile(s).", shell.Notice); Assert.Equal(keptRow.Profile.Id, Assert.Single(shell.Accounts).Profile.Id);
+        Assert.Equal("", shell.ErrorNotice); HealthNoSecrets(shell);
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Null(await vault.ReadAsync(removedRow.Profile.Id, default)); Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(keptRow.Profile.Id, default))!.Health);
+    });
+
     // M-L1a-5: Roblox never processed a check, and another operation replaced its fence before the restore. The restore is
     // refused (the newer sign-in is kept), but Roblox was still unreachable or busy, so the batch must stop there.
     [Fact]

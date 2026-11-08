@@ -182,6 +182,25 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         Assert.Equal(0,browser.Calls);Assert.Empty(f.Client.Seen);
     }
 
+    // O-C1-3: a preparation for an account that is being removed is refused before its grant is reserved (N-B1a-1), and the
+    // status says the account is being removed, not that another preparation was owned.
+    [Fact]
+    public async Task PreparationForAProfileBeingRemovedSaysTheProfileIsRemovedAndLeavesTheLinkedGrantUntouched()
+    {
+        await using var f=await Fixture.Open(_root);
+        using var browser=new Browser{Run=(_,_,_)=>throw new InvalidOperationException("A refused preparation was started.")};
+        var before=await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default);
+        using(await f.Service.BeginProfileRemovalAsync([f.Profile.Id],default))
+        {
+            var result=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+            Assert.Equal(NativeHandoffPreparationStatus.ProfileRemoved,result.Status);Assert.Null(result.Preparation);Assert.Null(result.BrowserFacts);
+            Assert.Equal(before,await f.Vault.ReadWriteSnapshotAsync(f.Profile.Id,default));Assert.Equal(0,browser.Calls);Assert.Empty(f.Client.Seen);
+        }
+        browser.Run=null;
+        var ready=await f.Service.PrepareNativeHandoffAsync(f.Intent,browser,default);
+        Assert.Equal(NativeHandoffPreparationStatus.Ready,ready.Status);ready.Preparation?.Dispose();
+    }
+
     [Fact]
     public async Task CancellationFromLateValidationCannotPublishAReadyPreparation()
     {

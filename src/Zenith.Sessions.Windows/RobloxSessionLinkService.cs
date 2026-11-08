@@ -130,7 +130,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         if (profileId == Guid.Empty || placeId <= 0) return new(RobloxHandoffProbeOutcome.ContextRejected);
         Operation operation;
         try { operation = Begin(profileId, SavedSessionOperationKind.HandoffInspection, ct); }
-        catch (AccountLinkException) { return new(RobloxHandoffProbeOutcome.Busy); }
+        // Both refusals happen before any grant is reserved; a row being removed is reported as such, not as another operation.
+        catch (AccountLinkException refused) { return new(refused.ProfileRemoved ? RobloxHandoffProbeOutcome.ProfileRemoved : RobloxHandoffProbeOutcome.Busy); }
         AuthorizationRecord? pending = null;
         var inspectionMutationId = Guid.NewGuid();
         RobloxHandoffProbeResult? result = null;

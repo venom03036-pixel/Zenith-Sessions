@@ -1271,6 +1271,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn,ended.GetType());
         }
+        catch(AccountLinkException refused) when(refused.ProfileRemoved)
+        {
+            // The row is being removed from the library, or already was: the service refused before anything was read or sent
+            // (N-B1a-1). A routine refusal, not a failure: it is shown as a notice and records nothing (O-C1-3).
+            if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
+            if(stop.IsCancellationRequested || _preserveStopNotice || IsLocked || _shuttingDown) return;
+            Notice=refused.Message;
+        }
         catch(Exception)
         {
             if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);

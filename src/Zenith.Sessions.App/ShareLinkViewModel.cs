@@ -142,6 +142,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
                 RobloxShareLinkOutcome.Expired=>"This share link has expired. Ask for a new one.",
                 RobloxShareLinkOutcome.Invalid=>"This share link is not valid for a game or private server.",
                 RobloxShareLinkOutcome.Busy=>"Another account operation is running. Try again when it finishes.",
+                RobloxShareLinkOutcome.ProfileRemoved=>"The selected account is being removed from your library, so the share link was not checked. Paste the link again to check it with another signed-in account.",
                 RobloxShareLinkOutcome.NotListed=>"This link's game is restricted or not publicly listed, so it cannot be opened from Zenith.",
                 RobloxShareLinkOutcome.Cancelled=>"Share link check cancelled.",
                 _=>"The share link could not be checked right now. Try again later."
