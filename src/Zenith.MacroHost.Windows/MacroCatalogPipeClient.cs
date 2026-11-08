@@ -5,17 +5,24 @@ using Zenith.MacroHost.Contracts;
 namespace Zenith.MacroHost.Windows;
 
 /// <summary>Explicit metadata requests only. One owned call; competitors receive Busy without waiting.
-/// A connected host that misses the request deadline is also Busy; only an absent, stopped or disposed link is Disconnected.</summary>
+/// A connected request that misses the deadline is also Busy. Absence, early closure or local disposal is Disconnected;
+/// the wire cannot distinguish remote shutdown from a timeout after the client's budget has elapsed.</summary>
 public sealed class MacroCatalogPipeClient : IZenithMacroCatalogClient, IAsyncDisposable
 {
     public const string ProductionPipeName = MacroHostProtocol.PipeName;
     private readonly object _gate = new();
     private readonly string _pipeName;
+    private readonly TimeProvider _clock;
     private readonly CancellationTokenSource _lifetime = new();
     private Task<MacroCatalogPage>? _active;
     private Task? _dispose;
     private bool _busy, _disposed;
-    public MacroCatalogPipeClient(string? pipeName = null) => _pipeName = MacroCatalogPipeCodec.PipeName(pipeName);
+    public MacroCatalogPipeClient(string? pipeName = null) : this(pipeName, TimeProvider.System) { }
+    internal MacroCatalogPipeClient(string? pipeName, TimeProvider clock)
+    {
+        _pipeName = MacroCatalogPipeCodec.PipeName(pipeName);
+        _clock = clock ?? throw new ArgumentNullException(nameof(clock));
+    }
 
     public Task<MacroCatalogPage> GetPageAsync(MacroCatalogQuery query, CancellationToken ct = default)
     {
@@ -31,8 +38,10 @@ public sealed class MacroCatalogPipeClient : IZenithMacroCatalogClient, IAsyncDi
 
     private async Task<MacroCatalogPage> ReadOwnedAsync(MacroCatalogQuery query, CancellationToken ct)
     {
-        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token);
-        deadline.CancelAfter(MacroCatalogPipeCodec.RequestTimeout);
+        long started = _clock.GetTimestamp();
+        using var timeout = new CancellationTokenSource(MacroCatalogPipeCodec.RequestTimeout, _clock);
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct, _lifetime.Token, timeout.Token);
+        bool Expired() => timeout.IsCancellationRequested || _clock.GetElapsedTime(started) >= MacroCatalogPipeCodec.RequestTimeout;
         bool connected = false;
         try
         {
@@ -46,15 +55,16 @@ public sealed class MacroCatalogPipeClient : IZenithMacroCatalogClient, IAsyncDi
             lock (_gate)
             {
                 ct.ThrowIfCancellationRequested();
-                return _disposed ? MacroCatalogPage.Failure(MacroCatalogState.Disconnected) : page;
+                if (_disposed) return MacroCatalogPage.Failure(MacroCatalogState.Disconnected);
+                return Expired() ? MacroCatalogPage.Failure(MacroCatalogState.Busy) : page;
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested) { throw; }
-        // A host that accepted the connection but did not answer before the deadline is running but stalled, not absent.
-        // The host's own equal deadline may close the pipe first (EOF/IOException); only this client's fired deadline counts.
-        // Dispose (_lifetime) and an absent host (connect timeout) stay Disconnected.
+        // Due timer callbacks need not run in deadline order. The host can close at its deadline before this client's
+        // callback runs, so measure the actual monotonic budget too. An early EOF, local disposal or absent host stays
+        // Disconnected; Busy after expiry says only that this connected request missed its deadline, not that the host lives.
         catch (Exception ex) when ((ex is OperationCanceledException or IOException) && connected
-            && deadline.IsCancellationRequested && !ct.IsCancellationRequested && !_lifetime.IsCancellationRequested)
+            && Expired() && !ct.IsCancellationRequested && !_lifetime.IsCancellationRequested)
         { return MacroCatalogPage.Failure(MacroCatalogState.Busy); }
         catch (OperationCanceledException) { return MacroCatalogPage.Failure(MacroCatalogState.Disconnected); }
         catch (TimeoutException) { return MacroCatalogPage.Failure(MacroCatalogState.Disconnected); }
