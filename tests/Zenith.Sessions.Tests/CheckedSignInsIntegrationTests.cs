@@ -414,10 +414,10 @@ public sealed partial class ClientWindowIntegrationTests
     private static string CookieOf(AccountRow row) => HealthCookie((int)(row.KnownUserId!.Value - 1000));
     private static AccountRow HealthRow(ShellViewModel shell, int index) => shell.Accounts.Single(row => row.Alias == $"Health {index:00}");
     private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0, IRobloxShareLinkClient? shareLinks = null,
-        IAccountRepository? accounts = null, IPublicRobloxDirectory? publicDirectory = null)
+        IAccountRepository? accounts = null, IPublicRobloxDirectory? publicDirectory = null, IRobloxAccountDataClient? accountData = null)
     {
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), accounts: accounts, signIn: signIn, sessionClient: client, shareLinkClient: shareLinks,
-            publicDirectory: publicDirectory);
+            publicDirectory: publicDirectory, accountDataClient: accountData);
         try
         {
             await shell.InitializeAsync();

@@ -8,7 +8,7 @@ using Xunit;
 
 namespace Zenith.Sessions.Tests;
 
-public sealed class RobloxSessionLinkServiceTests : IDisposable
+public sealed partial class RobloxSessionLinkServiceTests : IDisposable
 {
     private const string Secret = "synthetic-owned-session-only";
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-session-link-" + Guid.NewGuid().ToString("N"));

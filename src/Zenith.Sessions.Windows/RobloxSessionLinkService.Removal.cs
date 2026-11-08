@@ -14,6 +14,7 @@ public enum SavedSessionOperationKind
     HandoffInspection,
     ShareLinkCheck,
     NativeLaunchPreparation,
+    AccountObservation,
 }
 
 public sealed partial class RobloxSessionLinkService
@@ -39,7 +40,7 @@ public sealed partial class RobloxSessionLinkService
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
             foreach (var id in ids) _removing[id] = _removing.GetValueOrDefault(id) + 1;
-            active = _active is { } current && ids.Contains(current.ProfileId) ? current : null;
+            active = _active is { } current && (ids.Contains(current.ProfileId) || current.RelatedProfileId is { } related && ids.Contains(related)) ? current : null;
             if (active is not null) active.Invalidated = true;
         }
         var lease = new ProfileRemovalLease(this, ids, active?.Kind ?? SavedSessionOperationKind.None);
