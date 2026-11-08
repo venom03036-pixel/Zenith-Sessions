@@ -90,16 +90,115 @@ public sealed partial class MiniToolbarHotkeyPreferenceTests
     public void DefaultShortcutLiterals_AreDeclaredOnlyInTransportHotkeyDefaults()
     {
         string app = Path.Combine(FindRepositoryRoot(), "src", "MacroSuite.App");
-        var literal = new Regex("\"(F1|F4|F5|F6|F8|F12|Ctrl\\+Alt\\+F10)\"", RegexOptions.CultureInvariant);
         string[] separators = [Path.DirectorySeparatorChar + "bin" + Path.DirectorySeparatorChar, Path.DirectorySeparatorChar + "obj" + Path.DirectorySeparatorChar];
         var copies = Directory.EnumerateFiles(app, "*.cs", SearchOption.AllDirectories)
             .Where(path => !separators.Any(part => path.Contains(part, StringComparison.OrdinalIgnoreCase)))
             .Where(path => !string.Equals(Path.GetFileName(path), "TransportHotkeyDefaults.cs", StringComparison.OrdinalIgnoreCase))
-            .SelectMany(path => File.ReadLines(path).Select((line, index) => (path, line, index)))
-            .Where(item => literal.IsMatch(item.line))
-            .Select(item => $"{Path.GetRelativePath(app, item.path)}:{item.index + 1}: {item.line.Trim()}")
+            .SelectMany(path => FindDefaultShortcutCopies(File.ReadAllText(path))
+                .Select(copy => $"{Path.GetRelativePath(app, path)}:{copy.Line}: {copy.Text}"))
             .ToArray();
         copies.Should().BeEmpty("default shortcut keys must come from TransportHotkeyDefaults so first run, repair, reset and the editor cannot drift");
+    }
+
+    // %Name% stands for the value of TransportHotkeyDefaults.Name, so these cases follow the defaults if they change.
+    [Theory]
+    [InlineData(1, "private string _recordHotkey = \"%Record%\";")]
+    [InlineData(1, "private string _startHotkey = \"%AutoClicker%\";")]
+    [InlineData(1, "public string PanicHotkey { get; set; } = \"%Panic%\";")]
+    [InlineData(1, "public string DefaultPanicHotkey => \"%Panic%\";")]
+    [InlineData(1, "_recordHotkey = \"%Record%\"; _stopHotkey = \"%Stop%\";")]
+    [InlineData(1, "_miniToolbarClickThroughHotkey = \"%MiniClickThrough%\";")]
+    [InlineData(1, "_pauseHotkey = string.IsNullOrWhiteSpace(saved) ? \"%Pause%\" : saved;")]
+    [InlineData(1, "string rec = NormalizeBind(_recordHotkey, \"%Record%\");")]
+    [InlineData(1, "if (root.TryGetProperty(\"playHotkey\", out var ph)) _playHotkey = ph.GetString() ?? \"%Play%\";")]
+    [InlineData(1, "string bind = saved ?? \"%AutoClicker%\";")]
+    [InlineData(1, "var defaults = new Dictionary<string, string> { [\"record\"] = \"%Record%\", [\"stop\"] = \"%Stop%\" };")]
+    [InlineData(3, "var defaults = new Dictionary<string, string>", "{", "    [\"play\"] = \"%Play%\",", "};")]
+    [InlineData(1, "var defaults = new Dictionary<string, string> { { \"pause\", \"%Pause%\" } };")]
+    [InlineData(1, "string[] candidates = [\"%Panic%\", \"Ctrl+Shift+F12\", \"Alt+Shift+F11\"];")]
+    [InlineData(3, "public List<string> CommonHotkeyPresets { get; } = new()", "{", "    \"%AutoClicker%\", \"F7\", \"Ctrl+1\", \"Space\"", "};")]
+    [InlineData(1, "if (_panicHotkey == \"%Panic%\") ShowDefaultHint();")]
+    [InlineData(1, "Register(hotkey: \"%Record%\");")]
+    [InlineData(1, "void Register(string hotkey = \"%Record%\") { }")]
+    [InlineData(1, "[DefaultValue(\"%Stop%\")] public string StopBind { get; set; } = string.Empty;")]
+    public void DefaultShortcutGuard_ReportsEveryRoleThatHoldsADefault(int expectedLine, params string[] lines)
+    {
+        string source = ExpandDefaults(string.Join(Environment.NewLine, lines));
+        FindDefaultShortcutCopies(source).Select(copy => copy.Line).Should().Contain(expectedLine,
+            "a copy of a shipped default in this role lets first run, repair, reset or the editor drift from TransportHotkeyDefaults: {0}", source);
+    }
+
+    [Theory]
+    [InlineData("private static readonly Dictionary<string, int> FunctionKeys = new() { [\"%AutoClicker%\"] = 0x70, [\"%Panic%\"] = 0x7B };")]
+    [InlineData("private static readonly Dictionary<string, int> FunctionKeys = new()", "{", "    { \"%Play%\", 0x73 },", "    { \"%Pause%\", 0x74 },", "};")]
+    [InlineData("string[] functionKeys = [\"%AutoClicker%\", \"F2\", \"F3\", \"%Play%\", \"%Pause%\", \"%Record%\", \"F7\", \"%Stop%\", \"F9\", \"F10\", \"F11\", \"%Panic%\"];")]
+    [InlineData("case \"%Record%\": return 0x75;")]
+    [InlineData("string name = vk switch { 0x70 => \"%AutoClicker%\", 0x7B => \"%Panic%\", _ => \"?\" };")]
+    [InlineData("HelpKeyLabel.Text = \"%AutoClicker%\";")]
+    [InlineData("StatusText = string.Format(\"Press {0} for help.\", \"%AutoClicker%\");")]
+    [InlineData("/// <summary>Shown when the user presses \"%Panic%\" in the key tester.</summary>")]
+    [InlineData("// _panicHotkey = \"%Panic%\" was the old hard-coded value.")]
+    [InlineData("internal void SimulateKeyForTests(string key = \"%Record%\") => _keys.Press(key);")]
+    [InlineData("_input.SendKeyForTests(\"%MiniClickThrough%\");")]
+    public void DefaultShortcutGuard_IgnoresUnrelatedUsesOfTheSameKeyNames(params string[] lines)
+    {
+        string source = ExpandDefaults(string.Join(Environment.NewLine, lines));
+        FindDefaultShortcutCopies(source).Should().BeEmpty(
+            "a key-name table, help text, a comment or a test hook names a key without declaring a default: {0}", source);
+    }
+
+    /// <summary>
+    /// Reports each line where one C# source writes a shipped default shortcut as a quoted literal in a
+    /// role that holds a default. The same key names used for anything else (a key-name table, a switch
+    /// over keys, help text, comments or a test hook) are not reported, so the guard fails only where
+    /// first run, repair, reset or the editor could drift from <see cref="TransportHotkeyDefaults"/>.
+    /// </summary>
+    private static IReadOnlyList<(int Line, string Text)> FindDefaultShortcutCopies(string source)
+    {
+        // Whole-line comments are blanked, keeping line numbers, so notes and documentation never count.
+        string code = Regex.Replace(source, @"^[ \t]*//.*$", string.Empty, RegexOptions.Multiline);
+        string literal = "\"(?:" + string.Join("|", typeof(TransportHotkeyDefaults).GetFields()
+            .Where(field => field.IsLiteral && field.FieldType == typeof(string))
+            .Select(field => Regex.Escape((string)field.GetRawConstantValue()!))) + ")\"";
+        // A field, property, local or parameter whose name says it holds a shortcut, with an optional { get; set; }.
+        const string target = @"\b\w*(?:[Hh]otkeys?|[Ss]hortcuts?|[Bb]inds?|[Dd]efaults?)\s*(?:\{[^{}]*\}\s*)?";
+        const string entry = @"(?:""[^""\r\n]*""|[\w.]+)";
+        Regex[] roles =
+        [
+            // The value given to or returned for a shortcut-named target, including ?: and ?? fallbacks and multi-line initializers.
+            new($@"{target}(?:=>|=(?![=>]))(?<value>[^;]*)"),
+            // Compared with, or passed by name as, a shortcut-named value.
+            new($@"{target}(?:[!=]=|:(?!:))\s*(?<value>{literal})"),
+            // The repair fallback given to NormalizeBind, any ?? fallback, and a [DefaultValue].
+            new($@"\bNormalizeBind\s*\((?<value>[^;]*)"),
+            new($@"\?\?=?\s*(?<value>{literal})"),
+            new($@"\bDefaultValue\s*\(\s*(?<value>{literal})"),
+            // A dictionary entry's value, as in the reset map: ["record"] = "F6" or { "record", "F6" }.
+            new($@"\[\s*""[^""\r\n]*""\s*\]\s*=\s*(?<value>{literal})"),
+            new($@"\{{\s*""[^""\r\n]*""\s*,\s*(?<value>{literal})\s*\}}"),
+            // A list of binds such as Panic's repair candidates or a preset list: only strings and names, at
+            // least one of them a modifier combination. A plain list of key names is not a list of binds.
+            new($@"(?<value>[\[{{](?=[^\[\]{{}}]*""(?:Ctrl|Alt|Shift|Win)\+)\s*{entry}(?:\s*,\s*{entry})*\s*,?\s*[\]}}])"),
+        ];
+        var copy = new Regex(literal, RegexOptions.CultureInvariant);
+        var lines = new SortedSet<int>();
+        foreach (var role in roles)
+            foreach (Match match in role.Matches(code))
+            {
+                Group value = match.Groups["value"];
+                foreach (Match found in copy.Matches(value.Value))
+                    lines.Add(code.AsSpan(0, value.Index + found.Index).Count('\n') + 1);
+            }
+        string[] text = source.Split('\n');
+        return lines.Select(line => (line, text[line - 1].Trim())).ToArray();
+    }
+
+    private static string ExpandDefaults(string source)
+    {
+        foreach (var field in typeof(TransportHotkeyDefaults).GetFields().Where(field => field.IsLiteral && field.FieldType == typeof(string)))
+            source = source.Replace("%" + field.Name + "%", (string)field.GetRawConstantValue()!, StringComparison.Ordinal);
+        source.Should().NotContain("%", "every placeholder must name a TransportHotkeyDefaults constant");
+        return source;
     }
 
     private static string FindRepositoryRoot()
