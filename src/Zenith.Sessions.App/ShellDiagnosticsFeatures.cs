@@ -39,6 +39,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientPriority=>"Client priority",
         ManagerSubsystem.Lifecycle=>"Startup and shutdown",
         ManagerSubsystem.ClientMemory=>"Client memory",
+        ManagerSubsystem.ClientSound=>"Client sound",
         _=>"Unrecognized subsystem"
     };
 }

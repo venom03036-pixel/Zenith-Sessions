@@ -102,6 +102,9 @@ internal static class PackagedLayoutCheck
             if (window.FindName("ClientMemoryTrimTools") is not System.Windows.Controls.Expander trimTools)
                 throw new InvalidOperationException("The packaged memory trim tools are missing.");
             trimTools.IsExpanded = true;
+            if (window.FindName("ClientSoundTools") is not System.Windows.Controls.Expander soundTools)
+                throw new InvalidOperationException("The packaged client sound tools are missing.");
+            soundTools.IsExpanded = true;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             // A never-shown Window can retain its disconnected layout. Measure the
             // production content itself to exercise the expanded panel offscreen.
@@ -123,6 +126,12 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged memory trim controls lost their command binding or sample-mode boundary.");
             if (trimTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
+            if (window.FindName("MuteClientsButton") is not System.Windows.Controls.Button muteButton
+                || muteButton.Command != vm.MuteClients || muteButton.IsEnabled || vm.IsChangingClientSound || vm.CanChangeClientSound
+                || window.FindName("MuteArrivingClientsOption") is not System.Windows.Controls.CheckBox { IsChecked: false })
+                throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
+            if (soundTools.ActualHeight <= 0)
+                throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

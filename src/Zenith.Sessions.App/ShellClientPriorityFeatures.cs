@@ -57,30 +57,44 @@ public sealed partial class ShellViewModel
     /// <summary>Pins the checked (or selected) exact instances from the latest fresh scan; empty with <paramref name="refusal"/> otherwise.</summary>
     private SessionObservation[] PinClientPrioritySelection(out string refusal)
     {
-        refusal = ClientSelectionChangedText;
         var requested = Sessions.Where(row => row.IsChecked).Select(row => row.Observation).ToArray();
         if (requested.Length == 0 && SelectedSession is { } selected && Sessions.Contains(selected))
             requested = [selected.Observation];
-        var desktop = Volatile.Read(ref _latestDesktop);
-        var now = DateTimeOffset.UtcNow;
-        if (requested.Length is < 1 or > 128 || desktop is not { Problem: null, ProcessRevision: > 0 }
+        return PinFreshClientInstances(requested, out refusal);
+    }
+
+    /// <summary>
+    /// The latest scan, when it is fresh and complete enough to name every readable client instance exactly; null otherwise.
+    /// The monitor reports a process it could not open (for example another Windows user's client) as a row with a Problem and
+    /// no start time, and that row alone makes it call the scan incomplete. The row names no instance to act on, so it is
+    /// skipped, as TelemetryHistory skips it; its PID still takes part in the duplicate check. Any other incompleteness, and a
+    /// scan that reached its budget, still refuses.
+    /// </summary>
+    private static IReadOnlyList<SessionObservation>? FreshClientInventory(DesktopSnapshot? desktop, DateTimeOffset now)
+    {
+        if (desktop is not { Problem: null, ProcessRevision: > 0 }
             || desktop.ProcessObservedUtc is not { } observed || observed == default || observed > now
             || now - observed > TimeSpan.FromSeconds(3) || desktop.Sessions is null || desktop.Sessions.Count > 128)
-            return [];
+            return null;
         var current = desktop.Sessions;
-        // The monitor reports a process it could not open (for example another Windows user's client) as a row with a
-        // Problem and no start time, and that row alone makes it call the scan incomplete. The row names no instance to
-        // act on, so it is skipped, as TelemetryHistory skips it; its PID still takes part in the duplicate check. Any
-        // other incompleteness, and a scan that reached its budget, still refuses.
         bool unreadablePresent = current.Any(row => row is not null && IdentityUnavailable(row, observed, now));
         if (!desktop.ProcessInventoryComplete
             && (!unreadablePresent || current.Count >= DesktopSamplingCadence.MaximumProcessSamples))
-            return [];
+            return null;
         if (current.Any(row => row is null || (!IdentityUnavailable(row, observed, now) && (row.Problem is not null
                 || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0
                 || row.ObservedUtc > observed || row.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks
                 || row.ObservedUtc == default || now - row.ObservedUtc > TimeSpan.FromSeconds(3))))
-            || current.Select(row => row.ProcessId).Distinct().Count() != current.Count
+            || current.Select(row => row.ProcessId).Distinct().Count() != current.Count)
+            return null;
+        return current;
+    }
+
+    /// <summary>Pins <paramref name="requested"/> exact instances from the latest fresh scan; empty with <paramref name="refusal"/> otherwise.</summary>
+    private SessionObservation[] PinFreshClientInstances(SessionObservation[] requested, out string refusal)
+    {
+        refusal = ClientSelectionChangedText;
+        if (requested.Length is < 1 or > 128 || FreshClientInventory(Volatile.Read(ref _latestDesktop), DateTimeOffset.UtcNow) is not { } current
             || requested.Select(row => row.InstanceKey).Distinct().Count() != requested.Length)
             return [];
         var pinned = new SessionObservation[requested.Length];
