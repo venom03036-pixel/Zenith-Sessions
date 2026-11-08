@@ -337,6 +337,46 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Empty(vm.Launches);
     });
 
+    private static ClientInstallationCandidate BloxstrapManagedPlayer(string folder) => new(ClientInstallationProduct.Roblox,
+        "C:\\Synthetic\\Bloxstrap\\Versions\\" + folder + "\\RobloxPlayerBeta.exe", "Roblox", "0.744.0.35512", ClientInstallationFileState.PresentUnverified,
+        [new(ClientInstallationHintSource.VersionDirectory, ClientInstallationProduct.Bloxstrap)]);
+
+    [Fact]
+    public Task ABootstrapperManagedPlayerIsSummarizedSeparatelyFromTheNativeRobloxPlayer() => OnUi(async () =>
+    {
+        const string current = "version-9ac8595712b447a7", stale = "version-117ad38284844374";
+        var native = ReleaseSnapshot(stale).Candidates[0];
+        var discovery = new InstallationProbe { Override = ReleaseSnapshot(stale) with { Candidates = [native, BloxstrapManagedPlayer(current)] } };
+        var releases = new ReleaseProbe { Result = new(PublicDirectoryState.Success, CurrentRelease, "Public release.") };
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), installationDiscovery: discovery, clientReleases: releases);
+        await vm.InitializeAsync();
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+
+        // Each row still says what its own files show; a current Bloxstrap copy never makes a stale native player "Up to date".
+        Assert.Equal(new[] { "Not current", "Current release" }, vm.InstallationCandidates.Select(row => row.ReleaseStatus));
+        Assert.Equal("Update pending: no native Roblox player matches Roblox's current release 0.744.0.7441080 (version-9ac8595712b447a7). Roblox normally updates when it next starts."
+            + " The Bloxstrap-managed player matches that release. Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+
+        // Only a bootstrapper-managed player: no native headline, and the bootstrapper, not Roblox, is named as the one that updates it.
+        discovery.Override = ReleaseSnapshot(stale) with { Candidates = [BloxstrapManagedPlayer(current)] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Roblox's current release is 0.744.0.7441080 (version-9ac8595712b447a7). No native Roblox player could be compared with it."
+            + " The Bloxstrap-managed player matches that release.", vm.InstallationReleaseStatus);
+
+        discovery.Override = ReleaseSnapshot(stale) with { Candidates = [BloxstrapManagedPlayer(stale)] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Roblox's current release is 0.744.0.7441080 (version-9ac8595712b447a7). No native Roblox player could be compared with it."
+            + " The Bloxstrap-managed player does not match that release; Bloxstrap, not Roblox, decides when that copy updates and may keep an older version."
+            + " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+
+        // A current native player with a stale managed copy is up to date, and the managed copy is named on its own.
+        discovery.Override = ReleaseSnapshot(current) with { Candidates = [ReleaseSnapshot(current).Candidates[0], BloxstrapManagedPlayer(stale)] };
+        vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
+        Assert.Equal("Up to date: a native Roblox player matches Roblox's current release 0.744.0.7441080 (version-9ac8595712b447a7)."
+            + " The Bloxstrap-managed player does not match that release; Bloxstrap, not Roblox, decides when that copy updates and may keep an older version."
+            + " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.", vm.InstallationReleaseStatus);
+    });
+
     [Fact]
     public Task AnUnavailableOrInvalidReleaseStillListsTheInstallations() => OnUi(async () =>
     {

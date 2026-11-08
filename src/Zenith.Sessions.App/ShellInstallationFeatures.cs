@@ -186,12 +186,24 @@ public sealed partial class ShellViewModel
         if (latest is null)
             return "Could not check Roblox's current release. " + (result.State == PublicDirectoryState.Success ? "The public version service returned an unusable release." : result.Message);
         string named = latest.Version + " (" + latest.ClientVersionUpload + ")";
-        if (rows.Any(row => row.Release == ClientReleaseMatch.Current))
-            return "Up to date: an installed Roblox player matches Roblox's current release " + named + ".";
-        if (rows.Any(row => row.Release == ClientReleaseMatch.NotCurrent))
-            return "Update pending: no installed Roblox player matches Roblox's current release " + named
-                + ". Roblox normally updates when it next starts; Zenith never downloads or installs updates.";
-        return "Roblox's current release is " + named + ". No installed Roblox player could be compared with it.";
+        // The headline is about the native player only: Roblox updates that one itself when it next starts. A player in a
+        // bootstrapper's folder is updated (or pinned to an older version) by that bootstrapper, so it is named on its own and
+        // never makes a stale native player "Up to date". The release read is the default live channel's.
+        var compared = rows.Where(row => row.Release is ClientReleaseMatch.Current or ClientReleaseMatch.NotCurrent).ToArray();
+        var native = compared.Where(row => row.ManagedBy is null).ToArray();
+        var owners = compared.Where(row => row.ManagedBy is not null).GroupBy(row => row.ManagedBy!.Value)
+            .Select(owner => (Name: owner.Key, Current: owner.Any(row => row.Release == ClientReleaseMatch.Current))).ToArray();
+        bool nativeCurrent = native.Any(row => row.Release == ClientReleaseMatch.Current);
+        bool nativeStale = native.Length > 0 && !nativeCurrent;
+        string summary = nativeCurrent ? "Up to date: a native Roblox player matches Roblox's current release " + named + "."
+            : nativeStale ? "Update pending: no native Roblox player matches Roblox's current release " + named + ". Roblox normally updates when it next starts."
+            : "Roblox's current release is " + named + ". No " + (owners.Length > 0 ? "native" : "installed") + " Roblox player could be compared with it.";
+        foreach (var owner in owners)
+            summary += owner.Current ? $" The {owner.Name}-managed player matches that release."
+                : $" The {owner.Name}-managed player does not match that release; {owner.Name}, not Roblox, decides when that copy updates and may keep an older version.";
+        if (nativeStale || owners.Any(owner => !owner.Current))
+            summary += " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.";
+        return summary;
     }
     private void ReportInstallationFailure(Exception error)
     {
