@@ -135,7 +135,7 @@ public sealed class SettingsSearchTests
     public void ClientCpuSearchPointsToTheSessionsPriorityControl(string query)
     {
         // The real Sessions control comes first; the only other result is the explanation of what is not configurable,
-        // so no CPU cap, affinity or FPS control is ever advertised.
+        // so no automatic affinity or FPS control is ever advertised.
         var results = SettingsSearchCatalog.Search(query);
         Assert.Equal(["client-priority", "pending-client-performance"], results.Select(entry => entry.Id));
         Assert.Equal(SettingsSearchTarget.ClientPriority, results[0].Target);
@@ -148,15 +148,27 @@ public sealed class SettingsSearchTests
     }
 
     [Fact]
-    public void PendingClientPerformanceListsOnlyAutomaticAffinityAsUnavailableBesideCoreSpreading()
+    public void PendingClientPerformanceListsOnlyAutomaticAffinityAsUnavailableBesideCoreSpreadingAndTheCpuCap()
     {
-        // Core spreading sets process affinity in Sessions, so the pending explanation must not call affinity itself
-        // unconfigurable.
+        // Core spreading sets process affinity in Sessions, and the per-client CPU cap (R-instances-7) is a Sessions control
+        // too, so the pending explanation must call neither affinity itself nor CPU caps unconfigurable.
         var result = Assert.Single(SettingsSearchCatalog.Search("fps"));
         Assert.Equal("pending-client-performance", result.Id);
-        Assert.Contains("CPU caps and automatic affinity policies are not configurable here", result.Description, StringComparison.Ordinal);
+        Assert.Contains("automatic affinity policies are not configurable here", result.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("CPU caps", result.Description, StringComparison.Ordinal);
         Assert.DoesNotContain("cap/affinity", result.Description, StringComparison.Ordinal);
-        Assert.Contains("core spreading are set in Sessions", result.Description, StringComparison.Ordinal);
+        Assert.Contains("core spreading and a per-client CPU cap are set in Sessions", result.Description, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData("cpu cap")]
+    [InlineData("cap cpu")]
+    [InlineData("limit cpu")]
+    public void CpuCapSearchPointsToTheSessionsPriorityControlFirst(string query)
+    {
+        var results = SettingsSearchCatalog.Search(query);
+        Assert.Equal("client-priority", results[0].Id);
+        Assert.Contains("cap", results[0].Description, StringComparison.Ordinal);
     }
 
     [Fact]

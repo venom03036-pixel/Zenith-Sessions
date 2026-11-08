@@ -442,6 +442,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
+            stage=ManagerSubsystem.ClientPriority;await CheckLeftoverClientCpuCapsAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
             stage=ManagerSubsystem.Library;
             string? projectionNotice=null;

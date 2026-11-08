@@ -3,8 +3,9 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
+/// <param name="InForeignJob">The client is in a Windows job this run did not create (another program's, or one left by an earlier run of Zenith), so its cap is unknown and never set.</param>
 internal sealed record ClientPriorityRead(ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false,
-    ClientProcessSettings? Settings = null, ulong? SystemAffinity = null);
+    ClientProcessSettings? Settings = null, ulong? SystemAffinity = null, bool InForeignJob = false);
 internal sealed record ClientPriorityWrite(bool Accepted, ClientProcessPriorityStatus Status, ClientProcessPriorityClass? Current = null, bool Retired = false,
     ClientProcessSettings? Settings = null);
 internal sealed record ClientPriorityOpen(ClientProcessPriorityStatus Status, IClientPriorityHandle? Handle = null, bool Retired = false);
@@ -13,36 +14,73 @@ internal interface IClientPriorityHandle : IDisposable
     ClientPriorityRead Read();
     ClientPriorityWrite Change(ClientProcessSettings expected, ClientProcessSettings desired, Func<bool> stopped);
 }
-internal interface IClientPriorityAdapter
+/// <summary>Owns the native handles of its operations and, for the CPU cap, one job handle per capped client until the control disposes it.</summary>
+internal interface IClientPriorityAdapter : IDisposable
 {
     ClientPriorityOpen Open(SessionObservation session);
+    /// <summary>Names the clients an earlier run recorded and left capped; see <see cref="IClientProcessPriorityControl.CheckLeftoverCpuCapsAsync"/>.</summary>
+    ClientCpuCapLeftovers CheckLeftoverCaps(Func<bool> stopped);
 }
 
 /// <summary>
 /// One actual worker and no queued requests. The adapter is borrowed. No native operation runs on
 /// the caller's thread. A client's first read, set and unconditional readback share the same short-lived handle;
 /// Spread over cores keeps the handles of its clients (at most 128) open until its operation ends.
-/// The restore map is bounded and never evicts unresolved ownership.
+/// The restore map is bounded and never evicts unresolved ownership. A CPU cap is one more owned value: it lives in a
+/// Windows job the adapter creates for the exact client, keeps the handle to and records, and Restore clears it like any
+/// other value. The adapter, and with it every job handle, is disposed after the final restore pass.
 /// </summary>
 public sealed class WindowsClientProcessPriorityControl : IClientProcessPriorityControl
 {
     private readonly object _gate = new();
     private readonly IClientPriorityAdapter _adapter;
     private readonly Dictionary<SessionProcessKey, OwnedPriority> _owned = [];
-    private Task<ClientProcessPriorityBatchResult>? _active;
+    private Task? _active;
     private Task? _dispose;
     private long _generation;
     private bool _closed;
 
-    public WindowsClientProcessPriorityControl() : this(new NativeClientProcessPriorityAdapter()) { }
+    /// <summary>The production Windows calls, with the record of capped clients at <paramref name="cpuCapRecordPath"/> in Zenith's data folder.</summary>
+    public WindowsClientProcessPriorityControl(string cpuCapRecordPath)
+        : this(new NativeClientProcessPriorityAdapter(new ClientCpuCapLedgerFile(cpuCapRecordPath))) { }
     internal WindowsClientProcessPriorityControl(IClientPriorityAdapter adapter)
         => _adapter = adapter ?? throw new ArgumentNullException(nameof(adapter));
 
+    /// <summary>The file name, in the data folder, of the record of clients whose CPU Zenith capped.</summary>
+    public const string CpuCapRecordFileName = "client-cpu-caps.json";
     public int PendingRestoreCount { get { lock (_gate) return _owned.Count; } }
     public void CancelOperations() => Interlocked.Increment(ref _generation);
 
     public Task<ClientProcessPriorityBatchResult> ChangeAsync(IReadOnlyList<SessionObservation> sessions,
         ClientProcessPriorityAction action, CancellationToken ct)
+    {
+        if (action == ClientProcessPriorityAction.CapCpu)
+            throw new ArgumentException("A CPU cap needs its share of all CPUs; use CapCpuAsync.", nameof(action));
+        return Begin(sessions, action, 0, ct);
+    }
+
+    public Task<ClientProcessPriorityBatchResult> CapCpuAsync(IReadOnlyList<SessionObservation> sessions, int percentOfAllCpus, CancellationToken ct)
+    {
+        if (percentOfAllCpus is < IClientProcessPriorityControl.MinimumCpuCapPercent or > IClientProcessPriorityControl.MaximumCpuCapPercent)
+            throw new ArgumentOutOfRangeException(nameof(percentOfAllCpus), "A CPU cap is 5 to 95 percent of all CPU time on this PC.");
+        // Windows takes the rate in hundredths of a percent of all CPU time across every logical processor.
+        return Begin(sessions, ClientProcessPriorityAction.CapCpu, (uint)percentOfAllCpus * 100, ct);
+    }
+
+    public Task<ClientCpuCapLeftovers> CheckLeftoverCpuCapsAsync(CancellationToken ct)
+    {
+        long generation = Interlocked.Read(ref _generation);
+        lock (_gate)
+        {
+            if (_closed || _active is { IsCompleted: false }) return Task.FromResult(new ClientCpuCapLeftovers(0, 0, false, Stopped: true));
+            var check = Task.Run(() => _adapter.CheckLeftoverCaps(() => Stopped(generation, ct, false)), CancellationToken.None);
+            _active = check;
+            return check;
+        }
+    }
+
+    private Task<ClientProcessPriorityBatchResult> Begin(IReadOnlyList<SessionObservation> sessions, ClientProcessPriorityAction action,
+        uint cpuRate, CancellationToken ct)
     {
         long generation = Interlocked.Read(ref _generation);
         ArgumentNullException.ThrowIfNull(sessions);
@@ -58,7 +96,9 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             if (_closed) return Task.FromResult(Refused(pinned, action, ClientProcessPriorityStatus.Closed));
             if (_active is { IsCompleted: false }) return Task.FromResult(Refused(pinned, action, ClientProcessPriorityStatus.Busy));
             if (pinned.Length == 0) return Task.FromResult(new ClientProcessPriorityBatchResult([], Stopped(generation, ct, false), _owned.Count));
-            return _active = Task.Run(() => Run(pinned, action, generation, ct), CancellationToken.None);
+            var run = Task.Run(() => Run(pinned, action, generation, ct, cpuRate: cpuRate), CancellationToken.None);
+            _active = run;
+            return run;
         }
     }
 
@@ -71,7 +111,9 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             if (_closed) return Task.FromResult(Refused(pinned, ClientProcessPriorityAction.RestoreOriginal, ClientProcessPriorityStatus.Closed));
             if (_active is { IsCompleted: false }) return Task.FromResult(Refused(pinned, ClientProcessPriorityAction.RestoreOriginal, ClientProcessPriorityStatus.Busy));
             if (pinned.Length == 0) return Task.FromResult(new ClientProcessPriorityBatchResult([], Stopped(generation, ct, false), 0));
-            return _active = Task.Run(() => Run(pinned, ClientProcessPriorityAction.RestoreOriginal, generation, ct, ownedSelection: true), CancellationToken.None);
+            var run = Task.Run(() => Run(pinned, ClientProcessPriorityAction.RestoreOriginal, generation, ct, ownedSelection: true), CancellationToken.None);
+            _active = run;
+            return run;
         }
     }
 
@@ -79,7 +121,7 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         => !cleanup && (ct.IsCancellationRequested || generation != Interlocked.Read(ref _generation));
 
     private ClientProcessPriorityBatchResult Run(SessionObservation[] pinned, ClientProcessPriorityAction action,
-        long generation, CancellationToken ct, bool ownedSelection = false, bool cleanup = false)
+        long generation, CancellationToken ct, bool ownedSelection = false, bool cleanup = false, uint cpuRate = 0)
     {
         // Exact restore ownership can include two different starts of a recycled PID. Each
         // stored instance must be checked separately so the replacement can still be restored.
@@ -105,14 +147,14 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
                 else if (readAllFirst)
                     ready[index] = read;
                 else
-                    using (read!.Handle) results[index] = ChangeOne(read, action, stopped, index, pinned.Length);
+                    using (read!.Handle) results[index] = ChangeOne(read, action, stopped, index, pinned.Length, cpuRate);
             }
             int sharers = ready.Count(read => read is not null), share = 0;
             for (int index = 0; index < pinned.Length; index++)
                 if (ready[index] is { } read)
                     results[index] = stopped()
                         ? Result(read.Session, action, ClientProcessPriorityStatus.Cancelled, read.Current.Class, current: read.Current.Class)
-                        : ChangeOne(read, action, stopped, share++, sharers);
+                        : ChangeOne(read, action, stopped, share++, sharers, cpuRate);
         }
         finally
         {
@@ -170,7 +212,7 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             // Cores Windows did not report could never be restored, so that client takes no share.
             if (action == ClientProcessPriorityAction.SpreadCores && (current.Affinity is null || before.SystemAffinity is null))
                 return Result(session, action, ClientProcessPriorityStatus.SettingUnavailable, currentClass, current: currentClass);
-            read = new(session, handle, owned, current, before.SystemAffinity);
+            read = new(session, handle, owned, current, before.SystemAffinity, before.InForeignJob);
             return null;
         }
         finally
@@ -181,12 +223,12 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
 
     /// <summary>Changes one client <see cref="ReadOne"/> accepted, through its still-open handle, which the caller closes.</summary>
     private ClientProcessPriorityResult ChangeOne(ReadClient read, ClientProcessPriorityAction action, Func<bool> stopped,
-        int index, int count)
+        int index, int count, uint cpuRate)
     {
         var (session, handle, owned, current) = (read.Session, read.Handle, read.Owned, read.Current);
         var key = Key(session);
         var currentClass = current.Class;
-        if (Desired(action, current, owned, read.SystemAffinity, index, count, out var refusal) is not { } desired)
+        if (Desired(action, current, owned, read.SystemAffinity, index, count, cpuRate, read.InForeignJob, out var refusal) is not { } desired)
             return Result(session, action, refusal, currentClass, current: currentClass);
         if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled, currentClass, desired.Class, currentClass);
         if (current == desired)
@@ -240,11 +282,19 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
 
     /// <summary>The values an action asks for: the current ones with only that action's values replaced.</summary>
     private static ClientProcessSettings? Desired(ClientProcessPriorityAction action, ClientProcessSettings current, OwnedPriority? owned,
-        ulong? systemAffinity, int index, int count, out ClientProcessPriorityStatus refusal)
+        ulong? systemAffinity, int index, int count, uint cpuRate, bool inForeignJob, out ClientProcessPriorityStatus refusal)
     {
         refusal = ClientProcessPriorityStatus.SettingUnavailable;
         switch (action)
         {
+            case ClientProcessPriorityAction.CapCpu:
+                // A client in a job Zenith did not create is left alone (the owner's rule), as is one whose cap Windows did not report.
+                if (current.CpuCap is null)
+                {
+                    if (inForeignJob) refusal = ClientProcessPriorityStatus.AlreadyInJob;
+                    return null;
+                }
+                return current with { CpuCap = cpuRate };
             case ClientProcessPriorityAction.Normal: return current with { Priority = ClientProcessSettings.NormalClass };
             case ClientProcessPriorityAction.BelowNormal: return current with { Priority = ClientProcessSettings.BelowNormalClass };
             case ClientProcessPriorityAction.Efficiency:
@@ -297,6 +347,7 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
     private static ClientProcessPriorityStatus Failure(ClientProcessPriorityStatus status)
         => status is ClientProcessPriorityStatus.InvalidClient or ClientProcessPriorityStatus.AccessDenied
             or ClientProcessPriorityStatus.UnsupportedPriority or ClientProcessPriorityStatus.Conflict or ClientProcessPriorityStatus.Cancelled
+            or ClientProcessPriorityStatus.CapacityReached or ClientProcessPriorityStatus.AlreadyInJob
             ? status : ClientProcessPriorityStatus.NotConfirmed;
 
     public ValueTask DisposeAsync()
@@ -308,23 +359,27 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             return new(_dispose = DisposeCoreAsync(_active));
         }
     }
-    private async Task DisposeCoreAsync(Task<ClientProcessPriorityBatchResult>? active)
+    private async Task DisposeCoreAsync(Task? active)
     {
-        if (active is not null) await active.ConfigureAwait(false);
+        // Joined, not inspected: a faulted leftover check already reported its failure to the caller that started it.
+        if (active is not null) { try { await active.ConfigureAwait(false); } catch (Exception) { } }
         Task<ClientProcessPriorityBatchResult> restore;
         lock (_gate)
         {
             var pinned = RestoreSelection();
-            if (pinned.Length == 0) return;
-            restore = _active = Task.Run(() => Run(pinned, ClientProcessPriorityAction.RestoreOriginal,
+            if (pinned.Length == 0) { _adapter.Dispose(); return; }
+            restore = Task.Run(() => Run(pinned, ClientProcessPriorityAction.RestoreOriginal,
                 Interlocked.Read(ref _generation), CancellationToken.None, ownedSelection: true, cleanup: true), CancellationToken.None);
+            _active = restore;
         }
         var result = await restore.ConfigureAwait(false);
+        // The job handles close only now, after the restore pass that needs them; a client stays in its (now inert) job.
+        _adapter.Dispose();
         if (result.PendingRestoreCount > 0) throw new ClientProcessPriorityCleanupException(result.PendingRestoreCount);
     }
     /// <summary>The client's own values before this owner's first change, and every value this owner last applied.</summary>
     private sealed record OwnedPriority(SessionObservation Session, ClientProcessSettings Original, ClientProcessSettings LastApplied);
     /// <summary>One client's checked read and the open handle it came from, owned by <see cref="Run"/> until that client's change ends.</summary>
     private sealed record ReadClient(SessionObservation Session, IClientPriorityHandle Handle, OwnedPriority? Owned,
-        ClientProcessSettings Current, ulong? SystemAffinity);
+        ClientProcessSettings Current, ulong? SystemAffinity, bool InForeignJob);
 }

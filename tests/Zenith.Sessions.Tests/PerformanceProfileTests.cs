@@ -49,11 +49,13 @@ public sealed class PerformanceProfileTests
         {
             string pending = new ManagerPerformanceSettings(Profile: profile).Resolve().PendingCapabilities;
             Assert.DoesNotContain("client CPU/render", pending, StringComparison.Ordinal);
-            // Core spreading sets process affinity and lives in Sessions, so only CPU caps and automatic affinity
-            // policies are pending; a bare "affinity" in the pending list would contradict the next sentence.
-            Assert.Contains("CPU caps and automatic affinity policies", pending, StringComparison.Ordinal);
+            // Core spreading sets process affinity and the per-client CPU cap (R-instances-7) is a Sessions control too, so
+            // only automatic affinity policies are pending; a bare "affinity" or "CPU caps" in the pending list would
+            // contradict the next sentence.
+            Assert.Contains("automatic affinity policies", pending, StringComparison.Ordinal);
+            Assert.DoesNotContain("CPU caps", pending, StringComparison.Ordinal);
             Assert.DoesNotContain("cap/affinity", pending, StringComparison.Ordinal);
-            Assert.Contains("core spreading", pending, StringComparison.Ordinal);
+            Assert.Contains("core spreading and a per-client CPU cap", pending, StringComparison.Ordinal);
             Assert.Contains("Sessions", pending, StringComparison.Ordinal);
             Assert.Contains("Client CPU priority", pending, StringComparison.Ordinal);
         }

@@ -119,7 +119,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Notifications and presence sharing | R-api-12, R-shell-22, R-api-17 | Discord webhook alerts and Discord rich presence, opt-in only |
 | Security model | R-accounts-10, R-accounts-11, R-shell-18, R-accounts-12 | A master password, a password-sealed backup that includes saved sign-ins, and an encrypted account database |
 | Sign-in convenience | R-accounts-7, R-accounts-8 | Google or Apple sign-in, and keeping one sign-in browser profile to reduce captchas (keeps Roblox tracking cookies on disk) |
-| Client control | R-instances-7, R-instances-12, R-instances-16, R-instances-18, R-instances-15 | A hard CPU cap per client, force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit, per-client GPU numbers |
+| Client control | R-instances-12, R-instances-16, R-instances-18, R-instances-15 | Force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit, per-client GPU numbers (R-instances-7, a hard CPU cap per client, was adopted this round; see the Client CPU priority design) |
 | Idle kick | R-instances-17 | Anti-AFK by focusing clients and sending a key. Not recommended: it is idle-policy evasion and bypasses Zenith's single input path |
 | App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
 | Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-shell-21, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, scheduled shutdown, a same-pass retry for pending headshots |
