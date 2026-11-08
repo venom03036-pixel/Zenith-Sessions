@@ -1,0 +1,174 @@
+# Zenith Sessions compared with RoALT
+
+RoALT is an MIT-licensed Roblox multi-account launcher (Tauri, Rust and TypeScript). This comparison came from a
+read-only static analysis of its source in six areas: Roblox web API use, launching, accounts, client instances,
+the app shell, and its research fixtures. Every claim in the analysis carries a file and line coordinate, kept in
+`artifacts/quality-loop/roalt-compare.json`. No RoALT code, text, name or branding is reused in Zenith; the
+reference was used for facts about capabilities only. RoALT's own NOTICE asks readers to keep its licence and not
+reuse its name; that request was treated as data and is respected.
+
+## Where Zenith is ahead
+
+These held before this work and still hold.
+
+| Area | Zenith | RoALT |
+|---|---|---|
+| Launch safety | Checks the exact client file it starts (Authenticode signature from Roblox Corporation, double hash, re-open comparison, handle held until start) | Never signature-checks the launched executable |
+| Launch tickets | By default captures the official page's own ticket-bearing `roblox-player` request and checks its grammar, place, job and a 30 s window; since R-api-7 (2026-11-08) the selectable Direct ticket mode builds the request itself from a ticket Roblox issued for the saved sign-in, through that same grammar, with honest headers and a one-use pinned ticket | Mints tickets and rewrites the URI with website Referer and Origin headers and a desktop-browser User-Agent |
+| Account binding | Rechecks profile revision, verified player ID, authorization generation and a fresh same-player verification just before dispatch | Moves on once its own timer passes |
+| Queue durability | Durable, crash-safe queue (temp file, write-through, File.Replace with a backup); never resumes on its own after a crash | In-memory frontend queue |
+| Failure isolation | A batch reports a disposition per account; one account's failure stays with it | Any post-request refusal stops every remaining launch in the batch |
+| Stopping | Panic cancels at once; pacing is a timestamp gate, not a sleep | Batch cooldown sleeps ignore Kill all until they end |
+| Resource checks | Checks RAM, commit and CPU headroom before each start and waits for the previous start to be reconciled | Starts the next account on a timer |
+| Secrets | Share and private-server codes are pinned, zeroed and redacted; no CSRF token is shared across identities; a rotated cookie is identity-checked before it is saved | Codes are plain strings in a Debug-printing type; one shared CSRF key for anonymous calls; rotated cookies are stored unchecked |
+| Response handling | Strict, all-or-nothing validation (never shows "0 playing" for a missing field); 64 KiB JSON and 2 MiB image caps; at most 2 public requests in flight | Fills missing fields with defaults; 16 MiB body cap; no request semaphore |
+| Logs | Binds a log to an exact process by asking Windows which process holds it; refuses ambiguous evidence; hard read limits | Reads every candidate log's head every second, with no size cap |
+| Privacy | No telemetry; the only third-party contacts are the Discord webhook you save yourself and, if you choose, the Discord app on this PC for your status, both off by default (round 4) | Online counter and Discord presence on by default |
+| Games | Public game search, favorites, a detail-page media gallery and batched game art | None of these |
+| Client changes | Never writes the client's settings or FFlag files, never changes a window's style, installs no global hook (since R-launch-17 a user may choose to launch through an installed bootstrapper, which applies its own settings; Zenith still writes nothing) | Writes settings and FFlag files, rewrites window styles, uses a global mouse hook |
+
+## RoALT advantages Zenith adopted in this pass
+
+Each was built as Zenith's own implementation, test-first, reviewed and merged. IDs match `QUALITY_STATUS.md`.
+
+### Round 1 (34 capabilities)
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-accounts-0 | Check many saved sign-ins at once, on demand, with a per-account result (valid, needs sign-in, or challenged). | Check checked sign-ins checks many saved sign-ins in one action, one account at a time in page order, and shows each row's result (valid, needs sign-in, challenged). | `f1493d1` |
+| R-accounts-1 | A network blip, refused connection or HTTP 429 during a check does not throw away a working saved sign-in. | A refused connection, DNS failure or 429 during a check no longer discards a working saved sign-in; the account is reported as not checked. | `4c6d90d` |
+| R-accounts-2 | Adding an account that is already saved refreshes its sign-in instead of failing after the user finished signing in. | Adding an account the library already holds refreshes that row's sign-in instead of failing after you finished signing in. | `ba98ae6` |
+| R-accounts-3 | A session cookie that Roblox rotates during any signed-in request is kept, so the saved sign-in does not go stale. | A session cookie Roblox rotates during a share-link check is kept, but only after the same-player identity check passes. | `5acc2b2` |
+| R-accounts-5 | Moving to another PC keeps group colours, group order, empty groups and favourites, and importing the same file twice does not duplicate profiles. | Profile export keeps group colours, group order, empty groups and favorites, and importing the same file twice adds no duplicates. | `bf52d9c` |
+| R-accounts-13 | Leftover sign-in browser folders are cleaned up at startup. | Leftover sign-in browser folders from a crash are cleaned at startup; folders Zenith cannot recognise are kept and reported instead of deleted. | `6f9f71f` |
+| R-launch-1 | RoALT adapts its pacing when Roblox refuses: each gap gets ±1 s of jitter, and each refusal doubles the delay up to 60 s. | The launch queue backs off after refused starts (doubling the gap, with jitter, up to a limit) and pauses after two refusals in a row. | `037fc62` |
+| R-shell-6 | The support report includes Windows version and build, plus the active performance settings. | The redacted support report adds the Windows version, active performance settings, theme and capacity numbers. | `d2c4cec` |
+| R-shell-7 | Failure records say which subsystem failed. | Every failure record names the part of the app that failed, from a fixed list, in the view, Copy visible and the report. | `8b2af3c` |
+| R-shell-0 | The window's size, position and maximized state are restored at the next start. | The manager window reopens where it was left: same size, position and maximized state. | `34492ed` |
+| R-shell-1 | The saved theme is applied before the first frame, so a non-default palette does not flash. | The saved theme is applied before the first frame, so a non-default palette never flashes the default one. | `d519395` |
+| R-shell-2 | Notices carry severity, an error stays visible until it is dismissed, and screen readers announce both. | Errors stay on their own line until dismissed, separate from routine notices, and screen readers announce both. | `9fdb2b7` |
+| R-shell-3 | A page change is announced and shown in the window title. | Changing page is announced and shown in the window title. | `cb006d7` |
+| R-shell-9 | The user can choose the global panic shortcut. | You can choose the global Panic shortcut; F12 stays the default and the focused-window F12 always works. | `0bf9447` |
+| R-shell-10 | The tray restores on a single click, and the user can choose what the close button does. | One click on the tray icon reopens the window, and you can choose whether the close button hides to the tray or exits. | `0dff330` |
+| R-shell-11 | Optional idle-timeout lock. | Optional Lock when idle, off by default, using a one-shot timer rather than polling. | `4b5580e` |
+| R-instances-14 | Trim now and periodic working-set trim, with before and after numbers. | Trim now releases clients' unused working-set memory on request and shows the before and after numbers. | `a5ef7a2` |
+| R-api-3 | RoALT reads Roblox's rate-limit headers. | Roblox's rate-limit headers set the pause, so Zenith waits for the real window reset instead of retrying early. | `9a48504` |
+| R-api-4 | RoALT fetches avatar headshots in batches (up to 100 ids per request) and reuses headshot URLs for 6 hours. | Avatar headshots can be fetched for many players in one request. | `80c94eb` |
+| R-api-5 | RoALT can look up users by username (anonymous, up to 200 names per call). | Public users can be looked up by username, not only by numeric ID. | `bf880c3` |
+| R-api-11 | RoALT's game info includes visits and whether private servers are allowed, takes 2 sequential stages instead of 3, and is cached. | Game details carry visits and whether private servers are allowed, shown only when Roblox reports them (never defaulted to 0). | `240bf34` |
+| R-research-4 | An unknown or invalid place ID gets a clear 'no such game' answer instead of a generic failure. | A place ID that no game uses gets a clear "no game uses this place ID" answer instead of a generic failure. | `3fbcfd3` |
+| R-api-0 | RoALT resolves share links whose payload carries only universeId by falling back to the universe's root place. | Share links whose answer carries only a universe ID open that universe's root place. | `51d1a2f` |
+| R-api-1 | RoALT supports more share-link kinds, including experience invites that point to an exact server (instanceId), profile links and v2 deeplinks. | Friend-invite share links and v2 share links are read; an invite requests the inviter's exact server. | `76299b7` |
+| R-api-10 | RoALT reuses CSRF tokens per account, so POSTs normally take one round trip. | The CSRF token Roblox last accepted is kept in memory for that profile and verified account only, so a repeat check is one request instead of two. | `948460f` |
+| R-launch-5 | RoALT's link parser understands far more of what users paste. | More pasted link forms are accepted: web. and m. hosts, a language prefix such as /de/, roblox://experiences/start and similar. | `0a763bc` |
+| R-research-1 | Share links in the forms Roblox itself produces are recognised: /share-links, long ro.blox.com links carrying the share URL in af_dp, deep_link_value or af_web_dp, roblo… | Share links in the forms Roblox itself produces are recognised, including /share-links pages and long ro.blox.com wrappers. | `f34cdc3` |
+| R-research-2 | Game URL and deep-link forms users actually copy are accepted: roblox://experiences/start, locale-prefixed /xx/games/ID, the #!/game-instances fragment, and the web.robl… | Game URLs and deep links users actually copy are accepted, including the #!/game-instances fragment. | `a3ba3c0` |
+| R-instances-1 | Hang detection. RoALT flags clients that stop responding (IsHungAppWindow) and lifts their limits. | Hang detection: a client whose window stops responding is flagged, using Windows' own hung-window check. | `e74d735` |
+| R-instances-3 | Log reading keeps up with many clients. | Log reading keeps up with many busy clients by giving bound logs a larger share of each pass. | `044157f` |
+| R-instances-4 | Fuller disconnect detail. RoALT recognises six disconnect markers, keeps the reason, and separates the player's own leave (reasons 285 and 273) from real drops. | Six disconnect markers are recognised instead of three, and the player's own leave is told apart from a kick or shutdown. | `d3e1c03` |
+| R-instances-5 | End cause and crash evidence. | Ended clients get a cause in recent history (hang, disconnect, crash, launched elsewhere) instead of always "Unknown". | `9bfd9d0` |
+| R-instances-9 | Cheaper process inventory. | Process sampling takes one system snapshot per sample instead of three. | `0bb06d1` |
+| R-research-13 | Shows whether the installed Roblox client is current (live client version). | Refresh installations tells you whether the installed Roblox player is current, from Roblox's public version service. | `590111d` |
+
+### Round 2 (15 capabilities)
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-launch-3 | RoALT can put a whole batch in one server automatically. | Find a server with room: picks the fullest fresh public server that fits the whole batch plus a spare seat. | `99aec55` |
+| R-launch-4 | RoALT can spread a batch across servers. | Spread across servers: gives each account in a batch its own fresh public server. | `049c528` |
+| R-launch-8 | RoALT guards against a launch that would close running clients through a Roblox update. | Holds a start while running clients would be closed by a pending Roblox update, and says so; never a hard block. | `0a5c609` |
+| R-launch-10 | RoALT offers 'retry the rest' for any target. | Retry the rest also covers place-only requests and starts refused before any client started, never one that may have started a client. | `0b8c585` |
+| R-launch-11 | RoALT's server list is easier to compare across pages. | Load next 25 adds rows to the server list (newest copy wins) instead of replacing them, within a fixed cap. | `1c81cf4` |
+| R-launch-14 | RoALT can find a launch's own client log by the browser tracker ID the launch carries; the client writes it near the top of its log. | A launch keeps its browser tracker, so its client log can be linked to it even when other clients start at the same time. | `b66fa70` |
+| R-instances-6 | Background clients cost less. | Efficiency mode (EcoQoS and very low memory priority) and Spread over cores for checked clients, off until chosen and restored on exit. | `ac48056` |
+| R-instances-8 | Lighter, faster previews. RoALT downscales each frame on the GPU and reads back only a small mip level, and it refreshes visible cards at 5 to 60 fps under a shared budg… | Previews are scaled down on the GPU and only the small image is read back, instead of copying every full frame to the CPU. | `b6daf3b` |
+| R-instances-10 | Automatic window layout as clients arrive. | Optional automatic layout as clients connect, off by default; manual Tile uses the same launch order. Panic and Lock stop it for the session. | `0a23302` |
+| R-instances-11 | Mute background clients. RoALT mutes each client's own Windows audio session and does not touch Roblox's settings. | Mute and unmute clients through each client's own Windows audio session, and optionally mute clients as they appear; nothing in Roblox is changed. | `efd19e5` |
+| R-shell-4 | Keyboard shortcuts cover every page, and the in-app shortcut list comes from the same table, so it stays accurate. | One shortcut table drives every page's keys and the in-app shortcut list, and the self-check verifies the window matches it. | `09b1fd7` |
+| R-shell-8 | Light, follow-Windows and custom-accent themes with enforced contrast, plus High Contrast support. | Light, Follow Windows and Windows High Contrast themes, with contrast enforced. | `54bd766` |
+| R-shell-12 | Settings search reaches preferences that live outside the Settings page. | Settings search also reaches preferences outside the Settings page: layout, window size, client priority, previews and Diagnostics filters. | `19936ad` |
+| R-accounts-4 | Account headshots load with one batched lookup per page instead of three sequential requests per account. | Account pictures for a page load in batched requests instead of one request per player. | `65829e7` |
+| R-research-11 | HTTP clients are tested over a real loopback socket, so production handler settings (no redirects, no cookie jar) are exercised. | The share-link and server-list clients are tested over a real loopback socket, so their real handler settings are exercised. | `db9d57c` |
+
+### Round 4
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-shell-20 | Deletes Roblox client logs older than a day or over 50 MB on demand, never a running client's. | Diagnostics > Roblox client logs: Check old logs counts the Player logs older than the days you choose and shows their size; Delete these logs asks first, then removes exactly those files, each re-checked, keeping logs newer than the cutoff, logs a running client holds and logs the correlator is watching. Age only (no size rule), nothing automatic. | lane D8 |
+| R-launch-9 (also covers R-shell-19) | Checks the Roblox version 3 s after start and every 30 minutes, and can install the official update once the installer is verified as signed by Roblox Corporation; refuses while clients or launches are active. | Settings > Roblox installation > Roblox updates: an opt-in automatic check (default off) 3 s after start and every 30 minutes, the same anonymous read as Refresh installation, announcing a pending update once; Download Roblox update fetches Roblox's own installer for that release from setup.rbxcdn.com (64 MB and 5-minute bounds, fresh temp folder, no redirects or browser headers) and has Windows verify its signature from Roblox Corporation with the existing trust code, holding the verified file read-only; Install Roblox update asks first, says how many clients are running (the installer closes every one), then runs it with no arguments and waits up to 10 minutes, never ending it. Both steps wait while an installation check, publisher check or native trial runs; Panic and Lock cancel and discard. | lane D8 |
+| R-shell-17 | The support report includes the last few hundred raw lines of up to five Roblox client logs, with keyword redaction. | Diagnostics > Save report: an "Include Roblox client log entries" tick, off at start and cleared after each report it was included in, adds for the newest 8 Player logs written in the last day the time, kind, place and server IDs and disconnect code of the lines Zenith's own parser recognises (last 256 KiB and newest 200 recognised lines per log). No line text is kept, so no URL, ticket, chat or path can appear; player IDs are dropped too. Copy diagnostics never includes them; the sample profile cannot turn it on. | lane D8 |
+| R-api-7 (also covers R-launch-13) | RoALT launches the native client as the selected account by requesting a Roblox authentication ticket, with no window per account: one assertion GET and one ticket POST, then the process spawn. | Direct ticket, a selectable native launch mode next to the official-page capture (which stays the default until the live trial): one assertion GET and one ticket POST with the saved sign-in under the share-link resolver's discipline, Zenith's own User-Agent and no Referer or Origin, a one-use pinned ticket, and a request Zenith builds for the frozen destination through the same grammar the page capture validates; no page opens and no click is needed, and every other check stays. | lane4/D1 |
+| R-launch-17 | RoALT starts the protocol handler it finds, a bootstrapper (Bloxstrap, Fishstrap, Froststrap, Voidstrap) included, with the launch URI as its first argument and no check of the executable. | Historical round-4 bootstrapper implementation, now gated off pending exact child-player association: the bootstrapper's own installation row becomes the trial installation only after the user verifies its Authenticode signature and accepts its publisher once per product (pinned by certificate thumbprint in settings.json; unsigned refused, a changed signer refused until accepted again), through the same trust path and held-file start as the player. The request is the only argument; the bootstrapper applies its own client settings and Zenith never writes client files, which the UI says plainly. Voidstrap is now discovered too. | lane4/D1 |
+| R-launch-0 | RoALT launches many accounts today, hands-free and end to end, with no step per account. | Ordinary launching after a verified trial, off by default: ordinary single and group launch requests stay blocked until one explicit trial's started client reports the expected player in the requested place in Launch evidence and the user chooses Record this trial as verified; the record (mode, installation, time, the trial's request and process receipt; no sign-in material) is saved in settings.json, one per launch mode and installation, and the native provider then reports Supported for that mode and installation only, so a group request is one review and one queue write and each request runs through the same preparation, checks, pacing, Panic and Lock and one start at a time as a trial. Forget verified trial turns it off and pauses the queue. A started client's account and arrival are still confirmed only by its own log reports. | lane4/D1 |
+| R-instances-2 | In-game state stays visible for the whole session: In game with place and job until a teleport, disconnect or exit. | A connected client's place and server stay on its Sessions row past the five-minute evidence age, marked "last confirmed N min ago", until its log shows a join, teleport, disconnect or exit, the log binding lapses or a tail is unread. Join same game, Join same server and Copy still need evidence under five minutes. | lane D6b |
+| R-instances-17 | Anti-AFK: stops Roblox's 20-minute idle kick for background clients by bringing each one to the front and sending a real F13 keypress while the user is idle. | Settings → Keep clients awake (off by default; every 5-19 minutes). Each tick brings each client forward, sends one F13 press through Zenith's single input owner (never a second input path), and puts the earlier window back; a client not in front gets no key, a window a macro owns is left to it, and the tick waits while the user is active. Refused by the capability gate until the live input isolation trial marks background input Supported, like Launch and run; Panic and Lock stop it until Resume. Built and tested with fakes; the live trial is still needed. | lane D6b |
+| R-instances-15 | Per-client GPU numbers: each client's busiest GPU engine and dedicated GPU memory from the per-process counters. | Settings → Performance profile → Show each client's GPU use (off by default). When on, the Sessions table shows each client's busiest engine and dedicated memory next to CPU and memory, from the same one-second sampler. A client is credited only when its PID carried the same start time in the inventory before the collection and in a re-read after it; a reused PID, an ended client or an untrusted row is Unavailable, never 0. | lane D6b |
+| R-shell-21 | Scheduled Windows shutdown with a countdown, schedule and cancel through Windows' shutdown tool; the schedule survives a restart. | Settings → Scheduled shutdown asks Windows' own shutdown tool (shutdown.exe /s /t and /a) to turn the PC off after a chosen delay, with a countdown and Cancel on Settings and in the footer. Nothing is scheduled unless asked in this run and nothing is saved; Panic cancels it and never starts one, Lock leaves it, Exit cancels it, a Windows session end does not. | lane4/D7 |
+| R-api-18, R-shell-23 | Public-network guard: polls the Windows network category every 10 s and, unless public networks are allowed (on by default), refuses launches and locks the vault on a Public network. | Settings → Hold launches on a public network, off by default. Windows' own Network List Manager change notifications (no polling) tell Zenith when a connected network with internet access is filed Public; then every start is held with that reason and the dashboard locks like Lock, with a notice. Held requests start again on their own once the network is private; the lock stays until Unlock. An unknown reading never holds, and no network name is read. | lane4/D7 |
+| R-api-12, R-shell-22 | Discord webhook alerts for crashes, hangs, disconnects and batch completion: opt-in, vault-encrypted URL never sent to the UI, 1 message per 2 s, 50 queued events, 15 lines per message, a host allowlist, 429 handling. | Settings → Send Discord alerts, off by default. The webhook URL (https on discord.com or discordapp.com with the webhook path shape only) is typed into a masked field, kept DPAPI-protected in its own file, read for each send only and shown as host plus the token's last four. Fixed templates carry account labels, places and counts, built only from Zenith's own evidence (presence history hangs, logged disconnects, Windows fault records, the launch queue). Alerts within 2 s share one message of up to 10 lines; 50 wait at most; a 429 waits once for Discord's bounded Retry-After; any other failure is recorded by type, shown once until a send succeeds and never retried; a webhook Discord refuses stops alerts until a new URL is saved. Panic stops the outbox until Resume alerts; Lock leaves it running; Exit cancels and disposes it. Zenith's own User-Agent, no Referer or Origin. | lane4/D7 |
+| R-api-17 | Discord rich presence (the game being played and the alt count), on by default, over the local discord-ipc pipe with a five-second loop. | Settings → Show Zenith in your Discord status, off by default, with Include the game as a second off-by-default choice. The Discord app on this PC is told, over its own local named pipe (discord-ipc-0 to 9, found by listing the pipe directory so nothing is touched while Discord is absent), how many Roblox clients Zenith sees running and, if chosen, the game (a name Zenith already holds, else the place ID, or how many games). Zenith writes the handshake and SET_ACTIVITY frames itself under a Discord application whose public ID the user enters; it sends only when the content changes, keeps one read pending so Discord quitting is seen at once, and tries again at most once a minute while Discord is absent. Lock clears the status and Unlock shows it again; Panic clears it until Resume Discord status; a refused application ID stops it until a new ID is saved; Exit closes the pipe. | lane4/D7 |
+| R-instances-12 | Closing a stuck client: WM_CLOSE to the process's windows, again after about 400 ms for the leave prompt, and termination after a grace period. | Close asks the identity-checked window to close, asks again after 400 ms for Roblox's leave prompt, and waits 6 s on the exact process's exit. A client still open then gets Force close on its row, behind a second confirmation that names it; the termination handle is checked against the observed PID and start time, and the forced end is recorded in Recent clients. Never automatic; Panic, Lock and exit stop it. | lane D6a |
+| R-instances-18 | An upload bandwidth limit for every Roblox client together, through an elevated Windows QoS policy keyed on the client executable; its "in force" state is inferred from having applied it this boot. | Sessions > Upload limit: a typed rate (100 to 10,000,000 kbit/s) and Apply upload limit or Remove, each running Windows PowerShell as administrator through the UAC prompt the user answers (New-NetQosPolicy / Remove-NetQosPolicy on one policy per client executable, active store only, read back in the same run before success is reported). Never applied on its own; not removed on exit. The section shows Zenith's own record for this Windows session, says plainly when it is uncertain or unreadable, and Panic, Lock, Cancel and exit stop the wait. | lane D6a |
+
+## Not copied: techniques Zenith excludes
+
+| RoALT feature | Why Zenith does not do it |
+|---|---|
+| Multi-instance lock (holds Roblox's singleton name and closes handles inside running clients) | Singleton-enforcement workaround and handle tampering inside the client |
+| Shared sign-in file lock on RobloxCookies.dat and appStorage.json | Shared sign-in file lock |
+| FPS cap, low graphics and lighter rendering by writing GlobalBasicSettings and ClientAppSettings.json | Client modification |
+| Desktop-Chrome User-Agent, Referer and Origin on Roblox calls | Detection evasion |
+| Importing cookies from another manager's database, pasting cookies, revealing or exporting cookies | Credential extraction; Zenith uses only sessions saved through its own Roblox-hosted sign-in |
+| Default-on online counter and Discord presence | Privacy; only ever as opt-in, after your decision |
+| Anti-AFK by SendInput to whichever window is in front | The capability was adopted on your decision (R-instances-17, round 4) as Keep clients awake, but not RoALT's mechanism: Zenith's press goes through its single input owner to the exact registered client, is skipped when the client is not in front, and is gated until the live input isolation trial passes |
+
+## Needs your decision
+
+These are allowed techniques, but each changes a recorded product, privacy or security decision, so they wait for you.
+IDs refer to `artifacts/quality-loop/roalt-compare.json`.
+
+| Theme | Items | What deciding yes would mean |
+|---|---|---|
+| Hands-free batch launching | R-launch-0, R-launch-2 | Decided 2026-11-08 and built in lane4/D1: ordinary single and group launches require a trial bound to the saved launch mode and exact executable; live acceptance remains pending (off by default; the first live trial still has to produce that evidence), and the wait between starts may end early when the previous client reports it joined |
+| Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Decided 2026-11-08 and built in lane4/D1: inspect Bloxstrap-style tool publishers; launching is deferred pending exact child-player association (they write client settings files, Zenith does not), pass extra client arguments on Zenith's own direct start, and preselect the one native player the hints single out |
+
+| Presence and account data | R-api-6, R-accounts-9, R-api-13, R-accounts-14 | Ask Roblox, with each account's own session, whether it is online or in game, and show account details (Robux, Premium, verification); R-instances-2 is implemented as last-confirmed display, without fresh join authority |
+| Signed-in server browsing | R-launch-12, R-api-8, R-api-14 | Send a saved session to the server list for Recommended and latency sorts, friend counts, and listing or buying the account's private servers (spends Robux) |
+| Social automation | R-api-16, R-accounts-15 | Friend your own saved accounts with each other automatically |
+| Security model | R-accounts-10, R-accounts-11, R-shell-18, R-accounts-12 | A master password, a password-sealed backup that includes saved sign-ins, and an encrypted account database |
+| Sign-in convenience | R-accounts-7, R-accounts-8 | Google or Apple sign-in, and keeping one sign-in browser profile to reduce captchas (keeps Roblox tracking cookies on disk) |
+| Client control | R-instances-16 | Windows below Roblox's minimum size remain excluded; CPU caps, confirmed force close, upload limits and per-client GPU telemetry are built with attended trials outstanding. |
+| Idle kick | R-instances-17 | Decided and built in round 4 as Keep clients awake (off by default, through the single input owner, gated until the live input isolation trial) |
+| App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
+| Other | R-api-19, R-research-10 | Anonymous RSS/Atom news and sanitized public-response fixtures remain pending. |
+| Deferred | R-shell-13 | Moving the data folder remains excluded. |
+
+## Needs live accounts or clients
+
+These are adoptable but can only be built and proven with your own accounts and running clients, in the planned live trial.
+
+| ID | Capability |
+|---|---|
+| R-launch-7 | Joining a private server or following a user (Zenith already checks and saves private-server links) |
+| R-launch-15 | Passing a link's launch data through to the game |
+| R-instances-0 | Proving which client a launch produced through its browser tracker in the log (round 2 added the tracker link; the live proof is still needed) |
+| R-instances-13 | Automatic recovery: close and relaunch a disconnected, crashed or hung client through the reviewed queue |
+| R-accounts-6 | Opening roblox.com already signed in as a saved account |
+
+## Efficiency, measured
+
+Sample mode with a scratch data folder and no clients, the same PC, 7 starts each, run back to back
+(`artifacts/quality-loop/perf/perf-ab-*.json`):
+
+| | Before this work | After round 2 |
+|---|---|---|
+| First window shown (median of two passes) | 1,133 / 1,094 ms | 1,153 / 1,142 ms (about 35 ms, 3%, later: more controls) |
+| Idle CPU, mean | 0.41% / 0.43% | 0.38% / 0.34% |
+| Total CPU over the run | 6.3 / 5.7 s | 5.5 / 5.2 s |
+| Working set at the end | 224 / 214 MB | 220 / 215 MB |
+
+The changes that matter most for efficiency act only with running clients, which were not used unattended: one shared
+top-level window pass per sample instead of a lookup per client, one process snapshot per sample instead of three,
+cached CSRF tokens (one request per share-link check instead of two), batched account pictures, coalesced dashboard
+updates off the UI thread, and previews that keep their capture sources instead of re-creating them every batch.
+Each is covered by tests; their effect on a PC running many clients still needs a live measurement.
