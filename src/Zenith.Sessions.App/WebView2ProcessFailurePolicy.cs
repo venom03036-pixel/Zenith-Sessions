@@ -1,3 +1,4 @@
+using System;
 using Microsoft.Web.WebView2.Core;
 
 namespace Zenith.Sessions.App;
@@ -22,4 +23,13 @@ internal static class WebView2ProcessFailurePolicy
             or CoreWebView2ProcessFailedKind.FrameRenderProcessExited => false,
         _ => true,
     };
+
+    /// <summary>The body of both owners' ProcessFailed handlers, free of WebView2 event types so tests run it. A recoverable
+    /// kind only shows <see cref="RecoveredNotice"/> and keeps the window; any other kind calls <paramref name="endWindow"/>
+    /// and leaves the status line as it was.</summary>
+    internal static void HandleProcessFailure(CoreWebView2ProcessFailedKind kind, Action<string> showStatus, Action endWindow)
+    {
+        if (EndsSession(kind)) endWindow();
+        else showStatus(RecoveredNotice);
+    }
 }

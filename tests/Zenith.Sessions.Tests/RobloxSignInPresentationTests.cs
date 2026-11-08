@@ -52,21 +52,63 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     public void FrameNavigationCannotDispatchNativeSchemes(string? value, bool expected)
         => Assert.Equal(expected, RobloxSignInNavigation.IsAllowedFrame(value));
 
+    // The guards need a live CoreWebView2 to run, so their bodies run in the tests below. This supplement checks that the
+    // live handlers are exactly those calls and are attached to the navigating CoreWebView2 on every path that opens a page.
     [Fact]
     public void SignInWindowCancelsExternalSchemeLaunchesBeforeNavigating()
     {
-        using var stream = typeof(RobloxSignInPresentationTests).Assembly.GetManifestResourceStream("ProductionOwnedRobloxSignIn.cs")!;
-        using var reader = new StreamReader(stream); string source = reader.ReadToEnd();
-        int navigate = source.IndexOf("core.Navigate(", StringComparison.Ordinal);
-        Assert.True(navigate > 0, "The sign-in no longer navigates its own CoreWebView2.");
-        int external = source.IndexOf("LaunchingExternalUriScheme +=", StringComparison.Ordinal);
-        Assert.True(external > 0 && external < navigate, "The sign-in window opens Roblox's pages without a LaunchingExternalUriScheme guard installed first.");
-        int frames = source.IndexOf("FrameNavigationStarting +=", StringComparison.Ordinal);
-        Assert.True(frames > 0 && frames < navigate, "The sign-in window opens Roblox's pages without a FrameNavigationStarting guard installed first.");
-        int handler = source.IndexOf("void ExternalScheme(", StringComparison.Ordinal);
-        Assert.True(handler > 0, "The sign-in window has no ExternalScheme handler.");
-        string body = source[(source.IndexOf('{', handler) + 1)..].TrimStart();
-        Assert.StartsWith("e.Cancel = true;", body);
+        string code = ProductionSourceText.Code("ProductionOwnedRobloxSignIn.cs");
+        ProductionSourceText.AssertRunsOnEveryPathTo(code, "core.LaunchingExternalUriScheme += ExternalScheme;", "core.Navigate(",
+            "The sign-in window can open Roblox's pages without its LaunchingExternalUriScheme guard installed on that CoreWebView2 first.");
+        ProductionSourceText.AssertRunsOnEveryPathTo(code, "core.FrameNavigationStarting += FrameNavigationStarting;", "core.Navigate(",
+            "The sign-in window can open Roblox's pages without its FrameNavigationStarting guard installed on that CoreWebView2 first.");
+        Assert.Equal("RefuseExternalLaunch(()=>e.Cancel=true,text=>status.Text=text);", ProductionSourceText.HandlerBody(code, "void ExternalScheme("));
+        Assert.Equal("GuardFrameNavigation(e.Uri,()=>e.Cancel=true,text=>status.Text=text);", ProductionSourceText.HandlerBody(code, "void FrameNavigationStarting("));
+    }
+
+    [Fact]
+    public void ExternalLaunchIsCancelledBeforeTheWindowSaysWhy()
+    {
+        var calls = new List<string>();
+        OwnedRobloxSignIn.RefuseExternalLaunch(() => calls.Add("cancel"), text => calls.Add(text));
+        Assert.Equal(new[] { "cancel", OwnedRobloxSignIn.ExternalLaunchRefused }, calls);
+        Assert.Contains("never opens Roblox or other apps", OwnedRobloxSignIn.ExternalLaunchRefused);
+    }
+
+    [Fact]
+    public void LaunchAndFrameStayCancelledWhenTheStatusLineCannotBeUpdated()
+    {
+        bool launch = false, frame = false;
+        Action<string> closedWindow = _ => throw new InvalidOperationException("synthetic: the status line is gone");
+        Assert.Throws<InvalidOperationException>(() => OwnedRobloxSignIn.RefuseExternalLaunch(() => launch = true, closedWindow));
+        Assert.Throws<InvalidOperationException>(() => OwnedRobloxSignIn.GuardFrameNavigation("roblox-player:1+launchmode:play", () => frame = true, closedWindow));
+        Assert.True(launch, "A status line that could not be updated left the external launch uncancelled.");
+        Assert.True(frame, "A status line that could not be updated left the roblox-player: frame uncancelled.");
+    }
+
+    [Theory]
+    [InlineData("roblox-player:1+launchmode:play")]
+    [InlineData("ms-settings:")]
+    [InlineData("javascript:x")]
+    [InlineData("http://www.roblox.com/")]
+    [InlineData(null)]
+    public void RefusedFrameIsCancelledBeforeTheWindowSaysWhy(string? uri)
+    {
+        var calls = new List<string>();
+        OwnedRobloxSignIn.GuardFrameNavigation(uri, () => calls.Add("cancel"), text => calls.Add(text));
+        Assert.Equal(new[] { "cancel", OwnedRobloxSignIn.ExternalLaunchRefused }, calls);
+    }
+
+    [Theory]
+    [InlineData("about:blank")]
+    [InlineData("data:text/html,synthetic")]
+    [InlineData("https://www.roblox.com/games/1")]
+    [InlineData("https://challenge.example.invalid/frame")]
+    public void AllowedFrameIsNeitherCancelledNorReported(string uri)
+    {
+        var calls = new List<string>();
+        OwnedRobloxSignIn.GuardFrameNavigation(uri, () => calls.Add("cancel"), text => calls.Add(text));
+        Assert.Empty(calls);
     }
 
     [Fact]

@@ -309,8 +309,7 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         {
             // A helper or subframe process WebView2 restarts by itself keeps the check and its guards; ending it here
             // would leave native preparation's pending record needing a new sign-in.
-            if(!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)){status.Text=WebView2ProcessFailurePolicy.RecoveredNotice;return;}
-            completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed));
+            WebView2ProcessFailurePolicy.HandleProcessFailure(e.ProcessFailedKind,text=>status.Text=text,()=>completion.TrySetResult(Capture(RobloxHandoffProbeOutcome.Failed)));
         }
         void DetachClosedGuards()
         {

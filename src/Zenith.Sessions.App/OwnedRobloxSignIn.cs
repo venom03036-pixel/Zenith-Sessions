@@ -23,7 +23,7 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
     // still closing; past it the folder is kept for the next start, and the latch asks for a restart. Disposal (Exit) joins it.
     internal static readonly TimeSpan BrowserExitLimit = TimeSpan.FromSeconds(30);
     private static readonly TimeSpan SignInDeadline = TimeSpan.FromMinutes(15);
-    private const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
+    internal const string ExternalLaunchRefused = "This sign-in window never opens Roblox or other apps. Save the sign-in, then launch from Zenith.";
     private const string FolderInUse = "Another private browser still holds its folder in signin-browser-data. Finish or cancel that window, then sign in again; if this repeats, close Zenith Sessions and retry. Nothing was saved.";
     private const string FolderKept = "A previous private browser's cleanup failed, and its folder in signin-browser-data is kept until Zenith Sessions closes, so no sign-in can start before then. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
     private const string FolderNeedsReview = "Private sign-in storage needs review: a leftover folder in signin-browser-data was not recognized or could not be removed, and it was preserved. Close Zenith Sessions and retry; if this repeats, review signin-browser-data in the Zenith data folder. Nothing was saved.";
@@ -215,14 +215,14 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         {
             if (!RobloxSignInNavigation.IsAllowed(e.Uri)) { e.Cancel = true; status.Text = "This window stays on Roblox’s own HTTPS pages. Use a Roblox passkey, password, or supported sign-in option on this page."; }
         }
+        // Exactly the tested bodies: the cancel runs first and unconditionally, so this window never forwards a launch.
         void ExternalScheme(object? _, CoreWebView2LaunchingExternalUriSchemeEventArgs e)
         {
-            e.Cancel = true; // First and unconditional: this window never forwards a launch to Roblox or any other app.
-            status.Text = ExternalLaunchRefused;
+            RefuseExternalLaunch(() => e.Cancel = true, text => status.Text = text);
         }
         void FrameNavigationStarting(object? _, CoreWebView2NavigationStartingEventArgs e)
         {
-            if (!RobloxSignInNavigation.IsAllowedFrame(e.Uri)) { e.Cancel = true; status.Text = ExternalLaunchRefused; }
+            GuardFrameNavigation(e.Uri, () => e.Cancel = true, text => status.Text = text);
         }
         void DetachGuards()
         {
@@ -246,10 +246,26 @@ public sealed class OwnedRobloxSignIn(string dataRoot, Dispatcher dispatcher) : 
         void ProcessFailed(object? _, CoreWebView2ProcessFailedEventArgs e)
         {
             // A helper or subframe process WebView2 restarts by itself keeps the sign-in, its challenge progress and its guards.
-            if (!WebView2ProcessFailurePolicy.EndsSession(e.ProcessFailedKind)) { status.Text = WebView2ProcessFailurePolicy.RecoveredNotice; return; }
-            completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved."));
+            WebView2ProcessFailurePolicy.HandleProcessFailure(e.ProcessFailedKind, text => status.Text = text,
+                () => completion.TrySetException(new AccountLinkException("The private Roblox browser stopped. Retry sign-in; existing saved accounts were preserved.")));
         }
     }
+    /// <summary>The body of the sign-in window's LaunchingExternalUriScheme handler, free of WebView2 event types so tests
+    /// run it. <paramref name="cancel"/> runs first and unconditionally: a status line that cannot be updated never lets a
+    /// launch through to Roblox or any other app.</summary>
+    internal static void RefuseExternalLaunch(Action cancel, Action<string> showStatus)
+    {
+        cancel();
+        showStatus(ExternalLaunchRefused);
+    }
+
+    /// <summary>The body of the FrameNavigationStarting handler. A child frame that <see cref="RobloxSignInNavigation.IsAllowedFrame"/>
+    /// refuses, such as the hidden roblox-player: frame behind Roblox's Play button, is cancelled first and then explained.</summary>
+    internal static void GuardFrameNavigation(string? uri, Action cancel, Action<string> showStatus)
+    {
+        if (!RobloxSignInNavigation.IsAllowedFrame(uri)) RefuseExternalLaunch(cancel, showStatus);
+    }
+
     internal bool CleanupPending { get { lock (_state) return _cleanupFailed; } }
     internal Task CleanupSettled { get { lock (_state) return _cleanup; } }
     private bool CleanupFailedUntilRestart { get { lock (_state) return _cleanupFailed && _cleanup.IsCompleted; } }
