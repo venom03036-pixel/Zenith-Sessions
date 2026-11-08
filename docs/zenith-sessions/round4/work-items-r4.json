@@ -1,0 +1,817 @@
+{
+ "R-api-7": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT launches the native client as the selected account by requesting a Roblox authentication ticket.",
+  "proposedChange": "Only if the user reverses the documented decision: add a RobloxLaunchTicketClient with the same exact-endpoint, no-redirect, single-CSRF-retry pattern as RobloxShareLinkClient, holding the ticket as a one-use protected value. Otherwise keep the official-page handoff that is already planned.",
+  "roaltEvidence": "roblox_api/mod.rs:218-237 gets client-assertion, then POSTs to auth/v1/authentication-ticket and reads the ticket from the rbx-authentication-ticket response header, right before each launch. roblox_api/mod.rs:713-725: these calls carry website Referer and Origin headers. Read in source.",
+  "zenithEvidence": "NATIVE-WEB-HANDOFF-RESEARCH.md:59 chose to let the official page own launch preparation and not to call private ticket endpoints. NATIVE-PROVIDER-RESEARCH.md:17 found no documented ticket contract. HANDOFF.md:34 keeps the native provider Unverified. All read in doc.",
+  "analysisConstraint": "An undocumented launch endpoint that Zenith's design currently avoids. RoALT also sends website Referer and Origin on these calls, which is classified as excluded below. A ticket proves neither identity nor arrival.",
+  "impact": "high",
+  "effort": "M",
+  "ownerDecision": "Approved: Zenith may request Roblox authentication tickets directly with an account's saved sign-in and build the roblox-player URI itself, reversing HANDOFF's 'capture the official page's request' decision for this mode. Build it as a selectable native launch mode ('Direct ticket') next to the existing official-page mode; keep the official-page mode as the default until the live trial verifies the direct mode. Rules: the request uses the same one-click authenticated web-API discipline as the share-link resolver (exact endpoint, no redirects, no cookie jar, kept per-identity CSRF token with one refresh retry, 64 KiB cap, 401/403/429 mapped to typed outcomes); Zenith identifies itself honestly (its own User-Agent; never a Referer, Origin or User-Agent that claims to be the Roblox website; the RBXAuthenticationNegotiation protocol header the endpoint requires is fine); the ticket is a secret (pinned/zeroed, one use, never logged, never persisted, never in ToString or diagnostics); the URI goes through the SAME grammar NativeRobloxHandoff already validates (play launch mode, PlaceLauncher RequestGame or RequestGameJob for the frozen destination, launchtime now, a fresh browsertrackerid kept for log linking, empty channel), so nothing is rewritten after validation; every existing admission check stays (verified client executable trust, account binding recheck, resource budget, pacing, Panic fences, one start at a time); no per-account sign-in window opens. Build and test with fake HTTP handlers and the existing provider test harness; live verification with the owner's account is the live trial, so report outcome 'implemented' with blockedBy naming what the trial must confirm (that the endpoint accepts Zenith's honest headers, the ticket format, and that the client joins). Document the reversal in docs/zenith-sessions/HANDOFF.md and the design doc.",
+  "alsoCovers": [
+   {
+    "id": "R-launch-13",
+    "title": "RoALT launches with no window per account: one optional assertion GET and one ticket POST, then the process spawn. Zenith opens a 760x820 WebView2 window per account with its own profile directory, loads the official page, may ask the user to choose Play, and allows up to 3 minutes per capture inside a 4-minute preparation deadline. A batch therefore isn't hands-free, and every launch costs a full browser page load.",
+    "proposedChange": "Option A (keeps the current design): for place-only destinations, load the official /games/start URL as already done for jobs (NativeHandoffNavigation.InitialPage), so the page sends the request with no click. Accept the joinAttemptOrigin it produces once the authorized trial has observed it, and show the capture window minimized or off-screen. Option B (if the user chooses): a direct ticket path in a new provider. The grammar change in A can be unit-tested; real behaviour needs the authorized trial."
+   }
+  ]
+ },
+ "R-launch-0": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT can launch many accounts today, hands-free and end to end. In Zenith, ordinary single and group launches are blocked: both native providers report Unverified, and only an explicitly consented single-account trial can dispatch.",
+  "proposedChange": "Finish HANDOFF next-work items 1-2 (the authorized two-account trial with recorded evidence). Then add an evidence-gated way for the provider to report Supported. At the same time, switch ShellDirectoryFeatures.QueueFrozenRecipientsAsync (ShellDirectoryFeatures.cs:239-274) from per-recipient EnqueueAsync to CaptureBatchReview plus EnqueueBatchAsync, keeping the existing review, Cancel and Panic behaviour.",
+  "roaltEvidence": "src-tauri/src/launcher/bulk.rs:452-573 (sequential batch loop) [read in source]; launch path mod.rs:139-236 [per supplied facts].",
+  "zenithEvidence": "src/Zenith.Sessions.Core/Launching.cs:208-214 (non-trial work is Blocked/ProviderUnavailable unless the provider is Supported); LaunchCoordinatorTrials.cs:33-34; src/Zenith.Sessions.Windows/WindowsConfiguredNativeLaunchProvider.cs:37-38, 73-74; WindowsNativeAccountLaunchProvider.cs:38-43 [read in source]; HANDOFF.md:34, 86-87 [read in fixture/doc].",
+  "analysisConstraint": "Enabling it requires the user-authorized live account trial that HANDOFF.md plans. RoALT's concurrency depends on an excluded singleton workaround (bulk.rs:312-318, 474-477), and HANDOFF.md:35 says multi-client compatibility still needs a supported approach. Zenith must not copy that technique.",
+  "impact": "high",
+  "effort": "L",
+  "ownerDecision": "Approved in principle: ordinary single and group launches should run end to end without a manual review step per account once the direct-ticket mode is verified live. Build whatever is separable from the live trial: the queue path from a group/batch request through the direct-ticket provider to client start, with pacing, admission, failure isolation and Panic unchanged; keep the one-time trial consent for the first live run and keep native providers 'Unverified' until that trial. Report exactly what is built and what stays blocked on the trial.",
+  "alsoCovers": []
+ },
+ "R-launch-2": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT's wait between accounts adapts to the client. It ends as soon as the previous client is past sign-in and joining (polled every 500 ms, at most 30 s), then adds a delay of 2-60 s with ±1 s jitter. Zenith's gap is max(stabilization, stagger), and validation keeps stabilization at 20 s or more. Mechanically, 16 accounts therefore cost at least 15 x 20 s = 300 s of pacing no matter how quickly each client joins.",
+  "proposedChange": "Add LaunchCoordinator.ReleasePacingEarly(operationId), called from the existing desktop observation cycle (ShellViewModel.cs:614) when a fresh observation of the receipt's exact PID and creation time reports that the client has left startup. Keep the stagger as the floor and the stabilization as the ceiling. Test with a FakeTimeProvider and a synthetic observation: the gate releases early only for a matching PID and creation time.",
+  "roaltEvidence": "src-tauri/src/launcher/bulk.rs:78, 362-367, 519-520 [read in source].",
+  "zenithEvidence": "src/Zenith.Sessions.Core/Launching.cs:445-447, 471-472, 483; PerformanceProfiles.cs:26-31, 96-97 [read in source].",
+  "analysisConstraint": "Ending a wait early would act on reported log evidence, which HANDOFF.md:47 treats as diagnostic. It only shortens pacing and grants no authority, but the user should agree to that use of reported evidence.",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved: the wait between accounts may end early when the previous client's log reports that it joined (the evidence registry's Connected/joined evidence). The evidence is advisory: it may shorten the wait down to a floor (the stagger), never skip an admission check or start two clients at once; the full wait stays when no evidence arrives.",
+  "alsoCovers": []
+ },
+ "R-launch-16": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT lets power users pass extra client arguments per account or as a default, validated for length, word count and forbidden characters.",
+  "proposedChange": "If wanted: add an allowlisted, per-profile argument set validated in Core, appended through ProcessStartInfo.ArgumentList after the official request and never logged. Test the validation tables.",
+  "roaltEvidence": "src-tauri/src/launcher/mod.rs:104-137, 365-387 [per supplied facts].",
+  "zenithEvidence": "src/Zenith.Sessions.Windows/WindowsPreparedNativeHandoffStart.cs:132, 158-166 (exactly one argument, the official request) [read in source].",
+  "analysisConstraint": "Extra arguments widen what reaches the client command line. The RoALT facts note a % expansion risk under bootstrappers. Allowed only if the user wants it and with a strict allowlist.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: extra client arguments per account and as a default, validated (bounded length, bounded token count, no quotes, newlines, redirection or percent characters), shown in Settings, applied only to Zenith's own direct client start (never through a bootstrapper, where percent expansion is a risk), never logged.",
+  "alsoCovers": []
+ },
+ "R-launch-17": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT launches through an installed bootstrapper (Bloxstrap, Fishstrap, Froststrap or Voidstrap) when that is what the user has. Zenith discovers bootstrappers but refuses to launch through them.",
+  "proposedChange": "Decide on a publisher and Authenticode policy per bootstrapper, and on whether launching through a client-modifying bootstrapper is acceptable. Only then extend WindowsClientExecutableTrust for that product.",
+  "roaltEvidence": "src-tauri/src/launcher/client.rs:40-58, 60-74, 92-102 [read in source].",
+  "zenithEvidence": "src/Zenith.Sessions.Windows/WindowsClientExecutableTrust.cs:78-83 (BootstrapperNotEvaluated); WindowsConfiguredNativeLaunchProvider.cs:341-357 [read in source]; HANDOFF.md:35 (FROSTSTRAP-LAUNCH-AUDIT) [read in fixture/doc].",
+  "analysisConstraint": "Bootstrappers commonly write the client's FFlag and settings files, which is client modification done on Zenith's behalf, and RoALT does not verify them at all. A per-bootstrapper publisher policy is needed first.",
+  "impact": "medium",
+  "effort": "L",
+  "ownerDecision": "Approved: launching through an installed bootstrapper (Bloxstrap, Fishstrap, Froststrap, Voidstrap) when the user selects that installation. Zenith does not write client files itself; the bootstrapper applies its own settings and the UI must say so plainly. Trust: the bootstrapper executable must carry a valid Authenticode signature whose publisher the user accepts once per product (shown and pinned by thumbprint; unsigned refused), using the existing trust-verification path with a per-product policy. Off by default; selectable per installation row.",
+  "alsoCovers": []
+ },
+ "R-launch-18": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT needs no setup to find Roblox: it picks the client from registry, protocol-handler and Versions-folder hints and skips Microsoft Store builds. Zenith requires the user to choose an installation in Settings and makes no automatic choice.",
+  "proposedChange": "When discovery returns exactly one present Roblox candidate and no conflict issues, preselect it in Settings as 'suggested' and still run WindowsClientExecutableTrust before any use. Test with a fake IClientInstallationInventorySource.",
+  "roaltEvidence": "src-tauri/src/launcher/client.rs:40-58, 87-90 [read in source].",
+  "zenithEvidence": "src/Zenith.Sessions.App/ShellNativeTrialFeatures.cs:23-27; src/Zenith.Sessions.Core/ClientInstallationDiscovery.cs:30-31 [read in source].",
+  "analysisConstraint": "Explicit selection is a deliberate Zenith safety choice. Preselecting is only a suggestion and must still pass the trust check.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: suggest an installation automatically from registry, protocol-handler and Versions-folder hints (skipping Microsoft Store builds), shown as 'Suggested'. It is only a preselection: every launch still passes the same trust check, and the user can change it.",
+  "alsoCovers": []
+ },
+ "R-api-6": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT shows each account's Roblox presence (online, in game or in Studio, plus place and gameId), asking with that account's own session.",
+  "proposedChange": "If approved, add RobloxPresenceClient.cs in Zenith.Sessions.Windows, modelled on RobloxSessionClient: one explicit call, the saved credential borrowed for that call, a 64 KiB cap and no retries. It returns a separate ServerReportedPresence evidence record (presence type, placeId, GUID-normalized gameId) that is never merged with log evidence or verified arrival. Run it on demand or at a slow cadence only. Tests: fake-handler bodies for offline, online, in game and Studio; a foreign userId rejected; a malformed gameId dropped.",
+  "roaltEvidence": "roblox_api/mod.rs:179-189 POSTs to presence/v1/presence/users with the account's cookie, at most 50 ids per call. commands.rs:738-763: each visible account asks about itself, one after another. commands.rs:598-607 keeps placeId, rootPlaceId, universeId and gameId. All read in source. The 60 s UI poll in data.ts:116-128 comes from the supplied facts and was not re-read.",
+  "zenithEvidence": "src has no presence client (grep for presence.roblox.com; read in source). FEATURE-COMPARISON.md:120 lists live presence as Missing, and HANDOFF.md:47 requires reported player and server values to stay separate from verified arrival (read in doc).",
+  "analysisConstraint": "An authenticated web API read with Zenith's own saved sessions, not an excluded technique. Today Zenith uses saved sessions only for explicit identity checks and share-link resolution, so periodic use is a policy change, and presence must never count as arrival proof. Only parsing can be verified here; live semantics cannot.",
+  "impact": "high",
+  "effort": "M",
+  "ownerDecision": "Approved: show each saved account's Roblox presence (offline, online, in game with place, in Studio) using that account's own saved session, on demand only (a 'Refresh presence' action; VA-09-02 forbids background refresh workers), one batched call for the selected or checked accounts, results kept in memory only and cleared on Lock, Panic and exit.",
+  "alsoCovers": [
+   {
+    "id": "R-accounts-9",
+    "title": "See which saved accounts Roblox reports as online, in game or offline.",
+    "proposedChange": "If approved: an on-demand 'Refresh Roblox status' for checked linked accounts. It makes one sequential cookie-bearing presence call per account through a hardened client (no redirects, no cookie jar, 64 KiB cap, rotation captured). Results are held in memory with a timestamp, labelled 'Roblox reports', and cleared on Lock or Panic. Tests with a fake transport in a temp root."
+   }
+  ]
+ },
+ "R-api-13": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT shows an account dashboard: Robux, Premium, email verified, 2-step methods and social counts.",
+  "proposedChange": "If approved, start with the anonymous parts only (friends, followers and followings counts) through RobloxPublicDirectory. The cookie parts (Robux, email verified, 2-step methods) read account security posture with saved sessions and need explicit consent.",
+  "roaltEvidence": "endpoints.rs:9-21 and roblox_api/mod.rs:136-140 and 176-204 (read in source). The rest of account_info (commands.rs:609-706) comes from the supplied facts and was not read.",
+  "zenithEvidence": "src has no economy, accountsettings or twostepverification client (grep). Read in source.",
+  "analysisConstraint": "",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved: an on-demand account details panel (Robux balance, Premium, email verified, 2-step methods, ban state, friend and follower counts) using the account's own saved session. Sensitive: on demand only, never written to disk, never in diagnostics or exports, cleared on Lock, Panic, account change and exit.",
+  "alsoCovers": [
+   {
+    "id": "R-accounts-14",
+    "title": "Account details panel: Robux, Premium, friend and follower counts, email-verified, 2-step methods and ban state.",
+    "proposedChange": "If approved: a 'Load account details' action for the selected linked account only, through a hardened client with a small fixed endpoint set and rotation capture. Results are kept in memory, never in a database cache, labelled 'Roblox reports', and cleared on Lock or Panic. Tests with fake transports."
+   }
+  ]
+ },
+ "R-api-16": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT can make the user's stored accounts friends with each other in one action.",
+  "proposedChange": "Only if requested: an explicit, per-run confirmed action over the user's own saved accounts. Surface any captcha and never try to solve it.",
+  "roaltEvidence": "endpoints.rs:32-36 (read in source). The flow at roblox_api/mod.rs:280-315 and the 20-account cap at commands.rs:765-789 come from the supplied facts and were not read.",
+  "zenithEvidence": "src makes no friends.roblox.com call (grep). Read in source.",
+  "analysisConstraint": "Automates social actions across accounts with saved sessions.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved: friend your own saved accounts with each other in one action. Explicit action with a confirmation that lists the pairs, one request at a time with the existing pauses and rate-limit handling, per-pair results, stop on Panic/Lock; never automatic.",
+  "alsoCovers": [
+   {
+    "id": "R-accounts-15",
+    "title": "Make friends between your own saved accounts automatically.",
+    "proposedChange": "Not recommended without explicit owner approval. If approved: a sequential, cancellable operation capped at 20 accounts with per-pair results, using the rotation-capture path and stopping at the first challenge."
+   }
+  ]
+ },
+ "R-research-6": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Headshots that are still Pending are asked for once more within the same pass, so new avatars appear without a manual refresh.",
+  "proposedChange": "If the user accepts a bounded exception: inside the loader's existing tracked task, after the batch call, wait once (a TimeProvider delay of about 2 s, cancelled by the same token) and ask again in one request for only the Pending ids. No further attempts. Test with a fake TimeProvider and handler: Pending then Completed shows the image; Pending twice keeps the placeholder after exactly 2 calls.",
+  "roaltEvidence": "docs/research/fixtures/acctinfo-thumbnails-headshot-pending-first-request.json:8 and acctinfo-thumbnails-headshot-pending-after-retry.json:8 (live captures) show every Pending row resolved about 2 s later. That capture used an uncached 720x720 Jpeg combination, not 150x150 Png (read in fixture/doc). src-tauri/src/roblox_api/tests.rs:470-501 asks again only for the pending ids, up to five times (read in source).",
+  "zenithEvidence": "src/Zenith.Sessions.Windows/RobloxPublicDirectory.cs:103-104 returns Deferred with a fixed 30 s hint for Pending (read in source). docs/zenith-sessions/AUTOMATIC-HEADSHOTS-DESIGN.md:9 says each pass tries a user once, with no retry loops or timer-based recovery (read in fixture/doc).",
+  "analysisConstraint": "Conflicts with the written no-retry decision in AUTOMATIC-HEADSHOTS-DESIGN.md:9, so it needs the user's approval.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: a headshot still Pending may be asked for once more within the same pass. Update AUTOMATIC-HEADSHOTS-DESIGN.md's no-retry sentence to the new rule (one bounded re-ask, never a loop).",
+  "alsoCovers": []
+ },
+ "R-launch-12": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Through a chosen account, RoALT offers signed-in sorts (Recommended, and fastest by latency) and lists that account's own private servers with cursor paging. Zenith's server browsing is anonymous only, with occupancy ascending or descending.",
+  "proposedChange": "If approved: add an IRobloxSignedInServerDirectory implemented in RobloxSessionLinkService, using its one-operation ownership and a borrowed credential like ResolveShareLinkAsync. Expose Recommended and BestLatency only when an account is selected, and add a private-server list whose codes stay in ProtectedPrivateServerCode. Test parsing and ordering with fake handlers.",
+  "roaltEvidence": "src/features/servers/ServerBrowser.tsx:97-166, 470-543; src-tauri/src/roblox_api/mod.rs:317-348 [per supplied facts; ServerBrowser.tsx lines 128-149 seen in grep hits].",
+  "zenithEvidence": "src/Zenith.Sessions.Windows/RobloxServerDirectory.cs:9-14, 121-126 (anonymous by design); src/Zenith.Sessions.Core/RobloxDestinations.cs:182 (Asc and Desc only) [read in source].",
+  "analysisConstraint": "The technique (an authenticated call with the account's saved session) is already used for share links, but making server browsing account-bound reverses a deliberate design. Real responses need a signed-in account.",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved: with the selected account's saved session, the server browser may offer the signed-in sorts (Recommended; lowest latency when the signed-in list carries ping) and list that account's own private servers with cursor paging. Explicit click per fetch, same parsing strictness and bounds as the anonymous list, the session never sent unless the user chose a signed-in sort. Buying or renewing private servers is NOT approved (it spends Robux); listing and renaming are (see R-api-14).",
+  "alsoCovers": [
+   {
+    "id": "R-api-8",
+    "title": "With a signed-in account, RoALT's server browser can sort by Recommended or Best latency and show friend counts per server.",
+    "proposedChange": "If approved, add a separate signed-in browse path rather than weakening the anonymous RobloxServerDirectory. It would call v2 with orderBy and the selected saved session, adding Recommended and BestLatency plus an optional FriendCount column, and reuse the same page validation and the private-record rejection. Test it with fake-handler bodies."
+   }
+  ]
+ },
+ "R-api-14": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT lists, edits, renews and buys private servers per account.",
+  "proposedChange": "If approved, build a read-only list first (games/v1/games/{placeId}/private-servers with the saved session) and no purchase. Any Robux purchase stays user-performed or behind an explicit per-action confirmation.",
+  "roaltEvidence": "endpoints.rs:40-46 (read in source). The behaviour at roblox_api/mod.rs:426-560 comes from the supplied facts and was not read.",
+  "zenithEvidence": "Zenith only stores private-server codes from share links. ShareLinkViewModel.cs:130-135 says joining needs launcher support that is still to come. Read in source.",
+  "analysisConstraint": "These calls spend Robux and change account state.",
+  "impact": "medium",
+  "effort": "L",
+  "ownerDecision": "Partly approved: list the account's own private servers (with R-launch-12) and rename one, on demand with the saved session. Buying, renewing or changing subscription state is excluded by the loop (spends Robux through an unofficial endpoint); say so in the UI with a link that opens roblox.com in the user's browser.",
+  "alsoCovers": []
+ },
+ "R-accounts-10": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Optional master password that locks saved sign-ins at rest and after an idle period.",
+  "proposedChange": "If approved: add a random 32-byte data key, wrapped by DPAPI in the default mode or by a passphrase key and then DPAPI. Seal new (v3) record payloads with System.Security.Cryptography.AesGcm under that key, with the profile id as associated data, and keep reading v2 DPAPI records. Lock zeroes the in-memory key. Unlock prompts for the passphrase. A mode switch re-wraps only the key. Tests in a temp root: a wrong passphrase fails closed, v2 records stay readable, and ReadAsync is blocked after Lock.",
+  "roaltEvidence": "Master mode wraps the data key with an Argon2id key (64 MiB, t=3, p=4, random salt) and then with DPAPI (src-tauri/src/vault/master.rs:11-36; read in source). An auto-lock check runs every 20 s with a configurable idle time, 15 minutes by default (src-tauri/src/main.rs:304-335; read in source). There is also a recovery code (vault/mod.rs:192-260, per the static facts, not re-read).",
+  "zenithEvidence": "Zenith's Lock is a UI fence: Unlock just sets IsLocked=false with no authentication (src/Zenith.Sessions.App/ShellViewModel.cs:319, 718; read in source). The vault is DPAPI CurrentUser only (ProtectedCredentialVault.cs:123, 497; read in source). The ledger says Lock is workflow control, not a DPAPI boundary, and disclaims protection against malware running as the same user (REQUIREMENTS-LEDGER.md:428-429; read in fixture/doc).",
+  "analysisConstraint": "The technique is not excluded, but this changes the product's security model in a way the ledger does not ask for. Argon2id needs a new dependency (AGENTS.md:178-182, Rule 19); the platform alternative is Rfc2898DeriveBytes.Pbkdf2. While unlocked it adds no protection against same-user malware. Migrating the vault needs a Rule 20 plan.",
+  "impact": "medium",
+  "effort": "L",
+  "ownerDecision": "Approved: an optional master password (off by default) that seals the saved sign-ins at rest with a key derived by PBKDF2-HMAC-SHA512 (built-in; about 600,000 iterations; 32-byte salt) wrapping the vault material under AES-256-GCM on top of DPAPI, and re-locks after the existing idle lock. State plainly that a forgotten password means the saved sign-ins are gone. No new dependency (Rule 19).",
+  "alsoCovers": []
+ },
+ "R-accounts-11": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Password-sealed, portable backup that includes saved sign-ins.",
+  "proposedChange": "Only with an approved reviewed design: seal the selected profiles' metadata and cookies with AesGcm under a passphrase-derived key, with the header as associated data, and write the file atomically. Optionally gate export with the Windows Hello UserConsentVerifier API. On import, store a cookie only if it validates through IRobloxSessionClient as the exported user id, through the normal snapshot commit, and never over a record with a newer generation. Round-trip tests with synthetic cookies and a fake identity client.",
+  "roaltEvidence": "The .roalt format seals a JSON payload with AES-GCM under an Argon2id key, with the header as associated data and no DPAPI layer (vault/backup.rs, per the static facts, not re-read). On import, Replace overwrites a stored cookie only after the backup cookie authenticates as the same user, with 400 ms pacing (src-tauri/src/commands.rs:2700-2711; read in source).",
+  "zenithEvidence": "Zenith exports metadata only (ShellViewModel.cs:527-557; read in source). The vault keeps no automatic backup or restore (ProtectedCredentialVault.cs:11-15; read in source).",
+  "analysisConstraint": "VA-08-05 requires a separately reviewed design and explicit consent for any portable secret export (REQUIREMENTS-LEDGER.md:432). CONFLICT-05 forbids restoring old rotated generations (line 580). Both read in fixture/doc.",
+  "impact": "medium",
+  "effort": "L",
+  "ownerDecision": "Approved with explicit consent: a password-sealed, portable backup that includes saved sign-ins (profiles, groups, favorites, settings and the protected records), AES-256-GCM with a PBKDF2-HMAC-SHA512 key, versioned header, never plaintext; the save dialog names that the file contains sign-ins and asks for confirmation; import needs the password and goes through the existing import fences. This is the VA-08-05 'separately reviewed design': write it down in the design docs.",
+  "alsoCovers": [
+   {
+    "id": "R-shell-18",
+    "title": "Password-protected backup that also includes saved sign-ins.",
+    "proposedChange": "If approved: an AES-GCM backup keyed from a user password with PBKDF2 at a high iteration count, holding vault records plus metadata. Import re-protects with DPAPI and re-verifies each session before use. Test with synthetic credentials only."
+   }
+  ]
+ },
+ "R-accounts-12": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "A copied account database cannot be read on another PC or Windows account.",
+  "proposedChange": "If approved: generate a random key, protect it with DPAPI using separate entropy, and store it in accounts.db.key with the vault's file ACL helper. Open connections with that key. Migrate once with sqlcipher_export plus integrity_check and row-count verification, then a resumable rename commit, alongside the existing verified .schemaN.bak flow. Tests in a temp root: migration, resume after an interrupted rename, failure with the wrong key, and that the file header is no longer plain SQLite. Proving a different Windows user cannot read it needs a second account, the same open gap as GAP-07.",
+  "roaltEvidence": "roalt.db is encrypted with SQLCipher under a random 256-bit key stored DPAPI-wrapped beside it, with a one-time, crash-safe migration (src-tauri/src/storage/cipher.rs:1-14; read in source).",
+  "zenithEvidence": "accounts.db is a plain SQLite file opened without a key (src/Zenith.Sessions.Windows/AccountRepository.cs:15-21; read in source). It holds labels, usernames, notes, groups and user ids (AccountRepository.cs:10-11, 72-76). It relies on the default ACL of %LOCALAPPDATA%\\ZenithSessions\\Personal (src/Zenith.Sessions.App/StartupOptions.cs:5; read in source; ACL inheritance inferred).",
+  "analysisConstraint": "Needs a SQLCipher-capable SQLite provider, which is a new dependency under Rule 19 and a schema migration under Rule 20 (AGENTS.md:178-192). Encrypting individual columns instead would break the SQL search over label, username and notes (AccountRepository.cs:132).",
+  "impact": "low",
+  "effort": "L",
+  "ownerDecision": "Approved: make a copied account database unreadable on another PC or Windows account. Preferred: encrypt the data folder's files with Windows EFS (File.Encrypt, built-in, bound to the Windows account) as an opt-in action with a clear explanation, reporting when the Windows edition has no EFS; no SQLCipher dependency (Rule 19).",
+  "alsoCovers": []
+ },
+ "R-accounts-7": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Accounts that use Sign in with Google or Apple on Roblox can be added.",
+  "proposedChange": "If approved: allow the exact https hosts accounts.google.com and appleid.apple.com, with the default port and no userinfo, in RobloxSignInNavigation. Keep Save limited to a roblox.com page (OwnedRobloxSignIn.cs:169). Keep DeleteAllCookies and the directory removal so the provider session never persists. Allow a pop-up only if live testing shows Roblox's flow needs one. Unit tests for look-alike hosts, userinfo and ports are possible here. The feature itself needs a real linked account.",
+  "roaltEvidence": "RoALT's login and session windows allow https navigation to google.com and apple.com hosts as well as roblox.com, and clear those providers' cookies (src-tauri/src/webview.rs:403-420, 607-626; read in source). That Roblox offers these sign-in options is inferred from the RoALT source comment, not verified here.",
+  "zenithEvidence": "RobloxSignInNavigation.IsAllowed accepts only https roblox.com and *.roblox.com (src/Zenith.Sessions.App/RobloxSignInNavigation.cs:9-16; read in source). Other navigation and every pop-up are cancelled with a hint to use a Roblox passkey or password (OwnedRobloxSignIn.cs:179-183; read in source).",
+  "analysisConstraint": "VA-04-02 records that external top-level navigation is rejected (REQUIREMENTS-LEDGER.md:399; read in fixture/doc). Widening it to third-party identity providers is a design-owner decision. The technique itself is not excluded: it stays inside Zenith's own private profile, which is deleted afterwards.",
+  "impact": "medium",
+  "effort": "S",
+  "ownerDecision": "Approved: accounts that use Sign in with Google or Apple can be added. Widen the private sign-in window's top-level navigation allowlist to the exact Google and Apple sign-in hosts needed for that flow (and back to roblox.com); Zenith still captures only the Roblox session cookie, never reads Google or Apple cookies, and the window stays private and disposable unless R-accounts-8 is on.",
+  "alsoCovers": []
+ },
+ "R-accounts-8": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Fewer captchas at sign-in, by reusing one kept sign-in browser profile.",
+  "proposedChange": "If approved after a live measurement: use one persistent 'signin-browser-data/kept' directory with a non-InPrivate controller. Delete .ROBLOSECURITY with CookieManager.DeleteCookiesWithDomainAndPath both before navigation and before close. Keep the marker and lease checks, and add a 'Reset sign-in browser data' action.",
+  "roaltEvidence": "RoALT keeps login and session profiles on purpose. A source comment says a fresh profile drew a captcha 403 on most sign-ins (src-tauri/src/webview.rs:1-6; read in source; the claim itself is unmeasured).",
+  "zenithEvidence": "Zenith creates a new InPrivate profile directory for every sign-in and deletes it afterwards (src/Zenith.Sessions.App/OwnedRobloxSignIn.cs:98-105, 151; src/Zenith.Sessions.Windows/SignInProfileDirectory.cs:6, 44-48; read in source).",
+  "analysisConstraint": "This would keep Roblox device and tracking cookies on disk between sign-ins, reversing Zenith's private, disposable sign-in design (SignInProfileDirectory.cs:6). The benefit rests on an unmeasured comment and can only be checked with real sign-ins.",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved as an opt-in (default off): keep one sign-in browser profile between sign-ins to reduce captchas. The kept profile lives under the data folder, protected by WebView2's own DPAPI encryption, with a 'Forget kept sign-in browser data' action; the Settings text says it keeps Roblox device and tracking cookies on disk.",
+  "alsoCovers": []
+ },
+ "Z1559": {
+  "kind": "verified finding, owner decision made 2026-11-08",
+  "title": "App exit can hang without limit on an inspection or native browser that never reports its exit",
+  "problem": "OwnedRobloxHandoffProbe.StopAsync awaits its cleanup with no bound; FinishCleanupAsync awaits browserExited, which only the BrowserProcessExited event completes. Exit waits forever (MainWindow.RequestExitAsync -> ShellViewModel.DisposeCoreAsync -> ShellHandoffProbeFeatures / ShellNativeTrialFeatures). Round 2 (M-L1b-4) already bounded the sign-in owner; the probe still waits without limit.",
+  "ownerDecision": "Option (a): bound only the shutdown join in the probe (10 s), then release the folder lease and rely on marked-folder recovery at the next start (SignInProfileDirectory's review flag). Update HANDOFF-PROBE-VERIFICATION.md and OWNED-NATIVE-PREPARATION-VERIFICATION.md to record that shutdown may stop waiting after 10 s while cleanup after a normal cancel still joins the real exit."
+ },
+ "M-L1a-6": {
+  "kind": "review finding, owner decision made 2026-11-08",
+  "title": "One 401 from the share-link resolve endpoint fences the saved session as SignInRequired without confirming",
+  "problem": "RobloxSessionLinkService.ShareLinks.cs: ResolveShareLinkAsync calls FenceRejectedSessionAsync on any SignInRequired outcome; RobloxShareLinkClient maps one HTTP 401 to that outcome. The endpoint is observed behaviour, not a contract.",
+  "ownerDecision": "Option (B): after a 401, confirm before fencing. Inside the same operation run the authenticated-user check with CheckSavedAsync's protocol (fence durably first because a response can rotate the cookie, then verify-and-save): valid and same player -> the record stays Linked (possibly rotated) and the share-link answer becomes Unavailable instead of SignInRequired; refused -> SignInRequired as today; network failure or timeout -> SignInRequired as CheckSavedAsync does. Update GAME-LINKS-DESIGN.md 4.2 and the Security row ('one explicit click, one host' becomes 'plus one identity confirmation after a 401'); change the two tests that assert no identity call with a recorded reason."
+ },
+ "R-research-10": {
+  "kind": "RoALT research practice the owner approved on 2026-11-08 (network access for anonymous public endpoints only)",
+  "title": "A broad set of recorded, sanitized captures drives the parser tests, including error and limit responses",
+  "ownerDecision": "Approved: record real responses from the anonymous public Roblox endpoints Zenith already calls (games, place-to-universe mapping, thumbnails and headshots, the public server list page, the client-version service, a 404 and, if one is observed, a 429 shape) with plain anonymous GETs/POSTs (no account, no cookie, Zenith's own User-Agent), sanitize them with an allowlisting sanitizer (synthetic ids where values are not needed), record provenance (URL, UTC time, sanitizer, SHA-256) and drive the parser tests from them next to the existing fixtures. Bound every body (64 KiB)."
+ },
+ "R-instances-7": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Hard CPU cap per client. RoALT can cap a background client at a set share of all CPUs through a job object, which also lowers its frame rate, without touching the client.",
+  "proposedChange": "If approved: create a named job whose DACL allows only the current user, with a random per-client name persisted in Zenith's data folder, so a restarted Zenith can OpenJobObject and lift the cap. This fixes RoALT's conceded weakness. Never set KILL_ON_JOB_CLOSE. Offer it as an explicit per-client opt-in in the same control as priority. Tests: a test-owned helper process. Assign it, check the cap with QueryInformationJobObject, then restart the controller, reopen the job by name and lift the cap.",
+  "roaltEvidence": "apply and set_job_cap (limits.rs:204-243), and the header that describes the technique (limits.rs:1-13) [read in source]. limits.rs:374-391 concedes that a cap cannot be lifted after RoALT is killed, because the job is unnamed [read in source].",
+  "zenithEvidence": "Zenith has no job object code (grep returned no matches for AssignProcessToJobObject or JobObject) [read in source]. Zenith's restore-ownership contract expects every change to be reversible at dispose (WindowsClientProcessPriorityControl.cs:197-219) [read in source].",
+  "analysisConstraint": "An OS mechanism, not an excluded technique. A process stays in its job for life, though, and a cap held through an unnamed handle survives a crash of the manager, which breaks Zenith's 'restore original' invariant.",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved: a hard CPU cap per client through a job object (JOB_OBJECT_CPU_RATE_CONTROL_ENABLE with HARD_CAP), without KILL_ON_JOB_CLOSE, as an explicit action with its own ownership and restore like the priority controls (restore clears the rate control; a process already in a job is reported as unsupported instead of failing silently).",
+  "alsoCovers": []
+ },
+ "R-instances-12": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Closing a client that is stuck. RoALT posts WM_CLOSE to every window of the process, posts it again after about 400 ms for Roblox's leave prompt, and terminates after a grace period, with the identity rechecked at each step. Zenith posts one WM_CLOSE to one window and never escalates.",
+  "proposedChange": "Step 1, adoptable now: in RequestCloseAsync, after an identity check, post again after 400 ms if the process is still alive, and report 'still open' at a grace deadline. Step 2, only if approved: an explicit 'Force close' for a selected client already flagged Not responding, guarded by pid and start time on the terminate handle. Tests: a test-owned helper window that ignores the first WM_CLOSE, plus a hung helper for the force path.",
+  "roaltEvidence": "process.rs:123-195 (close, terminate and post_close) [read in source].",
+  "zenithEvidence": "Zenith sends a single WM_CLOSE to session.Window and its comment says it never force-kills (WindowsDesktopMonitor.cs:290-294) [read in source].",
+  "analysisConstraint": "Repeating WM_CLOSE is uncontroversial. TerminateProcess is a documented API, but it reverses Zenith's explicit 'never force-kill' choice and needs PROCESS_TERMINATE rights.",
+  "impact": "medium",
+  "effort": "S",
+  "ownerDecision": "Approved: closing a stuck client. First WM_CLOSE to its windows, again after about 400 ms for Roblox's leave prompt; if the process is still alive after a bounded wait, offer TerminateProcess behind an explicit confirmation that names the client; record it in history as a forced end; never automatic.",
+  "alsoCovers": []
+ },
+ "R-instances-18": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Upload bandwidth limit for all Roblox clients through a Windows QoS policy.",
+  "proposedChange": "If approved, use the MSFT_NetQosPolicySettingData CIM class through an elevated helper rather than PowerShell with -ExecutionPolicy Bypass. Validate the integer rate and add a matching remove action. Test on this PC with UAC approval by checking that the policy exists in the ActiveStore. The throttling effect itself cannot be verified without traffic.",
+  "roaltEvidence": "qos.rs:1-103 runs an elevated PowerShell NetQosPolicy keyed on RobloxPlayerBeta.exe [from supplied facts, not re-opened].",
+  "zenithEvidence": "FEATURE-COMPARISON.md:219: missing, and no elevated QoS changes are made [read in fixture/doc].",
+  "analysisConstraint": "A system-wide, admin-level policy change made through a UAC prompt. It does not touch the client. AGENTS.md has no rule against it, but it changes machine settings outside the app.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved: an opt-in upload bandwidth limit for Roblox clients through a Windows QoS policy (New-NetQosPolicy / Remove-NetQosPolicy run elevated with the UAC prompt the user accepts), showing the current policy and a Remove button; never applied without the user's click.",
+  "alsoCovers": []
+ },
+ "R-instances-15": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Per-client GPU numbers. RoALT shows each client's busiest GPU engine and dedicated memory. Zenith shows adapter-wide GPU only.",
+  "proposedChange": "If approved, attribute a PID's engine maximum to a client only when that pid appears with the same start time in process inventories taken immediately before and after the PDH collection. Label the value 'PID-attributed'. Files: WindowsGpuTelemetryReader.cs (keep a per-pid aggregate), WindowsDesktopMonitor.cs (bracket the collection between inventory checks). Tests: fixture counter arrays through IGpuPdhApi.",
+  "roaltEvidence": "gpu.rs:1-145 parses PDH instances per pid [from supplied facts, not re-opened].",
+  "zenithEvidence": "PIDs are parsed but deliberately not attached to processes, because PID-only instances cannot prove process creation identity (WindowsGpuTelemetryReader.cs:252-262; GpuTelemetry.cs:3-21) [read in source].",
+  "analysisConstraint": "Local OS observation. This reverses a documented evidence decision.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: per-client GPU numbers (busiest engine utilization and dedicated memory) from the per-process GPU performance counters, sampled with the existing telemetry reader and shown next to CPU and memory.",
+  "alsoCovers": []
+ },
+ "R-instances-2": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "In-game state stays visible for the whole session. RoALT shows In game with place and job until a teleport, disconnect or exit. After 5 minutes in one server, Zenith drops the current place, server and user to Unknown and keeps them only as last-known. It also cannot recover them after its own restart, because the old lines are older than 5 minutes.",
+  "proposedChange": "Keep a current destination past 5 minutes only while all of the following hold: the same stream keeps its lease, read batches keep advancing with no AwaitingLogTail, and no Joining, Teleporting or Disconnected fact or discontinuity has occurred since Connected. Label it 'Connected since HH:mm · no disconnect seen · unverified'. Every other case keeps the 5-minute rule. Files: SessionEvidence.cs (track the last continuous-read time per entry and add a ContinuouslyObserved flag), SessionLogProjection.cs (wording). Tests: new SessionEvidenceTests cases with FakeTimeProvider. Cover a 10-minute continuous read (stays Connected), a lease lapse (becomes Unknown), and an unread tail (becomes Unknown).",
+  "roaltEvidence": "state_of derives InGame from facts that persist until a disconnect or teleport (tracker.rs:1562-1582) [read in source]. Facts and offset are saved and restored across restarts (tracker.rs:1174-1228) [from supplied facts, not re-opened].",
+  "zenithEvidence": "The default maximumEvidenceAge is 5 minutes (SessionEvidence.cs:82), and SessionLogProjection does not override it (SessionLogProjection.cs:13). Snapshot invalidates a destination older than that (SessionEvidence.cs:375-379). Apply rejects facts older than that (SessionEvidence.cs:192-193). Tests pin this behaviour (tests/Zenith.Sessions.Tests/SessionEvidenceTests.cs:45-61) [read in source].",
+  "analysisConstraint": "Local file read, so the technique is allowed. The expiry is a deliberate and tested rule that log liveness must not renew a server claim, so changing it is a product decision.",
+  "impact": "high",
+  "effort": "S",
+  "ownerDecision": "Approved: keep in-game state visible for the whole session. After the 5-minute window the place and server stay shown with a 'last confirmed N min ago' marker instead of becoming Unknown; liveness is still not renewed by that evidence, so Join same server and Copy stay gated on fresh evidence exactly as today.",
+  "alsoCovers": []
+ },
+ "R-instances-17": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Anti-AFK. RoALT stops Roblox's 20-minute idle kick for background clients by bringing each one to the front and sending a real F13 keypress while the user is idle.",
+  "proposedChange": "No change unless the user explicitly authorizes it. If authorized, implement it as a companion macro through the existing host-local Start handle and input arbiter (HANDOFF.md:57-58), not as a new input path.",
+  "roaltEvidence": "afk.rs:1-16, 35-152 and 180-259 [from supplied facts, not re-opened]. The ticks are 10 s and use GetLastInputInfo, SetForegroundWindow or AttachThreadInput, and SendInput.",
+  "zenithEvidence": "FEATURE-COMPARISON.md:181 and 189 say it is missing, and the review grants no authority to port idle-evasion actions [read in fixture/doc]. AGENTS.md Rule 4 allows SendInput only through the single input executor [read in fixture/doc].",
+  "analysisConstraint": "Not among the six named exclusions, but it is idle-policy evasion that Zenith's own review declined to authorize. It steals focus, and a focus change between the check and the keypress can deliver F13 to another app (afk.rs:187-199, per supplied facts). Any version must go through the Personal host's input arbiter.",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved with the project's own gate: anti-AFK for background clients as a built-in plan that runs ONLY through Zenith's single input executor (Zenith.Automation.Input / TargetedInputCoordinator), every N minutes (default 15, bounded), bringing a client forward, sending one F13 press, and restoring the previous foreground window; off by default and refused by the capability gate (CapabilityGate) until the background input isolation trial marks it Verified, exactly like 'Launch and run'. Build it, test it with fakes, report 'implemented' with blockedBy 'live input isolation trial'.",
+  "alsoCovers": []
+ },
+ "R-api-12": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT sends Discord webhook alerts for crashes, hangs, disconnects and batch completion.",
+  "proposedChange": "If approved, add an opt-in DiscordWebhookNotifier in Zenith.Sessions.Windows. Protect the URL with DPAPI (Rule 10), allowlist exact hosts and the path shape, use a bounded Channel<T> outbox with coalescing, and honour 429. Build events only from Zenith's own lifecycle evidence and never include secrets. Tests with a fake handler.",
+  "roaltEvidence": "discord.rs:1-40: opt-in, the vault-encrypted URL is never sent to the UI, at most 1 message per 2 s, 50 queued events, 15 lines per message, and a host allowlist (read in source). The 429 and backoff handling at discord.rs:250-595 comes from the supplied facts and was not read.",
+  "zenithEvidence": "FEATURE-COMPARISON.md:250 lists Discord webhook alerts as Missing (read in doc).",
+  "analysisConstraint": "Adds a third-party host and a user-supplied secret, and needs a defined fallback (Rule 16).",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved as opt-in (default off): Discord webhook alerts for crashes, hangs, disconnects and batch completion. The webhook URL is a secret (stored protected, never logged, masked in Settings), messages use fixed templates that carry only account labels, places and counts, sends are bounded and rate-limited with a defined fallback (Rule 16): a failed send is recorded by type and shown once, never retried in a storm.",
+  "alsoCovers": [
+   {
+    "id": "R-shell-22",
+    "title": "Discord webhook alerts.",
+    "proposedChange": "If approved: an opt-in notifier that sends only typed event kinds with a bounded rate, tested against a localhost fixture."
+   }
+  ]
+ },
+ "R-api-17": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT shows Discord rich presence (the game being played and the alt count).",
+  "proposedChange": "If wanted, an opt-in local-pipe client that is off by default and sends only when its content changes.",
+  "roaltEvidence": "model.rs:504 turns it on by default (read in source). The local discord-ipc pipe implementation (rpc.rs:1-188) comes from the supplied facts and was not read.",
+  "zenithEvidence": "FEATURE-COMPARISON.md:251 lists rich presence as Missing (read in doc).",
+  "analysisConstraint": "RoALT's default-on behaviour publishes activity to Discord without the user opting in.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved as opt-in (default off): Discord rich presence over Discord's local named pipe (discord-ipc-0..9, handshake and SET_ACTIVITY frames written by Zenith itself; no new dependency), showing the client count and optionally the current game; cleared on Lock, Panic and exit; silent when Discord is not running.",
+  "alsoCovers": []
+ },
+ "R-shell-21": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Scheduled Windows shutdown with a countdown.",
+  "proposedChange": "If approved: an IShutdownScheduler that wraps shutdown.exe /s /t and /a, tested with a fake process runner so the PC is never actually scheduled.",
+  "roaltEvidence": "Per the static reader, presets or a clock time schedule and cancel through Windows' shutdown tool, and the schedule survives a restart (src/features/settings/rows/launching.tsx:67-194, not opened by me).",
+  "zenithEvidence": "Zenith has nothing equivalent (inferred; no shutdown references found in the app).",
+  "analysisConstraint": "Allowed technique (public OS tool). Product scope is the user's call.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: scheduled Windows shutdown with a countdown (shutdown.exe /s /t N and /a to cancel), explicit action with a visible countdown and Cancel; Panic does not trigger it.",
+  "alsoCovers": []
+ },
+ "R-api-18": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT has a public-network guard that blocks launches and locks the vault on public Wi-Fi.",
+  "proposedChange": "If wanted, add an interface-backed network-category provider in Zenith.Sessions.Windows, preferably driven by events rather than 10 s polling (Rule 14). Test it with a fake provider.",
+  "roaltEvidence": "model.rs:516 sets allow_public_networks to true by default (read in source). The Network List Manager polling every 10 s (network.rs:1-151) comes from the supplied facts and was not read.",
+  "zenithEvidence": "Zenith has no Network List Manager use (grep for INetworkListManager). Read in source.",
+  "analysisConstraint": "Observation of the local operating system only, not an excluded technique.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved as opt-in (default off): a public-network guard through the Network List Manager (INetworkListManager / INetworkListManagerEvents, event-driven, no polling) that blocks new launches and locks the dashboard while the active network is Public, with a clear notice.",
+  "alsoCovers": [
+   {
+    "id": "R-shell-23",
+    "title": "Block launches on a Public network.",
+    "proposedChange": "If approved: an admission input to LaunchCoordinator based on INetworkListManager category, tested with a fake provider."
+   }
+  ]
+ },
+ "R-shell-14": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Signed self-update.",
+  "proposedChange": "If approved: write an IUpdateFeed interface and a bounded HttpClient adapter that runs only on demand plus once a day. Download to a temp folder, open it with FileShare.Read, and verify ECDSA P-256 over the versioned name and bytes using System.Security.Cryptography.ECDsa against an embedded public key. Hand off to the installer only after the queue is idle. Test entirely on this PC with a throwaway key and a localhost fixture server; no Roblox or network access is needed.",
+  "roaltEvidence": "self_update.rs:40-58 polls GitHub releases/latest every 6 h, with size caps, an asset-host allowlist and a hard-coded P-256 key. Read in source. Per the static reader, the download is verified through a handle that blocks writes, checked with CNG ECDSA, and installed silently (self_update.rs:198-466).",
+  "zenithEvidence": "Zenith has no updater. FEATURE-COMPARISON.md:260 lists signed self-update as Missing, and the staged output is a folder-based development preview (Check-ZenithSessionsManager.ps1:91-195). Read in source.",
+  "analysisConstraint": "Allowed technique (public web API), but it needs a release host, a signing-key custody plan with a rotation story (RoALT has none, per the static reader), and ReleaseReady first (HANDOFF.md:5). AGENTS.md Rule 16 requires that the app keep working when the host is unavailable.",
+  "impact": "medium",
+  "effort": "L",
+  "ownerDecision": "Approved: signed self-update mechanism. A manifest at a configurable feed URL (none shipped; off until the owner sets one), ECDSA P-256 signature over the manifest verified with an embedded public key, download to staging, SHA-256 and Authenticode checks, swap through the existing packaged-build promotion on next start, never silent. Ship a script that generates the key pair and signs a manifest (private key kept outside the repository), and test the verifier against a local file feed. Record that a release host and key custody are still the owner's to set up.",
+  "alsoCovers": []
+ },
+ "R-shell-15": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Per-user installer and uninstaller that check for WebView2 and ask before deleting data.",
+  "proposedChange": "If approved: a per-user installer (MSIX or Inno-style) that checks the .NET 10 Desktop Runtime and WebView2, never deletes %LOCALAPPDATA%\\ZenithSessions without asking, and is verified in an isolated guest, not on this PC.",
+  "roaltEvidence": "installer/RoALT.iss:27-39 installs per user without admin to a per-user Programs folder, requires Windows 1809 or later and closes running copies. RoALT.iss:56-76 checks the WebView2 registry keys before offering to launch. Read in source.",
+  "zenithEvidence": "Zenith ships a framework-dependent folder with a READ-ME saying the .NET 10 Desktop Runtime must already be installed (Check-ZenithSessionsManager.ps1:91-96). FEATURE-COMPARISON.md:261 lists the installer as Missing. Read in source.",
+  "analysisConstraint": "Release packaging is gated on ReleaseReady (HANDOFF.md:90). Installed Zenith editions and user data must be preserved (HANDOFF.md:5 and 10).",
+  "impact": "medium",
+  "effort": "M",
+  "ownerDecision": "Approved: a per-user installer and uninstaller without a new dependency: PowerShell scripts that install to %LOCALAPPDATA%\\Programs\\Zenith Sessions, check the WebView2 runtime (registry) and offer Microsoft's official Evergreen bootstrapper (downloaded only on the user's choice and verified as Microsoft-signed before running), add a Start menu shortcut and the HKCU Apps & features entry, and an uninstaller that asks before deleting the data folder. Publishing stays gated on ReleaseReady; the scripts can be tested against a staged build.",
+  "alsoCovers": []
+ },
+ "R-research-12": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Every change is built and tested automatically.",
+  "proposedChange": "If the user adopts version control: one scripted gate on each commit (dotnet build with warnings as errors, Zenith.Sessions.Tests with the 13 known environment failures excluded by trait, and the Luau verifier). Without version control: the same script run locally before each checkpoint, writing its usual machine record.",
+  "roaltEvidence": ".github/workflows/ci.yml:1-35 runs the build, cargo test --locked and clippy with -D warnings on windows-latest for every push and PR (read in source).",
+  "zenithEvidence": "The working copy has no .git or CI folder (directory listing, read). docs/zenith-sessions/HANDOFF.md:68-80 gives the test commands to run by hand (read in fixture/doc). Zenith's runs are manual but recorded (HANDOFF.md:63-66).",
+  "analysisConstraint": "Needs a version-control or CI host decision the user has not made.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved in principle: prepare automatic build-and-test. Add a GitHub Actions workflow (windows runner; builds; runs every suite with the cloud AI test excluded) and a local scripts/Run-AllChecks.ps1 that does the same on this PC. No host exists yet, so the workflow cannot run; say so.",
+  "alsoCovers": []
+ },
+ "R-shell-16": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Full localization, including right-to-left languages.",
+  "proposedChange": "If approved: move strings to .resx with a culture-aware markup extension, starting with shell chrome and notices. Add a test that every key exists in every culture and that format placeholders match.",
+  "roaltEvidence": "Per the static reader, 18 UI languages (about 1388 English keys), 332 Rust keys per catalog, and a completeness checker (src/i18n/index.ts, src-tauri/src/i18n.rs, scripts/check-i18n.mjs; not opened by me).",
+  "zenithEvidence": "All strings are hard-coded English in XAML and view models; for example, the Guide prose runs from MainWindow.xaml:1427 to 1508 and the notices are in ShellViewModel.cs. FEATURE-COMPARISON.md:241 lists Localization as Missing. Read in source.",
+  "analysisConstraint": "Allowed technique (UI only). This is a Personal single-user companion, so whether the cost is justified is the user's call.",
+  "impact": "low",
+  "effort": "L",
+  "ownerDecision": "Approved: localization infrastructure for Zenith.Sessions.App: a resx string catalog, a culture choice (Follow Windows / explicit), FlowDirection RightToLeft for RTL cultures, and a pseudo-locale for testing; migrate the sidebar, window title, Settings > Appearance and the Guide headings in this item and list every remaining page as follow-up in the docs (Rule 20 migration note). English is the only shipped language.",
+  "alsoCovers": []
+ },
+ "R-research-14": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Translation completeness gate.",
+  "proposedChange": "Only if the user wants localization: move strings into resource catalogs, then add a test comparing every catalog's keys and {placeholders} with English.",
+  "roaltEvidence": "package.json:9 runs scripts/check-i18n.mjs inside the build, so it runs in CI (read in source). The script body was not read.",
+  "zenithEvidence": "A grep of REQUIREMENTS-LEDGER.md found no localization requirement (read in fixture/doc). UI strings are written inline, for example src/Zenith.Sessions.App/ShareLinkViewModel.cs:110-114 (read in source).",
+  "analysisConstraint": "No current requirement. This would be a product decision.",
+  "impact": "low",
+  "effort": "L",
+  "ownerDecision": "Approved: a translation completeness gate: a test that every string key exists in every shipped culture file and that the migrated pages (R-shell-16) have no hard-coded user-facing literals.",
+  "alsoCovers": []
+ },
+ "R-launch-9": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT checks the Roblox version 3 s after start and every 30 minutes. It can install the official update once the installer is verified as signed by Roblox Corporation, and it refuses while clients or launches are active.",
+  "proposedChange": "If the user approves: add an explicit 'Update Roblox' action that downloads the official installer for the exact live version (bounded size, fresh temp folder, read-only share), checks it with the existing Authenticode and publisher path, and runs it only when no Roblox process or launch work is active. The pure checks (version string shape, refuse while busy) can be unit-tested with fakes.",
+  "roaltEvidence": "src-tauri/src/launcher/update.rs:1-15, 101-130, 321-500; authenticode.rs:1-126 [per supplied facts; update.rs 125-130 read in source].",
+  "zenithEvidence": "Zenith has no update notice or installer path; a grep found nothing [inferred]. It does have Authenticode verification infrastructure (src/Zenith.Sessions.Windows/WindowsClientExecutableTrust.cs:91-138) [read in source].",
+  "analysisConstraint": "Downloading and executing an installer is a significant new trust surface, even though it is the official signed installer. The 'out of date' notice is covered by the update-hold item. Verifying it end to end needs network access and a real Roblox install.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved: check the Roblox version 3 s after start and every 30 minutes as an opt-in (default off; the on-demand check from R-research-13 stays), and offer to install the official update from Roblox's own setup host: download to a temp folder, verify the Authenticode signature and Roblox Corporation publisher with the existing trust code, warn when clients are running, then run it only after the user confirms.",
+  "alsoCovers": [
+   {
+    "id": "R-shell-19",
+    "title": "Install or update the Roblox client from inside the app.",
+    "proposedChange": "If approved: an 'Open official download page' button is the smallest step. A managed install would reuse the existing Authenticode check before running anything."
+   }
+  ]
+ },
+ "R-shell-20": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "Clean up old Roblox client logs.",
+  "proposedChange": "If approved: an explicit cleanup that skips any file currently held open or referenced by recent session evidence. Test with temp-folder fixtures.",
+  "roaltEvidence": "Per the static reader, logs_clean deletes logs older than a day or larger than 50 MB, never a running client's log (commands.rs:1262-1272, not opened by me).",
+  "zenithEvidence": "Zenith has no cleanup, and its log correlator relies on those files for evidence (HANDOFF.md:46). Read in source.",
+  "analysisConstraint": "This deletes Roblox-owned files and could remove evidence that Zenith's correlation needs.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: clean up old Roblox client logs on demand: show count and size first, delete only logs older than N days that no bound or recent correlation needs, confirm, report.",
+  "alsoCovers": []
+ },
+ "R-shell-17": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "The support report includes recent Roblox client log tails.",
+  "proposedChange": "If approved: include only parsed, typed fields that WindowsSessionLogCorrelator already extracts (timestamps, place and job ids, disconnect codes), never raw lines, and only after an explicit checkbox in the save dialog.",
+  "roaltEvidence": "diagnostics.rs:10-18 adds the last 500 lines of roalt.log and the last 300 lines of up to 5 Roblox logs, each read from the last 4 MB. commands.rs:2347-2357 chooses live and crash logs. Read in source.",
+  "zenithEvidence": "Zenith deliberately leaves out raw logs ('no prior-session replay or raw log files', ShellDiagnosticsFeatures.cs:135; Guide MainWindow.xaml:1480). Read in source.",
+  "analysisConstraint": "Allowed technique (reading local files), and Zenith already reads these logs for correlation. But it reverses a deliberate privacy design, and RoALT's keyword and pattern redaction has gaps the static reader documents.",
+  "impact": "low",
+  "effort": "M",
+  "ownerDecision": "Approved: include recent Roblox client log tails in the support report as an opt-in checkbox at save time, passed through an allowlist filter (only line shapes Zenith already parses, with anything URL- or token-like removed), bounded per client. Update the report's privacy statement and the Guide.",
+  "alsoCovers": []
+ },
+ "R-api-19": {
+  "kind": "RoALT capability the owner decided on 2026-11-08 to adopt (build Zenith's own version within the constraints below)",
+  "title": "RoALT has a news tab with app releases, DevForum announcements and the Roblox newsroom.",
+  "proposedChange": "Low value. If wanted, read only DevForum's JSON category feeds, with no HTML scraping.",
+  "roaltEvidence": "data.ts:89-90 fetches the news every 30 min (read in source). The four sources, including an HTML scrape of about.roblox.com (news.rs), come from the supplied facts and were not read.",
+  "zenithEvidence": "Zenith has no news feed in this area (none of its files contacts those hosts).",
+  "analysisConstraint": "Adds non-Roblox hosts, and the HTML scrape breaks whenever the page markup changes.",
+  "impact": "low",
+  "effort": "S",
+  "ownerDecision": "Approved: a News page fed by RSS/Atom only (no HTML scraping): Roblox's newsroom feed and the DevForum announcements feed (probe their feed URLs with anonymous GETs, approved), loaded only when the user opens the page or presses Refresh, bounded bodies, HTML stripped to text, links opened through the existing open-in-browser confirmation. Adds those two hosts to the allowed public hosts.",
+  "alsoCovers": []
+ },
+ "O-C3-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The fix's own doc comment says a stopped state comes first in the 320 px header",
+  "location": "src/Zenith.Sessions.App/ShellDiagnosticsFeatures.cs:150-161 (DiagnosticsStatusText), tests/Zenith.Sessions.Tests/DiagnosticsViewModelTests.cs:371-385 (new theory)",
+  "problem": "The fix's own doc comment says a stopped state comes first in the 320 px header. Two stopped facts still do not reach the visible part. (1) RepeatLaunchStoppedStatus, the stopped restore listener, is still added at the very end, so it falls behind the ellipsis in every state. In the live state the visible line ends \"...bounded to three log files · a new launc…\". (2) When a disk-writer Failure text is set, it replaces the whole status, so a stopped monitor or a startup failure is left out of the header and its tooltip, while the restore-listener notice is kept. Both behaviours already existed before this lane and nothing regressed. The new theory only covers failure:null and restoreListenerStopped:false, so these combinations are untested. The fixer mentioned (1) as a follow-up.",
+  "proposedFix": "In a follow-up, give the restore-listener notice a short form placed first, or right after the state, when it is set. Decide whether a stopped monitor should appear next to a disk-writer failure, as the restore notice already does. Add theory rows with restoreListenerStopped:true and with a failure text.",
+  "originLane": "C3"
+ },
+ "O-C4-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The N-B4-3 fix leaves some High Contrast hover cases unfixed, and the new doc sentence claims more than it delivers",
+  "location": "src/Zenith.Sessions.App/Themes/SessionsControls.xaml:313-348 (SegmentButton), :505-575 (ChipButton, GameCard); docs/zenith-sessions/MANAGER-IMPLEMENTATION.md:353 (new parenthetical)",
+  "problem": "The N-B4-3 fix leaves some High Contrast hover cases unfixed, and the new doc sentence claims more than it delivers. (1) ChipButton and GameCard change only their border on hover, to TextMuted, which High Contrast maps to the same window text colour as BorderBrushLight, so hovering them still shows nothing. The fixer disclosed this, but the doc says other buttons show the state as a bar. (2) This also predates the lane. On a selected SegmentButton (Table, Previews, History) the template's IsMouseOver trigger replaces the selection fill with HoverBackground, while the style's Tag trigger keeps SelectionForeground. In High Contrast Black that is #000000 text on the #000000 window, and in High Contrast White it is white on white, so the selected segment's label disappears while the pointer is over it. Only the new 3 px bar remains visible.",
+  "proposedFix": "Reword the doc parenthetical so it names only the controls that actually get the edge. Separately, give ChipButton and GameCard a High Contrast hover state (for example, the same edge brush) and make the SegmentButton hover trigger skip the selected segment.",
+  "originLane": "C4"
+ },
+ "O-C4-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The new sentence says more than the code guarantees",
+  "location": "docs/zenith-sessions/MANAGER-IMPLEMENTATION.md:360 (\"...so it is never lost behind the lock screen\"); src/Zenith.Sessions.App/ShellViewModel.cs:1070 (Step(ClearError) in StopOperations)",
+  "problem": "The new sentence says more than the code guarantees. Only errors raised after the lock begins survive Unlock. An error already showing when the idle lock fires (ShellIdleLockFeatures.cs:45 to LockControls) or when Windows locks the session (MainWindow.xaml.cs:96 to LockDashboard) is cleared by StopOperations. Because the idle lock fires only after the user has been away, a failure in the minutes before it is exactly the one the user never saw, and after Unlock it is gone. Panic pressed while locked (F12 is global) clears it as well. The C4 code change itself is correct and matches Fail().",
+  "proposedFix": "Reword it, for example: \"A failure or unexpected error raised while the dashboard is locked is still shown after Unlock; an error already showing when any lock starts, including the idle lock, is cleared like any Lock.\" Whether the idle and session locks should keep an existing error is a separate decision for the owner.",
+  "originLane": "C4"
+ },
+ "O-C4-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The tests do not cover every path",
+  "location": "src/Zenith.Sessions.App/MainWindow.xaml.cs:83 (SetTheme); tests/Zenith.Sessions.Tests/SessionsThemesTests.cs:125-151",
+  "problem": "The tests do not cover every path. The edge-bar test runs only through App.ApplyStartupTheme. Nothing checks that the live path (SetTheme, which runs when High Contrast is switched on while the app is open) goes through SessionsThemes.Apply, so a revert to ThemeManager.Apply there would still pass. The pixel check also renders a bare 40x10 Border with no border or corner radius, not a real template. The fixer's stated invariant, that every hovered element has at least 8 px of padding, is also false: IconButton is 32x32 with Padding 0 and uses ActiveBackground through QuietButton. Its centred 16 px glyph starts at about x=8, so the 6 px pressed bar does not touch it today, but nothing tests the invariant.",
+  "proposedFix": "Add a test that raises the theme change through the window, or a source check that the Sessions app calls ThemeManager.Apply only from SessionsThemes.Apply and the default-theme reset. Optionally, render one real SecondaryButton or IconButton in its pressed state under High Contrast.",
+  "originLane": "C4"
+ },
+ "O-C2-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The new N-B2-3 sentence \"A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, also ended before any client started but does not lengthen the wait\" says to",
+  "location": "src/Zenith.Sessions.App/MainWindow.xaml:1515 (Guide, Launch evidence paragraph); pinned verbatim by tests/Zenith.Sessions.Tests/LaunchQueueGuideTests.cs:87",
+  "problem": "The new N-B2-3 sentence \"A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, also ended before any client started but does not lengthen the wait\" says too much. A timeout or stop during native startup is recorded Uncertain with TimedOut or CancelledDuringStartup, and those rows say \"A client may exist; reconcile before retrying\" (Launching.cs:97-98). The Guide therefore tells users no client started in exactly the cases where the queue warns that one may exist. The ledger hedges this correctly (\"most of them also end before any client started\"); the Guide does not. Harm is limited because the row text and the retry gate (EndedBeforeAnyClient) still guard the workflow.",
+  "proposedFix": "Reword the sentence to cover only what is true, e.g. \"A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, does not lengthen the wait; a timed-out or stopped startup may still have left a client, so reconcile it first.\" Update the pinned assertion to match.",
+  "originLane": "C2"
+ },
+ "O-C2-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The pause notice and the backoff status still say \"two starts in a row ended before any client started\", \"one more such start pauses the queue again\" and \"because the last start ended before any clien",
+  "location": "src/Zenith.Sessions.Core/Launching.cs:123 (ExplainPause RepeatedRefusals) and src/Zenith.Sessions.App/ShellLaunchEvidenceFeatures.cs:201 (RefusalBackoff status)",
+  "problem": "The pause notice and the backoff status still say \"two starts in a row ended before any client started\", \"one more such start pauses the queue again\" and \"because the last start ended before any client started\". The Guide and ledger now say only a provider refusal counts. After a Resume, a user who then sees a preparation timeout or expiry (which also \"ended before any client started\") would expect a re-pause that never comes. The fixer noted this as a follow-up but left it unchanged.",
+  "proposedFix": "Use the Guide's wording: \"two starts in a row were refused before any client started\" / \"one more refused start pauses the queue again\" / \"because the last start was refused before any client started\". Update LaunchPacingTests and OverviewWorkspaceIntegrationTests string checks to match.",
+  "originLane": "C2"
+ },
+ "O-C2-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The refused rows now promise that \"Launch evidence on Join a game shows which\" check stopped them",
+  "location": "src/Zenith.Sessions.Core/Launching.cs:103-105 (PreparationRejected / StartupRejected row text)",
+  "problem": "The refused rows now promise that \"Launch evidence on Join a game shows which\" check stopped them. Two things make that unreliable. First, native launch stages are memory-only and gone after a restart, while the Failed row is saved and shown after reopening. Second, PreparationRejected is also recorded for faults the coordinator catches itself and for an invalid prepared handle (LaunchCoordinatorPreparation.cs catch(Exception) and !validHandle), where no provider stage names a cause. In those cases the pointer sends the user to a panel that cannot answer.",
+  "proposedFix": "Soften to \"Launch evidence on Join a game may show which, while Zenith is still running\", or name the restart limit explicitly. Alternatively, only add the pointer when the native diagnostics for that operation are present.",
+  "originLane": "C2"
+ },
+ "O-C2-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Two places still describe the review-time binding that N-B2-1 removed",
+  "location": "src/Zenith.Sessions.App/ShellDirectoryFeatures.cs:396; tests/Zenith.Sessions.Tests/LaunchBatchQueueTests.cs (ASpreadReviewFreezesItsOwnServerForEachAccountAndThePlaceForTheRest)",
+  "problem": "Two places still describe the review-time binding that N-B2-1 removed. The comment says \"A spread review reads the loaded server list once, here, and freezes each account's server\". The existing test's name says the review freezes a server for each account, but it now asserts that every member keeps the place and that servers are handed out at enqueue. Both mislead the next maintainer.",
+  "proposedFix": "Change the comment to \"freezes the shuffled server order; the queue hands servers only to the requests it records\". Rename the test, e.g. ASpreadReviewFreezesTheServerOrderAndTheQueueHandsOneToEachRecordedRequest.",
+  "originLane": "C2"
+ },
+ "O-C2-5": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "New duplication",
+  "location": "src/Zenith.Sessions.Core/RequestedServerSelection.cs:23-50 (ServerSpread.ExplainRecorded) vs :88-97 (SpreadServers Explanation)",
+  "problem": "New duplication. ExplainRecorded copies the four-branch wording logic of ServerSpread.Explanation almost line for line. Explanation is now unused in production; only RequestedServerSelectionTests read it, and it still says accounts \"will join\" the place. Two text generators for one concept will drift apart.",
+  "proposedFix": "Derive one from the other, e.g. a shared private formatter that takes the noun (account/request) and the verb phrase. Or drop Explanation from the record and have SpreadServers' tests assert ExplainRecorded(count, SpreadCount).",
+  "originLane": "C2"
+ },
+ "O-C5-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "ApplyClientArrivalAsync now drops every arrival while any manual window operation is queued or running: Arrange, Minimize/Restore checked, or Resize",
+  "location": "src/Zenith.Sessions.App/MainWindow.xaml:692 (the help text under \"When a client connects\"); src/Zenith.Sessions.App/ShellClientArrivalLayoutFeatures.cs:98 (N-B5a-6, commit bc52df8)",
+  "problem": "ApplyClientArrivalAsync now drops every arrival while any manual window operation is queued or running: Arrange, Minimize/Restore checked, or Resize. That client counts as seen. With Minimize saved, it is never minimized. The Settings help text still says \"Zenith acts once per client, the first time its log reports it connected\" and lists only Panic/Lock and clients already running at startup as exceptions. The only mention of this new exception is a status sentence appended after the manual operation ends.",
+  "proposedFix": "Add one sentence to the help text, for example: \"A client that connects while you run a window operation is left alone and does not count again.\"",
+  "originLane": "C5"
+ },
+ "O-C5-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The note is appended inside the manual operation's finally block, when IsArrangingClients turns false",
+  "location": "src/Zenith.Sessions.App/ShellClientArrivalLayoutFeatures.cs:140-145 ManualWindowOperationEnded, called from the IsArrangingClients setter in src/Zenith.Sessions.App/ShellClientWindowFeatures.cs:56",
+  "problem": "The note is appended inside the manual operation's finally block, when IsArrangingClients turns false. If the manual operation throws, for example when PublishClientWindowResults gets inconsistent results, the AsyncCommand error handler ReportClientWindowFailure runs after that finally and replaces ClientWindowStatus. The flag has already been cleared, so the user never learns that a client which connected during the operation was left alone.",
+  "proposedFix": "Keep the flag until the command's report is final: append the note in ReportClientWindowFailure as well, or add it after the command completes rather than in the setter.",
+  "originLane": "C5"
+ },
+ "O-C5-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Slots() reads the latest scan, not the scan that produced the arrival",
+  "location": "src/Zenith.Sessions.App/ShellClientArrivalLayoutFeatures.cs:111-115 (N-B5a-4, commit 9ab01d0)",
+  "problem": "Slots() reads the latest scan, not the scan that produced the arrival. A follow-up request can therefore find no slots because the connected clients have closed or lost their windows since. It then shows \"every connected client is minimized or hidden\", which is false. That path also leaves the previous operation's ClientPlacementResults on screen under the new status. The `if (!_arranging)` guard on line 113 can never be false: line 98 already returned when _arranging was set, and there is no await between the two checks.",
+  "proposedFix": "Use the minimized/hidden wording only when the scan really lists connected clients that are minimized or hidden. Otherwise say that no connected client window is available. Clear ClientPlacementResults, or leave the status alone, and remove the dead guard.",
+  "originLane": "C5"
+ },
+ "O-C7-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Only half of the thumbnail-state rule is shared",
+  "location": "src/Zenith.Sessions.Windows/RobloxPublicDirectory.cs:107-110 and src/Zenith.Sessions.Windows/RobloxPublicGames.cs:151-154 (single headshot and game-icon lookups)",
+  "problem": "Only half of the thumbnail-state rule is shared. These two branches now ask MapThumbnailState(state) == Pending, but the next lines still compare the raw strings \"Blocked\"/\"Error\" and \"Completed\". If MapThumbnailState changes later (for example a new ready or blocked state), the gallery and batch paths follow the change and these two single lookups do not. The widened guard only looks for \"InReview\", so it cannot catch this split. The fixer mentioned it in their notes. Behaviour today is unchanged.",
+  "proposedFix": "Switch on MapThumbnailState(state) for every branch in both single lookups. Keep the current messages: Blocked or Error gives \"unavailable\"; Unavailable from an unknown state gives \"not supported\", which can stay a check on the raw \"Error\" string inside that arm. Alternatively, widen the \"thumbnail states\" pattern so a raw \"Completed\" comparison counts as a copy.",
+  "originLane": "C7"
+ },
+ "O-C7-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The theory's name now describes only 1 of its 5 rows",
+  "location": "tests/Zenith.Sessions.Tests/ShareLinkViewModelTests.cs:221 (AUniverseOnlyLinkToARestrictedGameSaysItCannotBeOpenedWithoutRetryAdvice)",
+  "problem": "The theory's name now describes only 1 of its 5 rows. After N-B6-3, the unknown, not-found, failure and deferred rows all expect the retry text (\"could not be checked right now. Try again later.\"). A reader sees a test named \"...CannotBeOpenedWithoutRetryAdvice\" whose main assertion is that retry advice is shown.",
+  "proposedFix": "Rename the test to say what it now checks, for example AUniverseOnlyLinkSaysItCannotBeOpenedOnlyWhenTheListingAnsweredWithoutTheUniverse.",
+  "originLane": "C7"
+ },
+ "O-C7-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The 1 s limit starts before InitializeAsync",
+  "location": "tests/Zenith.Sessions.Tests/ViewModelTests.cs:40-48 (ACheckThatOverrunsItsLimitIsStoppedBeforeTheTestFolderIsDeleted)",
+  "problem": "The 1 s limit starts before InitializeAsync. On a loaded PC (the case this item is about), the deadline can fire during initialization, before any export has opened overrun-export.json.tmp. The test then still passes: the Settings-saved assert fails after dispose and the check counts as stopped. So it can pass without testing the export-overlap case it was written for. Nothing asserts that an export was running when shutdown began.",
+  "proposedFix": "Have the check signal (a TaskCompletionSource) once its first ExportAsync starts, and assert the signal fired before the shutdown. Alternatively, count export iterations and assert the count is greater than 0, or give initialization its own longer limit and measure the 1 s overrun from the first export.",
+  "originLane": "C7"
+ },
+ "O-C1-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The shell now uses KeptForReview alone to choose between the review note (with the SignIn OperationFailed record) and the routine 'retries them' line",
+  "location": "src/Zenith.Sessions.Windows/SignInProfileDirectory.cs:224 with src/Zenith.Sessions.App/ShellViewModel.cs:1321-1325 (N-B1b-3)",
+  "problem": "The shell now uses KeptForReview alone to choose between the review note (with the SignIn OperationFailed record) and the routine 'retries them' line. SweepOwned still sets ReviewPending when kept + deferred > RecoveryBudget, even when KeptForReview is 0. Example: 8 held or busy folders plus 1 deferred, or 1 busy + 7 removed + 9 deferred. Then LeftoverNeedsReview is true, so the handoff and native checks refuse as CleanupFailed, but startup showed only routine lines and recorded no diagnostic. Before this lane, any Kept>0 showed the review note, so for these cases the lane widens a mismatch the fixer only partly attributed to existing code. It needs about 9 or more leftover folders at startup, so it is rare.",
+  "proposedFix": "Report the budget overflow as review: add a ReviewPending (or BudgetExceeded) field to SignInSweepResult, or have the shell decide with SignInProfileDirectory.LeftoverNeedsReview(DataRoot). Show the review note and RecordFailure(SignIn) whenever that is true, and add a test with more than 8 held/busy/deferred leftovers.",
+  "originLane": "C1"
+ },
+ "O-C1-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The new DeleteAccountsCoreAsync comment says a stopped share-link check 'has its own owner, which sees that stop itself'",
+  "location": "src/Zenith.Sessions.App/ShellViewModel.cs:684 (comment) and src/Zenith.Sessions.App/ShareLinkViewModel.cs:122 (N-B1a-2 follow-up; the cause predates this lane)",
+  "problem": "The new DeleteAccountsCoreAsync comment says a stopped share-link check 'has its own owner, which sees that stop itself'. When a removal invalidates the check, ResolveShareLinkAsync's Ensure throws OperationCanceledException, and RunCheckAsync swallows it with catch(OperationCanceledException){}. If the selection becomes empty after the reload (SelectedAccountChanged ignores an empty selection), Status keeps showing 'Checking the share link with the selected account…' after the check ended. The lane did not cause this (cancelling _authorizationStop never reached ShareLinkViewModel), but the new comment claims it is handled.",
+  "proposedFix": "In RunCheckAsync, when the OperationCanceledException did not come from the view model's own stop (!stop.IsCancellationRequested) and the generation is current, set a status such as 'Share link check stopped because its account was removed.' Or soften the comment.",
+  "originLane": "C1"
+ },
+ "O-C1-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The new ProfileRemoved refusal is correct and stops anything from being sent, but the wording outside the batch is generic or alarming",
+  "location": "src/Zenith.Sessions.Windows/RobloxSessionLinkService.cs:466-467 (Begin) with ShareLinks.cs:25, RobloxSessionLinkService.cs:131, RobloxSessionNativePreparation.cs:16, ShellViewModel.cs:403-405 (N-B1a-1)",
+  "problem": "The new ProfileRemoved refusal is correct and stops anything from being sent, but the wording outside the batch is generic or alarming. A share-link check on a row being removed says 'Another account operation is running. Try again when it finishes.' An inspection reports Busy, and native preparation shows Rejected with the diagnostic 'another preparation was still owned.' A Sign in or Refresh clicked on a row whose removal is still running goes through LinkAccount/RefreshAuthorization's Fail(error, SignIn), so it appears in ErrorNotice and records a SignIn OperationFailed for what is a routine refusal. This is better than before (previously the operation ran against a row being deleted), so it is polish only.",
+  "proposedFix": "Map ProfileRemoved to a removal-specific outcome or text in the three Busy mappers, and in AuthorizeSelectedAsync catch AccountLinkException{ProfileRemoved:true} to set Notice (no RecordFailure). Alternatively, disable Link/Refresh while IsRemovalPending(SelectedAccount).",
+  "originLane": "C1"
+ },
+ "O-C9-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "A row held for an update uses a stand-in count of one running client for as long as the process inventory is untrusted, including when desktop.Problem is set or ProcessInventoryComplete stays false fo",
+  "location": "src/Zenith.Sessions.App/ShellViewModel.cs:1347 (ReadLaunchAdmissionForBudget, N-B8-4)",
+  "problem": "A row held for an update uses a stand-in count of one running client for as long as the process inventory is untrusted, including when desktop.Problem is set or ProcessInventoryComplete stays false for a long time. If the monitor keeps failing after every Roblox client has closed, the row still shows ClientUpdateHold.Explanation (\"This request starts on its own once no Roblox client is running\"). That is now false: no client is running, the row still cannot start, and what actually blocks it is the missing fresh process evidence. The fixer documented this tradeoff, and starts stay refused in every case, so safety is not affected.",
+  "proposedFix": "Keep the hold only through a short run of untrusted samples, for example while the last fresh sample is younger than about 2x MaximumEvidenceAge or the monitor's sample interval. Alternatively, keep the stand-in only when desktop.Problem is null. Either way, a long monitoring failure falls back to the \"fresh complete process evidence is required\" explanation. Add a test in which a held row sees persistently untrusted samples well past that window.",
+  "originLane": "C9"
+ },
+ "O-C9-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Changing the account or destination during the release check, which can now last up to 5 s, cancels the start without saying so",
+  "location": "src/Zenith.Sessions.App/ShellInstallationFeatures.cs:300 and tests/Zenith.Sessions.Tests/NativeTrialReviewTests.cs:403 (N-B8-5)",
+  "problem": "Changing the account or destination during the release check, which can now last up to 5 s, cancels the start without saying so. The finally block puts the earlier card text back (for example \"Native file selected for an explicit trial...\") and AsyncCommand swallows the cancellation. The user has just read \"Checking Roblox's current release before this trial is queued\", and nothing now tells them the trial was not queued. This was already true for the very short vault reads, but the new, longer and announced wait makes it more visible. The new stopTrial:false case asserts Assert.Equal(before, NativeTrialStatus), so it locks this silent revert in as the expected result.",
+  "proposedFix": "When the start's own stop token is cancelled by a review change (not Panic, Lock, Stop trial or shutdown, which set their own reasons), set the card to the existing RejectNativeTrialReview text or a short \"Trial not started: the review changed while Roblox's release was being checked\" line. Update the stopTrial:false assertion to expect that line instead of the earlier text.",
+  "originLane": "C9"
+ },
+ "O-C9-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The new line tells the user \"Choose Stop trial to cancel it\"",
+  "location": "src/Zenith.Sessions.App/ShellInstallationFeatures.cs:108 (LaunchReleaseChecking text)",
+  "problem": "The new line tells the user \"Choose Stop trial to cancel it\". CancelNativeTrial also calls _launchQueue.SignalPanic(), which pauses the whole launch queue, including other accounts' queued requests. Neither this line nor the resulting \"Trial stopped. Review any process-start receipt...\" text says so. Stop trial already behaved this way, but the new string now sends users to it just to cancel a release check.",
+  "proposedFix": "Mention the side effect, for example \"Choose Stop trial to cancel it (this also pauses the launch queue)\", or have Stop trial's status say the queue was paused, as NativeTrialStoppedBySelection already does.",
+  "originLane": "C9"
+ },
+ "O-C9-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The lane added an optional `releases` parameter, but the default is still null",
+  "location": "tests/Zenith.Sessions.Tests/NativeTrialEvidenceIntegrationTests.cs:262 (NativeEvidenceShellAsync)",
+  "problem": "The lane added an optional `releases` parameter, but the default is still null. Because no installationDiscovery is injected, _clientReleases falls back to the real RobloxPublicDirectory over _publicHttp. Every other native-trial test in ClientWindowIntegrationTests therefore sends an anonymous request to clientsettingscdn.roblox.com (bounded at 5 s) when the trial starts, and now also shows the Checking line during that wait. The fixer flagged this as a follow-up and it predates the lane, but it leaves these tests depending on the live network and timing-sensitive (Rule 16, testability).",
+  "proposedFix": "Default `releases` in NativeEvidenceShellAsync to a fake that answers at once, for example a fixed valid release or a Failure result. Tests that need the held read keep passing HeldReleaseRead.",
+  "originLane": "C9"
+ },
+ "O-C11-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Once an owner stalls, UseAsync abandons it, but its workers keep running",
+  "location": "src/Zenith.Sessions.App/SelfCheckOwners.cs:30-35 together with src/Zenith.Sessions.App/DistributionSelfCheck.cs:122-123 (using var vault/repository/cleanup/settings) and :319 (using setupProjection); src/Zenith.Sessions.Windows/ProtectedCredentialVault.cs:901 and AccountIdentityProjection.cs:310",
+  "problem": "Once an owner stalls, UseAsync abandons it, but its workers keep running. Meanwhile the stage-scoped `using` resources they still use are disposed as the try block unwinds. ProtectedCredentialVault.Dispose and AccountIdentityProjection.Dispose throw InvalidOperationException (\"Cancel and await pending ... before disposal\") while a call is still active. That new exception replaces the tagged TimeoutException before `catch(Exception ex)` sees it. Example: NativeHandoffCoordinator dispatches through `_vault.TryDispatchCurrentAsync(finalGrant, () => start)`. If the token-less start stalls (the exact case N-B10-3 targets), the report reads ErrorType=InvalidOperationException, FailingMethod=Zenith.Sessions.Windows.ProtectedCredentialVault.Dispose, CauseType=null. It does not name NativeHandoffCoordinator.DisposeAsync, and the deadline cause is gone. The same happens in \"Direct verified account creation\" when setupService stalls inside a projection call. The report is still written and the run still exits 1, so this only mislabels the failure. But it contradicts the claim that the report names the stalled owner, and no test stalls a vault- or projection-holding owner.",
+  "proposedFix": "Record the stage failure before the stage's shared `using` resources unwind. For example, move the repository/vault/cleanup/settings declarations outside the try. Or wrap the stage body in an inner try that builds FailedCase from the first exception and keeps it when a later Dispose throws. Then add a test that stalls the starter inside NativeHandoffCoordinator.DispatchAsync (or a projection call) and asserts that FailingMethod is the stalled owner's DisposeAsync.",
+  "originLane": "C11"
+ },
+ "O-C11-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The filter runs after WaitAsync has already timed out",
+  "location": "src/Zenith.Sessions.App/SelfCheckOwners.cs:31 (`catch (TimeoutException) when (!shutdown.IsCompleted)`)",
+  "problem": "The filter runs after WaitAsync has already timed out. If the owner finishes in the gap between the bound expiring and the filter running, the filter is false and WaitAsync's raw, untagged TimeoutException escapes. The stage's own failure (for example the deadline OperationCanceledException or an InvalidDataException from the work) is lost, StalledOwner returns null, and FailedCase points FailingMethod at framework await code. The window is narrow, but a borderline-slow shutdown lands in exactly this case.",
+  "proposedFix": "Decide from a single observation. For example, `var finished = await Task.WhenAny(shutdown, Task.Delay(bound)) == shutdown;`, then throw the tagged timeout if not finished, otherwise `await shutdown` and rethrow `failure`. Or, inside the catch, when `shutdown.IsCompleted`, observe shutdown and rethrow `failure` instead of letting the WaitAsync timeout escape.",
+  "originLane": "C11"
+ },
+ "O-C11-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The allowlist says ManagerDiagnostics \"waits at most 3 s for its writer and then cancels it\"",
+  "location": "tests/Zenith.Sessions.Tests/SelfCheckOwnersTests.cs:14-27 (allowlist and regex); src/Zenith.Sessions.App/DistributionSelfCheck.cs:567-575; src/Zenith.Sessions.Windows/ManagerDiagnostics.cs:194-199; SelfCheckOwners.cs:14-16 comment",
+  "problem": "The allowlist says ManagerDiagnostics \"waits at most 3 s for its writer and then cancels it\". In fact, after the 3 s StopAsync does `_stop.Cancel(); await _writer`, which has no bound. A writer blocked in its synchronous File.Move/FileInfo/FileStream open ignores the token, so this stage can still hold the report. The stage disposes it through an explicit `await diagnostics.DisposeAsync()` (line 574), and the guard regex only inspects `await using`, so explicit DisposeAsync awaits are never checked (PackagedLayoutCheck.cs:146 is another). The timing comment \"15 s deadline plus this bound stays inside the 20 s\" also ignores two costs: this 3 s wait, and two healthy-but-slow nested owners after the deadline, which can each use nearly the full 2 s. That is about 19 s plus process start-up against the script's 20 s WaitForExit, which also covers start-up.",
+  "proposedFix": "Route the diagnostics stage through SelfCheckOwners.UseAsync, and bound the explicit inner DisposeAsync with the same helper or WaitAsync(bound). Extend the guard to flag `await <x>.DisposeAsync()` in self-check files. Reword the budget comment to state the real worst case (one bound per nested owner that is healthy but slow, plus the 3 s diagnostics wait), or shorten the bound for nested owners.",
+  "originLane": "C11"
+ },
+ "O-C11-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "This file is not in the lane diff",
+  "location": "tests/Zenith.Sessions.Tests/SessionLogCoverageTests.cs:112 (SessionLogCorrelatorTests.DroppingADisconnectFromBoundedReplayCannotRetainTheOldServerAfterACoalescedUpdate)",
+  "problem": "This file is not in the lane diff. The test failed once in my full Zenith.Sessions.Tests run (Assert.NotNull() Failure: Value is null) and passed 3 of 3 times when its class ran alone. So the 0-failed full-suite result the fixers reported does not always reproduce on this loaded machine. The failure is a timing flake under full-suite load, not a regression from this lane.",
+  "proposedFix": "Track it as a new QUALITY_STATUS item, and make the test wait on the correlator's revision or event for the replacement link instead of relying on timing under load. No change is needed in this lane.",
+  "originLane": "C11"
+ },
+ "O-C8-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "OwnerOf decides same-tracker launches by time, but the new cross-tracker exclusivity check ignores time completely",
+  "location": "src/Zenith.Sessions.Windows/WindowsSessionLogCorrelator.cs:549-552 (LinkLaunches exclusivity, N-B7-2) and src/Zenith.Sessions.App/ShellLaunchEvidenceFeatures.cs:42",
+  "problem": "OwnerOf decides same-tracker launches by time, but the new cross-tracker exclusivity check ignores time completely. Suppose launch L1's log was created before launch L2 began, and the log also names L2's tracker (for example the websiteBTId plus the 'BTID is overriden to' pair the head reader accepts). L1 is then marked Ambiguous even though L2 cannot own that log. LaunchLogExpectation.From offers up to 32 receipts, old terminal ones included, so this false Ambiguous can last as long as both receipts stay in the window. The row then reads 'more than one log or launch shares this browser tracker', which is not what happened: no other log or launch shares L1's tracker; L1's log names another launch's tracker. The direction is conservative (it never produces a wrong Linked), and the fixer stated the tradeoff, but the UI text misdescribes the case this change made more common.",
+  "proposedFix": "In the exclusivity loop, skip other launches whose NotBeforeUtcTicks is later than head.CreatedUtcTicks, because they cannot own the log. Also reword the Ambiguous text so it covers 'this launch's client log also names another launch's tracker', or add a separate status or reason. Pin the change with a test variant of ALogThatAlsoNamesAnotherLaunchsTrackerLinksNeitherEvenWhenThatLaunchCannotLink in which the second launch begins after the log was created.",
+  "originLane": "C8"
+ },
+ "O-C8-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "There is a documented race",
+  "location": "src/Zenith.Sessions.Windows/WindowsSessionLogCorrelator.cs:560-580 (OwnerOf, N-B7-1)",
+  "problem": "There is a documented race. An earlier same-tracker launch's client may create its log only after the relaunch began (slow bootstrapper update) while the relaunch itself produces no log. That log is then credited to the relaunch, whose row reads 'Client log: names this launch's browser tracker · held by PID <the earlier launch's client>', and the earlier launch shows NotLinked. The old rule made both rows Ambiguous. The link stays corroboration only (CanAuthorizeAccountAction false), but the user sees the wrong PID on a launch row. The tradeoff is recorded only in a code comment. The ledger and QUALITY_STATUS do not mention it.",
+  "proposedFix": "Record the tradeoff next to the N-B7-1 row and the launch-to-log notes (HANDOFF.md:47 or the ledger) when the merge step updates QUALITY_STATUS, so the owner can keep or reverse it. Optionally, in that window, add a qualifier to the Linked text such as 'an earlier launch with the same tracker has no log yet'.",
+  "originLane": "C8"
+ },
+ "O-C8-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The Ambiguous summary lists 'another offered launch with the same tracker began at the same instant' as a cause on its own",
+  "location": "src/Zenith.Sessions.Windows/WindowsSessionLogCorrelator.cs:54-66 (LaunchLogLinkStatus docs)",
+  "problem": "The Ambiguous summary lists 'another offered launch with the same tracker began at the same instant' as a cause on its own. In the code a tie only makes a launch Ambiguous when a log naming the tracker is found (tied is set only inside the named branch). Two tied same-tracker launches with no naming log are NotLinked. The NotLinked summary also says 'has not yet had a successful head read', but a log whose earlier read succeeded and whose latest read failed is pending too.",
+  "proposedFix": "Change the Ambiguous doc to say 'a log names it and another offered launch with the same tracker began at the same instant', and change the NotLinked doc to say 'whose last head read has not succeeded'.",
+  "originLane": "C8"
+ },
+ "O-C6-1": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "N-B5b-6 is only partly closed",
+  "location": "src/Zenith.Sessions.App/ShellClientSoundFeatures.cs ObserveClientSoundArrivals (unreadable-PID handling, ~lines 116-125)",
+  "problem": "N-B5b-6 is only partly closed. A seen key is kept only if it is already in _soundSeenClients. Suppose one of the user's own clients is unreadable in the first accepted scan, when _soundBaseline is false (for example, Zenith starts with 'Mute clients when they appear' already saved on and the first scan hits a transient InvalidOperationException or Win32Exception). That client never enters the seen set. On the next readable scan it counts as a new arrival, so a client that was already running gets muted. The fixer noted this gap.",
+  "proposedFix": "While not watching, including the baseline scan, keep a bounded set (at most 128) of unreadable PIDs. When that PID's instance first reads cleanly, add its key to the seen set without making it an arrival. Add a presentation test: the first scan cannot read client 2, later scans read it, and client 2 is never muted.",
+  "originLane": "C6"
+ },
+ "O-C6-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "If a Mute or Unmute click is waiting on an arrival operation, and that operation reaches a final result (for example, it mutes the new client), the arrival's rows and its 'N of M new clients muted as ",
+  "location": "src/Zenith.Sessions.App/ShellClientSoundFeatures.cs PublishArrivalSound (`if (final.Count == 0 || _changingClientSound) return;`)",
+  "problem": "If a Mute or Unmute click is waiting on an arrival operation, and that operation reaches a final result (for example, it mutes the new client), the arrival's rows and its 'N of M new clients muted as they appeared' status are dropped. The click's own results replace them. Nothing tells the user that a new client was just muted, apart from the aggregate 'muted by Zenith and not yet unmuted' count.",
+  "proposedFix": "Keep the arrival summary visible: add it to the click's ClientSoundStatus, or show it in a separate arrival status line (for example ArrivalMuteStatus), so the click's results list stays clean.",
+  "originLane": "C6"
+ },
+ "O-C6-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The fixer confirmed this test also passes without the fix",
+  "location": "tests/Zenith.Sessions.Tests/ClientAudioMutePresentationTests.cs ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt",
+  "problem": "The fixer confirmed this test also passes without the fix. It never checks that the waiting arrival keeps its original first-seen time. A regression that drops the arrival and re-adds it with a new time after an unreadable scan would still pass, and in that regression a periodically unreadable client could be retried past the 2-minute ArrivalMuteWindow.",
+  "proposedFix": "Make arrival time controllable: inject a TimeProvider instead of calling DateTimeOffset.UtcNow in ObserveClientSoundArrivals and PublishArrivalSound. Then assert that a NoAudioSession retry after an unreadable scan becomes final once the original first-seen time is more than ArrivalMuteWindow old.",
+  "originLane": "C6"
+ },
+ "O-C6-4": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "N-B5b-9 rewrote this sentence, but it still lists 'live previews' as requiring supported integration",
+  "location": "src/Zenith.Sessions.Core/PerformanceProfiles.cs:65 (PendingCapabilities)",
+  "problem": "N-B5b-9 rewrote this sentence, but it still lists 'live previews' as requiring supported integration. Sessions already ships Previews > 'Preview checked clients' with live thumbnails (SettingsSearch entry client-previews). That is the same kind of self-contradiction the item fixed for affinity, and Settings shows this copy to users.",
+  "proposedFix": "Remove 'live previews' from the pending list, or name the specific pending capability precisely. Add a DoesNotContain(\"live previews\") assertion to PerformanceProfileTests.PendingCapabilities....",
+  "originLane": "C6"
+ },
+ "O-C6-5": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "The label 'Original priorities awaiting restoration: {0}' counts clients whose pending restore can cover the priority class, EcoQoS, memory priority and affinity",
+  "location": "src/Zenith.Sessions.App/MainWindow.xaml:635",
+  "problem": "The label 'Original priorities awaiting restoration: {0}' counts clients whose pending restore can cover the priority class, EcoQoS, memory priority and affinity. The N-B5b-10 exit warning and status now say 'priority, efficiency or core settings', so this label is inconsistent with them and understates what is pending.",
+  "proposedFix": "Reword it to something like 'Clients with original priority, efficiency or core settings awaiting restoration: {0}'.",
+  "originLane": "C6"
+ },
+ "O-C6-6": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "After N-B5b-5, a Conflict for 'only part of it is muted' comes only from Mute",
+  "location": "src/Zenith.Sessions.Core/ClientAudioMute.cs Conflict explanation (line 39)",
+  "problem": "After N-B5b-5, a Conflict for 'only part of it is muted' comes only from Mute. The row still says only 'The current state was preserved.' A user who wants a partly muted client fully muted is not told that Unmute (which now turns every session on), followed by Mute, would do it.",
+  "proposedFix": "Give Mute its own Conflict text that names the partly-muted case and the Unmute-then-Mute path. Keep the generic text for other conflicts.",
+  "originLane": "C6"
+ },
+ "O-C10-2": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "InternalsVisibleTo(\"Zenith.MacroHost.Execution\") was added only so the runner can reach StopAsync(string)",
+  "location": "src/Zenith.Automation.Input/Zenith.Automation.Input.csproj:11 (N-B9-4, commit 7933551)",
+  "problem": "InternalsVisibleTo(\"Zenith.MacroHost.Execution\") was added only so the runner can reach StopAsync(string). Before this the assembly exposed no internals to anyone. It now exposes the input owner's whole internal surface to the execution layer: the Sync lock object, the Lane semaphore, the raw ITargetedInputTransport, the TargetedInputRun constructor, and RequestStopLocked/ReleaseLocked/TrackLocked, which assume the caller already holds Sync. Nothing misuses them today. But the execution assembly could now send input around the coordinator's admission and ownership checks (Rule 4 single input pipeline, Rule 13) or call *Locked methods without the lock.",
+  "proposedFix": "Remove the InternalsVisibleTo. Add a narrow public API instead, for example a public StopAsync(TargetedInputStopReason) with a closed enum (Completed, RuntimeLimit, AfterFailure, CompanionStopped, RunnerClosed, NotStarted), with the texts mapped inside Zenith.Automation.Input.",
+  "originLane": "C10"
+ },
+ "O-C10-3": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "I confirmed the fixer's side note",
+  "location": "src/Zenith.MacroHost.Execution/TargetedMacroPlayer.cs:131-133 (pre-existing; found by the N-B9-4 fixer, not recorded)",
+  "problem": "I confirmed the fixer's side note. When the runtime cap's token cancels a key send in progress, TargetedInputRun.DispatchAsync stops the input itself ('Input batch cancelled; ...') and returns Cancelled with run state Stopping. The player continues only for Pausing, Paused, Resuming or Clearing, so it throws Failure(), sets Rejected, and the run finalizes as Faulted/InputRejected instead of Stopped/RuntimeLimit. The new runtime-limit test sidesteps this with a delay-only macro. No app constructs CompanionMacroOperations yet, so no user sees this today. The item is not in QUALITY_STATUS.md.",
+  "proposedFix": "Open a work item. Treat a Cancelled dispatch caused by the run's own runtime cap (effectiveCt) as a stop, not a rejection, and add a test that hits the cap during a key send.",
+  "originLane": "C10"
+ },
+ "O-C10-5": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Test-harness hygiene (Rule 12)",
+  "location": "tests/MacroSuite.Infrastructure.Tests/WpfTestApplication.cs:47,53 and tests/MacroSuite.Infrastructure.Tests/ViewModels/RecordingPipelineTests.cs:164",
+  "problem": "Test-harness hygiene (Rule 12). The Task.Delay(liveness) and Task.Delay(drain) timers are never cancelled when the body finishes, so each of the 49 shared-dispatcher tests leaves a 2-minute timer pending. The green LargeRecordingStop test also keeps an untracked fire-and-forget `_ = Dispatcher.CurrentDispatcher.InvokeAsync(() => Thread.Sleep(200))` left over from the red simulation.",
+  "proposedFix": "Back the delays with a CancellationTokenSource and cancel it once the body completes. Keep the DispatcherOperation handle and await it before the assertions, or drop the deliberate 200 ms block.",
+  "originLane": "C10"
+ },
+ "O-C10-6": {
+  "kind": "minor finding from round 3's independent lane review (verify it first; the reviewer can be wrong)",
+  "title": "Subscribe_StartsLoopAndDeliversFrames failed once in my full Core run with 'Expected fakeService.LastReturnedFrame!.IsDisposed to be true, but found False.' It passed in 3 reruns of the class and in a",
+  "location": "tests/MacroSuite.Core.Tests/Capture/CaptureSchedulerTests.cs:129 (pre-existing; not touched by this lane)",
+  "problem": "Subscribe_StartsLoopAndDeliversFrames failed once in my full Core run with 'Expected fakeService.LastReturnedFrame!.IsDisposed to be true, but found False.' It passed in 3 reruns of the class and in a full rerun (761/761). The assertion reads the newest frame while the 15 ms capture loop may still be fanning it out. The item is not in QUALITY_STATUS.md.",
+  "proposedFix": "Unsubscribe or dispose the scheduler (or wait for the loop) before asserting disposal, or assert on a frame known to have finished fan-out. Record it as a flaky test.",
+  "originLane": "C10"
+ }
+}

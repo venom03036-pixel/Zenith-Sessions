@@ -1,0 +1,100 @@
+{
+ "D1": [
+  "O-C2-1",
+  "O-C2-2",
+  "O-C2-3",
+  "O-C2-4",
+  "O-C2-5",
+  "R-launch-18",
+  "R-launch-16",
+  "R-launch-2",
+  "R-api-7",
+  "R-launch-17",
+  "R-launch-0"
+ ],
+ "D7": [
+  "O-C3-1",
+  "O-C4-2",
+  "O-C4-3",
+  "O-C4-4",
+  "R-shell-21",
+  "R-api-18",
+  "R-api-12",
+  "R-api-17",
+  "R-shell-16",
+  "R-research-14"
+ ],
+ "D6b": [
+  "O-C8-1",
+  "O-C8-2",
+  "O-C8-3",
+  "O-C5-2",
+  "O-C5-3",
+  "O-C5-4",
+  "O-C10-2",
+  "O-C10-3",
+  "O-C10-5",
+  "O-C10-6",
+  "R-instances-2",
+  "R-instances-15",
+  "R-instances-17"
+ ],
+ "D6a": [
+  "O-C6-1",
+  "O-C6-2",
+  "O-C6-3",
+  "O-C6-4",
+  "O-C6-5",
+  "O-C6-6",
+  "R-instances-7",
+  "R-instances-12",
+  "R-instances-18"
+ ],
+ "D8": [
+  "O-C9-1",
+  "O-C9-2",
+  "O-C9-3",
+  "O-C9-4",
+  "R-shell-20",
+  "R-shell-17",
+  "R-launch-9"
+ ],
+ "D5": [
+  "O-C1-1",
+  "O-C1-2",
+  "O-C1-3",
+  "Z1559",
+  "M-L1a-6",
+  "R-accounts-7",
+  "R-accounts-8"
+ ],
+ "D3": [
+  "O-C7-1",
+  "O-C7-2",
+  "O-C7-3",
+  "R-research-10",
+  "R-launch-12",
+  "R-api-14",
+  "R-api-19"
+ ],
+ "D9": [
+  "O-C11-1",
+  "O-C11-2",
+  "O-C11-3",
+  "O-C11-4",
+  "R-research-12",
+  "R-shell-15",
+  "R-shell-14"
+ ],
+ "D2": [
+  "R-research-6",
+  "R-api-6",
+  "R-api-13",
+  "R-api-16"
+ ],
+ "D4": [
+  "R-accounts-12",
+  "R-accounts-10",
+  "R-accounts-11"
+ ]
+}
