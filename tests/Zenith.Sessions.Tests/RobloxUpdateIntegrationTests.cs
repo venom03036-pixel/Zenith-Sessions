@@ -18,6 +18,33 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
     private static PublicRobloxClientRelease Release(string upload = CurrentFolder, string version = "0.744.0.7441080") => new(version, upload, DateTimeOffset.UtcNow);
     private string SettingsPath => Path.Combine(_root, "settings.json");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnEarlierInitializationCannotRestartAutomaticChecksAfterPanic(bool stopBeforeLoaded) => OnUi(async () =>
+    {
+        using (var store = new Zenith.Sessions.Windows.SettingsStore(_root))
+            await store.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(CheckRobloxUpdates: true), default);
+        var releases = new Releases { Answer = Release() }; var inventory = new Inventory(_root, StaleFolder);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(),
+            installationDiscovery: inventory, clientReleases: releases, clientUpdateInstaller: new Installer());
+        Task initialization;
+        using (var held = new HeldPreferencesWrite(shell, initialLoad: true))
+        {
+            if (stopBeforeLoaded) shell.Panic.Execute(null);
+            initialization = shell.InitializeAsync();
+            Assert.False(initialization.IsCompleted);
+            if (!stopBeforeLoaded) shell.Panic.Execute(null);
+        }
+        await initialization;
+        Assert.True(shell.IsReady, shell.Notice);
+        Assert.True(shell.CheckRobloxUpdates);
+        await shell.RunAutomaticUpdateCheckNowAsync();
+        Assert.Equal(0, releases.Calls);
+        Assert.Equal(0, inventory.Calls);
+        Assert.Null(shell.ClientUpdateCheckDue);
+    });
+
     [Fact]
     public Task AnEarlierPendingSettingsSaveCannotRestartAutomaticChecksAfterPanic() => OnUi(async () =>
     {

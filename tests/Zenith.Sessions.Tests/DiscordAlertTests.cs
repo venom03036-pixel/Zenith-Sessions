@@ -27,6 +27,55 @@ public sealed class DiscordAlertTests : IDisposable
     private static readonly BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static readonly TimeSpan Positive = TimeSpan.FromSeconds(30);
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task LockDuringPendingSettingsActivationPreservesDiscordMonitoring(bool startup) => OnDispatcherAsync(async () =>
+    {
+        if (startup)
+            using (var store = new SettingsStore(_root))
+                await store.SaveAsync(new SessionsSettings(DiscordAlerts: true), default);
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        if (!startup) await vm.InitializeAsync();
+        Task pending;
+        using (var held = new HeldPreferencesWrite(vm, initialLoad: startup))
+        {
+            if (startup) pending = vm.InitializeAsync();
+            else { vm.DiscordAlerts = true; vm.SaveSettings.Execute(null); pending = vm.SaveSettings.Execution; }
+            Assert.False(pending.IsCompleted);
+            vm.LockDashboard();
+        }
+        await pending;
+        Assert.True(vm.IsReady, vm.Notice);
+        Assert.True(vm.IsLocked);
+        Assert.True(vm.IsDiscordAlertsActive);
+        Assert.False(vm.IsDiscordAlertsStopped);
+        Assert.Empty(transport.Requests);
+    });
+
+    [Fact]
+    public Task AnEarlierInitializationCannotRestartDiscordAlertsAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        using (var store = new SettingsStore(_root))
+            await store.SaveAsync(new SessionsSettings(DiscordAlerts: true), default);
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        Task initialization;
+        using (var held = new HeldPreferencesWrite(vm, initialLoad: true))
+        {
+            initialization = vm.InitializeAsync(); Assert.False(initialization.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await initialization;
+        Assert.True(vm.IsReady, vm.Notice);
+        Assert.False(vm.IsDiscordAlertsActive);
+        Assert.True(vm.IsDiscordAlertsStopped);
+        Assert.Empty(transport.Requests);
+    });
+
     [Fact]
     public Task AnEarlierPendingSettingsSaveCannotRestartDiscordAlertsAfterPanic() => OnDispatcherAsync(async () =>
     {

@@ -8,9 +8,11 @@ internal sealed class HeldPreferencesWrite : IDisposable
 {
     private readonly SemaphoreSlim _writer;
     private bool _released;
-    public HeldPreferencesWrite(ShellViewModel shell)
+    public HeldPreferencesWrite(ShellViewModel shell, bool initialLoad = false)
     {
-        _writer = (SemaphoreSlim)typeof(ShellViewModel).GetField("_preferencesWriter", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(shell)!;
+        const BindingFlags fields = BindingFlags.Instance | BindingFlags.NonPublic;
+        object owner = initialLoad ? typeof(ShellViewModel).GetField("_settingsStore", fields)!.GetValue(shell)! : shell;
+        _writer = (SemaphoreSlim)owner.GetType().GetField(initialLoad ? "_writer" : "_preferencesWriter", fields)!.GetValue(owner)!;
         if (!_writer.Wait(0)) throw new InvalidOperationException("A fixture write was already pending.");
     }
     public void Dispose()

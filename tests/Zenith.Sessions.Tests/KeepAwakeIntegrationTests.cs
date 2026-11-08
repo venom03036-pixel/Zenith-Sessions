@@ -15,6 +15,32 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
     private static readonly CapabilityGate Verified = new([new ProviderCapability(CapabilityGate.BackgroundInputCapability, CapabilityState.Supported, "Fixture: trial passed.")]);
 
     [Fact]
+    public Task AnEarlierInitializationCannotStartKeepAwakeAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        using (var store = new Zenith.Sessions.Windows.SettingsStore(_root))
+            await store.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(KeepAwakeMinutes: 5), default);
+        var input = new Executor(); var foreground = new Foreground(0x5000);
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(600),
+            keepAwakeInput: input, foregroundSwitch: foreground, userIdle: new Idle(TimeSpan.FromHours(1)), capabilityGate: Verified);
+        Task initialization;
+        using (var held = new HeldPreferencesWrite(vm, initialLoad: true))
+        {
+            initialization = vm.InitializeAsync();
+            Assert.False(initialization.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await initialization;
+        Assert.True(vm.IsReady, vm.Notice);
+        vm.Refresh.Execute(null); await vm.Refresh.Execution;
+        Assert.Single(vm.Sessions); // Ordinary monitoring and startup continue after Panic.
+        await vm.RunKeepAwakeTickAsync();
+        Assert.Empty(input.Transport.Accepted);
+        Assert.Empty(foreground.Requests);
+        Assert.Null(vm.KeepAwakeDue);
+        Assert.True(vm.CanResumeKeepAwake);
+    });
+
+    [Fact]
     public Task AnEarlierPendingSettingsSaveCannotStartKeepAwakeAfterPanic() => OnDispatcherAsync(async () =>
     {
         var input = new Executor(); var foreground = new Foreground(0x5000);

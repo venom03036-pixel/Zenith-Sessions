@@ -465,6 +465,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     { if(!_initializationStarted && !_shuttingDown) { _initializationStarted=true; _initializeTask=InitializeCoreAsync(); } return _initializeTask; }
     private async Task InitializeCoreAsync()
     {
+        // Startup is automatic, not a new user resume request. Its activation authority expires on the
+        // first Panic/Lock, including one before the window's Loaded event begins initialization.
+        const long activationGeneration = 0;
         // The startup catch-all names the stage that was running, so a failure says which subsystem stopped startup.
         var stage=ManagerSubsystem.Settings;
         try
@@ -483,7 +486,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             _publicNetworkGuard=_settings.PublicNetworkGuard;_discordAlerts=_settings.DiscordAlerts;
             _discordPresence=_settings.DiscordPresence;_discordPresenceGame=_settings.DiscordPresenceGame;_discordApplicationId=_settings.DiscordApplicationId;
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
-            _keepAwakeMinutes=_settings.KeepAwakeMinutes; ApplySavedKeepAwake(0);
+            _keepAwakeMinutes=_settings.KeepAwakeMinutes; ApplySavedKeepAwake(0, SettingsActivationCurrent(activationGeneration));
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
@@ -526,7 +529,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             }
             stage=ManagerSubsystem.Telemetry;await RecentClients.InitializeAsync();
             stage=ManagerSubsystem.DiscordAlerts;await LoadDiscordWebhookSummaryAsync();
-            stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();ApplySavedClientUpdateCheck(restart:true);
+            stage=ManagerSubsystem.Library;await LoadAccountsAsync(_lifetime.Token); _ready = true; RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); Raise(nameof(CanRefreshInstallations)); NotifyPerformanceTransfer(); GameDetails.RefreshAvailability(); RecentClients.RefreshAvailability();RefreshClientPreviewContext();MacroHostCatalog.RefreshAvailability();MacroAssignments.RefreshAvailability();RefreshPublicImageActivity();
             PreferencesEdited(); Notice = loaded.Notice ?? queueRecoveryNotice ?? projectionNotice ?? "Ready. Account metadata stays local; running processes require verified identity before automation.";
             AddEvent(IsSample ? "Isolated sample profile library opened; no sample session is shown as a live client." : "Local account library opened.");
             _diagnostics.Record(ManagerEventKind.Started);
@@ -541,9 +544,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             // Apply the saved lock before optional update scheduling can admit its first check.
             // The updater's owner consults current lock/sample/shutdown permission at every check boundary.
             ApplySavedPublicNetworkGuard();
+            if (SettingsActivationCurrent(activationGeneration)) ApplySavedClientUpdateCheck(restart:true);
             await ReleaseUpdates.InitializeAsync(_lifetime.Token);
-            ApplySavedDiscordAlerts(wasOn:false);
-            ApplySavedDiscordPresence(wasOn:false);
+            // Lock keeps alert monitoring enabled; only clearing a newer Panic requires current activation authority.
+            ApplySavedDiscordAlerts(wasOn:false, allowResume:SettingsActivationCurrent(activationGeneration));
+            if (SettingsActivationCurrent(activationGeneration)) ApplySavedDiscordPresence(wasOn:false);
+            else RefreshDiscordPresenceStatus();
         }
         catch (OperationCanceledException) when(_lifetime.IsCancellationRequested) { }
         catch (Exception ex) { _ready=false; _libraryUnavailable=true; ApplySavedPanicShortcut(); RefreshOverview(); Raise(nameof(IsReady)); Raise(nameof(EmptyAccountsText)); SaveStatus="Startup needs attention"; Fail(ex,stage); }
@@ -1044,8 +1050,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         else RaiseArrivalMute();
         if (SettingsActivationCurrent(activationGeneration)) ClientUpdateCheckPreferenceSaved(updateChecksWereOn);
         ApplySavedPublicNetworkGuard();
-        if (SettingsActivationCurrent(activationGeneration)) ApplySavedDiscordAlerts(discordAlertsWereOn);
-        else RefreshDiscordAlertStatus();
+        ApplySavedDiscordAlerts(discordAlertsWereOn, allowResume:SettingsActivationCurrent(activationGeneration));
         if (SettingsActivationCurrent(activationGeneration)) ApplySavedDiscordPresence(discordPresenceWasOn);
         else RefreshDiscordPresenceStatus();
     }
