@@ -345,10 +345,13 @@ public sealed class ViewModelTests : IDisposable
     [Fact]
     public Task OversizedExportPreservesTheDestinationAndDeletesItsPartialFile()=>CheckAsync(async vm=>
     {
+        // The export escapes '<' as the six-byte \u003C, so 750 profiles of 4,000 such characters make at least
+        // 18 MB of JSON from about 3 MB of stored notes. Storing 18 MB of plain notes made this test time out under load.
         using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
-        await repository.CreateManyAsync(Enumerable.Range(0,4500).Select(i=>AccountProfile.Create("Synthetic "+i) with { Notes=new string('x',4000) }).ToArray(),default);
+        await repository.CreateManyAsync(Enumerable.Range(0,750).Select(i=>AccountProfile.Create("Synthetic "+i) with { Notes=new string('<',4000) }).ToArray(),default);
         string path=Path.Combine(_root,"preserved-export.json");await File.WriteAllTextAsync(path,"previous export");
-        await Assert.ThrowsAsync<InvalidDataException>(()=>vm.ExportAsync(path));
+        var error=await Assert.ThrowsAsync<InvalidDataException>(()=>vm.ExportAsync(path));
+        Assert.Contains("exceeds 16 MiB",error.Message);
         Assert.Equal("previous export",await File.ReadAllTextAsync(path));Assert.False(File.Exists(path+".tmp"));
     });
     [Fact]
