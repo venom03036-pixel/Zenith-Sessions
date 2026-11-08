@@ -13,7 +13,10 @@ public static class ExplicitReportFile
     private static readonly TimeSpan ReplaceRetryDelay=TimeSpan.FromMilliseconds(25);
 
     /// <param name="validate">Checks a path and returns its full form; it runs before staging and again before commit.</param>
-    public static async Task WriteAsync(string path,byte[] bytes,Func<string,string> validate,CancellationToken ct)
+    public static Task WriteAsync(string path,byte[] bytes,Func<string,string> validate,CancellationToken ct)
+        =>WriteAsync(path,bytes,validate,ct,TimeProvider.System);
+
+    internal static async Task WriteAsync(string path,byte[] bytes,Func<string,string> validate,CancellationToken ct,TimeProvider clock)
     {
         ArgumentNullException.ThrowIfNull(bytes);ArgumentNullException.ThrowIfNull(validate);
         ct.ThrowIfCancellationRequested();string destination=validate(path);
@@ -34,7 +37,7 @@ public static class ExplicitReportFile
                 // A scanner or viewer can briefly hold the old file without delete sharing. These codes leave
                 // both files under their original names, so a bounded, cancellable retry is safe.
                 catch(IOException ex) when(IsTransientSharingFailure(ex) && attempt<ReplaceAttempts && File.Exists(temporary) && File.Exists(destination))
-                {await Task.Delay(ReplaceRetryDelay,ct).ConfigureAwait(false);}
+                {await Task.Delay(ReplaceRetryDelay,clock,ct).ConfigureAwait(false);}
             }
         }
         finally {if(File.Exists(temporary)) File.Delete(temporary);}
@@ -45,9 +48,12 @@ public static class ExplicitReportFile
     /// <see cref="ArgumentException"/> and cancellation still throws <see cref="OperationCanceledException"/>;
     /// a disk, permission or folder failure becomes a <see cref="ReportFileException"/> that names the chosen folder.
     /// </summary>
-    public static async Task WriteReportAsync(string path,byte[] bytes,string dataRoot,string applicationRoot,CancellationToken ct)
+    public static Task WriteReportAsync(string path,byte[] bytes,string dataRoot,string applicationRoot,CancellationToken ct)
+        =>WriteReportAsync(path,bytes,dataRoot,applicationRoot,ct,TimeProvider.System);
+
+    internal static async Task WriteReportAsync(string path,byte[] bytes,string dataRoot,string applicationRoot,CancellationToken ct,TimeProvider clock)
     {
-        try {await WriteAsync(path,bytes,candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),ct).ConfigureAwait(false);}
+        try {await WriteAsync(path,bytes,candidate=>DiagnosticExportPath.Validate(candidate,dataRoot,applicationRoot),ct,clock).ConfigureAwait(false);}
         catch(Exception error) when(error is IOException or UnauthorizedAccessException or Win32Exception) {throw new ReportFileException(error);}
     }
 

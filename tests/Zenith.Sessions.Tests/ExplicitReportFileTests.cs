@@ -19,12 +19,22 @@ public sealed class ExplicitReportFileTests : IDisposable
     {
         string report=Path.Combine(Share,"report.json");await File.WriteAllTextAsync(report,"old report");
         var held=new FileStream(report,FileMode.Open,FileAccess.Read,FileShare.Read);
+        var clock=new RetryClock();using var stop=new CancellationTokenSource();Task? write=null;
         try
         {
-            Task write=ExplicitReportFile.WriteReportAsync(report,NewReport,Data,App,default);
-            await Task.Delay(60);await held.DisposeAsync();await write;
+            write=ExplicitReportFile.WriteReportAsync(report,NewReport,Data,App,stop.Token,clock);
+            await clock.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TimeSpan.FromMilliseconds(25),clock.DueTime);
+            Assert.False(write.IsCompleted);
+            Assert.Equal("old report",await File.ReadAllTextAsync(report));
+            await held.DisposeAsync();clock.Expire();await write.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(1,clock.Count);
         }
-        finally {await held.DisposeAsync();}
+        finally
+        {
+            stop.Cancel();await held.DisposeAsync();
+            if(write is not null)try{await write.WaitAsync(TimeSpan.FromSeconds(5));}catch(OperationCanceledException) { }
+        }
         Assert.Equal(NewReport,await File.ReadAllBytesAsync(report));Assert.Empty(Directory.GetFiles(Share,"*.tmp"));
     }
 
@@ -67,10 +77,43 @@ public sealed class ExplicitReportFileTests : IDisposable
         // Panic, Lock and shutdown cancel a write that is waiting out a held report; that must stay a cancellation.
         await using(var held=new FileStream(report,FileMode.Open,FileAccess.Read,FileShare.Read))
         {
-            using var stop=new CancellationTokenSource(TimeSpan.FromMilliseconds(70));
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>ExplicitReportFile.WriteReportAsync(report,NewReport,Data,App,stop.Token));
+            using var stop=new CancellationTokenSource();var clock=new RetryClock();
+            var write=ExplicitReportFile.WriteReportAsync(report,NewReport,Data,App,stop.Token,clock);
+            try
+            {
+                await clock.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(TimeSpan.FromMilliseconds(25),clock.DueTime);Assert.False(write.IsCompleted);
+                stop.Cancel();
+                await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>write.WaitAsync(TimeSpan.FromSeconds(5)));
+            }
+            finally
+            {
+                stop.Cancel();try{await write.WaitAsync(TimeSpan.FromSeconds(5));}catch(OperationCanceledException) { }
+            }
         }
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Equal(new[] {report},Directory.GetFiles(Share));
+    }
+
+    // Real File.Replace must first encounter the held destination. Only its retry clock is controlled;
+    // the five-second waits contain a stuck fixture and do not redefine the 25-ms production delay.
+    private sealed class RetryClock : TimeProvider
+    {
+        private TimerCallback? _callback;private object? _state;
+        public TaskCompletionSource Started {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TimeSpan DueTime {get;private set;}
+        public int Count {get;private set;}
+        public override ITimer CreateTimer(TimerCallback callback,object? state,TimeSpan dueTime,TimeSpan period)
+        {
+            DueTime=dueTime;Count++;_callback=callback;_state=state;
+            Started.TrySetResult();return new Timer();
+        }
+        public void Expire()=>_callback!(_state);
+        private sealed class Timer : ITimer
+        {
+            public bool Change(TimeSpan dueTime,TimeSpan period)=>true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
+        }
     }
 
     public void Dispose()
