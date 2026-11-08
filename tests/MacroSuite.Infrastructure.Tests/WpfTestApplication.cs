@@ -16,9 +16,12 @@ internal static class WpfTestApplication
     private static Thread? _thread;
 
     /// <summary>
-    /// Hang guard for one test body. It is generous on purpose: the heaviest body (production
-    /// editor layout with 10,000 actions) took 2-6 s alone and 31 s in a full run while other
-    /// test runs shared the CPU. It detects a body that never finishes; it is not a speed budget.
+    /// Hang guard for one test body, not a speed budget: it only detects a body that never finishes.
+    /// The heaviest bodies (production editor with 10,000 actions) take 2-10 s alone; in loaded
+    /// full runs they took up to 1 min 30 s while computing under 1 s per layout pass, and 2 min 8 s
+    /// once one layout pass computed for 114 s (QUALITY_STATUS F-4). A test that needs a speed
+    /// budget counts it in dispatcher-thread CPU with <see cref="ThreadCpuBudget"/>, as the
+    /// UiNavigation tests do, so the budget can stay tight without failing on a busy machine.
     /// </summary>
     internal static readonly TimeSpan LivenessBound = TimeSpan.FromMinutes(2);
     /// <summary>How long an overrunning body may still take to stop before later bodies are refused.</summary>
