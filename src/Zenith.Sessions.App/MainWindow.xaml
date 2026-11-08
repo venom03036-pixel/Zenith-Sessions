@@ -1682,6 +1682,25 @@
             <WrapPanel Margin="0,10,0,12"><Button Content="Encrypt data folder with Windows EFS…" Click="EncryptDataFolder" IsEnabled="{Binding CanEncryptDataFolder}" /><Button Content="Cancel encryption" Command="{Binding CancelDataEncryption}" IsEnabled="{Binding IsEncryptingDataFolder}" Margin="8,0,0,0" /></WrapPanel>
             <TextBlock Text="{Binding CredentialCleanupStatus}" Style="{StaticResource Muted}" />
             <Button x:Name="SettingsRecoveryButton" Content="Retry credential cleanup" Command="{Binding CleanupCredentials}" HorizontalAlignment="Left" Margin="0,12,0,16" />
+            <Expander x:Name="SettingsReleaseUpdates" Header="Zenith updates" DataContext="{Binding ReleaseUpdates}" Margin="0,10,0,16">
+              <StackPanel Margin="0,10,0,0">
+                <TextBlock Text="Updates stay off until the release feed and trusted publisher are configured. A check can download a verified package; it never installs one automatically. Approval for the next start asks you again before installation." Style="{StaticResource Muted}" Margin="0,0,0,12" />
+                <TextBlock Text="Release feed URL" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding FeedUri, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Release feed URL" Margin="0,4,0,10" />
+                <TextBlock Text="Publisher certificate SHA-256" Style="{StaticResource FieldLabel}" />
+                <TextBox Text="{Binding PublisherCertificateSha256, UpdateSourceTrigger=PropertyChanged}" AutomationProperties.Name="Publisher certificate SHA-256" Margin="0,4,0,10" />
+                <CheckBox Content="Check daily while Zenith is open" IsChecked="{Binding CheckDaily}" Margin="0,0,0,10" />
+                <WrapPanel>
+                  <Button Content="Save update settings" Command="{Binding Save}" Margin="0,0,8,8" />
+                  <Button Content="Check now" Command="{Binding CheckNow}" Margin="0,0,8,8" />
+                  <Button Content="Stop check" Command="{Binding Stop}" Margin="0,0,8,8" />
+                  <Button Content="Approve for next start…" Command="{Binding ApproveNextStart}" Margin="0,0,8,8" />
+                  <Button Content="Cancel approval" Command="{Binding CancelApproval}" Margin="0,0,8,8" />
+                  <Button Content="Discard downloaded update" Command="{Binding DiscardPending}" Margin="0,0,8,8" />
+                </WrapPanel>
+                <TextBlock Text="{Binding Status}" Style="{StaticResource Muted}" AutomationProperties.LiveSetting="Polite" />
+              </StackPanel>
+            </Expander>
           </StackPanel>
         </ScrollViewer>
         <ScrollViewer Visibility="{Binding IsGuide, Converter={StaticResource VisibleIf}}" VerticalScrollBarVisibility="Auto">
