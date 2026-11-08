@@ -416,8 +416,11 @@ public sealed class ProtectedCredentialVault : IAccountCredentialVault, IAuthori
     public async Task DeleteAsync(Guid profileId, CancellationToken ct)
     {
         PathFor(profileId);
+        // Store-wide checks (lease, coordination file, directories) all run in EnterAsync, so they stay untagged.
         using var lease = await EnterAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
-        await DeleteOwnedAsync(profileId, ct).ConfigureAwait(false);
+        // Everything after the lease reads or writes only this profile's record, pointer, claims and generation files.
+        try { await DeleteOwnedAsync(profileId, ct).ConfigureAwait(false); }
+        catch (InvalidDataException error) { AuthorizationRecordDamage.Mark(error); throw; }
     }
 
     private async Task DeleteOwnedAsync(Guid profileId, CancellationToken ct, long? fenceGeneration = null)

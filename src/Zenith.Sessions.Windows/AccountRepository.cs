@@ -4,7 +4,7 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
-public sealed partial class AccountRepository : IAccountRepository,IAccountGroupEditor,IAccountGroupLifecycle,IAccountGroupCatalog,IDisposable
+public sealed partial class AccountRepository : IAccountRepository,IAccountGroupEditor,IAccountGroupLifecycle,IAccountGroupCatalog,IAccountMetadataImport,IDisposable
 {
     private const int MaximumGroupsJsonLength = 16384;
     private const string ProfileColumns = "id,label,username,group_name,priority,place_id,user_id,updated_utc,revision,notes,is_favorite,additional_groups";
@@ -247,34 +247,81 @@ public sealed partial class AccountRepository : IAccountRepository,IAccountGroup
     }
     public async Task CreateManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct)
     {
-        if (profiles.Count > 100000 || profiles.Select(p => p.Id).Distinct().Count() != profiles.Count)
-            throw new ArgumentException("Import requires distinct profiles and at most 100,000 rows.");
-        var validated = profiles.Select(p => p.Validated()).ToArray();
-        if (validated.Any(p => p.Revision != 0)) throw new ArgumentException("Imported profiles must be new records.");
+        var validated = ValidateNewProfiles(profiles);
         await _writer.WaitAsync(ct);
         try
         {
             await using var db = await OpenAsync(ct); using var tx = db.BeginTransaction();
-            using var command = db.CreateCommand(); command.Transaction = tx;
             await RequireCurrentAccountSchemaAsync(db,tx,ct);
-            command.CommandText = "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,1,$notes,$favorite,$additional WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id)";
-            foreach (var p in validated)
-            {
-                ct.ThrowIfCancellationRequested(); command.Parameters.Clear();
-                command.Parameters.AddWithValue("$id", p.Id.ToString("D")); command.Parameters.AddWithValue("$label", p.Label);
-                command.Parameters.AddWithValue("$username", p.Username); command.Parameters.AddWithValue("$group", p.Group);
-                command.Parameters.AddWithValue("$priority", p.Priority); command.Parameters.AddWithValue("$place", (object?)p.PreferredPlaceId ?? DBNull.Value);
-                command.Parameters.AddWithValue("$user", (object?)p.RobloxUserId ?? DBNull.Value); command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
-                command.Parameters.AddWithValue("$notes",p.Notes); command.Parameters.AddWithValue("$favorite",p.IsFavorite?1:0);
-                command.Parameters.AddWithValue("$additional",GroupsJson(p));
-                if(await command.ExecuteNonQueryAsync(ct)!=1) throw new RevisionConflictException();
-            }
-            bool catalogChanged=false;
-            foreach(var profile in validated)catalogChanged|=await EnsureProfileGroupDefinitionsAsync(db,tx,profile,ct);
-            if(catalogChanged)await AdvanceCatalogAsync(db,tx,ct);
+            if(await InsertNewProfilesAsync(db,tx,validated,ct))await AdvanceCatalogAsync(db,tx,ct);
             ct.ThrowIfCancellationRequested(); tx.Commit();
         }
         finally { _writer.Release(); }
+    }
+    public async Task<int> ImportMetadataAsync(IReadOnlyList<ProfileMetadataGroup> groups, IReadOnlyList<AccountProfile> profiles, CancellationToken ct)
+    {
+        var definitions = ValidateImportedGroups(groups); var validated = ValidateNewProfiles(profiles);
+        await _writer.WaitAsync(ct).ConfigureAwait(ConfigureAwaitOptions.ForceYielding);
+        try
+        {
+            // One connection, one transaction and one commit for every group and profile, so a failure or
+            // cancellation part way leaves no saved group or profile behind.
+            await using var db = await OpenAsync(ct); using var tx = db.BeginTransaction();
+            await RequireCurrentAccountSchemaAsync(db,tx,ct);
+            // Saved groups first: creating a profile adds a missing membership group without a color at the end of the list.
+            int added = 0;
+            foreach (var group in definitions)
+            {
+                ct.ThrowIfCancellationRequested();
+                if (await FindGroupByNameAsync(db,tx,group.Name,ct) is not null) continue;
+                await InsertGroupAsync(db,tx,group.Name,group.ColorHex,ct); added++;
+            }
+            bool membershipGroupsAdded = await InsertNewProfilesAsync(db,tx,validated,ct);
+            if(added > 0 || membershipGroupsAdded)await AdvanceCatalogAsync(db,tx,ct);
+            ct.ThrowIfCancellationRequested(); tx.Commit(); return added;
+        }
+        finally { _writer.Release(); }
+    }
+    private static AccountProfile[] ValidateNewProfiles(IReadOnlyList<AccountProfile> profiles)
+    {
+        if (profiles.Count > 100000 || profiles.Select(p => p.Id).Distinct().Count() != profiles.Count)
+            throw new ArgumentException("Import requires distinct profiles and at most 100,000 rows.");
+        var validated = profiles.Select(p => p.Validated()).ToArray();
+        if (validated.Any(p => p.Revision != 0)) throw new ArgumentException("Imported profiles must be new records.");
+        return validated;
+    }
+    private static ProfileMetadataGroup[] ValidateImportedGroups(IReadOnlyList<ProfileMetadataGroup> groups)
+    {
+        ArgumentNullException.ThrowIfNull(groups);
+        if (groups.Count > ProfileMetadataImport.MaximumGroups) throw new ArgumentException("Import at most 100,000 saved groups per operation.");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase); var result = new ProfileMetadataGroup[groups.Count];
+        for (int index = 0; index < result.Length; index++)
+        {
+            var group = groups[index] ?? throw new ArgumentException("Every imported saved group must be present.");
+            result[index] = group with { Name = AccountGroups.ValidateName(group.Name), ColorHex = AccountGroupDefinition.ValidateColor(group.ColorHex) };
+            if (!names.Add(result[index].Name)) throw new ArgumentException("Each imported saved group needs its own name.");
+        }
+        return result;
+    }
+    /// <summary>Inserts validated new profiles inside the caller's transaction. Returns whether a missing membership group was added.</summary>
+    private static async Task<bool> InsertNewProfilesAsync(SqliteConnection db, SqliteTransaction tx, AccountProfile[] validated, CancellationToken ct)
+    {
+        using var command = db.CreateCommand(); command.Transaction = tx;
+        command.CommandText = "INSERT INTO profiles("+ProfileColumns+") SELECT $id,$label,$username,$group,$priority,$place,$user,$updated,1,$notes,$favorite,$additional WHERE NOT EXISTS(SELECT 1 FROM credential_cleanup WHERE profile_id=$id)";
+        foreach (var p in validated)
+        {
+            ct.ThrowIfCancellationRequested(); command.Parameters.Clear();
+            command.Parameters.AddWithValue("$id", p.Id.ToString("D")); command.Parameters.AddWithValue("$label", p.Label);
+            command.Parameters.AddWithValue("$username", p.Username); command.Parameters.AddWithValue("$group", p.Group);
+            command.Parameters.AddWithValue("$priority", p.Priority); command.Parameters.AddWithValue("$place", (object?)p.PreferredPlaceId ?? DBNull.Value);
+            command.Parameters.AddWithValue("$user", (object?)p.RobloxUserId ?? DBNull.Value); command.Parameters.AddWithValue("$updated", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$notes",p.Notes); command.Parameters.AddWithValue("$favorite",p.IsFavorite?1:0);
+            command.Parameters.AddWithValue("$additional",GroupsJson(p));
+            if(await command.ExecuteNonQueryAsync(ct)!=1) throw new RevisionConflictException();
+        }
+        bool catalogChanged=false;
+        foreach(var profile in validated)catalogChanged|=await EnsureProfileGroupDefinitionsAsync(db,tx,profile,ct);
+        return catalogChanged;
     }
     public async Task DeleteManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct)
     {

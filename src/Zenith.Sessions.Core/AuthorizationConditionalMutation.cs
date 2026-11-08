@@ -47,3 +47,16 @@ public interface ISnapshotAuthorizationVault : IConditionalAuthorizationVault
 }
 
 public sealed class AuthorizationVaultBusyException() : IOException("The protected store is busy. Wait for its owned operation to finish, then retry.");
+
+/// <summary>
+/// Tells a failure confined to one profile's damaged or inconsistent protected files apart from a store-wide one
+/// (such as an invalid coordination file), which fails every profile the same way. <see cref="InvalidDataException"/>
+/// is sealed, and callers, error messages and diagnostics rely on that type, so the vault tags it instead of wrapping it.
+/// The tag is a boolean only: it carries no profile, path or secret (Rule 10).
+/// </summary>
+public static class AuthorizationRecordDamage
+{
+    private const string Key = "Zenith.Sessions.AuthorizationRecordDamaged";
+    public static InvalidDataException Mark(InvalidDataException error) { error.Data[Key] = true; return error; }
+    public static bool IsMarked(Exception error) => error is InvalidDataException && error.Data[Key] is true;
+}

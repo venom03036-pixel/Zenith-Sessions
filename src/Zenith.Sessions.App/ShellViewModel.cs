@@ -329,9 +329,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _identityProjection=new(root,_accounts,_vault);
         _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher);
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
-        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient);
-        _credentialCleanup=new(_accounts,_vault);
         _diagnostics=new(root);
+        // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
+        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type));
+        _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
         // Crash records only mean something for real processes, so an injected (test or synthetic) monitor gets no default probe.
@@ -661,7 +662,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             foreach(var row in rows)await _launchQueue.InvalidateAuthorizationAsync(row.Profile.Id,_lifetime.Token);
         }
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
-        if(_linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
+        // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
+        // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
+        using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
+        if(removal.StoppedOperation || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
@@ -745,13 +749,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var validated = imported.Profiles.Where(profile => !existing.Contains(ProfileKey(profile)))
             .Select(profile => profile with { Id = Guid.NewGuid(), Revision = 0, RobloxUserId = null }).ToArray();
         int skipped = imported.Profiles.Count - validated.Length;
-        // Groups first: creating profiles adds any missing membership group without a color at the end of the list.
-        int addedGroups = await Task.Run(() => ImportGroupsAsync(imported.Groups, _lifetime.Token));
-        if (validated.Length > 0) await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
+        // Saved groups and profiles commit together, so a failure part way adds neither.
+        int addedGroups = 0;
+        if (_accounts is IAccountMetadataImport library)
+        { if (validated.Length > 0 || imported.Groups.Count > 0) addedGroups = await Task.Run(() => library.ImportMetadataAsync(imported.Groups, validated, _lifetime.Token)); }
+        else if (validated.Length > 0) await Task.Run(() => _accounts.CreateManyAsync(validated, _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token);
         string skippedText = skipped == 0 ? "" : $" Skipped {skipped} already in this library (same name and username).";
         string groupsText = imported.Groups.Count == 0 ? ""
-            : _accounts is not IAccountGroupCatalog ? " Saved groups, colors and order were not added because this library has no group list."
+            : _accounts is not IAccountMetadataImport ? " Saved groups, colors and order were not added because this library has no group list."
             : (addedGroups == 0 ? "" : $" Added {addedGroups} saved group(s) with their colors and order.")
               + (addedGroups == imported.Groups.Count ? "" : $" Kept this library's colors and order for {imported.Groups.Count - addedGroups} group(s) it already had.");
         Notice = $"Imported {validated.Length} profiles.{skippedText}{groupsText} Sign-in is required separately."; AddEvent("Profile metadata imported.");
@@ -768,21 +774,6 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             foreach (var profile in batch.Items) { ct.ThrowIfCancellationRequested(); keys.Add(ProfileKey(profile)); }
             read += batch.Items.Count; if (batch.Items.Count == 0 || read >= batch.Total) return keys;
         }
-    }
-    /// <summary>Creates the saved groups this library lacks, in exported order, so they keep their colors and relative
-    /// order after this library's own groups. A group it already has keeps its own color and position. Returns how many were added.</summary>
-    private async Task<int> ImportGroupsAsync(IReadOnlyList<ProfileMetadataGroup> groups, CancellationToken ct)
-    {
-        if (groups.Count == 0 || _accounts is not IAccountGroupCatalog catalog) return 0;
-        int added = 0;
-        foreach (var group in groups)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (await catalog.FindGroupAsync(group.Name, ct) is not null) continue;
-            long revision = (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), ct)).CatalogRevision;
-            await catalog.CreateGroupAsync(group.Name, group.ColorHex, revision, ct); added++;
-        }
-        return added;
     }
     private async Task MonitorLoopAsync(CancellationToken ct)
     {
@@ -1235,7 +1226,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
         CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
-            :result.ErrorType==nameof(InvalidDataException)?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete."
+            :result.RecordDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
             :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+_signInFolderNote;
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.RecordFailure(ManagerSubsystem.Vault); }
     }

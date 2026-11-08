@@ -220,6 +220,35 @@ public sealed class VaultMetadataTests : IDisposable
         Assert.Equal(sibling with { AccessToken = "" }, await vault.ReadAsync(sibling.ProfileId, default));
     }
 
+    // Saving (rotation) and reading also sweep the record's own crash-orphaned atomic-write copies, so a
+    // stale encrypted session copy does not wait for Delete or Disconnect. Another profile's files are kept.
+    [Theory]
+    [InlineData("save")]
+    [InlineData("read")]
+    public async Task SaveAndReadRemoveTheirRecordsCrashOrphanedAtomicWriteTemporariesButKeepAnotherProfilesFiles(string operation)
+    {
+        using var vault = new ProtectedCredentialVault(Root);
+        var record = Record(Guid.NewGuid());
+        var sibling = Record(Guid.NewGuid(), userId: 456);
+        await vault.SaveAsync(record, default);
+        await vault.SaveAsync(sibling, default);
+        string path = RecordPath(record.ProfileId), siblingPath = RecordPath(sibling.ProfileId);
+        foreach (string target in new[] { path, path + ".identity" })
+            File.Copy(target, target + "." + Guid.NewGuid().ToString("N") + ".tmp");
+        string siblingTemporary = siblingPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+        File.Copy(siblingPath, siblingTemporary);
+        static string[] Names(IEnumerable<string> files) => files.Select(file => Path.GetFileName(file)!).Order(StringComparer.Ordinal).ToArray();
+
+        var rotated = record with { Generation = 2, RefreshToken = "synthetic-rotated-refresh" };
+        if (operation == "save") await vault.SaveAsync(rotated, default);
+        else Assert.Equal(record with { AccessToken = "" }, await vault.ReadAsync(record.ProfileId, default));
+
+        Assert.Equal(Names([path, path + ".identity", siblingPath, siblingPath + ".identity", siblingTemporary, ProtectedCredentialVault.WriterLockFileName]),
+            Names(Directory.GetFiles(VaultRoot)));
+        Assert.Equal((operation == "save" ? rotated : record) with { AccessToken = "" }, await vault.ReadAsync(record.ProfileId, default));
+        Assert.Equal(sibling with { AccessToken = "" }, await vault.ReadAsync(sibling.ProfileId, default));
+    }
+
     [Fact]
     public async Task IdentityAndMappedUserDeduplicateAtomicallyAcrossVaultInstances()
     {

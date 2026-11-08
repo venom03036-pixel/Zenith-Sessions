@@ -92,6 +92,33 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Single(Directory.GetFiles(Path.Combine(_root, "accounts.vault"), "*.dpapi")); DirectNoSecrets(shell);
     });
 
+    [Fact]
+    public Task RemovingTheRowAnAddIsRefreshingStopsThatAddAndWaitsForItBeforeRemovingTheRow() => OnUi(async () =>
+    {
+        using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);
+        using var vault = new ProtectedCredentialVault(_root); var gate = new DirectReloadGate(repository, vault);
+        var signIn = new DirectSignIn(); var client = new DirectClient();
+        await using var shell = DirectShell(_root, signIn, client, gate); await shell.InitializeAsync();
+        shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
+        var row = Assert.Single(shell.Accounts);
+        // The second add verifies the same player, moves onto this row, and then checks the row still exists.
+        gate.HoldFind = row.Profile.Id; shell.AddRobloxAccount.Execute(null); Task adding = shell.AddRobloxAccount.Execution; Task? removing = null;
+        try
+        {
+            await gate.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.NotEqual(row.Profile.Id, signIn.ProfileId);
+            removing = shell.DeleteAccountsAsync([row]);
+            bool stopped = await Task.WhenAny(gate.FindCancelled.Task, Task.Delay(TimeSpan.FromSeconds(5))) == gate.FindCancelled.Task;
+            Assert.True(stopped, "Removing the row did not stop the add that was refreshing that row's saved sign-in.");
+            Assert.False(removing.IsCompleted); Assert.False(adding.IsCompleted);
+        }
+        finally { gate.ReleaseFind(); await adding.WaitAsync(TimeSpan.FromSeconds(5)); if (removing is not null) await removing.WaitAsync(TimeSpan.FromSeconds(5)); }
+        Assert.Empty(shell.Accounts); Assert.False(shell.IsAuthorizing); Assert.Equal("", shell.ErrorNotice);
+        Assert.StartsWith("Removed 1 profile(s).", shell.Notice); Assert.DoesNotContain("Refreshed", shell.Notice);
+        Assert.Null(await repository.FindAsync(row.Profile.Id, default)); Assert.Null(await repository.FindAsync(signIn.ProfileId, default));
+        Assert.Null(await vault.ReadAsync(row.Profile.Id, default)); Assert.Null(await vault.ReadAsync(signIn.ProfileId, default));
+        DirectNoSecrets(shell);
+    });
+
     [Theory]
     [InlineData("invalid-identity")]
     [InlineData("expired")]
@@ -399,7 +426,22 @@ public sealed partial class ClientWindowIntegrationTests
                     { Entered.TrySetResult(summary); await _release.Task.ConfigureAwait(false); break; }
             return page;
         }
-        public Task<AccountProfile?> FindAsync(Guid id, CancellationToken ct) => inner.FindAsync(id, ct);
+        // The first lookup of HoldFind waits for ReleaseFind and, like an uncooperative store, ignores cancellation until then.
+        public Guid HoldFind;
+        public readonly TaskCompletionSource FindEntered = new(TaskCreationOptions.RunContinuationsAsynchronously),
+            FindCancelled = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _findRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _findHeld;
+        public void ReleaseFind() => _findRelease.TrySetResult();
+        public async Task<AccountProfile?> FindAsync(Guid id, CancellationToken ct)
+        {
+            if (id != Guid.Empty && id == HoldFind && Interlocked.Exchange(ref _findHeld, 1) == 0)
+            {
+                using var stopped = ct.Register(() => FindCancelled.TrySetResult());
+                FindEntered.TrySetResult(); await _findRelease.Task.ConfigureAwait(false);
+            }
+            return await inner.FindAsync(id, ct).ConfigureAwait(false);
+        }
         public Task<IReadOnlyList<string>> ReadGroupsAsync(CancellationToken ct) => inner.ReadGroupsAsync(ct);
         public Task<AccountProfile> SaveAsync(AccountProfile account, CancellationToken ct) => inner.SaveAsync(account, ct);
         public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => inner.DeleteAsync(id, revision, ct);

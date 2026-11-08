@@ -7,6 +7,15 @@ public sealed record ProfileMetadataGroup(string Name, string? ColorHex, long So
 /// <summary>Decoded export contents. <see cref="Groups"/> is in exported list order and empty before version 4.</summary>
 public sealed record ProfileMetadataDocument(IReadOnlyList<AccountProfile> Profiles, IReadOnlyList<ProfileMetadataGroup> Groups);
 
+/// <summary>A library that can take an import's saved groups and new profiles together.</summary>
+public interface IAccountMetadataImport
+{
+    /// <summary>In one transaction, creates the saved groups this library lacks (in the given order, with their colors)
+    /// and then the new profiles. A group the library already has keeps its own color and position. Any failure or
+    /// cancellation adds nothing. Returns how many saved groups were added.</summary>
+    Task<int> ImportMetadataAsync(IReadOnlyList<ProfileMetadataGroup> groups, IReadOnlyList<AccountProfile> profiles, CancellationToken ct);
+}
+
 /// <summary>A bounded, metadata-only import. Its values never establish authorization.</summary>
 public static class ProfileMetadataImport
 {

@@ -1,6 +1,7 @@
 using System.IO;
 using System.Text.Json;
 using System.Windows.Threading;
+using Microsoft.Data.Sqlite;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -316,6 +317,54 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         // An existing group keeps this library's color and position; missing groups follow it in their exported order.
         Assert.Equal(new (string, string?)[] { ("ALPHA", "#ABCDEF"), ("Zeta", "#FF0000"), ("Empty", "#00FF00") }, await CatalogNames(destination));
     });
+
+    [Fact]
+    public Task ImportAddsEveryMissingSavedGroupAndProfileAsOneCatalogChange() => OnUi(async () =>
+    {
+        string path = await ExportMovedLibrary();
+        string root = Path.Combine(_root, "destination"); var destination = new AccountRepository(root);
+        await using var vm = await Ready(destination, root);
+        IAccountGroupCatalog catalog = destination;
+        long before = (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision;
+        await vm.ImportAsync(path);
+        Assert.Equal(3, (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).Total); Assert.Equal(2, vm.AccountCount);
+        // One transaction: three new saved groups and two profiles advance the catalog once, not once per group.
+        Assert.Equal(before + 1, (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision);
+    });
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task AnImportThatFailsPartWayAddsNoSavedGroupOrProfile(bool laterGroupFails) => OnUi(async () =>
+    {
+        var repository = new AccountRepository(_root); await using var vm = await Ready(repository, _root);
+        await vm.SaveAccountAsync(AccountProfile.Create("Existing") with { Group = "Edge" });
+        var existing = Assert.Single(vm.Accounts).Profile;
+        // Only one more saved group fits after "Edge"; the next group created cannot get a list position.
+        await SetSortOrder((await repository.FindGroupAsync("Edge", default))!.Id, long.MaxValue - 1);
+        IAccountGroupCatalog catalog = repository;
+        var before = await CatalogNames(catalog); long revision = (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision;
+        var groups = new List<object> { new { Name = "First new", ColorHex = "#112233", SortOrder = 0 } };
+        // Either a later saved group fails, or the profile's own membership group fails after the saved groups.
+        if (laterGroupFails) groups.Add(new { Name = "Second new", ColorHex = (string?)null, SortOrder = 1 });
+        string path = Path.Combine(_root, "fails-part-way.json");
+        await File.WriteAllTextAsync(path, JsonSerializer.Serialize(new { Version = 4, Groups = groups, Profiles = new[] { new
+        {
+            Id = Guid.NewGuid(), Label = "Imported", Username = "", Group = laterGroupFails ? "Edge" : "Not saved yet", Priority = 0, UpdatedUtc = DateTimeOffset.UtcNow
+        } } }));
+        await Assert.ThrowsAsync<InvalidDataException>(() => vm.ImportAsync(path));
+        Assert.Equal(before, await CatalogNames(catalog));
+        Assert.Equal(revision, (await catalog.ReadGroupCatalogAsync(new(PageSize: 1), default)).CatalogRevision);
+        Assert.Equal(existing, Assert.Single((await repository.ReadAsync(new(), default)).Items));
+    });
+    private async Task SetSortOrder(Guid group, long order)
+    {
+        await using var db = new SqliteConnection(new SqliteConnectionStringBuilder { DataSource = Path.Combine(_root, "accounts.db"), Pooling = false }.ToString());
+        await db.OpenAsync(); db.CreateCollation("ZENITH_GROUP", (left, right) => StringComparer.OrdinalIgnoreCase.Compare(left, right));
+        using var command = db.CreateCommand(); command.CommandText = "UPDATE account_groups SET sort_order=$order WHERE id=$id";
+        command.Parameters.AddWithValue("$order", order); command.Parameters.AddWithValue("$id", group.ToString("D"));
+        Assert.Equal(1, await command.ExecuteNonQueryAsync());
+    }
 
     private async Task<string> ExportMovedLibrary()
     {

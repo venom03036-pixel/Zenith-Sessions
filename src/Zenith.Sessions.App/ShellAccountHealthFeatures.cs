@@ -20,7 +20,10 @@ public sealed partial class AccountRow
 /// single sign-in lane as Check saved sign-in, so Cancel, Lock, Panic, Exit, Disconnect and Remove
 /// stop it. It never runs automatically and never retries: the first unreachable, busy or timed-out
 /// result stops the batch, because each check fences its account before contacting Roblox. A check
-/// Roblox never processed restores its own account, which then counts as not checked.
+/// Roblox never processed restores its own account (or keeps another operation's newer sign-in), and a
+/// check refused because another account operation holds the sign-in service changes nothing; either
+/// way that account counts as not checked. A row whose status the busy protected store could not read
+/// is counted as such, not as having no saved sign-in.
 /// </summary>
 public sealed partial class ShellViewModel
 {
@@ -35,24 +38,26 @@ public sealed partial class ShellViewModel
         if (IsLocked || !_ready || _shuttingDown || IsAuthorizing) return;
         if (_nativeLaunch.IsBusy) { Notice = "Finish or stop the native trial before checking saved sign-ins."; return; }
         // Pin the work list now. Later checkbox, search or page changes cannot redirect it.
-        var targets = new List<Guid>(); int anyChecked = 0, noSavedSignIn = 0, needSignIn = 0, overflow = 0;
+        var targets = new List<Guid>(); int anyChecked = 0, statusUnread = 0, noSavedSignIn = 0, needSignIn = 0, overflow = 0;
         foreach (var row in Accounts)
         {
             if (!row.IsChecked) continue;
             anyChecked++;
-            if (row.KnownUserId is null) noSavedSignIn++;
+            if (row.SignInStatusBusy) statusUnread++; // The store was busy: this saved sign-in is unknown, not missing.
+            else if (row.KnownUserId is null) noSavedSignIn++;
             else if (!row.HasLinkedSavedSignIn) needSignIn++; // Already known; Roblox is not contacted.
             else if (targets.Count < MaximumSignInChecks) targets.Add(row.Profile.Id);
             else overflow++;
         }
         if (anyChecked == 0) { Notice = "Check one or more accounts on this page, then choose Check checked sign-ins."; return; }
         if (targets.Count == 0)
-        { Notice = "Nothing was sent to Roblox." + DescribeSignInChecks(0, needSignIn, 0, noSavedSignIn, overflow, false, false); return; }
+        { Notice = "Nothing was sent to Roblox." + DescribeSignInChecks(0, needSignIn, 0, noSavedSignIn, statusUnread, overflow, false, false); return; }
 
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _authorizationStop = stop; _linkingProfile = null; _preserveStopNotice = false; Raise(nameof(IsAuthorizing));
         Notice = $"Checking {targets.Count} saved {Plural(targets.Count, "sign-in", "sign-ins")} one at a time…";
-        int verified = 0, securityCheck = 0, attempted = 0, restored = 0; var challenged = new HashSet<Guid>();
+        // stoppedUnchanged: the check that stopped the batch left its account unchanged, so it counts as not checked.
+        int verified = 0, securityCheck = 0, attempted = 0, stoppedUnchanged = 0; var challenged = new HashSet<Guid>();
         string? stoppedBecause = null; bool cancelled = false, inFlight = false;
         try
         {
@@ -74,9 +79,16 @@ public sealed partial class ShellViewModel
                     }
                     catch (RobloxSessionException error) when (error.Failure == RobloxSessionFailure.NotProcessed)
                     {
-                        // Roblox never processed this check and its account was restored unchanged.
-                        // Stop anyway: the rest would meet the same outage or rate limit.
-                        restored = 1; stoppedBecause = "Roblox could not be reached or was busy";
+                        // Roblox never processed this check: its account was restored, or another operation's
+                        // newer sign-in was kept. Stop anyway: the rest would meet the same outage or rate limit.
+                        stoppedUnchanged = 1; stoppedBecause = "Roblox could not be reached or was busy";
+                        break;
+                    }
+                    catch (AccountLinkException error) when (error.OperationInProgress)
+                    {
+                        // A share-link check, handoff inspection or launch preparation holds the sign-in service.
+                        // This check read and changed nothing; stop rather than refuse every remaining account.
+                        stoppedUnchanged = 1; stoppedBecause = "another account operation was running. Try again when it finishes";
                         break;
                     }
                     catch (Exception error) when (error is RobloxSessionException or AccountLinkException) { needSignIn++; }
@@ -99,8 +111,8 @@ public sealed partial class ShellViewModel
                     row.SetAuthorization("Security check required", "Roblox asked for a human security check. Choose Sign in with Roblox and complete it in the official window; this saved sign-in is not reused until then.");
             if (_preserveStopNotice || IsLocked) return;
             string head = cancelled ? "Saved sign-in check cancelled." : stoppedBecause is { } reason ? $"Saved sign-in check stopped because {reason}." : "Saved sign-in check finished.";
-            string summary = head + DescribeSignInChecks(verified, needSignIn, securityCheck, noSavedSignIn, targets.Count - attempted + restored + overflow,
-                stoppedBecause is not null && restored == 0, cancelled && inFlight);
+            string summary = head + DescribeSignInChecks(verified, needSignIn, securityCheck, noSavedSignIn, statusUnread,
+                targets.Count - attempted + stoppedUnchanged + overflow, stoppedBecause is not null && stoppedUnchanged == 0, cancelled && inFlight);
             Notice = summary; AddEvent(summary);
         }
         finally
@@ -110,7 +122,7 @@ public sealed partial class ShellViewModel
         }
     }
 
-    private static string DescribeSignInChecks(int verified, int needSignIn, int securityCheck, int noSavedSignIn, int notChecked,
+    private static string DescribeSignInChecks(int verified, int needSignIn, int securityCheck, int noSavedSignIn, int statusUnread, int notChecked,
         bool stoppedAccountFenced, bool interruptedByCancel)
     {
         string text = "";
@@ -122,6 +134,7 @@ public sealed partial class ShellViewModel
         if (stoppedAccountFenced) text += " The account being checked when it stopped needs sign-in because its check could not finish.";
         if (interruptedByCancel) text += " The account being checked when you cancelled may need a new sign-in.";
         if (noSavedSignIn > 0) text += $" {noSavedSignIn} checked {Plural(noSavedSignIn, "account has", "accounts have")} no saved sign-in.";
+        if (statusUnread > 0) text += $" {statusUnread} checked {Plural(statusUnread, "account's", "accounts'")} sign-in status could not be read because protected storage was busy. Choose Refresh, then check again.";
         if (notChecked > 0) text += $" {notChecked} not checked; {Plural(notChecked, "its saved sign-in was", "their saved sign-ins were")} left unchanged.";
         return text;
     }

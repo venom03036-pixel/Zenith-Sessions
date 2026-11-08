@@ -1,3 +1,5 @@
+using System.Data.Common;
+using System.Security.Cryptography;
 using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
@@ -48,7 +50,7 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
                 // A kept replacement changed the record, so this conditional fence then writes nothing.
                 if (resolution.Outcome == RobloxShareLinkOutcome.SignInRequired) await FenceRejectedSessionAsync(operation, record).ConfigureAwait(false);
             }
-            catch { resolution.Dispose(); throw; } // Only cancellation reaches here; the answer's codes are zeroed with it.
+            catch { resolution.Dispose(); throw; } // Cancellation or a defect: the answer's codes are zeroed with it.
             return resolution;
         }
         finally { Complete(operation); }
@@ -59,8 +61,9 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
     /// same verify-and-save path as a sign-in: the identity check must name the same player as the record that was sent,
     /// the record must still be that one with no other write reserved, and the commit is conditional on that snapshot at
     /// the next generation. Any other result leaves the saved record as it was; an interrupted commit is fenced to only
-    /// this operation's own write, like an interrupted sign-in. The share-link answer stands either way and no failure
-    /// text is forwarded (it could quote protected paths).
+    /// this operation's own write, like an interrupted sign-in. After an expected failure the share-link answer stands and
+    /// only the failure's type is reported, never its text (it could quote protected paths). Any other exception is a
+    /// defect: it is not absorbed, so the caller's failure path shows and records it.
     /// </summary>
     private async Task KeepRotatedSessionAsync(Operation operation, AuthorizationRecord sent, RobloxSessionCredential candidate)
     {
@@ -73,7 +76,8 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
             kept = true;
         }
         catch (OperationCanceledException) { Ensure(operation); }
-        catch (Exception) { /* Mismatch, refusal, network or storage: nothing was kept. The conditional write cannot replace a newer grant. */ }
+        // Mismatch, refusal, network or storage: nothing was kept. The conditional write cannot replace a newer grant.
+        catch (Exception error) when (IsExpectedSessionFailure(error)) { failed?.Invoke(error.GetType()); }
         finally
         {
             // A fence failure is not forwarded either: the record is then the verified replacement or the original.
@@ -84,9 +88,10 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
     /// <summary>
     /// Roblox refused the saved session that was sent. Mark exactly that record as needing sign-in, keeping its protected
     /// bytes as CheckSavedAsync does. A newer grant or reservation from another operation is never overwritten: if the
-    /// record changed or the conditional write is refused, nothing is written. A storage failure is not forwarded (its
-    /// text could quote protected paths); the SignInRequired answer stands either way, and launch preparation still
-    /// fences an unchanged record before any use, so no client can start with the refused session.
+    /// record changed or the conditional write is refused, nothing is written. After a storage failure only its type is
+    /// reported, never its text (it could quote protected paths); the SignInRequired answer stands, and launch preparation
+    /// still fences an unchanged record before any use, so no client can start with the refused session. Any other
+    /// exception is a defect and is not absorbed.
     /// </summary>
     private async Task FenceRejectedSessionAsync(Operation operation, AuthorizationRecord sent)
     {
@@ -100,6 +105,16 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
             Ensure(operation);
         }
         catch (OperationCanceledException) { Ensure(operation); }
-        catch (Exception) { /* Storage or a changed record: keep the outcome; nothing else to undo, the write is conditional. */ }
+        // Storage or a changed record: keep the outcome; nothing else to undo, the write is conditional.
+        catch (Exception error) when (IsExpectedSessionFailure(error)) { failed?.Invoke(error.GetType()); }
     }
+
+    /// <summary>
+    /// The failures the saved-session upkeep after a share-link answer expects: Roblox refused or could not be reached
+    /// (RobloxSessionException), the identity or record no longer matches (AccountLinkException), or the protected store
+    /// or library could not be read or written. Everything else, such as InvalidOperationException, ArgumentException or
+    /// NullReferenceException, is a defect.
+    /// </summary>
+    private static bool IsExpectedSessionFailure(Exception error) => error is RobloxSessionException or AccountLinkException
+        or IOException or UnauthorizedAccessException or InvalidDataException or CryptographicException or DbException;
 }

@@ -137,6 +137,26 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
     }
 
     [Fact]
+    public async Task AnAddCannotRefreshARowWhileThatRowIsBeingRemovedAndCanAfterTheRemovalEnds()
+    {
+        await using var fixture = await Fixture.Open(Root);
+        var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Main alt") with { Username = "verified_player", RobloxUserId = 456 }, default);
+        var saved = Record(existing.Id, cookie: Stale); await fixture.Inner.SaveAsync(saved, default);
+        using (var removal = await fixture.Service.BeginProfileRemovalAsync([existing.Id], default))
+        {
+            Assert.False(removal.StoppedOperation);
+            var error = await Assert.ThrowsAsync<AccountLinkException>(() => fixture.Service.AddAsync(default));
+            Assert.Contains("being removed", error.Message); Assert.DoesNotContain(Original, error.Message);
+            Assert.Equal(saved, await fixture.Inner.ReadAsync(existing.Id, default)); Assert.Equal(existing, await fixture.InnerProfiles.FindAsync(existing.Id, default));
+            Assert.Equal(1, (await fixture.InnerProfiles.ReadAsync(new(), default)).Total); Assert.Equal(0, fixture.Profiles.Creates);
+            Assert.Equal(0, fixture.Vault.Commits); Assert.False(File.Exists(fixture.JournalPath(existing.Id)));
+            AssertDisposed(fixture.Browser.Issued.Single());
+        }
+        var added = await fixture.Service.AddAsync(default);
+        Assert.True(added.Refreshed); Assert.Equal(existing.Id, added.ProfileId); Assert.Equal(Record(existing.Id, 2), await fixture.Inner.ReadAsync(existing.Id, default));
+    }
+
+    [Fact]
     public async Task EditableMetadataNeverAutoMatchesOrOverwritesAnExistingProfile()
     {
         await using var fixture = await Fixture.Open(Root);

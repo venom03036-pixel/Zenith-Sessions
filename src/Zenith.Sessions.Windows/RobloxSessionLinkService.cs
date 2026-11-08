@@ -3,9 +3,13 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
-/// <summary>One owned saved-session operation and one bounded waiting disconnect. Never launches a client.</summary>
+/// <summary>
+/// One owned saved-session operation and one bounded waiting disconnect. Never launches a client. <paramref name="failed"/>
+/// receives only the type of an expected failure that the service absorbs without changing its answer (never its message).
+/// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
-    IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null)
+    IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
+    Action<Type>? failed = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();
@@ -95,7 +99,13 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
                 operation.FinalMutationIssued = true; // Cleanup may fence only this exact write.
                 var receipt = await ((ISnapshotAuthorizationVault)vault).TryCommitSnapshotAsync(pendingSnapshot, restored,
                     operation.FinalMutationId, operation.Token).ConfigureAwait(false);
-                Ensure(operation); RequireMutation(receipt, restored.Generation);
+                Ensure(operation);
+                // Another operation replaced this check's fence, so its newer record is kept. Roblox still never
+                // processed the check: report that, so a caller treats it as unreachable or busy, not as a sign-in answer.
+                if (receipt.Status == AuthorizationMutationStatus.Conflict)
+                    throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
+                        "Roblox could not be reached or was busy, so the saved sign-in was not checked. Another operation changed it meanwhile, and that newer sign-in was kept.");
+                RequireMutation(receipt, restored.Generation);
                 succeeded = true;
                 throw new RobloxSessionException(RobloxSessionFailure.NotProcessed,
                     "Roblox could not be reached or was busy, so the saved sign-in was not checked. It was left unchanged; check it again later.");
@@ -380,8 +390,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
     }
     /// <summary>
     /// Moves this owned add to the saved row of the same verified player. The move happens under the
-    /// state gate, so a later Disconnect, Cancel or Dispose for that row reaches this operation; like
-    /// Begin, it refuses while a disconnect is waiting. The commit stays conditional on the row's snapshot.
+    /// state gate, so a later Disconnect, Cancel, Dispose or profile removal for that row reaches this operation; like
+    /// Begin, it refuses while a disconnect is waiting, and it refuses a row that is being removed. The commit stays
+    /// conditional on the row's snapshot.
     /// </summary>
     private async Task<AuthorizationWriteSnapshot> AdoptSavedSessionAsync(Operation operation, Guid profileId, LinkedIdentity identity)
     {
@@ -391,6 +402,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             if (_disposed || operation.Invalidated || !ReferenceEquals(_active, operation)) throw new OperationCanceledException(operation.Token);
             if (_disconnect is not null)
                 throw new AccountLinkException("A saved sign-in is being removed, so this account's saved sign-in was not refreshed. Add the account again after that finishes.");
+            // A removal holds its rows from before it decides whether an operation owns one until they are gone (BeginProfileRemovalAsync).
+            if (_removing.ContainsKey(profileId))
+                throw new AccountLinkException("This account is being removed from your library, so its saved sign-in was not refreshed. Add the account again after the removal finishes.");
             operation.ProfileId = profileId;
         }
         var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
@@ -444,7 +458,8 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         lock (_state)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
-            if (_active is not null || _disconnect is not null) throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.");
+            if (_active is not null || _disconnect is not null)
+                throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.") { OperationInProgress = true };
             return _active = new(profileId, CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token));
         }
     }

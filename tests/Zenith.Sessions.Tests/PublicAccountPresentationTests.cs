@@ -329,6 +329,31 @@ public sealed class PublicAccountPresentationTests
         Assert.Equal(0, directory.LookupCalls);
     }
 
+    [Fact]
+    public async Task BatchedDescriptorSkipsTheSingleRequestAndMustBelongToThePlayer()
+    {
+        var directory = new SyntheticDirectory(Png());
+        await using var presenter = new PublicAccountPresentation(directory);
+        Assert.False(presenter.CanBatchAvatars); // A directory without the batch capability keeps the single-player path.
+        Assert.Equal(PublicDirectoryState.Failure, (await presenter.GetAvatarDescriptorsAsync([42], default)).State);
+        PublicRobloxAvatar Avatar(long id) => new(id, new Uri("https://tr.rbxcdn.com/synthetic.png"), 150, 150, DateTimeOffset.UtcNow);
+        var loaded = await presenter.FetchAsync(42, new PublicRobloxAvatarBatchItem(42, PublicRobloxThumbnailState.Ready, Avatar(42)), default);
+        Assert.Equal(PublicDirectoryState.Success, loaded.State); Assert.NotNull(loaded.Value!.Avatar);
+        Assert.Equal(0, directory.DescriptorCalls); Assert.Equal(1, directory.EncodedCalls);
+        // An item for another player is rejected before any request.
+        var other = await presenter.FetchAsync(43, new PublicRobloxAvatarBatchItem(42, PublicRobloxThumbnailState.Ready, Avatar(42)), default);
+        Assert.Equal(PublicDirectoryState.InvalidInput, other.State); Assert.Null(other.Value); Assert.Equal(1, directory.LookupCalls);
+        // A ready item carrying another player's picture keeps the placeholder and downloads nothing.
+        var foreign = await presenter.FetchAsync(44, new PublicRobloxAvatarBatchItem(44, PublicRobloxThumbnailState.Ready, Avatar(42)), default);
+        Assert.Equal(PublicDirectoryState.Failure, foreign.Value!.AvatarState); Assert.Null(foreign.Value.Avatar);
+        // Still being prepared waits like the single reply; blocked keeps the placeholder.
+        var preparing = await presenter.FetchAsync(45, new PublicRobloxAvatarBatchItem(45, PublicRobloxThumbnailState.Pending, null), default);
+        Assert.Equal(PublicDirectoryState.Deferred, preparing.Value!.AvatarState); Assert.Equal(TimeSpan.FromSeconds(30), preparing.RetryAfter);
+        var blocked = await presenter.FetchAsync(46, new PublicRobloxAvatarBatchItem(46, PublicRobloxThumbnailState.Blocked, null), default);
+        Assert.Equal(PublicDirectoryState.Unknown, blocked.Value!.AvatarState); Assert.Null(blocked.Value.Avatar);
+        Assert.Equal(1, directory.EncodedCalls); Assert.Equal(0, directory.DescriptorCalls);
+    }
+
     private static TaskCompletionSource<bool> Signal() => new(TaskCreationOptions.RunContinuationsAsynchronously);
     private static PublicDirectoryResult<PublicRobloxUser> User(long id) => new(PublicDirectoryState.Success,
         new(id, "Synthetic_" + id, "Public Display", DateTimeOffset.UtcNow), "Synthetic public profile");
