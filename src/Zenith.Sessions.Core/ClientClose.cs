@@ -16,7 +16,11 @@ public enum ClientCloseStatus
     /// <summary>The process is alive but Windows refused the close request for its window; nothing was sent.</summary>
     NotSent,
     /// <summary>Stopped by Panic, Lock, exit or cancellation. A request already sent cannot be recalled.</summary>
-    Cancelled
+    Cancelled,
+    /// <summary>Windows denied access before a close request could be sent.</summary>
+    Denied,
+    /// <summary>The process could not be checked; its exit has not been established.</summary>
+    NotConfirmed
 }
 
 /// <param name="CloseRequests">How many close requests reached the client's window (0, 1 or 2).</param>
@@ -38,7 +42,9 @@ public enum ClientForceCloseStatus
     /// <summary>Windows refused the termination (for example another Windows user's client); nothing was ended.</summary>
     Denied,
     /// <summary>Stopped before the termination was sent; nothing was ended.</summary>
-    Cancelled
+    Cancelled,
+    /// <summary>The process could not be checked; no termination was sent.</summary>
+    NotConfirmed
 }
 
 /// <param name="EndedUtc">When Windows accepted the termination; null when nothing was ended.</param>

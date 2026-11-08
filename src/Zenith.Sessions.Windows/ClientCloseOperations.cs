@@ -4,6 +4,8 @@ namespace Zenith.Sessions.Windows;
 
 /// <summary>What Windows answered to one TerminateProcess call on the checked handle.</summary>
 internal enum ClientTerminateStatus { Accepted, AlreadyExited, Denied }
+internal enum ClientCloseOpenStatus { Opened, NotCurrent, Denied, NotConfirmed }
+internal sealed record ClientCloseOpenResult(ClientCloseOpenStatus Status, IClientCloseHandle? Handle = null);
 
 /// <summary>
 /// One open handle to the exact process instance a close or force close acts on. The adapter opens it only after the
@@ -23,10 +25,10 @@ internal interface IClientCloseHandle : IDisposable
 internal interface IClientCloseAdapter
 {
     /// <summary>
-    /// Opens the exact instance named by the observation, or null when it has exited, its PID was reused, it is not an
-    /// accepted client executable, or Windows refused to open it. <paramref name="forTermination"/> adds the terminate right.
+    /// Opens the exact instance, or distinguishes a gone/changed instance from denied or unconfirmed access.
+    /// <paramref name="forTermination"/> adds the terminate right.
     /// </summary>
-    IClientCloseHandle? Open(SessionObservation session, bool forTermination);
+    ClientCloseOpenResult Open(SessionObservation session, bool forTermination);
 }
 
 /// <summary>
@@ -67,8 +69,14 @@ internal sealed class ClientCloseOperations : IClientCloseControl
         long generation = Interlocked.Read(ref _generation);
         int pid = session.ProcessId;
         if (pid <= 0 || session.ProcessStartUtcTicks <= 0) return NotCurrent();
-        using var handle = await Task.Run(() => _adapter.Open(session, forTermination: false), ct).ConfigureAwait(false);
-        if (handle is null) return NotCurrent();
+        var opened = await Task.Run(() => _adapter.Open(session, forTermination: false), ct).ConfigureAwait(false);
+        using var handle = opened.Handle;
+        if (opened.Status == ClientCloseOpenStatus.NotCurrent) return NotCurrent();
+        if (handle is null || opened.Status != ClientCloseOpenStatus.Opened)
+            return new(opened.Status == ClientCloseOpenStatus.Denied ? ClientCloseStatus.Denied : ClientCloseStatus.NotConfirmed, 0,
+                opened.Status == ClientCloseOpenStatus.Denied
+                    ? "Windows denied access to the client. Close was not sent; its exit has not been confirmed."
+                    : "Windows could not confirm the client's identity or state. Close was not sent; its exit has not been confirmed.");
         int requests = 0;
         try
         {
@@ -107,8 +115,14 @@ internal sealed class ClientCloseOperations : IClientCloseControl
         int pid = session.ProcessId;
         const string nothing = " Nothing was ended.";
         if (pid <= 0 || session.ProcessStartUtcTicks <= 0) return NotCurrent();
-        using var handle = await Task.Run(() => _adapter.Open(session, forTermination: true), ct).ConfigureAwait(false);
-        if (handle is null) return NotCurrent();
+        var opened = await Task.Run(() => _adapter.Open(session, forTermination: true), ct).ConfigureAwait(false);
+        using var handle = opened.Handle;
+        if (opened.Status == ClientCloseOpenStatus.NotCurrent) return NotCurrent();
+        if (handle is null || opened.Status != ClientCloseOpenStatus.Opened)
+            return new(opened.Status == ClientCloseOpenStatus.Denied ? ClientForceCloseStatus.Denied : ClientForceCloseStatus.NotConfirmed, null,
+                (opened.Status == ClientCloseOpenStatus.Denied
+                    ? "Windows denied access to the client. Its exit has not been confirmed."
+                    : "Windows could not confirm the client's identity or state. Its exit has not been confirmed.") + nothing);
         if (Stopped(generation)) return new(ClientForceCloseStatus.Cancelled, null, "Force close stopped before anything was sent." + nothing);
         var status = await Task.Run(() => handle.Terminate(), ct).ConfigureAwait(false);
         if (status == ClientTerminateStatus.AlreadyExited) return NotCurrent();

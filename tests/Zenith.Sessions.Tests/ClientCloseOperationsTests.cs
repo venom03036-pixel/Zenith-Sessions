@@ -196,6 +196,31 @@ public sealed class ClientCloseOperationsTests
         await Assert.ThrowsAsync<ArgumentNullException>(() => operations.CloseAsync(null!, default));
     }
 
+    [Theory]
+    [InlineData(5, ClientCloseStatus.Denied, ClientForceCloseStatus.Denied)]
+    [InlineData(6, ClientCloseStatus.NotConfirmed, ClientForceCloseStatus.NotConfirmed)]
+    public async Task FailedHandleAccessDoesNotClaimExitOrSendAnything(int error, ClientCloseStatus expectedClose, ClientForceCloseStatus expectedForce)
+    {
+        var adapter = new ScriptedAdapter { OpenStatus = NativeClientCloseAdapter.OpenFailure(error) };
+        var operations = Operations(adapter);
+        var close = await operations.CloseAsync(Session(), default);
+        var force = await operations.ForceCloseAsync(Session(), default);
+        Assert.Equal(expectedClose, close.Status); Assert.Equal(expectedForce, force.Status);
+        Assert.Equal(0, close.CloseRequests); Assert.False(close.OffersForceClose);
+        Assert.False(force.Accepted); Assert.Null(force.EndedUtc);
+        Assert.Contains("exit has not been confirmed", close.Explanation);
+        Assert.Contains("exit has not been confirmed", force.Explanation);
+        Assert.Equal(["open", "open-terminate"], adapter.Calls);
+    }
+
+    [Fact]
+    public void AMissingPidIsDistinctFromAccessDeniedOrUnknownFailure()
+    {
+        Assert.Equal(ClientCloseOpenStatus.NotCurrent, NativeClientCloseAdapter.OpenFailure(87));
+        Assert.Equal(ClientCloseOpenStatus.Denied, NativeClientCloseAdapter.OpenFailure(5));
+        Assert.Equal(ClientCloseOpenStatus.NotConfirmed, NativeClientCloseAdapter.OpenFailure(0));
+    }
+
     private sealed class FixedClock(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
@@ -205,6 +230,7 @@ public sealed class ClientCloseOperationsTests
     {
         public List<string> Calls { get; } = [];
         public bool OpenFails;
+        public ClientCloseOpenStatus OpenStatus = ClientCloseOpenStatus.Opened;
         /// <summary>The 1-based wait after which the process reads as exited; int.MaxValue never exits.</summary>
         public int ExitAfterWait = int.MaxValue;
         public bool[] PostResults = [true, true];
@@ -214,11 +240,12 @@ public sealed class ClientCloseOperationsTests
         public Action? OnOpen;
         private int _posts, _waits;
 
-        public IClientCloseHandle? Open(SessionObservation session, bool forTermination)
+        public ClientCloseOpenResult Open(SessionObservation session, bool forTermination)
         {
             Calls.Add(forTermination ? "open-terminate" : "open");
             OnOpen?.Invoke();
-            return OpenFails ? null : new Handle(this);
+            return OpenFails ? new(ClientCloseOpenStatus.NotCurrent)
+                : OpenStatus != ClientCloseOpenStatus.Opened ? new(OpenStatus) : new(OpenStatus, new Handle(this));
         }
 
         private sealed class Handle(ScriptedAdapter owner) : IClientCloseHandle

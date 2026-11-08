@@ -17,3 +17,9 @@ Evidence in `artifacts/sessions-tests-0.60-d6process/`:
 - `d6-cpu-close.trx`: 107 passing CPU and close checks after restoring the repair.
 
 Review covered ownership retention on failed writes, exact PID/start comparisons, cap conflict preservation, query-only access, temporary-file compatibility, cancellation and disposal. The patch adds no packages or polling loop. Native CPU/FPS behavior remains an attended trial; synthetic results do not establish live Roblox compatibility.
+
+## Close access failures
+
+Opening a close handle now returns a typed outcome: opened, no longer the same instance, access denied, or identity/state unconfirmed. Only an actual gone/changed instance is described as exited/not current. Denied or unknown opens send no close or termination, stamp no end time and never offer Force close. Creation-time and image-query failures remain unconfirmed rather than being treated as proof of exit. The checked process handle remains owned until the operation ends.
+
+`d6-close-before.trx` records two expected failures after temporarily restoring the original error-collapsing classification with the typed seam retained: both access denied and an unknown handle error incorrectly became NotCurrent. `d6-upload-first.trx` then passed 83 close/upload checks after restoring the repaired classification; `d6-cpu-close.trx` passed 107 CPU/close checks. Native client closing remains an attended test.

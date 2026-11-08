@@ -23,24 +23,45 @@ internal sealed class NativeClientCloseAdapter(IReadOnlyList<string> allowedExec
 
     public NativeClientCloseAdapter() : this(NativeClientWindowAdapter.ClientExecutables) { }
 
-    public IClientCloseHandle? Open(SessionObservation session, bool forTermination)
+    public ClientCloseOpenResult Open(SessionObservation session, bool forTermination)
     {
-        if (session.ProcessId <= 0 || session.ProcessStartUtcTicks <= 0) return null;
+        if (session.ProcessId <= 0 || session.ProcessStartUtcTicks <= 0) return new(ClientCloseOpenStatus.NotCurrent);
         var process = Native.OpenProcess(QueryLimited | Synchronize | (forTermination ? Terminate : 0), false, session.ProcessId);
-        if (process.IsInvalid) { process.Dispose(); return null; }
-        if (Native.WaitForSingleObject(process, 0) != WaitTimeout || !ProcessInstanceIdentity.MatchesStart(process, session.ProcessStartUtcTicks)
-            || !AcceptedExecutable(process))
-        { process.Dispose(); return null; }
-        try { return new Handle(process, session.ProcessId, _allowedExecutables); }
-        catch (Win32Exception) { process.Dispose(); return null; }
+        if (process.IsInvalid)
+        {
+            int error = Marshal.GetLastWin32Error(); process.Dispose();
+            return new(OpenFailure(error));
+        }
+        uint wait = Native.WaitForSingleObject(process, 0);
+        if (wait != WaitTimeout)
+        { process.Dispose(); return new(wait == WaitSignaled ? ClientCloseOpenStatus.NotCurrent : ClientCloseOpenStatus.NotConfirmed); }
+        long? start = ProcessInstanceIdentity.StartTicks(process);
+        if (start != session.ProcessStartUtcTicks)
+        { process.Dispose(); return new(start is null ? ClientCloseOpenStatus.NotConfirmed : ClientCloseOpenStatus.NotCurrent); }
+        var accepted = AcceptedExecutable(process);
+        if (accepted != ClientCloseOpenStatus.Opened) { process.Dispose(); return new(accepted); }
+        try { return new(ClientCloseOpenStatus.Opened, new Handle(process, session.ProcessId, _allowedExecutables)); }
+        catch (Win32Exception error)
+        {
+            process.Dispose();
+            return new(error.NativeErrorCode == 5 ? ClientCloseOpenStatus.Denied : ClientCloseOpenStatus.NotConfirmed);
+        }
     }
 
-    private bool AcceptedExecutable(SafeProcessHandle process)
+    internal static ClientCloseOpenStatus OpenFailure(int error) => error switch
+    {
+        5 => ClientCloseOpenStatus.Denied,
+        87 => ClientCloseOpenStatus.NotCurrent, // ERROR_INVALID_PARAMETER for a nonexistent PID.
+        _ => ClientCloseOpenStatus.NotConfirmed
+    };
+
+    private ClientCloseOpenStatus AcceptedExecutable(SafeProcessHandle process)
     {
         var image = new StringBuilder(1024); uint length = (uint)image.Capacity;
-        if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
+        if (!Native.QueryFullProcessImageName(process, 0, image, ref length))
+            return Marshal.GetLastWin32Error() == 5 ? ClientCloseOpenStatus.Denied : ClientCloseOpenStatus.NotConfirmed;
         string name = Path.GetFileName(image.ToString());
-        return _allowedExecutables.Contains(name, StringComparer.OrdinalIgnoreCase);
+        return _allowedExecutables.Contains(name, StringComparer.OrdinalIgnoreCase) ? ClientCloseOpenStatus.Opened : ClientCloseOpenStatus.NotCurrent;
     }
 
     private sealed class Handle : IClientCloseHandle
