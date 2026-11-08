@@ -147,11 +147,11 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
             if (data.GetArrayLength() != 1) throw new InvalidPublicResponseException();
             JsonElement item = data[0];
             if (ReadId(item, "targetId") != universeId) throw new InvalidPublicResponseException();
-            string state = ReadText(item, "state", 32);
-            if (MapThumbnailState(state) == PublicRobloxThumbnailState.Pending)
+            var state = MapThumbnailState(ReadText(item, "state", 32), out bool known);
+            if (state == PublicRobloxThumbnailState.Pending)
                 return Deferred<PublicRobloxGameIcon>("The public game icon is still being prepared.", TimeSpan.FromSeconds(30));
-            if (state is "Blocked" or "Error") return Unknown<PublicRobloxGameIcon>("The public game icon is unavailable.");
-            if (state != "Completed") return Unknown<PublicRobloxGameIcon>("The public game icon state is not supported.");
+            if (state != PublicRobloxThumbnailState.Ready)
+                return Unknown<PublicRobloxGameIcon>(known ? "The public game icon is unavailable." : "The public game icon state is not supported.");
             if (!TryValidateAvatarUri(ReadText(item, "imageUrl", 2048), out Uri? imageUri)) throw new InvalidPublicResponseException();
             return Success(new PublicRobloxGameIcon(universeId, imageUri!, 150, 150, _clock.GetUtcNow()),
                 "Public icon of the universe's root place.");

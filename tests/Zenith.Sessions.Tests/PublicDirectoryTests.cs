@@ -447,18 +447,19 @@ public sealed class PublicDirectoryTests
     }
 
     [Theory]
-    [InlineData("Pending", PublicDirectoryState.Deferred)]
-    [InlineData("InReview", PublicDirectoryState.Deferred)]
-    [InlineData("Blocked", PublicDirectoryState.Unknown)]
-    [InlineData("Error", PublicDirectoryState.Unknown)]
-    [InlineData("NewUnknownState", PublicDirectoryState.Unknown)]
-    public async Task UnreadyAvatarsAreExplicitAndNeverInvented(string state, PublicDirectoryState expected)
+    [InlineData("Pending", PublicDirectoryState.Deferred, "The public avatar is still being prepared.")]
+    [InlineData("InReview", PublicDirectoryState.Deferred, "The public avatar is still being prepared.")]
+    [InlineData("Blocked", PublicDirectoryState.Unknown, "The public avatar is unavailable.")]
+    [InlineData("Error", PublicDirectoryState.Unknown, "The public avatar is unavailable.")] // Roblox's own name for a picture it could not make.
+    [InlineData("NewUnknownState", PublicDirectoryState.Unknown, "The public avatar state is not supported.")] // A name Zenith does not know yet.
+    public async Task UnreadyAvatarsAreExplicitAndNeverInvented(string state, PublicDirectoryState expected, string message)
     {
         using var handler = new FakeHandler((_, _) => Task.FromResult(Json(AvatarJson(state, null))));
         using var http = new HttpClient(handler);
         var result = await new RobloxPublicDirectory(http).GetAvatarAsync(42, CancellationToken.None);
         Assert.Equal(expected, result.State);
         Assert.Null(result.Value);
+        Assert.Equal(message, result.Message);
     }
 
     [Theory]

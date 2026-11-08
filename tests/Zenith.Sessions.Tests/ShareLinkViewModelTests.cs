@@ -260,7 +260,7 @@ public sealed class ShareLinkViewModelTests
 
     [Theory]
     [MemberData(nameof(UniverseLookups))]
-    public Task AUniverseOnlyLinkToARestrictedGameSaysItCannotBeOpenedWithoutRetryAdvice(string lookup,string status)=>SearchTest.OnUi(async()=>
+    public Task AUniverseOnlyLinkSaysItCannotBeOpenedOnlyWhenTheListingAnsweredWithoutTheUniverse(string lookup,string status)=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var store=new Store();
         var listing=new Listing(lookup switch

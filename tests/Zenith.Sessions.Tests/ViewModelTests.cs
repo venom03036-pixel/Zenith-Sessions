@@ -17,35 +17,55 @@ public sealed class ViewModelTests : IDisposable
     // A check that overruns its limit is stopped the way the app exits (DisposeAsync cancels and awaits every library
     // operation, such as an export writing its .tmp file) and then awaited, so its own files close too. Abandoning it
     // left that work writing on the dispatcher thread while Dispose deleted the folder, and into later tests.
+    // The limit measures the check alone. Opening the shell has its own limit, so a short limit cannot fire while the
+    // shell is still opening and report a check that never ran as "stopped": on a loaded PC that run would have
+    // stopped nothing, and the overrun test below would have passed with no export open.
     private async Task CheckAsync(Func<ShellViewModel,Task> check,TimeSpan limit)
     {
-        var stopLimit=TimeSpan.FromSeconds(15);
+        var openLimit=TimeSpan.FromSeconds(15); var stopLimit=TimeSpan.FromSeconds(15);
         await OnDispatcherAsync(async ()=>
         {
             await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());
-            async Task RunAsync() { await vm.InitializeAsync(); Assert.Equal("Settings saved",vm.SaveStatus); await check(vm); }
-            var checking=RunAsync();
-            using(var finished=new CancellationTokenSource())
+            await WithinAsync(async ()=> { await vm.InitializeAsync(); Assert.Equal("Settings saved",vm.SaveStatus); },openLimit,"opening the shell");
+            await WithinAsync(()=>check(vm),limit,"the check");
+            async Task WithinAsync(Func<Task> work,TimeSpan within,string stage)
             {
-                if(await Task.WhenAny(checking,Task.Delay(limit,finished.Token))==checking) { finished.Cancel(); await checking; return; }
+                var running=work();
+                using(var finished=new CancellationTokenSource())
+                {
+                    if(await Task.WhenAny(running,Task.Delay(within,finished.Token))==running) { finished.Cancel(); await running; return; }
+                }
+                await vm.DisposeAsync();
+                Exception? afterStop=null;
+                try { await running.WaitAsync(stopLimit); } catch(Exception ex) { afterStop=ex; }
+                string outcome=running.IsCompleted ? $"{stage} then stopped" : $"{stage} was still running {stopLimit.TotalSeconds:0} s later";
+                throw new TimeoutException($"{char.ToUpperInvariant(stage[0])}{stage[1..]} did not finish within {within.TotalSeconds:0.###} s. Zenith Sessions was shut down and {outcome}.",afterStop);
             }
-            await vm.DisposeAsync();
-            Exception? afterStop=null;
-            try { await checking.WaitAsync(stopLimit); } catch(Exception ex) { afterStop=ex; }
-            string outcome=checking.IsCompleted ? "the check then stopped" : $"the check was still running {stopLimit.TotalSeconds:0} s later";
-            throw new TimeoutException($"The check did not finish within {limit.TotalSeconds:0.###} s. Zenith Sessions was shut down and {outcome}.",afterStop);
-        }).WaitAsync(limit+stopLimit+stopLimit); // Last resort only: the dispatcher thread itself is blocked.
+        }).WaitAsync(openLimit+limit+stopLimit+stopLimit); // Last resort only: the dispatcher thread itself is blocked.
     }
     [Fact]
     public async Task ACheckThatOverrunsItsLimitIsStoppedBeforeTheTestFolderIsDeleted()
     {
         // Only Zenith's shutdown ends this loop, and each export holds overrun-export.json.tmp open while it writes:
         // the shape of the oversized-export run that overran 15 s under load and left Dispose unable to delete the folder.
-        string path=Path.Combine(_root,"overrun-export.json");
-        var overrun=await Assert.ThrowsAsync<TimeoutException>(()=>CheckAsync(async vm=> { while(true) await vm.ExportAsync(path); },TimeSpan.FromSeconds(1)));
+        // An export the shell accepted (not refused as already shutting down) was in flight, or being started, when
+        // the shutdown began; without one, this run would have stopped nothing and proved nothing about open files.
+        string path=Path.Combine(_root,"overrun-export.json"); int accepted=0;
+        var overrun=await Assert.ThrowsAsync<TimeoutException>(()=>CheckAsync(async vm=>
+        {
+            while(true) { var export=vm.ExportAsync(path); if(!export.IsCanceled) accepted++; await export; }
+        },TimeSpan.FromSeconds(1)));
         Assert.Contains("Zenith Sessions was shut down and the check then stopped",overrun.Message);
+        Assert.True(accepted>0,"No export was accepted before the shutdown, so the stop was never tried against an open export file.");
         Directory.Delete(_root,true); // Throws while any file in the folder is still open.
     }
+    [Fact]
+    public Task TheCheckLimitStartsOnlyOnceTheShellHasOpened()=>
+        // Opening the shell (settings, the library and the vault, on the thread pool) takes far longer than this limit.
+        // The limit measures the check alone, so a check that finishes at once passes; a limit that ran from startup
+        // would report that check as overrunning and "stopped" before it ever ran, and under load the overrun test
+        // above would do the same with no export open.
+        CheckAsync(vm=> { Assert.Equal("Settings saved",vm.SaveStatus); return Task.CompletedTask; },TimeSpan.FromMilliseconds(1));
     [Fact]
     public Task RestoringAFieldCannotHideAnUnsavedViewPreference()=>CheckAsync(async vm=>
     {
