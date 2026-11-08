@@ -393,6 +393,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientUpdateFeatures(clientUpdateInstaller);
         InitializeDiagnosticsFeatures(clientLogTails);
         InitializeDataEncryption(dataEncryption);InitializeNews(newsFeed);
+        InitializeVaultPasswordFeatures();
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
@@ -412,7 +413,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
-        Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); ApplySavedClientUpdateCheck(restart:true); LoadClientDisplaysOnce(); });
+        Lock = new(_ => LockDashboard()); Unlock = new(_ => RequestDashboardUnlock());
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         LanguageChoices=CreateLanguageChoices();
@@ -485,13 +486,16 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
             stage=ManagerSubsystem.ClientPriority;await CheckLeftoverClientCpuCapsAsync();
             stage=ManagerSubsystem.UploadLimit;await LoadUploadLimitRecordAsync();
-            stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
+            stage=ManagerSubsystem.Vault;await RefreshVaultPasswordStateAsync();await CleanupCredentialsAsync();
             stage=ManagerSubsystem.Library;
             string? projectionNotice=null;
             try
             {
-                var projection=await Task.Run(()=>_identityProjection.ReplayAsync(_lifetime.Token));
-                if(projection.Pending>0) projectionNotice="Linked account names need reconciliation. Pending metadata journals were retained; account authorization is checked separately.";
+                if (!_vaultPasswordUnavailable && _vaultPasswordMode is VaultPasswordMode.Disabled or VaultPasswordMode.Unlocked)
+                {
+                    var projection=await Task.Run(()=>_identityProjection.ReplayAsync(_lifetime.Token));
+                    if(projection.Pending>0) projectionNotice="Linked account names need reconciliation. Pending metadata journals were retained; account authorization is checked separately.";
+                }
             }
             catch(Exception ex) when(ex is IOException or UnauthorizedAccessException || ex is OperationCanceledException && !_lifetime.IsCancellationRequested)
             {
@@ -582,7 +586,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             HashSet<Guid>? unavailable=null, busy=null;
             try { foreach(var summary in await _vault.ReadSummariesAsync(ids,ct)) summaries[summary.ProfileId]=summary; }
             catch(AuthorizationVaultBusyException) { busy=[..ids]; }
-            catch(Exception ex) when(ex is InvalidDataException or IOException or UnauthorizedAccessException)
+            catch(Exception ex) when(ex is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException)
             {
                 // One damaged or locked record must not hide every other row's link. Only on this
                 // degraded path, re-read each visible profile alone (same validation, same lease)
@@ -594,7 +598,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                     try { if(await _vault.GetSummaryAsync(ids[i],ct) is { } summary) summaries[ids[i]]=summary; }
                     // Every later read would wait out the same 2-second lease deadline.
                     catch(AuthorizationVaultBusyException) { busy=[..ids[i..]]; break; }
-                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException) { unavailable.Add(ids[i]); }
+                    catch(Exception itemError) when(itemError is InvalidDataException or IOException or UnauthorizedAccessException or CryptographicException) { unavailable.Add(ids[i]); }
                 }
             }
             foreach(var item in page.Items)
@@ -1149,7 +1153,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientCloseOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(()=>StopUploadLimitOperations(panic:true));Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
-        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(StopVaultPasswordWork);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
@@ -1258,7 +1262,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopShutdownStep(DisposeSettingsSearch);
         StopShutdownStep(RefreshClientPreviewContext);
         StopShutdownStep(CancelPerformanceTransfers);
-        StopShutdownStep(StopDataEncryption);StopShutdownStep(News.Stop);
+        StopShutdownStep(StopDataEncryption);StopShutdownStep(StopVaultPasswordWork);StopShutdownStep(News.Stop);
         StopShutdownStep(CancelInstallationWork);
         StopShutdownStep(()=>RecipientBundles.CancelWork());
         StopShutdownStep(_launchQueue.SignalPanic);
@@ -1303,6 +1307,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
         await StopOwnerAsync(DisposeUploadLimitFeaturesAsync);
         await StopOwnerAsync(DisposeClientCloseFeaturesAsync);
+        await StopOwnerAsync(DisposeVaultPasswordAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
