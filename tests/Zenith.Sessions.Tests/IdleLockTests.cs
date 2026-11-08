@@ -162,7 +162,7 @@ public sealed class IdleLockTests : IDisposable
     public Task TheSavedIdleChoiceLocksTheManagerAndUnlockStartsTheCountAgain() => OnDispatcherAsync(async () =>
     {
         var clock = new ManualClock();
-        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), idleClock: clock);
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), clock: clock);
         try
         {
             await vm.InitializeAsync(); Assert.Equal("Settings saved", vm.SaveStatus);
@@ -205,7 +205,7 @@ public sealed class IdleLockTests : IDisposable
 
         // The next start reads the saved choice and arms the timer from startup.
         var reopenedClock = new ManualClock();
-        await using var reopened = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), idleClock: reopenedClock);
+        await using var reopened = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), clock: reopenedClock);
         await reopened.InitializeAsync();
         Assert.Equal(5, reopened.IdleLockMinutes); Assert.Equal(TimeSpan.FromMinutes(5), reopened.IdleLockDue);
         Assert.Contains(reopened.IdleLockChoices, c => c.Minutes == 5);

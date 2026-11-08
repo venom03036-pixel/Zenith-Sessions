@@ -42,7 +42,7 @@ public sealed partial class ClientPreviewPresentationTests
     [Fact]
     public Task ArrivalMuteMutesOnlyAClientThatAppearsAfterItIsSavedAndWaitsForItsSound()=>OnUi(async ()=>
     {
-        var control=new SoundControlProbe{NoSoundFirst=true};var monitor=new SoundDesktopMonitor{Count=1};
+        var control=new SoundControlProbe{NoSoundCalls=1};var monitor=new SoundDesktopMonitor{Count=1};
         await using var shell=await ReadySound(monitor,control);
         shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
         await Refresh(shell);
@@ -125,21 +125,35 @@ public sealed partial class ClientPreviewPresentationTests
     [Fact]
     public Task ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt()=>OnUi(async ()=>
     {
-        var control=new SoundControlProbe{NoSoundFirst=true};var monitor=new SoundDesktopMonitor{Count=1};
-        await using var shell=await ReadySound(monitor,control);
+        // Windows never lists this client's sound, so every try says "no sound yet" and only the 2-minute window, on the shell's
+        // clock, can end the wait. The shell's own sampling loop scans too, so no step here depends on how many tries a phase made.
+        var clock=new Clock();var control=new SoundControlProbe{NoSoundCalls=int.MaxValue};var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control,clock:clock);
         shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
-        monitor.Count=2;await Refresh(shell);
+        monitor.Count=2;await Refresh(shell); // First seen now.
         Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
         await Until(()=>!shell.IsChangingClientSound);
+        monitor.Unreadable=2;
         Assert.Empty(shell.ClientSoundResults); // No sound yet: it waits.
         // A scan that cannot read it neither tries it nor gives up on it.
-        monitor.Unreadable=2;await Refresh(shell);
-        Assert.Equal(1,control.ChangeCalls);
+        int tries=control.ChangeCalls;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(tries,control.ChangeCalls);
+        // It kept its first-seen time through that scan: at the very end of its window it is tried again and still waits...
+        clock.Advance(ShellViewModel.ArrivalMuteWindow);
         monitor.Unreadable=0;await Refresh(shell);
         Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>!shell.IsChangingClientSound);
+        Assert.Empty(shell.ClientSoundResults);
+        // ...and one second past it the next "no sound yet" is final: the client is reported as never muted. Had the unreadable scan
+        // dropped it and the next scan listed it as new again, its window would have restarted and it would still be waiting here.
+        clock.Advance(TimeSpan.FromSeconds(1));
+        await Refresh(shell);
         await Until(()=>shell.ClientSoundResults.Count==1);
-        Assert.Equal(ClientAudioMuteStatus.Applied,shell.ClientSoundResults[0].Status);
-        Assert.Contains("1 of 1 new clients muted",shell.ClientSoundStatus);
+        Assert.Equal(ClientAudioMuteStatus.NoAudioSession,shell.ClientSoundResults[0].Status);
+        Assert.Equal(2,shell.ClientSoundResults[0].Session.ProcessId);
+        Assert.Equal("0 of 1 new clients muted as they appeared. Unmute or Exit turns the sound Zenith muted on again.",shell.ClientSoundStatus);
+        tries=control.ChangeCalls;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(tries,control.ChangeCalls); // Given up on: never tried again.
     });
 
     [Theory]
@@ -326,10 +340,10 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Empty(shell.ClientSoundResults);Assert.Equal(0,shell.PendingSoundRestoreCount);
     });
 
-    private async Task<ShellViewModel> ReadySound(SoundDesktopMonitor monitor,IClientAudioMuteControl? control,bool sample=false)
+    private async Task<ShellViewModel> ReadySound(SoundDesktopMonitor monitor,IClientAudioMuteControl? control,bool sample=false,TimeProvider? clock=null)
     {
         var shell=new ShellViewModel(_root,sample,Dispatcher.CurrentDispatcher,monitor,new NoPublicDirectory(),new NoServerDirectory(),
-            previewProvider:new PreviewProvider(),clientPriority:new PriorityControlProbe(),clientSound:control);
+            previewProvider:new PreviewProvider(),clientPriority:new PriorityControlProbe(),clientSound:control,clock:clock);
         try{await shell.InitializeAsync();await Refresh(shell);Assert.True(shell.IsReady,shell.Notice);return shell;}
         catch{await shell.DisposeAsync();throw;}
     }
@@ -343,7 +357,9 @@ public sealed partial class ClientPreviewPresentationTests
     {
         private readonly Channel<SoundCall> _calls=Channel.CreateBounded<SoundCall>(8);
         private readonly List<SoundCall> _held=[];
-        internal bool Defer,NoSoundFirst;
+        internal bool Defer;
+        /// <summary>The first this many calls report that Windows lists no sound for the clients yet; later calls apply.</summary>
+        internal int NoSoundCalls;
         internal int ChangeCalls,CancelCalls,AlreadyMutedPid;
         public int PendingRestoreCount=>0;
         public async Task<ClientAudioMuteBatchResult> ChangeAsync(IReadOnlyList<SessionObservation> sessions,ClientAudioMuteAction action,CancellationToken ct)
@@ -351,7 +367,7 @@ public sealed partial class ClientPreviewPresentationTests
             ChangeCalls++;var call=new SoundCall(Array.AsReadOnly(sessions.ToArray()),action,ct);
             Assert.True(_calls.Writer.TryWrite(call));
             if(Defer){_held.Add(call);return await call.Reply.Task;}
-            return SoundReport(call,NoSoundFirst && ChangeCalls==1?ClientAudioMuteStatus.NoAudioSession:ClientAudioMuteStatus.Applied,AlreadyMutedPid);
+            return SoundReport(call,ChangeCalls<=NoSoundCalls?ClientAudioMuteStatus.NoAudioSession:ClientAudioMuteStatus.Applied,AlreadyMutedPid);
         }
         internal Task<SoundCall> NextAsync()=>_calls.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         /// <summary>Answers every held call still waiting, as stopped, so a test that failed early can still exit.</summary>

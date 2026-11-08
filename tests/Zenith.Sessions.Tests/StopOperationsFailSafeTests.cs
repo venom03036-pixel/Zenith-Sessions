@@ -21,7 +21,7 @@ public sealed class StopOperationsFailSafeTests : IDisposable
     public Task AStopStepThatThrowsNeverSkipsTheQueueStopThePauseTheLockOrTheNotice(string stop) => OnDispatcherAsync(async () =>
     {
         var clock = new ManualClock();
-        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), idleClock: clock);
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor(), clock: clock);
         try
         {
             await vm.InitializeAsync();

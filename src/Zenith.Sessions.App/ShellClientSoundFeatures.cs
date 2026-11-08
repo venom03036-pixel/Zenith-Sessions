@@ -12,7 +12,10 @@ namespace Zenith.Sessions.App;
 
 public sealed partial class ShellViewModel
 {
-    /// <summary>How long a client that appeared is watched for its first sound before arrival muting gives up on it.</summary>
+    /// <summary>
+    /// How long a client that appeared is watched for its first sound before arrival muting gives up on it, measured on the shell's
+    /// monotonic clock from the scan that first listed the client.
+    /// </summary>
     internal static readonly TimeSpan ArrivalMuteWindow = TimeSpan.FromSeconds(120);
 
     private IClientAudioMuteControl _clientSound = null!;
@@ -29,10 +32,11 @@ public sealed partial class ShellViewModel
     // Arrival muting, on the dispatcher only: the exact instances in the last usable scan (with those it could not read kept
     // by PID), the PIDs that scan could not read and that were first listed while nothing was watched (the instance behind
     // one is already running, so it is never an arrival once it reads), and the new ones still waiting for Windows to list
-    // their sound. Each holds at most one entry per PID in a scan, so at most 128.
+    // their sound, each with the shell clock's timestamp of the scan that first listed it, kept through scans that cannot read
+    // it. Each holds at most one entry per PID in a scan, so at most 128.
     private readonly HashSet<SessionProcessKey> _soundSeenClients = [];
     private readonly HashSet<int> _soundUnreadClients = [];
-    private readonly Dictionary<SessionProcessKey, DateTimeOffset> _soundArrivals = [];
+    private readonly Dictionary<SessionProcessKey, long> _soundArrivals = [];
     private bool _soundBaseline, _arrivalMutePaused;
 
     public ObservableCollection<ClientAudioMuteResult> ClientSoundResults { get; } = [];
@@ -119,8 +123,9 @@ public sealed partial class ShellViewModel
     /// </summary>
     private void ObserveClientSoundArrivals(DesktopSnapshot snapshot)
     {
-        var now = DateTimeOffset.UtcNow;
-        if (FreshClientInventory(snapshot, now) is not { } rows) return;
+        // The scan's freshness is judged on the wall clock it was stamped with; the arrival window on the shell's monotonic clock.
+        if (FreshClientInventory(snapshot, DateTimeOffset.UtcNow) is not { } rows) return;
+        long seen = _clock.GetTimestamp();
         bool watching = _soundBaseline && _savedSettings.MuteArrivingClients && !_arrivalMutePaused && _soundPermitted && _ready
             && !IsLocked && !_shuttingDown;
         var current = new HashSet<SessionProcessKey>();
@@ -133,7 +138,7 @@ public sealed partial class ShellViewModel
             foreach (var key in _soundSeenClients) if (unreadable.Contains(key.ProcessId)) current.Add(key);
         if (watching)
             foreach (var key in current)
-                if (!_soundSeenClients.Contains(key) && !_soundUnreadClients.Contains(key.ProcessId)) _soundArrivals.TryAdd(key, now);
+                if (!_soundSeenClients.Contains(key) && !_soundUnreadClients.Contains(key.ProcessId)) _soundArrivals.TryAdd(key, seen);
         _soundSeenClients.Clear(); _soundSeenClients.UnionWith(current); _soundBaseline = true;
         // Keep only PIDs this scan still could not read, so the set never outgrows one scan (at most 128): a PID that now reads
         // is known through _soundSeenClients, and one that is gone may be reused by a genuinely new client.
@@ -220,21 +225,21 @@ public sealed partial class ShellViewModel
     }
 
     /// <summary>
-    /// A client with no sound yet keeps waiting for a later scan until <see cref="ArrivalMuteWindow"/> has passed; every other
-    /// outcome, and that last "no sound yet", is final and shown, so a client that was never muted is reported. A Mute or Unmute
-    /// clicked while this ran has cleared the list for its own results, so the rows are not shown then; the report is held and
-    /// added to that click's final status instead, so a client muted while the click waited is still told.
+    /// A client with no sound yet keeps waiting for a later scan until <see cref="ArrivalMuteWindow"/> has passed, on the shell's
+    /// monotonic clock, since the scan that first listed it (a wall-clock change neither shortens nor extends the wait); every
+    /// other outcome, and that last "no sound yet", is final and shown, so a client that was never muted is reported. A Mute or
+    /// Unmute clicked while this ran has cleared the list for its own results, so the rows are not shown then; the report is held
+    /// and added to that click's final status instead, so a client muted while the click waited is still told.
     /// </summary>
     private void PublishArrivalSound(ClientAudioMuteBatchResult result, bool stopped)
     {
         if (stopped) return; // Panic, Lock and Cancel already dropped the waiting arrivals; their own notice stays.
-        var now = DateTimeOffset.UtcNow;
         var final = new List<ClientAudioMuteResult>();
         foreach (var row in result.Results)
         {
             var key = row.Session.ProcessKey;
             if ((row.Status is ClientAudioMuteStatus.NoAudioSession or ClientAudioMuteStatus.Busy)
-                && _soundArrivals.TryGetValue(key, out var firstSeen) && now - firstSeen <= ArrivalMuteWindow) continue;
+                && _soundArrivals.TryGetValue(key, out var firstSeen) && _clock.GetElapsedTime(firstSeen) <= ArrivalMuteWindow) continue;
             _soundArrivals.Remove(key);
             final.Add(row);
         }

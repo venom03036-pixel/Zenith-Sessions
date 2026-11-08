@@ -177,6 +177,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private bool _presentationFaulted;
     private const string RefreshPresentationFailed="Refresh could not show the latest measurements, so the dashboard may be out of date. Monitoring and launch safety checks continue.";
     private readonly Dispatcher _dispatcher;
+    // The shell's monotonic clock (GetTimestamp): the idle lock and arrival muting measure elapsed time on it, so a wall-clock
+    // change neither shortens nor extends them and tests drive both without waiting. Wall-clock stamps that are compared with
+    // scans and files (DateTimeOffset.UtcNow) are not routed through it.
+    private readonly TimeProvider _clock;
     private readonly CancellationTokenSource _lifetime = new();
     private CancellationTokenSource? _queryCancellation;
     private Task _queryTask = Task.CompletedTask, _monitorTask = Task.CompletedTask, _initializeTask = Task.CompletedTask;
@@ -329,11 +333,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IRobloxHandoffProbe? handoffProbe=null,WindowsConfiguredNativeLaunchProvider? nativeProvider=null,IZenithMacroCatalogClient? macroCatalogClient=null,
         IMacroAssignmentStore? macroAssignmentStore=null,bool enableAutomaticPublicImages=false,
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
-        TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
+        TimeProvider? clock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
-        _idleLock=new(idleClock);
+        _clock=clock??TimeProvider.System;
+        _idleLock=new(_clock);
         _monitor=monitor??new WindowsDesktopMonitor();
         _accounts = accounts??new AccountRepository(root); _settingsStore = new(root);
         _vault=new(root);
