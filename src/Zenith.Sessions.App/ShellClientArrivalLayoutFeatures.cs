@@ -13,7 +13,9 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // the existing window lane: Arrange tiles every connected client that is not minimized or hidden, in launch order on the
 // saved monitor; Minimize minimizes the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
 // Clients already running at the first complete scan after Zenith starts never arrive, though their Connected line can be minutes old.
-// Clients that connect while a request runs wait for one follow-up request, never one each. Panic and Lock cancel the
+// Clients that connect while a request runs wait for one follow-up request, never one each. Clients that connect while a
+// manual window operation is queued or running are left alone and count as seen: a request queued behind it on the lane
+// would re-tile every connected client right after the user's arrangement and replace its report. Panic and Lock cancel the
 // request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
 // the user chooses Resume automatic layout. Clients that connect meanwhile count as seen, so they never arrive later. One
 // tracked task, awaited on dispose (Rule 12); each request in it has its own stop, so no client waits after the task ends.
@@ -24,7 +26,7 @@ public sealed partial class ShellViewModel
     private List<SessionObservation>? _arrivedClients;
     private CancellationTokenSource? _arrivalStop;
     private Task _arrivalWork = Task.CompletedTask;
-    private bool _arrivalLayoutStopped;
+    private bool _arrivalLayoutStopped, _arrivalsLeftAloneForManualOperation;
     private Command? _resumeClientArrivalLayout;
     public IReadOnlyList<ClientArrivalChoice> ClientArrivalChoices { get; } =
     [
@@ -92,6 +94,8 @@ public sealed partial class ShellViewModel
 
     private async Task ApplyClientArrivalAsync(List<SessionObservation> arrived, CancellationToken ct, Func<bool> stopped)
     {
+        // A manual operation sets IsArrangingClients before it waits for the window lane, so this sees one queued or running.
+        if (_arranging) { _arrivalsLeftAloneForManualOperation = true; return; }
         var layout = _savedSettings.WindowLayout ?? new ClientWindowLayoutSettings().Validated();
         var action = layout.ArrivalAction;
         SessionObservation[] selected;
@@ -130,6 +134,14 @@ public sealed partial class ShellViewModel
             if (error is not OperationCanceledException) _diagnostics.RecordFailure(ManagerSubsystem.ClientWindows, error.GetType());
         }
         catch (Exception error) { ReportClientWindowFailure(error); }
+    }
+
+    // IsArrangingClients turned false: the manual operation has written its report, so add why Zenith left a client alone.
+    private void ManualWindowOperationEnded()
+    {
+        if (!_arrivalsLeftAloneForManualOperation) return;
+        _arrivalsLeftAloneForManualOperation = false;
+        if (!_shuttingDown) ClientWindowStatus += " A client connected during this window operation, so automatic layout left the windows alone.";
     }
 
     // The saved monitor when it is still listed, else the primary monitor, else the first one; null before the list loads.

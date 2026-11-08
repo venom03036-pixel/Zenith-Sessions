@@ -254,6 +254,100 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
     });
 
+    // N-B5a-6: a manual window operation is queued or running on the window lane when a client connects. An automatic request
+    // would wait behind it, then re-tile every connected client right after the user's chosen arrangement and replace its
+    // report. Zenith leaves the windows alone instead, says so, and acts again when the next client connects.
+    [Theory]
+    [InlineData(ClientArrivalWindowAction.Arrange)]
+    [InlineData(ClientArrivalWindowAction.Minimize)]
+    public Task AClientThatConnectsDuringAManualArrangeLeavesTheUsersArrangementAndReportAlone(ClientArrivalWindowAction action) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = action; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(470, minutesAgo: 3); var second = log.Client(471, minutesAgo: 2); var third = log.Client(472, minutesAgo: 1);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.Arrangements + monitor.StateChanges);
+        // Then the user arranges the first client on the second monitor by hand.
+        shell.Sessions.Single(row => row.Observation.ProcessId == 470).IsChecked = true;
+        shell.SelectedClientDisplay = shell.ClientDisplays[1];
+        monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        shell.ArrangeClients.Execute(null);
+        var manual = monitor.Requested.ToArray();
+        try
+        {
+            Assert.True(shell.IsArrangingClients);
+            Assert.Equal(new[] { 470 }, manual.Select(client => client.ProcessId));
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            Assert.Equal(2, monitor.Arrangements + monitor.StateChanges);
+        }
+        finally
+        {
+            monitor.Pending.TrySetResult(new([new(manual[0], new(2000, -1000, 640, 480), ClientWindowPlacementStatus.Applied, "Synthetic manual result")],
+                false, "Synthetic manual arrangement complete."));
+        }
+        monitor.Pending = null;
+        await shell.ArrangeClients.Execution; await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.Arrangements + monitor.StateChanges);
+        Assert.Equal("fixture-display-2", monitor.RequestedDisplay);
+        Assert.Equal("PID 470", Assert.Single(shell.ClientPlacementResults).Client);
+        Assert.StartsWith("Synthetic manual arrangement complete.", shell.ClientWindowStatus);
+        Assert.Contains("A client connected during this window operation, so automatic layout left the windows alone.", shell.ClientWindowStatus);
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+        // The client that connected meanwhile counts as seen; the next client that connects gets the saved choice again.
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(3, monitor.Arrangements + monitor.StateChanges);
+        Assert.Equal(action == ClientArrivalWindowAction.Arrange ? new[] { 470, 471, 472 } : new[] { 472 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith", shell.ClientWindowStatus);
+        Assert.DoesNotContain("during this window operation", shell.ClientWindowStatus);
+    });
+
+    // N-B5a-6: the user starts Arrange while an automatic request runs, and another client connects meanwhile. The manual
+    // operation waits on the lane; the follow-up request for that client is left out instead of queueing behind it.
+    [Fact]
+    public Task AFollowUpRequestNeverQueuesBehindAManualArrangeStartedDuringAnAutomaticOne() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(480, minutesAgo: 2); var second = log.Client(481, minutesAgo: 1);
+        var automatic = monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        var automaticClients = monitor.Requested.ToArray();
+        var manual = monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            Assert.Equal(1, monitor.Arrangements);
+            shell.Sessions.Single(row => row.Observation.ProcessId == 480).IsChecked = true;
+            shell.ArrangeClients.Execute(null);
+            Assert.Equal(2, monitor.Arrangements);
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            automatic.TrySetResult(new([new(automaticClients[0], new(0, 0, 320, 240), ClientWindowPlacementStatus.Applied, "Synthetic automatic result")], false, "Synthetic automatic arrangement."));
+            // A follow-up request would wait on the manual one here, so bound the wait and count the requests.
+            await Task.WhenAny(shell.ClientArrivalWork, Task.Delay(TimeSpan.FromSeconds(5)));
+            Assert.Equal(2, monitor.Arrangements);
+            Assert.True(shell.ClientArrivalWork.IsCompleted);
+        }
+        finally
+        {
+            automatic.TrySetResult(new([], true, "Synthetic stopped"));
+            manual.TrySetResult(new([new(automaticClients[0], new(0, 0, 320, 240), ClientWindowPlacementStatus.Applied, "Synthetic manual result")], false, "Synthetic manual arrangement complete."));
+        }
+        monitor.Pending = null;
+        await shell.ArrangeClients.Execution; await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.Arrangements);
+        Assert.Equal("Synthetic manual result", Assert.Single(shell.ClientPlacementResults).Explanation);
+        Assert.StartsWith("Synthetic manual arrangement complete.", shell.ClientWindowStatus);
+        Assert.Contains("automatic layout left the windows alone", shell.ClientWindowStatus);
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+    });
+
     /// <summary>
     /// Publishes one synthetic process scan and log snapshot, then runs the real forced sample and presentation. A stopped
     /// correlator ignores offers, so the 1 Hz loop presents the same snapshot; a presentation queued from an older scan is
