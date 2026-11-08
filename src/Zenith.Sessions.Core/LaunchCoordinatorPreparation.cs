@@ -36,7 +36,9 @@ public sealed partial class LaunchCoordinator
             }
             if(problem!=LaunchProblem.None)
             {
-                // Only the provider's own Rejected answer is a refusal; faults and expiry are not.
+                // Only the provider's own Rejected answer counts toward the refusal streak; expiry,
+                // cleanup failure and faults the coordinator catches itself do not. The native provider
+                // also answers Rejected for its own local faults, busy, trust and cancel outcomes.
                 if(result?.Failure==LaunchPreparationFailure.Rejected)await FailRefusedPreparationAsync(chosen,generation,stagger).ConfigureAwait(false);
                 else await ChangeAsync(chosen,LaunchState.Failed,problem).ConfigureAwait(false);
                 return;

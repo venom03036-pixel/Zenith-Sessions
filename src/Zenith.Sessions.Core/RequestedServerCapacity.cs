@@ -16,6 +16,10 @@ public static class RequestedServerCapacity
     public static readonly TimeSpan MaximumAge = TimeSpan.FromMinutes(5);
     public static readonly TimeSpan MaximumFutureSkew = TimeSpan.FromSeconds(5);
 
+    /// <summary>The freshness rule <see cref="Assess"/> applies: timed, at most five minutes old and at most five seconds ahead.</summary>
+    public static bool IsFresh(DateTimeOffset observedUtc, DateTimeOffset now)
+        => observedUtc != default && observedUtc - now <= MaximumFutureSkew && now - observedUtc <= MaximumAge;
+
     public static RequestedServerCapacityAssessment Assess(RobloxRequestedDestination? requested,
         RobloxPublicServer? observation, int recipientCount, DateTimeOffset now)
     {
@@ -32,7 +36,7 @@ public static class RequestedServerCapacity
         now = now.ToUniversalTime();
         DateTimeOffset expires = observed > DateTimeOffset.MaxValue - MaximumAge
             ? DateTimeOffset.MaxValue : observed + MaximumAge;
-        if (observed == default || observed - now > MaximumFutureSkew || now - observed > MaximumAge)
+        if (!IsFresh(observed, now))
             return new(RequestedServerCapacityState.Stale, recipientCount, null, observed, expires,
                 "The requested server capacity observation is stale or its timestamp cannot be trusted. Browse and explicitly use a fresh observation; no seats are reserved.");
 

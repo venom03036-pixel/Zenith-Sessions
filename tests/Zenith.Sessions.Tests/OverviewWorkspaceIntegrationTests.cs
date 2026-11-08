@@ -114,7 +114,7 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
         typeof(ShellViewModel).GetProperty(nameof(ShellViewModel.QueueReady))!.SetValue(shell,true);
         Assert.Equal(reason,shell.Notice);Assert.Single(shell.Events,line=>line.EndsWith(reason,StringComparison.Ordinal));
-        Assert.Contains("refused",reason);Assert.Contains("stay queued",reason);
+        Assert.Contains("ended before any client started",reason);Assert.Contains("stay queued",reason);
         Assert.StartsWith("Paused · 1 queued",shell.QueueStatus);Assert.Equal("Resume queue",shell.QueuePauseLabel);
         // A later save with the same reason does not repeat the event; a resume clears it for next time.
         Invoke(shell,"QueueChanged",new LaunchQueueSnapshot(true,[queued]) {PauseReason=LaunchQueuePauseReason.RepeatedRefusals});
@@ -133,8 +133,11 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         typeof(LaunchCoordinator).GetMethod("BeginPacing",BindingFlags.NonPublic|BindingFlags.Instance)!
             .Invoke(queue,[Guid.NewGuid(),TimeSpan.FromSeconds(4.5),LaunchPacingReason.RefusalBackoff]);
         typeof(ShellViewModel).GetMethod("RefreshLaunchEvidence",BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(shell,null);
-        Assert.StartsWith("Waiting 5 s before the next start because the last start was refused.",shell.LaunchPacingStatus);
-        Assert.Contains("up to 1 minute",shell.LaunchPacingStatus);
+        // Cause-neutral: a local fault or a closed trial page also ends a start this way. The cap is
+        // 60 s plus up to 1 s of jitter, so the ceiling is "about" a minute.
+        Assert.StartsWith("Waiting 5 s before the next start because the last start ended before any client started.",shell.LaunchPacingStatus);
+        Assert.Contains("up to about 1 minute",shell.LaunchPacingStatus);
+        Assert.DoesNotContain("refused",shell.LaunchPacingStatus);
         await Task.CompletedTask;
     });
     [Fact]

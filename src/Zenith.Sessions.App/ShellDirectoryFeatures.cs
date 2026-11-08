@@ -25,6 +25,7 @@ public sealed partial class AccountRow
     public string LaunchStatus=>_launchState switch
     {
         LaunchState.Arrived=>"Arrival verified",LaunchState.ReviewRequired=>"Review required",
+        LaunchState.Blocked when _launchProblem==LaunchProblem.Interrupted=>LaunchRow.NotStartedInterrupted,
         LaunchState.ClientStartedUnverified=>"Client started · account and arrival unverified",
         null=>"No verified client",_=>_launchState.ToString()!
     };
@@ -381,19 +382,30 @@ public sealed partial class ShellViewModel
         // Freeze advisory occupancy with the same recipient/target snapshot. It never reserves
         // seats, authenticates accounts or changes the existing native-provider admission guards.
         var capacityAdvice=ServerBrowser.AssessRequestedCapacity(target,snapshot.Count);
+        // Spreading is asked for but a server is pinned: the pinned server still goes to every account.
+        bool spread=ServerBrowser.SpreadsFor(target);
+        string advice=ServerBrowser.SpreadAcrossServers && !spread
+            ?"A server is pinned, so every account was sent to it. To give each account its own listed server, choose the game without a server. "+capacityAdvice.Explanation
+            :capacityAdvice.Explanation;
         int queued=0,blocked=0,skipped=0;
         if(!ct.IsCancellationRequested && epoch==_directoryGeneration && CanUseDirectories())
         {
             // One review and one durable queue write for the whole frozen snapshot. The review is
             // fenced by the queue's stop generation (Panic) and the caller's token; the queue owns
             // the write to completion and cancels the accepted subset itself if a stop races it.
+            // A spread review reads the loaded server list once, here, and freezes each account's server.
             LaunchBatchReview review;
-            try{review=_launchQueue.CaptureBatchReview(target,snapshot);}
+            try
+            {
+                review=spread?_launchQueue.CaptureSpreadBatchReview(target.PlaceId,ServerBrowser.LoadedServers(target.PlaceId),snapshot,Random.Shared)
+                    :_launchQueue.CaptureBatchReview(target,snapshot);
+            }
             catch(ArgumentException error)
             {
                 _diagnostics.RecordFailure(ManagerSubsystem.Queue,error.GetType());
                 return $"Place {target.PlaceId} destination requests: one or more selected accounts could not be reviewed. Review the accounts and try again. No request was made.";
             }
+            if(review.Spread is { } servers) advice=servers.Explanation;
             IReadOnlyList<LaunchBatchRow> rows;
             // A stopped or unhealthy queue rejects the whole review before anything is written.
             try{rows=await _launchQueue.EnqueueBatchAsync(review,ct);}
@@ -418,7 +430,7 @@ public sealed partial class ShellViewModel
             skipped=snapshot.Count-queued-blocked;
         }
         QueueExpanded=true;
-        return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable. No arrival is assumed. {capacityAdvice.Explanation}";
+        return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable. No arrival is assumed. {advice}";
     }
     private void RefreshAccountLaunchStates()
     {

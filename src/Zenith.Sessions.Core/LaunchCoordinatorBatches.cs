@@ -4,9 +4,14 @@ public sealed record LaunchBatchMember(Guid ProfileId, long ProfileRevision, int
 {
     public Guid? RetryOfOperationId => RetrySource?.Intent.OperationId;
     internal LaunchOperation? RetrySource { get; init; }
+    /// <summary>The destination frozen for this account when its review was captured.</summary>
+    public RobloxRequestedDestination? Destination { get; internal init; }
 }
 
-/// <summary>One reviewed destination and recipient snapshot, valid for one submission to its original queue.</summary>
+/// <summary>
+/// One reviewed recipient snapshot with each account's frozen destination, valid for one submission to its original queue.
+/// <see cref="Destination"/> is the shared destination, or the place alone when <see cref="Spread"/> gave accounts their own servers.
+/// </summary>
 public sealed class LaunchBatchReview
 {
     private readonly object _owner;
@@ -14,13 +19,20 @@ public sealed class LaunchBatchReview
     internal long StopGeneration { get; }
     public RobloxRequestedDestination Destination { get; }
     public IReadOnlyList<LaunchBatchMember> Recipients { get; }
+    /// <summary>How a spread review handed out listed servers; null when every account shares <see cref="Destination"/>.</summary>
+    public ServerSpread? Spread { get; }
 
-    internal LaunchBatchReview(object owner, long generation, RobloxRequestedDestination destination, LaunchBatchMember[] recipients)
+    internal LaunchBatchReview(object owner, long generation, RobloxRequestedDestination destination, LaunchBatchMember[] recipients,
+        ServerSpread? spread = null)
     {
         _owner = owner;
         StopGeneration = generation;
         Destination = destination;
+        // Freeze each account's destination with the snapshot: the shared one unless a spread chose one for it.
+        for (int i = 0; i < recipients.Length; i++)
+            recipients[i] = recipients[i] with { Destination = spread?.Destinations[i] ?? destination };
         Recipients = Array.AsReadOnly(recipients);
+        Spread = spread;
     }
 
     internal bool TryConsume(object owner) => ReferenceEquals(_owner, owner) && Interlocked.Exchange(ref _consumed, 1) == 0;
@@ -33,21 +45,46 @@ public sealed partial class LaunchCoordinator
 {
     private readonly object _batchReviewOwner = new();
 
-    /// <summary>Freeze an exact requested destination and selected accounts before presenting a launch review.</summary>
+    /// <summary>Freeze an exact requested destination for every selected account before presenting a launch review.</summary>
     public LaunchBatchReview CaptureBatchReview(RobloxRequestedDestination destination,
         IReadOnlyList<(AccountProfile Profile, LaunchAccountBinding? Binding)> recipients)
     {
         ArgumentNullException.ThrowIfNull(destination);
+        var (generation, members) = CaptureMembers(recipients);
+        return new(_batchReviewOwner, generation, destination, members);
+    }
+
+    /// <summary>
+    /// Freeze the selected accounts and give each one a different listed public server of <paramref name="placeId"/> with room
+    /// for it and a spare seat, in an order drawn from <paramref name="random"/>; accounts beyond those servers get the place
+    /// with no chosen server (see <see cref="RequestedServerSelection.SpreadServers"/>). Repeated accounts count once. The list
+    /// is read only here, so later changes to it never reach the review.
+    /// </summary>
+    public LaunchBatchReview CaptureSpreadBatchReview(long placeId, IReadOnlyList<RobloxPublicServer> servers,
+        IReadOnlyList<(AccountProfile Profile, LaunchAccountBinding? Binding)> recipients, Random random)
+    {
+        ArgumentNullException.ThrowIfNull(servers);
+        ArgumentNullException.ThrowIfNull(random);
+        var place = new RobloxRequestedDestination(placeId);
+        var (generation, members) = CaptureMembers(recipients);
+        var spread = RequestedServerSelection.SpreadServers(placeId, servers, members.Length, _time.GetUtcNow(), shuffle: true, random);
+        return new(_batchReviewOwner, generation, place, members, spread);
+    }
+
+    private (long Generation, LaunchBatchMember[] Members) CaptureMembers(
+        IReadOnlyList<(AccountProfile Profile, LaunchAccountBinding? Binding)> recipients)
+    {
         ArgumentNullException.ThrowIfNull(recipients);
         long generation = Interlocked.Read(ref _generation);
         int count = RequireBatchCount(recipients.Count);
         var members = new LaunchBatchMember[count];
         for (int i = 0; i < count; i++)
             members[i] = CaptureBatchMember(recipients[i].Profile, recipients[i].Binding);
-        return new(_batchReviewOwner, generation, destination, DistinctMembers(members));
+        return (generation, DistinctMembers(members));
     }
 
-    /// <summary>Review retries for rejected starts that originally requested the same exact server.</summary>
+    /// <summary>Review retries for requests that ended before any client started and all chose one destination:
+    /// the same exact server, or the same place with no server.</summary>
     public LaunchBatchReview CaptureBatchRetryReview(
         IReadOnlyList<(LaunchOperation Previous, AccountProfile Profile, LaunchAccountBinding Binding)> recipients)
     {
@@ -62,20 +99,32 @@ public sealed partial class LaunchCoordinator
             ArgumentNullException.ThrowIfNull(previous);
             ArgumentNullException.ThrowIfNull(binding);
             var member = CaptureBatchMember(profile, binding);
-            if (previous is not { State: LaunchState.Failed, Problem: LaunchProblem.StartupRejected, ProcessReceipt: null }
+            // A place taken from the profile's preference was never a reviewed destination, so only a
+            // chosen place (with or without an exact server) can be pinned again.
+            if (!EndedBeforeAnyClient(previous)
                 || previous.Intent is not { } intent
-                || !intent.HasExplicitDestination || intent.RequestedJobId is null || !HasValidDestination(intent)
+                || !intent.HasExplicitDestination || !HasValidDestination(intent)
                 || intent.OperationId == Guid.Empty || intent.ProfileId != member.ProfileId || intent.UserId != binding.UserId
                 || intent.AuthorizationGeneration <= 0)
-                throw new ArgumentException("Retry requires a rejected start for the same account and a known exact server.", nameof(recipients));
+                throw new ArgumentException("Retry requires a request for the same account that ended before any client started, with a chosen place.", nameof(recipients));
             if (destination is null) destination = new(intent.PlaceId, intent.RequestedJobId, intent.RequestedServerKind);
             else if (destination.PlaceId != intent.PlaceId || destination.JobId != intent.RequestedJobId
                 || destination.ServerKind != intent.RequestedServerKind)
-                throw new ArgumentException("A retry review must use one exact destination.", nameof(recipients));
+                throw new ArgumentException("A retry review must use one destination: the same place, and the same server or no server.", nameof(recipients));
             members[i] = member with { RetrySource = previous };
         }
         return new(_batchReviewOwner, generation, destination!, DistinctMembers(members));
     }
+
+    // Only a failure recorded before native startup qualifies: the provider refused the start, or
+    // preparation was refused or expired before dispatch. A process receipt or any other problem stays
+    // out, and so does every row that is not Failed: an Uncertain, ReviewRequired or
+    // ClientStartedUnverified row may have a client, and a Cancelled row was a user's or a stop's decision.
+    private static bool EndedBeforeAnyClient(LaunchOperation previous) => previous is
+    {
+        State: LaunchState.Failed, ProcessReceipt: null,
+        Problem: LaunchProblem.StartupRejected or LaunchProblem.PreparationRejected or LaunchProblem.PreparationExpired
+    };
 
     private static int RequireBatchCount(int count)
         => count is >= 1 and <= MaximumPendingOperations ? count : throw new ArgumentOutOfRangeException(nameof(count));
@@ -155,7 +204,7 @@ public sealed partial class LaunchCoordinator
                     rows[i] = new(member.ProfileId, LaunchBatchDisposition.QueueFull);
                     continue;
                 }
-                var destination = review.Destination;
+                var destination = member.Destination ?? review.Destination;
                 var intent = new LaunchIntent(Guid.NewGuid(), member.ProfileId, member.ProfileRevision,
                     member.Binding?.UserId ?? 0, destination.PlaceId, member.Priority, _time.GetUtcNow(),
                     member.Binding?.AuthorizationGeneration ?? 0, destination.JobId, destination.ServerKind, true);

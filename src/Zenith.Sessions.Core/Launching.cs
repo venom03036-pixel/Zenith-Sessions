@@ -108,9 +108,16 @@ public static class LaunchDescriptions
         LaunchProblem.ClientClosureAcknowledged=>"You confirmed the possible client is closed. Its historical receipt is retained; current Windows observations remain separate.",
         _=>""
     };
+    /// <summary>A row's explanation. Interrupted means two things: on a Blocked row it was recovered from a
+    /// Queued or Blocked save made before any validation, preparation or provider call, so it never started a
+    /// client and Cancel is its only action; on a ReviewRequired row a client may exist and Review applies.</summary>
+    public static string Explain(LaunchState state,LaunchProblem problem)=>state==LaunchState.Blocked && problem==LaunchProblem.Interrupted
+        ?"This request never started a client. Cancel it and queue again if it is still needed.":Explain(problem);
     public static string ExplainPause(LaunchQueuePauseReason reason)=>reason switch
     {
-        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row were refused before any client started. The remaining requests stay queued. Wait a few minutes, check the saved sign-ins, then resume.",
+        // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
+        // untrusted client and a closed trial page, so the queue cannot name one cause.
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's details in the launch queue (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
@@ -120,7 +127,7 @@ public static class LaunchDescriptions
     /// <summary>A waiting row held because starting the selected player would let Roblox's update close running clients.</summary>
     public static bool AwaitsClientUpdate(LaunchOperation operation)=>AwaitsCapacity(operation) && operation.HoldReason==LaunchHoldReason.ClientUpdate;
     /// <summary>The row's explanation: its problem's, or the update hold's for a row waiting on a Roblox update.</summary>
-    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation:Explain(operation.Problem);
+    public static string Explain(LaunchOperation operation)=>AwaitsClientUpdate(operation)?ClientUpdateHold.Explanation:Explain(operation.State,operation.Problem);
     public static bool NeedsReservation(LaunchState state)=>state is LaunchState.Validating or LaunchState.Launching or LaunchState.Stabilizing or LaunchState.Uncertain or LaunchState.ReviewRequired or LaunchState.ClientStartedUnverified;
     public static bool HasUnresolvedReservation(LaunchOperation operation)=>NeedsReservation(operation.State)
         || operation.ProcessReceipt is {IsValid:true} && !(operation.State==LaunchState.Cancelled && operation.Problem==LaunchProblem.ClientClosureAcknowledged);
@@ -158,6 +165,9 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     public event Action<Exception>? Faulted;
     public string ProviderExplanation=>_provider.AccountLaunch.Explanation;
     public bool IsHealthy=>_initialized && !_unhealthy && !_stop.IsCancellationRequested;
+    /// <summary>True once InitializeAsync has opened the queue. InitializeAsync never opens it a
+    /// second time, so an opened queue that stops after a fault reopens only after a restart.</summary>
+    public bool Opened=>_initialized;
     // Immutable publication does not resume a paused/stopped queue or change an active start.
     public void ConfigurePerformance(ManagerPerformancePolicy policy)
     {
@@ -504,7 +514,8 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
             else if(result?.Status==ProviderLaunchStatus.RejectedBeforeStart)
             {
                 bool processClaim=result.ProcessId is not null || result.ProcessStartUtcTicks is not null;
-                // A refusal before any client started lengthens the next gap; a second in a row pauses.
+                // Any rejection with no process claim counts, whatever its cause (provider refusal or a
+                // local boundary denial): it lengthens the next gap, and a second in a row pauses.
                 if(!processClaim) {RecordRefusalOwned(chosen.Intent.OperationId,stagger);refusalPacing=true;}
                 await UpdateAsync(chosen,processClaim?LaunchState.Uncertain:LaunchState.Failed,
                     processClaim?LaunchProblem.ProviderFailure:LaunchProblem.StartupRejected,CancellationToken.None).ConfigureAwait(false);

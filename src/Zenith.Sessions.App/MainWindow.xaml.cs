@@ -245,7 +245,7 @@ public partial class MainWindow : Window
     private void SetAsideInterruptedQueueWrite(object sender, RoutedEventArgs e)
     {
         if(!_vm.CanSetAsideInterruptedQueueWrite) return;
-        if(MessageBox.Show(this,"An interrupted save (launch-queue.json.tmp) is blocking the launch queue. Rename it to a kept launch-queue.json.interrupted file and reopen the queue from its last completed save? Nothing is deleted. Requests reopen paused for review and no client is started.","Set aside interrupted save",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
+        if(MessageBox.Show(this,_vm.SetAsideInterruptedQueueWriteConfirmation,"Set aside interrupted save",MessageBoxButton.YesNo,MessageBoxImage.Question)==MessageBoxResult.Yes)
             _vm.SetAsideInterruptedQueueWrite.Execute(null);
     }
     private void CopyVisibleDiagnostics(object sender,RoutedEventArgs e)

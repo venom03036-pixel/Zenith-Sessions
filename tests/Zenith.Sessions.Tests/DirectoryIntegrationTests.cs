@@ -28,8 +28,13 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
             var row=Assert.Single(reopened.Launches);Assert.Equal("Renamed sample",row.Label);
             // A never-started request is recovered as a cancellable non-reserving row, not a possible client.
             Assert.Equal(LaunchState.Blocked,row.Operation.State);Assert.Equal(LaunchProblem.Interrupted,row.Operation.Problem);
-            Assert.Equal("Review request",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
-            Assert.Equal("Blocked",Assert.Single(reopened.Accounts).LaunchStatus);
+            // M-L2-2: it cannot be reviewed, so it says it never started instead of asking for review, and the
+            // account list and that account's Details notice use the queue row's words.
+            Assert.Equal("Not started · interrupted",row.State);Assert.True(row.CanCancel);Assert.False(row.CanReview);
+            var account=Assert.Single(reopened.Accounts);Assert.Equal(row.State,account.LaunchStatus);Assert.Equal("Details",account.PowerLabel);
+            reopened.AccountPower.Execute(account);await reopened.AccountPower.Execution;
+            Assert.Equal("This request never started a client. Cancel it and queue again if it is still needed.",reopened.Notice);
+            Assert.Same(row,Assert.Single(reopened.Launches));Assert.Equal(LaunchState.Blocked,row.Operation.State);
         }
     });
     [Fact]
@@ -140,6 +145,47 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         }
         string Summary()=>bundle?vm.RecipientBundles.Status:vm.Notice;
     });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task SpreadingGivesEachCheckedAccountItsOwnLoadedServerUnlessAServerIsPinned(bool pinned)=>OnUi(async () =>
+    {
+        var servers=new Servers();
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),new PublicDirectory(),servers);
+        await vm.InitializeAsync();
+        foreach(string label in new[]{"First","Second","Third","Fourth"}) await vm.SaveAccountAsync(AccountProfile.Create(label));
+        foreach(var row in vm.Accounts) row.IsChecked=true;
+        const long place=42;var now=DateTimeOffset.UtcNow;
+        string[] jobs=["31111111-2222-4333-8444-000000000001","31111111-2222-4333-8444-000000000002","31111111-2222-4333-8444-000000000003"];
+        // 9/10 has room for one more player but no spare seat, so only two of these servers are handed out.
+        servers.Rows=[new(place,jobs[0],1,10,null,null,now),new(place,jobs[1],9,10,null,null,now),new(place,jobs[2],5,10,null,null,now)];
+        vm.ServerBrowser.UsePreferredPlace(place);
+        vm.ServerBrowser.Browse.Execute(null);await vm.ServerBrowser.Browse.Execution;
+        Assert.Equal(3,vm.ServerBrowser.Servers.Count);
+        // Off by default: the batch keeps one destination.
+        Assert.False(vm.ServerBrowser.SpreadAcrossServers);
+        Assert.Equal("Same destination for everyone",vm.ServerBrowser.BatchDestinationCaption);
+        if(pinned) {vm.ServerBrowser.SelectedServer=vm.ServerBrowser.Servers[1];vm.ServerBrowser.UseServer.Execute(null);}
+        vm.ServerBrowser.SpreadAcrossServers=true;
+        Assert.Equal(pinned?"A server is pinned, so everyone goes to it":"Each account gets its own listed server",vm.ServerBrowser.BatchDestinationCaption);
+        vm.QueueTargetedAccounts.Execute(null);await vm.QueueTargetedAccounts.Execution;await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(4,vm.Launches.Count);
+        var requested=vm.Launches.Select(l=>l.Operation.Intent.RequestedJobId).ToArray();
+        Assert.All(vm.Launches,l=>{Assert.Equal(place,l.Operation.Intent.PlaceId);Assert.True(l.Operation.Intent.HasExplicitDestination);});
+        if(pinned)
+        {
+            Assert.All(requested,job=>Assert.Equal(jobs[1],job));
+            Assert.Contains("A server is pinned, so every account was sent to it",vm.Notice);
+            return;
+        }
+        var own=requested.Where(job=>job is not null).ToArray();
+        Assert.Equal(2,own.Length);Assert.Equal(2,own.Distinct().Count());
+        Assert.All(own,job=>Assert.Contains(job,new[]{jobs[0],jobs[2]}));
+        Assert.Equal(2,requested.Count(job=>job is null));
+        Assert.Contains("2 of 4 accounts got their own listed server",vm.Notice);
+        Assert.Contains("the other 2 will join the place without a chosen server",vm.Notice);
+        Assert.Contains("4 blocked",vm.Notice);
+    });
     private async Task<IReadOnlyList<LaunchOperation>> ReadQueueBackupAsync()
     {
         string copy=Path.Combine(_root,"queue-backup-check-"+Guid.NewGuid().ToString("N"));
@@ -234,7 +280,8 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
     }
     private sealed class Servers : IRobloxPublicServerDirectory
     {
-        public Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query,CancellationToken ct)=>Task.FromResult(new RobloxPublicServerResult(RobloxPublicServerStatus.Complete,[],null,null,"Synthetic only"));
+        public IReadOnlyList<RobloxPublicServer> Rows {get;set;}=[];
+        public Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query,CancellationToken ct)=>Task.FromResult(new RobloxPublicServerResult(RobloxPublicServerStatus.Complete,Rows,null,null,"Synthetic only"));
     }
     private sealed class Monitor : IDesktopMonitor
     {

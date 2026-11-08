@@ -190,6 +190,62 @@ public sealed class JoinWorkspacePresentationTests
         Assert.DoesNotContain(columns,column=>((string?)column.Attribute("DisplayMemberBinding"))?.Contains("PlaceId",StringComparison.Ordinal)==true);
     }
 
+    [Fact]
+    public void FindAServerWithRoomSendsTheSameRecipientCountTheCapacityAdviceUses()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var find=join.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Command")=="{Binding FindRoom}");
+        const string count="{Binding DataContext.DestinationRecipientCount, RelativeSource={RelativeSource AncestorType=Window}}";
+        Assert.Equal(count,(string?)find.Attribute("CommandParameter"));Assert.Equal(count,(string?)find.Attribute("Content"));
+        Assert.Equal("Find a server with room for {0}",(string?)find.Attribute("ContentStringFormat"));
+        Assert.Equal("Find a server with room",(string?)find.Attribute("AutomationProperties.Name"));
+        Assert.Equal("{Binding CanUseDestination}",(string?)find.Attribute("IsEnabled"));
+        Assert.Equal("{Binding ServerBrowser}",(string?)find.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext"));
+    }
+
+    [Fact]
+    public void ReviewOffersSpreadingTheBatchAcrossLoadedServersAndBothCaptionsSayWhichRuleApplies()
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var spread=join.Descendants(Ui+"CheckBox").Single(box=>(string?)box.Attribute("IsChecked")=="{Binding SpreadAcrossServers}");
+        Assert.Equal("Give each account its own listed server",(string?)spread.Attribute("Content"));
+        Assert.Contains("Browse public servers first",(string?)spread.Attribute("ToolTip"));
+        Assert.Equal("{Binding ServerBrowser}",(string?)spread.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext"));
+        var captions=join.Descendants(Ui+"TextBlock").Where(text=>(string?)text.Attribute("Text")=="{Binding BatchDestinationCaption}").ToArray();
+        Assert.Equal(2,captions.Length);
+        Assert.All(captions,caption=>Assert.Equal("{Binding ServerBrowser}",(string?)caption.Ancestors().First(element=>element.Attribute("DataContext") is not null).Attribute("DataContext")));
+        Assert.DoesNotContain(join.Descendants(Ui+"TextBlock"),text=>(string?)text.Attribute("Text") is "Same destination for everyone" or "One destination for every account in the batch");
+    }
+
+    [Fact]
+    public Task PublicServerListDrawsEachRowsFillMeterAndReportedFps()=>SearchTest.OnUi(async()=>
+    {
+        var join=Page(Source(),"JoinGamePage");
+        var next=join.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Content")=="Load next 25");
+        Assert.Equal("{Binding Next}",(string?)next.Attribute("Command"));Assert.Equal("{Binding CanNext}",(string?)next.Attribute("IsEnabled"));
+        var list=new XElement(join.Descendants(Ui+"ListView").Single(element=>(string?)element.Attribute("ItemsSource")=="{Binding Servers}"));
+        Assert.Equal(new[]{"Server","Players","Room","Ping","FPS","Checked"},list.Descendants(Ui+"GridViewColumn").Select(column=>(string?)column.Attribute("Header")).ToArray());
+        _=Application.LoadComponent(new Uri("/Zenith.Sessions.App;component/Themes/SessionsControls.xaml",UriKind.Relative));
+        var markup=new XElement(Ui+"Window",new XAttribute(XNamespace.Xmlns+"x",X.NamespaceName),new XElement(Ui+"Window.Resources",new XElement(Ui+"ResourceDictionary",
+            new XElement(Ui+"ResourceDictionary.MergedDictionaries",new XElement(Ui+"ResourceDictionary",new XAttribute("Source","/Zenith.Sessions.App;component/Themes/SessionsControls.xaml"))))),list);
+        var window=(Window)XamlReader.Parse(markup.ToString());ThemeManager.Apply(window.Resources,"midnight");
+        var now=DateTimeOffset.UtcNow;
+        await using var browser=new ServerBrowserViewModel(new ServerPage(new(RobloxPublicServerStatus.Complete,
+            [new(42,"9a073cb7-73b1-42bd-844b-83a09cbec848",5,20,59.94,40,now),new(42,"00000000-0000-0000-0000-000000000002",20,20,null,null,now)],null,null,"Synthetic page")));
+        browser.UsePreferredPlace(42);browser.Browse.Execute(null);await browser.Browse.Execution;Assert.Equal(2,browser.Servers.Count);
+        try
+        {
+            // A real binding pass: a two-way meter binding to the read-only ratio would throw here.
+            var view=(ListView)window.Content;view.DataContext=browser;Layout(view,900,260);
+            var meters=Visual(view).OfType<ProgressBar>().ToArray();
+            Assert.Equal(new[]{0.25,1.0},meters.Select(meter=>meter.Value));Assert.All(meters,meter=>{Assert.Equal(0,meter.Minimum);Assert.Equal(1,meter.Maximum);});
+            Assert.Equal("Players 5 / 20",AutomationProperties.GetName(meters[0]));Assert.False(meters[0].Focusable);
+            var text=Visual(view).OfType<TextBlock>().Select(block=>block.Text).ToArray();
+            Assert.Contains(browser.Servers[0].Fps,text);Assert.Contains("5 / 20",text);Assert.Contains("20 / 20",text);Assert.Contains("Unavailable",text);
+        }
+        finally {window.Content=null;window.Close();}
+    });
+
     [Theory]
     [InlineData("graphite-mint",960,640)]
     [InlineData("graphite-mint",1320,840)]
@@ -328,6 +384,8 @@ public sealed class JoinWorkspacePresentationTests
         public Task<bool> FocusAsync(SessionObservation value,CancellationToken ct)=>throw new InvalidOperationException("No window operation expected");
         public Task<bool> RequestCloseAsync(SessionObservation value,CancellationToken ct)=>throw new InvalidOperationException("No window operation expected");
     }
+    private sealed class ServerPage(RobloxPublicServerResult result):IRobloxPublicServerDirectory
+    {public Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query,CancellationToken ct)=>Task.FromResult(result);}
     private sealed class NoCapture:IClientPreviewProvider
     {
         public int Calls;
