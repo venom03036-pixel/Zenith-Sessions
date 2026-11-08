@@ -89,7 +89,45 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
         }
     }
 
+    /// <summary>True when the directory can read many players' headshot descriptors in one request.</summary>
+    public bool CanBatchAvatars => _directory is IPublicRobloxAvatarBatchDirectory;
+
+    /// <summary>
+    /// One caller-owned request for the headshot descriptors (picture addresses and states, no pictures) of 1 to
+    /// <see cref="PublicRobloxAvatarBatchLimits.MaximumBatch"/> distinct players. It caches nothing and starts no other
+    /// work; the caller awaits it and runs it one at a time with its other requests here. Pass each item to
+    /// <see cref="FetchAsync(long, PublicRobloxAvatarBatchItem, CancellationToken, bool)"/>.
+    /// </summary>
+    public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>> GetAvatarDescriptorsAsync(IReadOnlyList<long> userIds, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        lock (_gate)
+            if (_disposed) return Task.FromResult(new PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>(
+                PublicDirectoryState.Failure, null, "Public profile presentation is closed."));
+        return _directory is IPublicRobloxAvatarBatchDirectory batch ? batch.GetAvatarsAsync(userIds, ct)
+            : Task.FromResult(new PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>(
+                PublicDirectoryState.Failure, null, "Public avatar information for several players at once is unavailable."));
+    }
+
     public Task<PublicDirectoryResult<PublicAccountData>> FetchAsync(long userId, CancellationToken ct, bool forceRefresh = false)
+        => Start(userId, null, ct, forceRefresh);
+
+    /// <summary>
+    /// The same as <see cref="FetchAsync(long, CancellationToken, bool)"/>, using a headshot descriptor already read by
+    /// <see cref="GetAvatarDescriptorsAsync"/> instead of requesting this player's descriptor again. A descriptor for
+    /// another player is rejected before any request.
+    /// </summary>
+    public Task<PublicDirectoryResult<PublicAccountData>> FetchAsync(long userId, PublicRobloxAvatarBatchItem descriptor,
+        CancellationToken ct, bool forceRefresh = false)
+    {
+        ArgumentNullException.ThrowIfNull(descriptor);
+        ct.ThrowIfCancellationRequested();
+        if (descriptor.UserId != userId) return Task.FromResult(new PublicDirectoryResult<PublicAccountData>(PublicDirectoryState.InvalidInput, null,
+            "The public avatar information belongs to another player."));
+        return Start(userId, descriptor, ct, forceRefresh);
+    }
+
+    private Task<PublicDirectoryResult<PublicAccountData>> Start(long userId, PublicRobloxAvatarBatchItem? descriptor, CancellationToken ct, bool forceRefresh)
     {
         ct.ThrowIfCancellationRequested();
         lock (_gate)
@@ -99,7 +137,7 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
             if (!forceRefresh && TryGetCached(userId, out PublicAccountData? cached))
                 return Task.FromResult(Success(cached!, "Cached public profile information."));
             if (_active is not null) return Task.FromResult(Deferred("A public profile request is already active. Try again after it finishes."));
-            var operation = new Operation(userId, _generation, ct);
+            var operation = new Operation(userId, _generation, ct, descriptor);
             _active = operation;
             Task<PublicDirectoryResult<PublicAccountData>> task = FetchCoreAsync(operation);
             _activeTask = task;
@@ -121,7 +159,8 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
             BitmapSource? image = null;
             PublicDirectoryState avatarState;
             TimeSpan? retry = null;
-            var descriptor = await _directory.GetAvatarAsync(operation.UserId, operation.Token).ConfigureAwait(false);
+            var descriptor = operation.Descriptor is { } batched ? FromBatch(batched)
+                : await _directory.GetAvatarAsync(operation.UserId, operation.Token).ConfigureAwait(false);
             operation.Token.ThrowIfCancellationRequested();
             if (descriptor.State != PublicDirectoryState.Success)
             { avatarState = SafeState(descriptor.State); retry = SafeRetry(descriptor.RetryAfter); }
@@ -390,6 +429,15 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
         while (node is not null) { var previous = node.Previous; if (_cache[node.Value].ExpiresUtc <= now) Remove(node); node = previous; }
     }
     private void Remove(LinkedListNode<long> node) { _cache.Remove(node.Value); _lru.Remove(node); }
+    // A batch item reads exactly as the single-player headshot reply would: still being prepared waits like that
+    // reply's 30-second hint, and blocked or unavailable keeps the placeholder.
+    private static PublicDirectoryResult<PublicRobloxAvatar> FromBatch(PublicRobloxAvatarBatchItem item) => item.State switch
+    {
+        PublicRobloxThumbnailState.Ready when item.Avatar is { } avatar => new(PublicDirectoryState.Success, avatar, "Public avatar information."),
+        PublicRobloxThumbnailState.Ready => new(PublicDirectoryState.Failure, null, "The public avatar information was invalid."),
+        PublicRobloxThumbnailState.Pending => new(PublicDirectoryState.Deferred, null, "The public avatar is still being prepared.", TimeSpan.FromSeconds(30)),
+        _ => new(PublicDirectoryState.Unknown, null, "The public avatar is unavailable.")
+    };
     private static PublicDirectoryState SafeState(PublicDirectoryState state) => Enum.IsDefined(state) ? state : PublicDirectoryState.Failure;
     private static TimeSpan? SafeRetry(TimeSpan? retry) => retry is { } delay && delay>TimeSpan.Zero?delay:null;
     private static PublicDirectoryResult<PublicAccountData> ProviderFailure(PublicDirectoryState state, TimeSpan? retry, string operation) => new(
@@ -460,9 +508,11 @@ public sealed class PublicAccountPresentation : IAsyncDisposable
         public long Generation { get; }
         public CancellationToken CallerToken { get; }
         public CancellationToken Token { get; }
-        public Operation(long userId, long generation, CancellationToken callerToken)
+        /// <summary>Set when a batch already read this player's headshot descriptor; null requests it here.</summary>
+        public PublicRobloxAvatarBatchItem? Descriptor { get; }
+        public Operation(long userId, long generation, CancellationToken callerToken, PublicRobloxAvatarBatchItem? descriptor)
         {
-            UserId = userId; Generation = generation; CallerToken = callerToken;
+            UserId = userId; Generation = generation; CallerToken = callerToken; Descriptor = descriptor;
             _source = CancellationTokenSource.CreateLinkedTokenSource(callerToken); Token = _source.Token;
         }
         public void Cancel()

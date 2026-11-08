@@ -11,7 +11,11 @@ public sealed record PublicAccountPageBinding(Guid ProfileId, long UserId, long 
 public sealed record PublicAccountPageUpdate(long PageGeneration, long UserId,
     IReadOnlyList<PublicAccountPageBinding> Bindings, PublicDirectoryResult<PublicAccountData> Result);
 
-/// <summary>One latest-page pump borrowing one presenter. No row tasks, polling, retries or additional image cache.</summary>
+/// <summary>
+/// One latest-page pump borrowing one presenter. No row tasks, polling, retries or additional image cache. When the
+/// presenter's directory supports it, headshot descriptors are read up to 50 players per request (a 100-player page
+/// costs 2 descriptor requests instead of 100); each player's profile and picture are still requested one at a time.
+/// </summary>
 public sealed class PublicAccountPageLoader : IAsyncDisposable
 {
     public const int MaximumBindings = 100;
@@ -100,10 +104,19 @@ public sealed class PublicAccountPageLoader : IAsyncDisposable
             PublicDirectoryResult<PublicAccountData>? final = null;
             try
             {
-                foreach (var group in plan.Bindings.GroupBy(binding => binding.UserId))
+                var groups = plan.Bindings.GroupBy(binding => binding.UserId).ToArray();
+                // An automatic page reads the headshot descriptors of up to 50 uncached players in one request, just
+                // before it reaches them; a manual refresh keeps its single forced request. A missing key means not yet
+                // read; a null value means the batch failed and that player's own descriptor request is used instead.
+                Dictionary<long, PublicRobloxAvatarBatchItem?>? descriptors = manual is null && _presenter.CanBatchAvatars ? new() : null;
+                for (int index = 0; index < groups.Length; index++)
                 {
+                    var group = groups[index];
                     if (!Current(plan) || !_canUse()) break;
                     bool cached = manual is null && _presenter.TryGetCached(group.Key, out _);
+                    if (!cached && descriptors is not null && !descriptors.ContainsKey(group.Key)
+                        && !await ReadDescriptorsAsync(plan, groups, index, descriptors).ConfigureAwait(false)) break;
+                    PublicRobloxAvatarBatchItem? descriptor = descriptors?.GetValueOrDefault(group.Key);
                     var request = new ActiveRequest(manual?.CallerToken ?? default, _clock);
                     lock (_gate)
                     {
@@ -112,13 +125,17 @@ public sealed class PublicAccountPageLoader : IAsyncDisposable
                     }
                     try
                     {
-                        final = await _presenter.FetchAsync(group.Key, request.Token, forceRefresh: manual is not null).ConfigureAwait(false);
+                        final = descriptor is null
+                            ? await _presenter.FetchAsync(group.Key, request.Token, forceRefresh: manual is not null).ConfigureAwait(false)
+                            : await _presenter.FetchAsync(group.Key, descriptor, request.Token).ConfigureAwait(false);
                         if (!Current(plan) || !_canUse() || request.Token.IsCancellationRequested) break;
                         var update = new PublicAccountPageUpdate(plan.PageGeneration, group.Key, Array.AsReadOnly(group.ToArray()), final);
                         await _publish(update, request.Token).ConfigureAwait(false);
-                        // Never retry a Deferred request in a tight loop, including shared HTTP-slot pressure.
+                        // Never retry a Deferred request in a tight loop, including shared HTTP-slot pressure. A picture the
+                        // batch reported as still being prepared is not request pressure, so the rest of the page continues.
+                        bool preparing = descriptor?.State == PublicRobloxThumbnailState.Pending;
                         if (!Current(plan) || !cached && (final.State == PublicDirectoryState.Deferred
-                            || final.Value?.AvatarState == PublicDirectoryState.Deferred)) break;
+                            || !preparing && final.Value?.AvatarState == PublicDirectoryState.Deferred)) break;
                     }
                     finally
                     {
@@ -143,6 +160,43 @@ public sealed class PublicAccountPageLoader : IAsyncDisposable
                     else manual.Completion.TrySetCanceled();
                 }
             }
+        }
+    }
+    /// <summary>
+    /// One owned, cancellable descriptor request for the player at <paramref name="start"/> and the next uncached players,
+    /// at most <see cref="PublicRobloxAvatarBatchLimits.MaximumBatch"/>. Fifty players at the 20-second request deadline
+    /// stay inside the directory's 30-minute descriptor lifetime. Returns false when the page must stop: superseded,
+    /// unusable, or the request was deferred (a provider pause or busy slots is never retried in a loop).
+    /// </summary>
+    private async Task<bool> ReadDescriptorsAsync(Plan plan, IGrouping<long, PublicAccountPageBinding>[] groups, int start,
+        Dictionary<long, PublicRobloxAvatarBatchItem?> descriptors)
+    {
+        var ids = new List<long>(PublicRobloxAvatarBatchLimits.MaximumBatch);
+        for (int next = start; next < groups.Length && ids.Count < PublicRobloxAvatarBatchLimits.MaximumBatch; next++)
+        {
+            long id = groups[next].Key;
+            if (next == start || !descriptors.ContainsKey(id) && !_presenter.TryGetCached(id, out _)) ids.Add(id);
+        }
+        var request = new ActiveRequest(default, _clock);
+        lock (_gate)
+        {
+            if (_disposed || plan.Epoch != _epoch) { request.Complete(); return false; }
+            _current = request;
+        }
+        try
+        {
+            var result = await _presenter.GetAvatarDescriptorsAsync(ids, request.Token).ConfigureAwait(false);
+            if (!Current(plan) || !_canUse() || request.Token.IsCancellationRequested || result.State == PublicDirectoryState.Deferred) return false;
+            foreach (long id in ids) descriptors[id] = null;
+            if (result.State == PublicDirectoryState.Success && result.Value is { } items)
+                foreach (PublicRobloxAvatarBatchItem item in items)
+                    if (item is not null && ids.Contains(item.UserId)) descriptors[item.UserId] = item;
+            return true;
+        }
+        finally
+        {
+            lock (_gate) if (ReferenceEquals(_current, request)) _current = null;
+            request.Complete();
         }
     }
     private bool Current(Plan plan) { lock (_gate) return !_disposed && plan.Epoch == _epoch; }

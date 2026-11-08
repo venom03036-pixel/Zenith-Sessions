@@ -131,6 +131,179 @@ public sealed class PublicAccountPageLoaderTests
         Assert.Single(directory.Ids); Assert.Equal(0, directory.Clears); await loader.DisposeAsync();
     }
 
+    [Fact]
+    public async Task HundredUserPageReadsHeadshotDescriptorsInTwoBatchedRequests()
+    {
+        var directory = new BatchDirectory(); await using var presenter = new PublicAccountPresentation(directory);
+        var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
+        var page = Enumerable.Range(0, PublicAccountPageLoader.MaximumBindings).Select(index => Binding(index, 1000 + index)).ToArray();
+        loader.ReplacePage(1, page); await loader.ActiveOperation.WaitAsync(Deadline);
+        // 100 accounts: 2 descriptor requests of 50 (the batch limit) instead of 100 single ones; profile and picture stay per user.
+        Assert.Equal(new[] { 50, 50 }, directory.Batches.Select(batch => batch.Length).ToArray());
+        Assert.Equal(page.Select(binding => binding.UserId), directory.Batches.SelectMany(batch => batch));
+        Assert.Equal(0, directory.SingleDescriptorCalls);
+        Assert.Equal(100, directory.Ids.Count); Assert.Equal(100, directory.Downloads); Assert.Equal(1, directory.MaximumActive);
+        Assert.Equal(100, updates.Count); Assert.All(updates, update => Assert.NotNull(update.Result.Value!.Avatar));
+    }
+
+    [Fact]
+    public async Task MixedHeadshotStatesFromOneBatchPublishEveryUserWithoutSingleRequests()
+    {
+        var directory = new BatchDirectory();
+        directory.States[2] = PublicRobloxThumbnailState.Pending; directory.States[3] = PublicRobloxThumbnailState.Blocked;
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
+        loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2), Binding(2, 3), Binding(3, 4) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Equal(new long[] { 1, 2, 3, 4 }, Assert.Single(directory.Batches)); Assert.Equal(0, directory.SingleDescriptorCalls);
+        // A picture Roblox is still preparing keeps its placeholder but does not stop the rest of the page.
+        Assert.Equal(new long[] { 1, 2, 3, 4 }, updates.Select(update => update.UserId).ToArray());
+        Assert.NotNull(updates[0].Result.Value!.Avatar);
+        Assert.Equal(PublicDirectoryState.Deferred, updates[1].Result.Value!.AvatarState); Assert.Null(updates[1].Result.Value!.Avatar);
+        Assert.Equal(PublicDirectoryState.Unknown, updates[2].Result.Value!.AvatarState); Assert.Null(updates[2].Result.Value!.Avatar);
+        Assert.NotNull(updates[3].Result.Value!.Avatar); Assert.Equal(2, directory.Downloads);
+    }
+
+    [Fact]
+    public async Task FailedBatchFallsBackToSingleDescriptorRequests()
+    {
+        var directory = new BatchDirectory { BatchState = PublicDirectoryState.Failure };
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
+        loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Single(directory.Batches); Assert.Equal(2, directory.SingleDescriptorCalls);
+        Assert.Equal(2, updates.Count); Assert.All(updates, update => Assert.NotNull(update.Result.Value!.Avatar));
+    }
+
+    [Fact]
+    public async Task DeferredBatchStopsThePageWithoutPerUserRequestsOrRetries()
+    {
+        var directory = new BatchDirectory { BatchState = PublicDirectoryState.Deferred };
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
+        loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Single(directory.Batches); Assert.Empty(directory.Ids); Assert.Equal(0, directory.SingleDescriptorCalls); Assert.Empty(updates);
+        loader.ReplacePage(2, new[] { Binding(0, 1), Binding(1, 2) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Equal(2, directory.Batches.Count); Assert.Empty(directory.Ids); Assert.Empty(updates);
+    }
+
+    [Fact]
+    public async Task CancelWorkCancelsAnInFlightBatchAndPublishesNothing()
+    {
+        var entered = Gate(); var directory = new BatchDirectory
+        { BatchWait = async ct => { entered.TrySetResult(); await Task.Delay(Timeout.Infinite, ct); } };
+        await using var presenter = new PublicAccountPresentation(directory); int updates = 0;
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (_, _) => { updates++; return Task.CompletedTask; });
+        loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2) }); await entered.Task.WaitAsync(Deadline);
+        loader.CancelWork(); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.True(directory.BatchCanceled); Assert.Empty(directory.Ids); Assert.Equal(0, updates);
+    }
+
+    [Fact]
+    public async Task CachedUsersAreLeftOutOfTheNextBatch()
+    {
+        var directory = new BatchDirectory(); await using var presenter = new PublicAccountPresentation(directory);
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (_, _) => Task.CompletedTask);
+        loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        loader.ReplacePage(2, new[] { Binding(0, 1), Binding(1, 2), Binding(2, 3) }); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Equal(2, directory.Batches.Count); Assert.Equal(new long[] { 1, 2 }, directory.Batches[0]); Assert.Equal(new long[] { 3 }, directory.Batches[1]);
+        Assert.Equal(new long[] { 1, 2, 3 }, directory.Ids); Assert.Equal(0, directory.SingleDescriptorCalls);
+    }
+
+    [Fact]
+    public async Task HundredUserPageOverTheRealTransportCostsTwoDescriptorRequests()
+    {
+        // Every request ends at this owned synthetic handler. No Roblox contact, credentials or launches.
+        byte[] png = PublicAccountPresentationTests.Png(); var counts = new Dictionary<string, int>(); var gate = new object();
+        using var handler = new Handler(request =>
+        {
+            Uri uri = request.RequestUri!;
+            lock (gate) counts[uri.Host] = counts.GetValueOrDefault(uri.Host) + 1;
+            if (uri.Host == "users.roblox.com")
+            {
+                string id = uri.Segments[^1];
+                return Json("{\"id\":" + id + ",\"name\":\"Fixture_" + id + "\",\"displayName\":\"Public fixture\"}");
+            }
+            if (uri.Host == "thumbnails.roblox.com")
+            {
+                string[] ids = uri.Query.Split('&')[0]["?userIds=".Length..].Split(',');
+                return Json("{\"data\":[" + string.Join(",", ids.Select(id => "{\"targetId\":" + id + ",\"state\":\"Completed\",\"imageUrl\":\"https://tr.rbxcdn.com/30DAY-AvatarHeadshot-SYNTHETIC"
+                    + id + "-Png/150/150/AvatarHeadshot/Png/noFilter\",\"version\":\"TN3\"}")) + "]}");
+            }
+            var content = new System.Net.Http.ByteArrayContent(png); content.Headers.ContentType = new("image/png");
+            return new(System.Net.HttpStatusCode.OK) { Content = content };
+        });
+        using var http = new System.Net.Http.HttpClient(handler);
+        await using var presenter = new PublicAccountPresentation(new Zenith.Sessions.Windows.RobloxPublicDirectory(http));
+        var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
+        loader.ReplacePage(1, Enumerable.Range(0, PublicAccountPageLoader.MaximumBindings).Select(index => Binding(index, 1000 + index)).ToArray());
+        await loader.ActiveOperation.WaitAsync(TimeSpan.FromSeconds(30));
+        // Before batching this page cost 300 requests (100 profiles, 100 descriptors, 100 pictures); now 202.
+        Assert.Equal(2, counts["thumbnails.roblox.com"]); Assert.Equal(100, counts["users.roblox.com"]); Assert.Equal(100, counts["tr.rbxcdn.com"]);
+        Assert.Equal(100, updates.Count); Assert.All(updates, update => Assert.NotNull(update.Result.Value!.Avatar));
+    }
+
+    private static System.Net.Http.HttpResponseMessage Json(string json) => new(System.Net.HttpStatusCode.OK)
+    { Content = new System.Net.Http.StringContent(json, System.Text.Encoding.UTF8, "application/json") };
+    private sealed class Handler(Func<System.Net.Http.HttpRequestMessage, System.Net.Http.HttpResponseMessage> handle) : System.Net.Http.HttpMessageHandler
+    {
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken ct)
+        { ct.ThrowIfCancellationRequested(); return Task.FromResult(handle(request)); }
+    }
+
+    // Counts every request kind so request-count claims are measured, not inferred.
+    private sealed class BatchDirectory : IPublicRobloxDirectory, IPublicRobloxAvatarBatchDirectory
+    {
+        private readonly object _gate = new(); private int _active;
+        public List<long> Ids { get; } = []; public List<long[]> Batches { get; } = [];
+        public Dictionary<long, PublicRobloxThumbnailState> States { get; } = [];
+        public int MaximumActive, SingleDescriptorCalls, Downloads; public PublicDirectoryState BatchState = PublicDirectoryState.Success;
+        public Func<CancellationToken, Task>? BatchWait; public bool BatchCanceled;
+        private static PublicRobloxAvatar Avatar(long id) => new(id, new Uri("https://tr.rbxcdn.com/fixture" + id + ".png"), 150, 150, DateTimeOffset.UtcNow);
+        private int Enter() { lock (_gate) return MaximumActive = Math.Max(MaximumActive, ++_active); }
+        private void Leave() { lock (_gate) _active--; }
+        public Task<PublicDirectoryResult<PublicRobloxUser>> LookupUserAsync(long id, CancellationToken ct)
+        { Enter(); try { lock (_gate) Ids.Add(id); return Task.FromResult(User(id)); } finally { Leave(); } }
+        public Task<PublicDirectoryResult<PublicRobloxAvatar>> GetAvatarAsync(long id, CancellationToken ct)
+        {
+            Enter(); try { lock (_gate) SingleDescriptorCalls++; return Task.FromResult(new PublicDirectoryResult<PublicRobloxAvatar>(PublicDirectoryState.Success, Avatar(id), "Fixture avatar")); }
+            finally { Leave(); }
+        }
+        public async Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>> GetAvatarsAsync(IReadOnlyList<long> userIds, CancellationToken ct)
+        {
+            Enter();
+            try
+            {
+                lock (_gate) Batches.Add(userIds.ToArray());
+                Assert.InRange(userIds.Count, 1, PublicRobloxAvatarBatchLimits.MaximumBatch);
+                if (BatchWait is not null)
+                    try { await BatchWait(ct); } catch (OperationCanceledException) when (ct.IsCancellationRequested) { BatchCanceled = true; throw; }
+                if (BatchState != PublicDirectoryState.Success)
+                    return new PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>(BatchState, null, "Fixture batch", TimeSpan.FromSeconds(30));
+                IReadOnlyList<PublicRobloxAvatarBatchItem> items = userIds.Select(id =>
+                {
+                    var state = States.GetValueOrDefault(id, PublicRobloxThumbnailState.Ready);
+                    return new PublicRobloxAvatarBatchItem(id, state, state == PublicRobloxThumbnailState.Ready ? Avatar(id) : null);
+                }).ToArray();
+                return new PublicDirectoryResult<IReadOnlyList<PublicRobloxAvatarBatchItem>>(PublicDirectoryState.Success, items, "Fixture batch");
+            }
+            finally { Leave(); }
+        }
+        public Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)
+        {
+            Enter();
+            try
+            {
+                lock (_gate) Downloads++;
+                return Task.FromResult(new PublicDirectoryResult<EncodedPublicAvatar>(PublicDirectoryState.Success,
+                    new(PublicAccountPresentationTests.Png(), "image/png", DateTimeOffset.UtcNow), "Fixture PNG"));
+            }
+            finally { Leave(); }
+        }
+        public void ClearMemoryCache() { }
+    }
+
     private sealed class Directory : IPublicRobloxDirectory
     {
         private readonly object _gate = new(); private int _active;
