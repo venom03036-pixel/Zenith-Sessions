@@ -39,8 +39,11 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
             try
             {
                 var recovered=await ReadGenerationAsync(".bak",ct).ConfigureAwait(false);
-                // Backup intent is historical. Loading never promotes it or resumes activity;
-                // the coordinator also converts active work into explicit startup review.
+                // Backup intent is historical. Loading never promotes it or resumes activity. Its
+                // waiting rows become review rows here (BackupRowForReview), so the coordinator's
+                // never-started recovery does not apply to them. The coordinator then keeps recovered
+                // preparation cancellable and a receipted, budgeted started client as saved, and turns
+                // every other active row into review. Nothing is replayed.
                 RecoveryNotice="Loaded the verified launch-queue backup. Recovered requests are paused for review; no client was restarted. Original recovery files were preserved.";
                 return recovered with{Paused=true,Operations=recovered.Operations.Select(BackupRowForReview).ToArray()};
             }
