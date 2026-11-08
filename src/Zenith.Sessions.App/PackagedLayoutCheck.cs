@@ -161,7 +161,7 @@ internal static class PackagedLayoutCheck
             {
                 if (SessionsThemes.ReadabilityProblem(palette) is { } problem)
                     throw new InvalidOperationException($"The packaged {palette.Name} theme is not readable: {problem}.");
-                ThemeManager.Apply(resources, palette);
+                SessionsThemes.Apply(resources, palette);
                 content.Measure(new Size(1320, 840)); content.Arrange(new Rect(0, 0, 1320, 840)); content.UpdateLayout();
             }
         }

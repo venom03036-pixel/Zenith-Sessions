@@ -68,6 +68,8 @@ internal static class SessionsThemes
     /// Windows' own High Contrast colours, unchanged wherever they are readable. A colour that would not reach 4.5:1 on what it is
     /// drawn over is replaced by the window text colour, or by black or white, so a hand-made contrast theme cannot hide text.
     /// Status colours become plain text: the words on chips and banners carry the meaning, as High Contrast expects.
+    /// Hovered and pressed primary and danger buttons take the window text colour when their label reads on it; rows and other
+    /// buttons keep the window colour and <see cref="Apply"/> marks those states with an edge.
     /// </summary>
     public static ThemePreset HighContrast(HighContrastColors system)
     {
@@ -77,19 +79,50 @@ internal static class SessionsThemes
         Color onAccent = Readable(accent == system.Highlight ? system.HighlightText : window, accent);
         Color selection = system.Highlight, onSelection = Readable(system.HighlightText, selection);
         Color disabled = AppearancePalette.Contrast(system.GrayText, window) >= 3 ? system.GrayText : text;
-        // Every key starts as the window colour (all backgrounds, badges and materials), then foregrounds are assigned.
+        // A hovered or pressed accent button needs a fill other than the accent that keeps its label readable. Only the window text
+        // colour, or black or white, can be; when none is, the fill stays the accent.
+        Color buttonState = new[] { text, Colors.Black, Colors.White }
+            .FirstOrDefault(fill => fill != accent && AppearancePalette.Contrast(onAccent, fill) >= TextContrast, accent);
+        // Every key starts as the window colour (all backgrounds, badges and materials), then foregrounds are assigned. That includes
+        // HoverBackground and ActiveBackground: no other Windows colour keeps the window text readable as a fill.
         var colors = Standard.Colors.Keys.ToDictionary(key => key, _ => window, StringComparer.Ordinal);
         foreach (string key in new[] { "TextPrimary", "TextSecondary", "TextMuted", "TextHighlight", "BorderBrushLight", "BorderBrushDark", "ControlBorder",
                      "AccentCyan", "AccentTeal", "AccentSuccess", "AccentWarning", "AccentDanger", "AccentMauve", "AccentSky", "AccentGold",
                      "ActionMouse", "ActionKeyboard", "ActionWait", "ActionFlow", "ActionImage", "ActionAI", "ActionColor" })
             colors[key] = text;
         foreach (string key in new[] { "AccentPrimary", "AccentMint", "BrandGradient", "SuccessGradient", "BorderBrushFocus", "BorderBrushGlow", "SelectionBorder",
-                     "PrimaryHoverBackground", "PrimaryPressedBackground", "DangerGradient", "DangerHoverBackground", "DangerPressedBackground" })
+                     "DangerGradient" })
             colors[key] = accent;
+        foreach (string key in new[] { "PrimaryHoverBackground", "PrimaryPressedBackground", "DangerHoverBackground", "DangerPressedBackground" })
+            colors[key] = buttonState;
         colors["PrimaryForeground"] = colors["DangerForeground"] = onAccent;
         colors["SelectionBackground"] = selection; colors["SelectionForeground"] = onSelection;
         colors["DisabledForeground"] = disabled;
         return new(HighContrastId, "High Contrast", "The Windows High Contrast colours.", colors);
+    }
+
+    /// <summary>
+    /// UI thread: shows <paramref name="palette"/> through <paramref name="resources"/>. Under High Contrast, hovered and pressed rows
+    /// and buttons keep the window colour behind their text and show the state as a bar of the window text colour along their leading
+    /// edge, 3 pixels wide on hover and 6 while pressed. Every other palette's hover and press colours are applied as they are.
+    /// </summary>
+    public static void Apply(ResourceDictionary resources, ThemePreset palette)
+    {
+        ArgumentNullException.ThrowIfNull(resources); ArgumentNullException.ThrowIfNull(palette);
+        ThemeManager.Apply(resources, palette);
+        if (palette.Id != HighContrastId) return;
+        resources["HoverBackground"] = Edge(palette.Colors["HoverBackground"], palette.Colors["TextPrimary"], 3);
+        resources["ActiveBackground"] = Edge(palette.Colors["ActiveBackground"], palette.Colors["TextPrimary"], 6);
+    }
+
+    // Absolute mapping keeps the bar the same width on every control: the bar colour up to width, then the surface, which Pad
+    // (the default spread) carries on to the far edge.
+    private static LinearGradientBrush Edge(Color surface, Color bar, double width)
+    {
+        var stops = new GradientStopCollection { new(bar, 0), new(bar, .5), new(surface, .5), new(surface, 1) };
+        var brush = new LinearGradientBrush(stops, new Point(0, 0), new Point(width * 2, 0)) { MappingMode = BrushMappingMode.Absolute };
+        brush.Freeze();
+        return brush;
     }
 
     /// <summary>The palettes the packaged self-check applies: every choice as it can appear, and High Contrast from this computer's SystemColors.</summary>
