@@ -26,15 +26,24 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
         await using var control = new WindowsClientWorkingSetTrimControl(new NativeClientWorkingSetTrimApi(), "powershell.exe",
             TimeSpan.FromMilliseconds(100), TimeSpan.FromMilliseconds(500));
 
+        // Windows' own working-set manager may page the idle helper out at any time on a busy, low-memory PC.
+        // The test does that itself at each idle point so the worst case runs every time, not by chance, and the
+        // helper touches its buffer again just before each measured step so system paging is never blamed on the
+        // product. The touch always comes before the product call, never between that call and its reading.
+        helper.EmptyAsTheSystemMight();
+        await helper.TouchAgainAsync();
+
         // Same PID, different start: the identity a recycled PID would present. It must not be trimmed.
-        var reused = await control.TrimAsync([exact with { ProcessStartUtcTicks = exact.ProcessStartUtcTicks - 1 }], default);
+        var reused =await control.TrimAsync([exact with { ProcessStartUtcTicks = exact.ProcessStartUtcTicks - 1 }], default);
         var refused = Assert.Single(reused.Results);
         Assert.Equal(ClientWorkingSetTrimStatus.InvalidClient, refused.Status);
         Assert.Null(refused.Before);
         var untouched = ProcessMemoryReader.Read(helper.ProcessId, helper.StartUtcTicks);
         Assert.True(untouched?.PrivateWorkingSetBytes >= Touched, $"The refused trim still changed residency: {untouched?.PrivateWorkingSetBytes}");
 
-        var trimmed = await control.TrimAsync([exact], default);
+        helper.EmptyAsTheSystemMight();
+        await helper.TouchAgainAsync();
+        var trimmed =await control.TrimAsync([exact], default);
         var row = Assert.Single(trimmed.Results);
         Assert.Equal(ClientWorkingSetTrimStatus.Trimmed, row.Status);
         Assert.False(trimmed.Cancelled);
@@ -254,7 +263,9 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
 
     /// <summary>
     /// A test-owned Windows PowerShell child that allocates and touches 200 MiB of its own memory, reports
-    /// ready, then idles until told to exit. It is never a Roblox process and receives no other input.
+    /// ready, then idles. Each "touch" line on its stdin makes it write one byte per page of its own buffer
+    /// again and answer "touched"; any other line, or a closed stdin, makes it exit. It is never a Roblox
+    /// process and receives no other input.
     /// </summary>
     private sealed class TouchedMemoryHelper : IAsyncDisposable
     {
@@ -265,8 +276,9 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
 
         public static async Task<TouchedMemoryHelper> StartAsync()
         {
-            const string script = "$b=[byte[]]::new(200MB); for($i=0;$i -lt $b.Length;$i+=4096){$b[$i]=1}; "
-                + "[Console]::Out.WriteLine('ready'); [void][Console]::In.ReadLine(); $b[0]=2";
+            const string script = "$b=[byte[]]::new(200MB); function Touch-Buffer { for($i=0;$i -lt $b.Length;$i+=4096){$b[$i]=1} }; "
+                + "Touch-Buffer; [Console]::Out.WriteLine('ready'); "
+                + "while([Console]::In.ReadLine() -eq 'touch'){ Touch-Buffer; [Console]::Out.WriteLine('touched') }; $b[0]=2";
             var start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
                 "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
             { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true };
@@ -280,6 +292,27 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
                 return helper;
             }
             catch { await helper.DisposeAsync(); throw; }
+        }
+
+        /// <summary>Makes every page of the helper's buffer resident again and waits for it to confirm.</summary>
+        public async Task TouchAgainAsync()
+        {
+            await _process.StandardInput.WriteLineAsync("touch");
+            Assert.Equal("touched", await _process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(60)));
+        }
+
+        /// <summary>
+        /// Empties the helper's working set from outside, the way Windows' memory manager may under pressure.
+        /// This goes straight to the native call, not through the product's trim control.
+        /// </summary>
+        public void EmptyAsTheSystemMight()
+        {
+            var native = new NativeClientWorkingSetTrimApi();
+            using var handle = native.Open(ProcessId, out int error);
+            Assert.False(handle.IsInvalid, $"The test could not open its own helper (error {error}).");
+            Assert.True(native.Trim(handle, out error), $"The test could not empty its own helper's working set (error {error}).");
+            var paged = ProcessMemoryReader.Read(ProcessId, StartUtcTicks);
+            Assert.True(paged?.PrivateWorkingSetBytes < Touched, $"The simulated system trim left {paged?.PrivateWorkingSetBytes} bytes resident.");
         }
 
         public async ValueTask DisposeAsync()
