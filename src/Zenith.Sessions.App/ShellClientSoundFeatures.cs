@@ -102,10 +102,10 @@ public sealed partial class ShellViewModel
     /// Dispatcher, after each sample. Only a fresh scan that names every readable client can tell which clients are new, so
     /// any other scan is skipped. Clients in the first such scan, and clients already running when the setting is saved on,
     /// are never arrivals. A new client is muted once Windows lists its sound, tried again on later scans for at most
-    /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per scan on the sound worker. No timer or thread is added: this
-    /// rides the existing sample cadence. A row Windows could not read names a PID that is still running but not which
-    /// instance, so a client already known under that PID stays known (and a waiting arrival keeps waiting) instead of
-    /// counting as new when a later scan reads it again.
+    /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per waiting client per scan (up to four on the scan that mutes it) on
+    /// the sound worker. No timer or thread is added: this rides the existing sample cadence. A row Windows could not read
+    /// names a PID that is still running but not which instance, so a client already known under that PID stays known (and a
+    /// waiting arrival keeps waiting) instead of counting as new when a later scan reads it again.
     /// </summary>
     private void ObserveClientSoundArrivals(DesktopSnapshot snapshot)
     {

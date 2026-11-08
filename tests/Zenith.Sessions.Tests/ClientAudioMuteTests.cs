@@ -243,6 +243,25 @@ public sealed class ClientAudioMuteTests
         Assert.Equal(new[] { true }, native.Clients[1].Sessions);
     }
 
+    [Fact]
+    public async Task CoreAudioEnumerationsPerOperationMatchTheDesignRecord()
+    {
+        // SELECTED-PRIORITY-DESIGN.md (Client sound, Rule 18): a client that is changed takes four enumerations (the read before,
+        // the read just before the write, the write and the readback); one already in the asked state or with no sound takes one.
+        var native = new Native(); native.Add(1, false); native.Add(2, false); native.Add(3, true); native.Add(4);
+        await using var control = Control(native);
+        await control.ChangeAsync([Session(1), Session(2)], ClientAudioMuteAction.Mute, default);
+        Assert.True(native.Enumerations == 8, $"Muting two clients took {native.Enumerations} Core Audio enumerations.");
+
+        int before = native.Enumerations;
+        await control.ChangeAsync([Session(3), Session(4)], ClientAudioMuteAction.Mute, default); // Already muted; no sound yet.
+        Assert.True(native.Enumerations - before == 2, $"Two clients left as found took {native.Enumerations - before} enumerations.");
+
+        before = native.Enumerations;
+        await control.ChangeAsync([Session(1)], ClientAudioMuteAction.Unmute, default);
+        Assert.True(native.Enumerations - before == 4, $"Unmuting one client took {native.Enumerations - before} enumerations.");
+    }
+
     // A fixed clock: Zenith's first mute happens at Now, after the synthetic clients started and before a "later" one.
     private static WindowsClientAudioMuteControl Control(Native native) => new(new NativeClientAudioMuteAdapter(native), new Clock(Now));
     private sealed class Clock(DateTimeOffset now) : TimeProvider { public override DateTimeOffset GetUtcNow() => now; }
@@ -265,7 +284,9 @@ public sealed class ClientAudioMuteTests
         private readonly Dictionary<SafeProcessHandle, Client> _handles = [];
         public Action<Client>? AfterSessionRead, BeforeSet;
         public bool DenySet;
-        public int SetCalls;
+        public int SetCalls, ReadCalls;
+        /// <summary>Each read and each write is one enumeration of every active output device's sessions.</summary>
+        public int Enumerations => ReadCalls + SetCalls;
         public void Add(int pid, params bool[] sessions) => Clients.Add(pid, new(pid, sessions));
         public SafeProcessHandle Open(int pid, out int error)
         {
@@ -284,6 +305,7 @@ public sealed class ClientAudioMuteTests
         public bool[]? ReadSessions(int processId, out int hresult)
         {
             hresult = 0;
+            ReadCalls++;
             var client = Clients[processId];
             var states = client.Sessions.ToArray();
             AfterSessionRead?.Invoke(client);
