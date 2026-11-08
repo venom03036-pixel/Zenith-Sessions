@@ -36,10 +36,13 @@ public sealed class LaunchEvidenceRow(LaunchOperation operation) : Observable
         ?"Client log: not matched · no browser tracker was recorded for this launch"
         :link?.Status switch
         {
-            LaunchLogLinkStatus.Linked when link.Process is { } holder=>$"Client log: names this launch's browser tracker · held by PID {holder.ProcessId} · supporting evidence only, not account or arrival proof",
-            LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · no running process holds it now · supporting evidence only, not account or arrival proof",
+            // The qualifier is the OwnerOf tradeoff (HANDOFF.md, launch-to-log): a relaunch's log may be the earlier launch's, created late.
+            LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · "
+                +(link.Process is { } holder?$"held by PID {holder.ProcessId}":"no running process holds it now")
+                +(link.EarlierLaunchMayOwnLog?" · an earlier launch with the same tracker has no log yet, so this log may be that launch's":"")
+                +" · supporting evidence only, not account or arrival proof",
             LaunchLogLinkStatus.NotLinked=>"Client log: none found yet that names this launch's browser tracker",
-            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker",
+            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker, or the log naming it also names another launch's tracker",
             LaunchLogLinkStatus.Unavailable=>"Client log: unavailable · client logs could not be read right now",
             _=>"Client log: not checked yet"
         };

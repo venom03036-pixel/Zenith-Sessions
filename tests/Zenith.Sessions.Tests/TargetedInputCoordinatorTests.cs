@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Collections.Concurrent;
 using Xunit;
 using Zenith.Sessions.Core;
@@ -502,6 +503,58 @@ public sealed class TargetedInputCoordinatorTests
         // An ordinary stop of a healthy run still names the user.
         fixture.Transport.Validation = null;
         Assert.Equal("Stopped by user.", (await Open(fixture, Target(2)).StopAsync().WaitAsync(Deadline)).Explanation);
+    }
+
+    // O-C10-2: another assembly stops a lease only through the owner's public, closed-reason Stop. Exposing the
+    // owner's internals would let it reach the Sync lock, the Lane, the raw transport, the run constructor and the
+    // *Locked members that assume the lock is held (Rule 4 single input pipeline, Rule 13 ownership).
+    [Fact]
+    public void TheInputOwnerExposesNoInternalsToAnyAssembly()
+    {
+        var exposed = typeof(TargetedInputRun).Assembly
+            .GetCustomAttributes<System.Runtime.CompilerServices.InternalsVisibleToAttribute>()
+            .Select(attribute => attribute.AssemblyName).ToArray();
+        Assert.Empty(exposed);
+    }
+
+    // The owner keeps the text for each reason it can be given, so the final snapshot says why the lease was
+    // released without any caller writing the explanation.
+    [Theory]
+    [InlineData(TargetedInputStopReason.User, "Stopped by user.")]
+    [InlineData(TargetedInputStopReason.EmergencyStop, "Stopped by emergency stop.")]
+    [InlineData(TargetedInputStopReason.Completed, "Macro completed; input lease released.")]
+    [InlineData(TargetedInputStopReason.RuntimeLimit, "Macro reached its runtime limit; input lease released.")]
+    [InlineData(TargetedInputStopReason.AfterFailure, "Macro stopped after a failure; input lease released.")]
+    [InlineData(TargetedInputStopReason.CompanionStopped, "Its companion operation stopped; input lease released.")]
+    [InlineData(TargetedInputStopReason.RunnerClosed, "Macro runner closed; input lease released.")]
+    [InlineData(TargetedInputStopReason.NotStarted, "Run could not start; input lease released.")]
+    [InlineData(TargetedInputStopReason.KeepAwakeSent, "Keep-awake press sent; input lease released.")]
+    public async Task StopWithAReasonReleasesTheHoldsAndSaysWhyTheLeaseWasReleased(TargetedInputStopReason reason, string expected)
+    {
+        await using var fixture = new Fixture(); var run = Open(fixture);
+        await run.SubmitAsync(new[] { Down(65) }).WaitAsync(Deadline);
+        var stopped = await run.StopAsync(reason).WaitAsync(Deadline);
+        Assert.Equal(TargetedInputRunState.Stopped, stopped.State);
+        Assert.Equal(0, stopped.SubmittedHolds);
+        Assert.Equal(expected, stopped.Explanation);
+        Assert.Equal(Up(65), Assert.Single(fixture.Transport.Attempts.Where(command => command.Cleanup)).Signal);
+        // The lease is free again.
+        Assert.NotNull(fixture.Owner.TryOpen(run.Target, TargetedInputPurpose.OwnedWindowDiagnostic).Run);
+    }
+
+    [Fact]
+    public async Task StopRefusesAReasonOutsideTheClosedSetWithoutTouchingTheRun()
+    {
+        await using var fixture = new Fixture(); var run = Open(fixture);
+        await run.SubmitAsync(new[] { Down(65) }).WaitAsync(Deadline);
+        await Assert.ThrowsAsync<ArgumentOutOfRangeException>(() => run.StopAsync((TargetedInputStopReason)999));
+        var snapshot = run.Snapshot;
+        Assert.Equal(TargetedInputRunState.Running, snapshot.State);
+        Assert.Equal(1, snapshot.SubmittedHolds);
+        Assert.Empty(fixture.Transport.Attempts.Where(command => command.Cleanup));
+        // Every member of the set has a text of its own (the theory above lists them all; KeepAwakeSent was appended for R-instances-17).
+        Assert.Equal(9, Enum.GetValues<TargetedInputStopReason>().Length);
+        Assert.Equal("Stopped by user.", (await run.StopAsync().WaitAsync(Deadline)).Explanation);
     }
 
     [Theory]

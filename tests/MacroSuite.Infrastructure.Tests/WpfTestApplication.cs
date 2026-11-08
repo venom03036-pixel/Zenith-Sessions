@@ -48,19 +48,26 @@ internal static class WpfTestApplication
                     $"'{stuck.Test}', which did not finish within its time limit.");
         }
         Task running = dispatcher.InvokeAsync(body).Task.Unwrap();
-        if (await Task.WhenAny(running, Task.Delay(liveness)).ConfigureAwait(false) == running)
+        // The hang guard and the drain are timers (Rule 12): a body that finishes first cancels the one
+        // still armed, so a finished test leaves nothing pending behind it.
+        using var guard = new CancellationTokenSource();
+        try
         {
-            await running.ConfigureAwait(false);
-            return;
+            if (await Task.WhenAny(running, Task.Delay(liveness, guard.Token)).ConfigureAwait(false) == running)
+            {
+                await running.ConfigureAwait(false);
+                return;
+            }
+            var overrun = Stopwatch.StartNew();
+            if (await Task.WhenAny(running, Task.Delay(drain, guard.Token)).ConfigureAwait(false) == running)
+                throw new TimeoutException($"'{test}' did not finish within {liveness.TotalSeconds:0.##} s on the shared WPF test dispatcher. " +
+                    $"It stopped {overrun.Elapsed.TotalSeconds:0.0} s later, before the next test started, so no later test ran beside it.",
+                    running.Exception?.GetBaseException());
+            lock (AbandonedGate) _abandoned = (test, running);
+            throw new TimeoutException($"'{test}' did not finish within {liveness.TotalSeconds:0.##} s on the shared WPF test dispatcher " +
+                $"and was still running {drain.TotalSeconds:0.##} s later. Later WPF tests are refused until it ends.");
         }
-        var overrun = Stopwatch.StartNew();
-        if (await Task.WhenAny(running, Task.Delay(drain)).ConfigureAwait(false) == running)
-            throw new TimeoutException($"'{test}' did not finish within {liveness.TotalSeconds:0.##} s on the shared WPF test dispatcher. " +
-                $"It stopped {overrun.Elapsed.TotalSeconds:0.0} s later, before the next test started, so no later test ran beside it.",
-                running.Exception?.GetBaseException());
-        lock (AbandonedGate) _abandoned = (test, running);
-        throw new TimeoutException($"'{test}' did not finish within {liveness.TotalSeconds:0.##} s on the shared WPF test dispatcher " +
-            $"and was still running {drain.TotalSeconds:0.##} s later. Later WPF tests are refused until it ends.");
+        finally { guard.Cancel(); }
     }
 
     /// <summary>Completes when no abandoned body remains on the shared dispatcher.</summary>

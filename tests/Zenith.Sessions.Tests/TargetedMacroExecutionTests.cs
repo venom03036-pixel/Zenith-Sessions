@@ -458,6 +458,51 @@ public sealed partial class TargetedMacroExecutionTests
         }
     }
 
+    // The run's own stop can land while a key send is in flight. The input owner then stops on the cancelled batch, and
+    // the run reports that stop (its runtime cap, the user's Stop, Panic), not an input rejection.
+    [Theory]
+    [InlineData("runtime-limit", TargetedMacroProblem.RuntimeLimit, "Input batch cancelled before any of it was sent; releasing the run's holds.")]
+    [InlineData("user", TargetedMacroProblem.Stopped, "Stopped by user.")]
+    [InlineData("runner-panic", TargetedMacroProblem.Stopped, "Stopped by emergency stop.")]
+    public async Task AStopThatLandsDuringAKeySendEndsTheRunAsThatStopNotAsAnInputRejection(string ending, TargetedMacroProblem problem, string expected)
+    {
+        var f = new Fixture();
+        try
+        {
+            var entered = Gate();
+            // Like a slow native submission: the send stays inside the transport until the run's token is cancelled.
+            f.Transport.BeforeWithToken = async (command, ct) =>
+            {
+                if (command.Cleanup)
+                    return;
+                entered.TrySetResult();
+                await WhenCancelledAsync(ct);
+            };
+            var model = Model(Key());
+            // Long enough for the send to reach the transport first under a loaded parallel run; the cap then expires there.
+            if (ending == "runtime-limit")
+                model.Settings.MaxRuntime = TimeSpan.FromSeconds(2);
+            var run = Start(f, TargetedMacroPlan.Compile(model, TargetedMacroScope.OwnedWindowDiagnostic));
+            var reached = await Task.WhenAny(entered.Task, run.Completion).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(ReferenceEquals(reached, entered.Task), "The run ended before its key send reached the transport, so this run did not exercise a stop during a send.");
+            if (ending == "user")
+                _ = run.StopAsync();
+            else if (ending == "runner-panic")
+                f.Runner.SignalPanic();
+            var result = await run.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TargetedMacroResultStatus.Stopped, result.Status);
+            Assert.Equal(problem, result.Problem);
+            Assert.Equal(TargetedMacroState.Stopped, result.Snapshot.State);
+            Assert.Equal(TargetedInputRunState.Stopped, result.Snapshot.Input.State);
+            Assert.Equal(expected, result.Snapshot.Input.Explanation);
+            Assert.Empty(f.Transport.Commands);
+        }
+        finally
+        {
+            await f.DisposeAsync();
+        }
+    }
+
     [Fact]
     public async Task CompanionStopReleasesItsRunWithoutSayingTheUserStoppedIt()
     {
@@ -592,6 +637,13 @@ public sealed partial class TargetedMacroExecutionTests
     }
 
     private static TaskCompletionSource Gate() => new(TaskCreationOptions.RunContinuationsAsynchronously);
+    private static async Task WhenCancelledAsync(CancellationToken ct)
+    {
+        var cancelled = Gate();
+        using var registration = ct.Register(static state => ((TaskCompletionSource)state!).TrySetResult(), cancelled);
+        await cancelled.Task;
+    }
+
     private static async Task Until(Func<bool> condition)
     {
         var elapsed = Stopwatch.StartNew();
@@ -632,6 +684,8 @@ public sealed partial class TargetedMacroExecutionTests
         private readonly HashSet<TargetedInputTarget> _registered = new();
         private readonly List<TargetedInputCommand> _commands = [];
         public Func<TargetedInputCommand, Task>? Before;
+        // Like Before, for a test that must see the batch's own token: (command, ct) => work before admission is checked.
+        public Func<TargetedInputCommand, CancellationToken, Task>? BeforeWithToken;
         // Test-only answer for a registered target: (target, cleanup) => validation.
         public Func<TargetedInputTarget, bool, TargetedInputValidation>? Validation;
         public bool RejectCleanup;
@@ -670,6 +724,8 @@ public sealed partial class TargetedMacroExecutionTests
         {
             if (Before is { } before)
                 await before(command);
+            if (BeforeWithToken is { } beforeWithToken)
+                await beforeWithToken(command, ct);
             if (!admit() || command.Cleanup && RejectCleanup)
                 return TargetedInputSubmission.Rejected;
             lock (_sync)

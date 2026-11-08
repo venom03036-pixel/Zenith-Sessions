@@ -42,6 +42,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientSound=>"Client sound",
         ManagerSubsystem.ClientLogs=>"Roblox client logs",
         ManagerSubsystem.ClientUpdate=>"Roblox update",
+        ManagerSubsystem.KeepAwake=>"Keep clients awake",
         _=>"Unrecognized subsystem"
     };
 }

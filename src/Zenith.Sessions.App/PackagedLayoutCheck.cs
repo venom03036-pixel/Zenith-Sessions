@@ -160,6 +160,11 @@ internal static class PackagedLayoutCheck
             if (window.FindName("IncludeClientLogTailsOption") is not System.Windows.Controls.CheckBox { IsChecked: false } tailsOption
                 || tailsOption.IsEnabled || vm.CanIncludeClientLogTails || vm.IncludeClientLogTails)
                 throw new InvalidOperationException("The packaged client log entries option lost its binding, its off default or its sample-mode boundary.");
+            if (window.FindName("SettingsClientGpu") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.ShowClientGpu)
+                throw new InvalidOperationException("The packaged per-client GPU option lost its binding or its off default.");
+            if (window.FindName("SettingsKeepAwake") is not System.Windows.Controls.ComboBox { SelectedValue: 0 } || vm.KeepAwakeMinutes != 0 || vm.KeepAwakeDue is not null
+                || window.FindName("ResumeKeepAwakeButton") is not System.Windows.Controls.Button resumeKeepAwake || resumeKeepAwake.Command != vm.ResumeKeepAwake || resumeKeepAwake.IsEnabled || vm.CanResumeKeepAwake)
+                throw new InvalidOperationException("The packaged Keep clients awake controls lost their binding or their off default.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

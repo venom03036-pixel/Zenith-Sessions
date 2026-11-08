@@ -36,6 +36,36 @@ public sealed class LaunchToLogPresentationTests
     }
 
     [Fact]
+    public void TheAmbiguousTextCoversALogThatAlsoNamesAnotherLaunchsTracker()
+    {
+        // Ambiguous has two causes: a shared tracker (more than one log or launch), or this launch's own log also naming
+        // another launch's tracker. The row must describe both, since the second is not a shared tracker at all.
+        string text = LaunchEvidenceRow.DescribeLaunchToLog(Receipt, new(Operation, LaunchLogLinkStatus.Ambiguous));
+        Assert.StartsWith("Client log: not matched", text);
+        Assert.Contains("more than one log or launch shares this browser tracker", text);
+        Assert.Contains("also names another launch's tracker", text);
+    }
+
+    [Fact]
+    public void ALinkedRowSaysWhenAnEarlierLaunchWithTheSameTrackerHasNoLogYet()
+    {
+        // The log credited to a relaunch may be the earlier launch's, created late by a slow client (the OwnerOf tradeoff
+        // recorded in HANDOFF.md). While that earlier launch has no log of its own the row says so, in plain words, and
+        // keeps the holder PID and the corroboration-only wording. Only a Linked row carries the qualifier.
+        var holder = new SessionProcessKey(null, 77, Now.AddSeconds(-30).UtcTicks);
+        const string qualifier = "an earlier launch with the same tracker has no log yet, so this log may be that launch's";
+        string held = LaunchEvidenceRow.DescribeLaunchToLog(Receipt, new(Operation, LaunchLogLinkStatus.Linked, holder, EarlierLaunchMayOwnLog: true));
+        string unheld = LaunchEvidenceRow.DescribeLaunchToLog(Receipt, new(Operation, LaunchLogLinkStatus.Linked, EarlierLaunchMayOwnLog: true));
+        Assert.Contains(qualifier, held); Assert.Contains(qualifier, unheld);
+        Assert.Contains("PID 77", held); Assert.DoesNotContain("PID", unheld);
+        Assert.Contains("not account or arrival proof", held); Assert.Contains("not account or arrival proof", unheld);
+        Assert.NotEqual(held, unheld);
+        Assert.DoesNotContain(qualifier, LaunchEvidenceRow.DescribeLaunchToLog(Receipt, new(Operation, LaunchLogLinkStatus.Linked, holder)));
+        Assert.DoesNotContain(qualifier, LaunchEvidenceRow.DescribeLaunchToLog(Receipt, new(Operation, LaunchLogLinkStatus.NotLinked, EarlierLaunchMayOwnLog: true)));
+        Assert.DoesNotContain("1234567890", held + unheld);
+    }
+
+    [Fact]
     public void TheRowRaisesItsLaunchToLogTextOnlyWhenTheTextChanges()
     {
         var operation = new LaunchOperation(new(Operation, Guid.NewGuid(), 1, 123, 1818, 0, Now), LaunchState.ClientStartedUnverified,

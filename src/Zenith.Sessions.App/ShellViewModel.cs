@@ -111,6 +111,12 @@ public sealed class SessionRow(SessionObservation observation) : Observable
     public string IoTransfers=>Observation.Problem is null && Observation.IoRates is { } io
         ? "R "+TelemetryDisplay.Number(io.ReadBytesPerSecond/1024,"0.0"," KiB/s")+" · W "+TelemetryDisplay.Number(io.WriteBytesPerSecond/1024,"0.0"," KiB/s")+" · other "+TelemetryDisplay.Number(io.OtherBytesPerSecond/1024,"0.0"," KiB/s") : "Unavailable / warming up";
     public string ObservedTime=>Observation.ObservedUtc.LocalDateTime.ToString("T");
+    private string _gpu=ClientGpuText.Off;
+    /// <summary>This client's busiest GPU engine and dedicated GPU memory, from the latest fresh snapshot's confirmed client row
+    /// (matched by PID and start time); "Off in Settings" until the saved option is on; never a number for an unknown value.</summary>
+    public string Gpu=>_gpu;
+    public void UpdateGpu(GpuClientTelemetry? client,bool fresh,bool enabled)
+    { string text=ClientGpuText.Format(client,fresh,enabled); if(_gpu!=text) { _gpu=text; Raise(nameof(Gpu)); } }
     public void Update(SessionObservation value)
     {
         var prior = Observation; Observation = value;
@@ -335,7 +341,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);
@@ -384,6 +390,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientSoundFeatures(clientSound);
         InitializeSignInBrowserData();
         InitializeClientLogCleanupFeatures(clientLogCleanup);
+        InitializeKeepAwakeFeatures(keepAwakeInput,foregroundSwitch,userIdle,capabilityGate);
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
@@ -446,11 +453,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             _keepSignInBrowserData=_settings.KeepSignInBrowserData; Raise(nameof(KeepSignInBrowserData));
             _defaultClientArguments=_settings.DefaultClientArguments;_shortenWaitAfterJoin=_settings.ShortenWaitAfterJoin;
             LoadNativeLaunchModeDraft(); RefreshBootstrapperLaunch();
+            _showClientGpu=_settings.ShowClientGpu;ApplyClientGpu(_showClientGpu);
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
+            _keepAwakeMinutes=_settings.KeepAwakeMinutes; ApplySavedKeepAwake(0);
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
-            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin), nameof(CheckRobloxUpdates) }) Raise(field);
+            foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(DefaultClientArguments), nameof(ShortenWaitAfterJoin), nameof(CheckRobloxUpdates), nameof(ShowClientGpu), nameof(KeepAwakeMinutes) }) Raise(field);
             ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
@@ -922,6 +931,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             : "Process scan incomplete, stale or unavailable. Displayed rows may be last-known; missing clients are not confirmed exits.";
         // Replace only observations whose measurements changed; profile views are not rebuilt by telemetry.
         bool clientRowsChanged=(_sessionRows??=new(ReleaseSessionRow,CreateSessionRow)).Reconcile(Sessions,snapshot.Sessions);
+        PresentClientGpu(snapshot,now);
         // One log snapshot for both the update and the row views, so a newer correlator pass cannot split them.
         var logs = _logCorrelator?.Snapshot;
         _logProjection.Update(snapshot.Sessions, logs, now);
@@ -973,7 +983,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         string defaultClientArguments=ExtraClientArgumentPolicy.Validate(DefaultClientArguments);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,KeepSignInBrowserData=KeepSignInBrowserData,CheckRobloxUpdates=CheckRobloxUpdates,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,ShowClientGpu=ShowClientGpu,KeepAwakeMinutes=KeepAwakeMinutes,KeepSignInBrowserData=KeepSignInBrowserData,CheckRobloxUpdates=CheckRobloxUpdates,DefaultClientArguments=defaultClientArguments,ShortenWaitAfterJoin=ShortenWaitAfterJoin,
             NativeLaunchMode=NativeLaunchModes.ToSettingsValue(SelectedNativeLaunchMode.Mode) }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
@@ -999,6 +1009,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && CheckRobloxUpdates == _savedSettings.CheckRobloxUpdates
             && DefaultClientArgumentsDraftIsSaved && ShortenWaitAfterJoin == _savedSettings.ShortenWaitAfterJoin
             && SelectedNativeLaunchMode.Mode == SavedNativeLaunchMode
+            && ShowClientGpu == _savedSettings.ShowClientGpu
+            && KeepAwakeMinutes == _savedSettings.KeepAwakeMinutes
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -1018,11 +1030,15 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
+                int keepAwakeBefore=_savedSettings.KeepAwakeMinutes;
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
                 ApplySavedNativeLaunchMode();
                 _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
+                ApplyClientGpu(snapshot.ShowClientGpu);
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
+                // Only a changed choice re-arms the timer; a theme or window autosave leaves the scheduled press where it is.
+                if (snapshot.KeepAwakeMinutes != keepAwakeBefore) ApplySavedKeepAwake(keepAwakeBefore);
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
                 // Only Save settings registers the saved panic shortcut, or tries a refused one again; autosaves leave it alone.
@@ -1100,7 +1116,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(StopGroupChanges);Step(StopSignInBrowserData);
         Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1187,6 +1203,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(_shuttingDown) return;
         _shuttingDown=true;
         StopIdleLock();
+        StopKeepAwakeForShutdown();
         StopClientPriorityOperations();
         StopClientTrimOperations();
         StopClientSoundOperations();
@@ -1226,6 +1243,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await DisposeClientSoundFeaturesAsync();
         await DisposeClientLogCleanupFeaturesAsync();
         await DisposeClientUpdateFeaturesAsync();
+        await StopOwnerAsync(()=>_keepAwakeTick);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.

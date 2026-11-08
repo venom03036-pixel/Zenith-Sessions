@@ -115,7 +115,7 @@ public sealed class DesktopSamplingCadence(TimeProvider? timeProvider = null)
     }
 }
 
-public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,IClientWindowControl,IClientWindowArranger,IClientWindowBatchControl,IClientWindowResizer,IDisposable
+public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,IClientWindowControl,IClientWindowArranger,IClientWindowBatchControl,IClientWindowResizer,IClientGpuTelemetryControl,IDisposable
 {
     private readonly SemaphoreSlim _sampling = new(1);
     private readonly SemaphoreSlim _windowControl = new(1,1);
@@ -137,6 +137,11 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
     private readonly List<ClientProcessEntry> _clients = []; // Reused by every sample; holds one snapshot's clients.
     private readonly ITopLevelWindows _windows;
     private readonly ClientMainWindowIndex _mainWindows;
+    // Per-client GPU numbers (R-instances-15): off until the saved option turns it on. The candidates are the clients the
+    // last process inventory read (PID and start time); both are used only under the sampling gate, like every sample field.
+    private bool _clientGpu;
+    private readonly Dictionary<int, long> _clientStarts = [];
+    private readonly GpuClientAttribution _clientAttribution;
 
     public WindowsDesktopMonitor(TimeProvider? timeProvider = null, WindowsGpuTelemetryReader? gpuReader = null)
         : this(timeProvider, gpuReader, new NativeClientProcessSource(ClientProcessNames), NativeTopLevelWindows.Instance) { }
@@ -153,7 +158,31 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         _ioRates = new(_clock);
         _gpu = gpuReader ?? new(_clock);
         _sampleSystem = SampleSystem; _sampleProcesses = SampleProcesses;
+        _clientAttribution = new(_clientStarts, ConfirmClient);
         _windowOperations = new(_windowControl, new NativeClientWindowAdapter());
+    }
+
+    /// <summary>Takes effect at the next system sample. Off adds no counter and opens no extra handle; on costs one gauge read and one
+    /// query-limited handle per client with GPU rows each second.</summary>
+    public void ConfigureClientGpuTelemetry(bool enabled)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        Volatile.Write(ref _clientGpu, enabled);
+    }
+
+    /// <summary>
+    /// The check after a GPU collection: the client is read again through one query-limited handle and counts only while it
+    /// is still running with the start time the inventory saw. Ended, reused or unreadable processes are refused, never guessed.
+    /// </summary>
+    private bool ConfirmClient(int processId, long start, CancellationToken ct)
+    {
+        ct.ThrowIfCancellationRequested();
+        try
+        {
+            var reading = _processes.Read(processId, ct);
+            return reading.Outcome == ClientProcessReadOutcome.Read && reading.StartUtcTicks == start;
+        }
+        catch (Exception error) when (error is InvalidOperationException or Win32Exception or UnauthorizedAccessException) { return false; }
     }
 
     public void ConfigurePerformance(ManagerPerformancePolicy policy)
@@ -183,7 +212,9 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         double? cpu = ReadCpu();
         // Optional GPU failure is reported only in its own snapshot. It must not turn a valid
         // physical/commit sample into a failure or manufacture free GPU capacity.
-        var gpu = _gpu.Read(ct);
+        // Per-client numbers bracket the collection: the candidates were read by the inventory before it (within this
+        // serialized pass or an earlier one) and ConfirmClient reads each PID with rows again after it.
+        var gpu = Volatile.Read(ref _clientGpu) && _clientStarts.Count > 0 ? _gpu.Read(_clientAttribution, ct) : _gpu.Read(ct);
         ct.ThrowIfCancellationRequested();
         return new ResourceSnapshot(at, memory.TotalPhysical, memory.AvailablePhysical,
             Multiply(performance.CommitLimit, performance.PageSize), Multiply(performance.CommitTotal, performance.PageSize), cpu,
@@ -198,6 +229,8 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
         var liveIo = new HashSet<SessionProcessKey>();
         var clients = _clients;
         clients.Clear();
+        // A new inventory replaces the GPU candidates; a failed or partial one leaves only the clients it did read.
+        _clientStarts.Clear();
         // One system process snapshot covers every client name. Each client is then read through one query-limited
         // handle (start and processor time, memory, I/O and exit state), not one handle per Process property.
         try { _processes.Snapshot(clients, ct); }
@@ -244,6 +277,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
                 var measured = reading.Memory;
                 if (measured is null) complete = false;
                 string key = $"{processId}:{start}"; alive.Add(key);
+                _clientStarts[processId] = start;
                 double? percent = null,faultsPerSecond=null;
                 if (_processTimes.TryGetValue(key, out var previous) && ticks > previous.At)
                 {
@@ -345,7 +379,7 @@ public sealed partial class WindowsDesktopMonitor : IConfigurableDesktopMonitor,
     {
         if (_disposed) return;
         _windowOperations.Cancel();
-        _disposed = true; _cadence.Clear(); _processTimes.Clear(); _ioRates.Clear(); _gpu.Dispose();
+        _disposed = true; _cadence.Clear(); _processTimes.Clear(); _clientStarts.Clear(); _ioRates.Clear(); _gpu.Dispose();
         _sampling.Dispose(); _windowControl.Dispose();
     }
     private static class Native

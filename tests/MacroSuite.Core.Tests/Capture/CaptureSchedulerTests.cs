@@ -17,11 +17,18 @@ public sealed class CaptureSchedulerTests
         public int CaptureCount { get; private set; }
         public CaptureFrame? LastReturnedFrame { get; private set; }
 
+        /// <summary>
+        /// Every frame handed to the scheduler, in order. Written on the capture loop's thread; read it only
+        /// after the scheduler has been disposed (its loop task has then ended).
+        /// </summary>
+        public List<CaptureFrame> ReturnedFrames { get; } = new();
+
         public Task<CaptureFrame> CaptureRegionAsync(Rectangle region, CancellationToken ct = default)
         {
             CaptureCount++;
             var frame = TestFrameFactory.CreateSolidColor(region.Width, region.Height, 100, 100, 100);
             LastReturnedFrame = frame;
+            ReturnedFrames.Add(frame);
             return Task.FromResult(frame);
         }
 
@@ -95,6 +102,30 @@ public sealed class CaptureSchedulerTests
         public void Dispose() { }
     }
 
+    /// <summary>
+    /// Holds the first frame it receives inside <see cref="OnFrameCaptured"/> until the test releases it,
+    /// so the test can observe the scheduler while a fan-out is in progress.
+    /// </summary>
+    private sealed class GatedSubscriber : ICaptureSubscriber, IDisposable
+    {
+        private readonly ManualResetEventSlim _release = new(false);
+
+        public Guid Id { get; } = Guid.NewGuid();
+        public Rectangle Region { get; } = new(0, 0, 10, 10);
+        public TimeSpan PollingInterval { get; } = TimeSpan.FromMilliseconds(15);
+        public TaskCompletionSource FrameHeld { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public void OnFrameCaptured(CaptureFrame frame, Rectangle subRegion)
+        {
+            FrameHeld.TrySetResult();
+            _release.Wait(TimeSpan.FromSeconds(5));
+        }
+
+        public void Release() => _release.Set();
+
+        public void Dispose() => _release.Dispose();
+    }
+
     [Fact]
     public void InitialState_HasZeroSubscribersAndIsNotRunning()
     {
@@ -125,8 +156,43 @@ public sealed class CaptureSchedulerTests
         sub.LastSubRegion.Should().Be(new Rectangle(0, 0, 50, 50));
         fakeService.CaptureCount.Should().BeGreaterThan(0);
 
-        // Frame should have been disposed after fanout
+        // The loop disposes a frame only after its fan-out (Rule 13), so reading the newest frame while the
+        // loop still runs races that fan-out (the 100 ms delay above and the loop's 15 ms wait fire from the
+        // same timer queue, so the two often wake together). DisposeAsync returns only after the loop task has
+        // ended, and by then every frame the service handed out has been through the loop's finally.
+        await scheduler.DisposeAsync();
+
         fakeService.LastReturnedFrame!.IsDisposed.Should().BeTrue();
+        fakeService.ReturnedFrames.Should().OnlyContain(frame => frame.IsDisposed);
+    }
+
+    [Fact]
+    public async Task DisposeAsync_WaitsForAFrameStillBeingFannedOut_ThenEveryReturnedFrameIsDisposed()
+    {
+        using var fakeService = new FakeCaptureService();
+        // Declared before the scheduler so that scope exit disposes the scheduler (and ends its loop) before
+        // the gate the loop may still be waiting on.
+        using var sub = new GatedSubscriber();
+        await using var scheduler = new CaptureScheduler(fakeService);
+
+        scheduler.Subscribe(sub);
+        await sub.FrameHeld.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        // Rule 13: the frame stays the scheduler's, and valid, until the subscriber's handler returns.
+        var heldFrame = fakeService.LastReturnedFrame!;
+        try
+        {
+            heldFrame.IsDisposed.Should().BeFalse();
+        }
+        finally
+        {
+            sub.Release();
+        }
+
+        await scheduler.DisposeAsync();
+
+        heldFrame.IsDisposed.Should().BeTrue();
+        fakeService.ReturnedFrames.Should().NotBeEmpty().And.OnlyContain(frame => frame.IsDisposed);
     }
 
     [Fact]

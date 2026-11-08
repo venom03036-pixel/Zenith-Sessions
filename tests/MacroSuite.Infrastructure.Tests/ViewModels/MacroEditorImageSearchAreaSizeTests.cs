@@ -35,7 +35,7 @@ public partial class MacroEditorViewModelTests
     }
 
     [Fact]
-    public void ImageSearchArea_ChooseRejectsTooSmallArea_AndAcceptsExactTemplateBoundary()
+    public async Task ImageSearchArea_ChooseRejectsTooSmallArea_AndAcceptsExactTemplateBoundary()
     {
         var saved = new Rectangle(-300, -100, 500, 400);
         var source = new WaitUntilStep(new ImageCondition(SearchAreaTemplatePng(320, 240), searchRegion: saved));
@@ -43,6 +43,10 @@ public partial class MacroEditorViewModelTests
         vm.RegionPrompter = () => new Rectangle(-250, -90, 319, 240);
 
         vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        // Picking owns input until its asynchronous retirement completes. A second picker must not
+        // race that retirement; otherwise it is correctly refused as another active operation.
+        if (vm.InputOperations.Snapshot.OperationId is { } rejectedPicker)
+            await vm.InputOperations.WaitForRetirementAsync(rejectedPicker).WaitAsync(WpfTestApplication.LivenessBound);
 
         vm.ActionEditor.ImageSearchRegion.Should().Be(saved);
         vm.GetStepAt(0).Should().BeSameAs(source);
@@ -51,6 +55,8 @@ public partial class MacroEditorViewModelTests
         var exact = new Rectangle(-250, -90, 320, 240);
         vm.RegionPrompter = () => exact;
         vm.ActionEditor.ChooseImageSearchAreaCommand.Execute(null);
+        if (vm.InputOperations.Snapshot.OperationId is { } acceptedPicker)
+            await vm.InputOperations.WaitForRetirementAsync(acceptedPicker).WaitAsync(WpfTestApplication.LivenessBound);
         vm.ActionEditor.ImageSearchRegion.Should().Be(exact);
         vm.ActionEditor.DraftError.Should().BeNull();
         vm.ActionEditor.Apply().Should().BeTrue();

@@ -60,6 +60,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "tray", "close to tray", "minimize to tray", "notification area", "quit", "background"),
         E("idle-lock", "Lock when idle", "Choose whether the manager locks like Lock after a time without keyboard or mouse input. Off by default; save settings to apply.",
             SettingsSearchTarget.Appearance, "idle", "auto lock", "automatic lock", "inactivity", "timeout", "away", "privacy", "security"),
+        E("keep-awake", "Keep clients awake", "Off by default. Choose a gap of 5 to 19 minutes and save: each client is brought forward, sent one F13 press through the input owner, and the earlier window is put back. Refused until the live input isolation trial passes.",
+            SettingsSearchTarget.Appearance, "anti-afk", "anti afk", "afk", "away from keyboard", "idle kick", "idle disconnect", "keep awake", "keepalive", "f13", "20 minutes", "automation"),
         E("panic-shortcut", "Panic shortcut", "Choose the global shortcut for Panic stop: F12 by default, or another such as Ctrl+Alt+Shift+P. Save settings to register it; F12 still works while the manager is focused.",
             SettingsSearchTarget.Appearance, "panic", "hotkey", "hot key", "keyboard shortcut", "global shortcut", "emergency stop", "F12", "key combination"),
 
@@ -75,6 +77,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.CustomTiming, "performance preset", "custom timing", "reset"),
         E("main-account", "Main saved account", "Use the selected library account as main, or clear the choice. This selection does not verify a running client.",
             SettingsSearchTarget.Performance, "main account choice", "library", "priority", "clear main"),
+        E("client-gpu", "Show each client's GPU use", "Off by default. Turn it on and save to show each client's busiest GPU engine and dedicated GPU memory as a column of the Sessions table. Unknown values stay Unavailable, never 0.",
+            SettingsSearchTarget.Performance, "gpu", "graphics card", "video memory", "vram", "dedicated memory", "engine", "utilization", "per client", "monitor"),
         E("process-timing", "Process details interval", "Custom process sampling interval: 500 to 5000 milliseconds. Cached measurements keep their original time.",
             SettingsSearchTarget.CustomTiming, "process sample", "polling", "cadence", "milliseconds", "monitor", "refresh"),
         E("dashboard-timing", "Dashboard interval", "Custom dashboard presentation interval: 250 to 2000 milliseconds.",

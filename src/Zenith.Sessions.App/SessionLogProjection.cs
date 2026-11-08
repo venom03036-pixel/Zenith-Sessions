@@ -183,13 +183,21 @@ public sealed record SessionLogView(string Correlation, string ReportedUserId, s
         };
         static string Destination(ObservedSessionDestination? destination) => destination is null ? "Unknown"
             : $"Place {destination.PlaceId.ToString(CultureInfo.InvariantCulture)} · {destination.JobId:D} · {destination.ObservedUtc.ToLocalTime():HH:mm:ss}";
+        // Owner decision 2026-11-08 (R-instances-2): a Connected client's place and server stay shown after the
+        // registry's evidence age, marked with how long ago the log last confirmed them, until a join, teleport,
+        // disconnect, exit, unread tail or lost binding. Display only: ReportedPlaceId and ReportedJobId stay null,
+        // so Join same game, Join same server and Copy are offered only on evidence under that age, as before.
+        var remembered = leased && evidence.ConnectedToLastKnownDestination ? evidence.LastKnownDestination : null;
+        string? marker = remembered is null ? null : LastConfirmed(remembered.ObservedUtc, now);
         return new(correlation,
             leased && evidence.ObservedUserId is { } user ? user.ToString(CultureInfo.InvariantCulture) : "Unknown",
-            leased && evidence.CurrentDestination is { } current ? current.PlaceId.ToString(CultureInfo.InvariantCulture) : "Unknown",
-            leased && evidence.CurrentDestination is { } server ? server.JobId.ToString("D") : "Unknown",
-            Destination(evidence.LastKnownDestination), leased ? LifecycleText(evidence) : "Unknown",
+            leased && evidence.CurrentDestination is { } current ? current.PlaceId.ToString(CultureInfo.InvariantCulture)
+                : remembered is not null ? $"{remembered.PlaceId.ToString(CultureInfo.InvariantCulture)} · {marker}" : "Unknown",
+            leased && evidence.CurrentDestination is { } server ? server.JobId.ToString("D")
+                : remembered is not null ? $"{remembered.JobId:D} · {marker}" : "Unknown",
+            Destination(evidence.LastKnownDestination), leased ? LifecycleText(evidence, marker) : "Unknown",
             evidence.Confidence == SessionEvidenceConfidence.Unknown ? "Not observed" : evidence.ObservedUtc.ToLocalTime().ToString("HH:mm:ss", CultureInfo.InvariantCulture),
-            "A process using a log does not prove who wrote its lines. Parser formats remain unverified. Reported IDs never authorize account actions; expired and last-known destinations are kept separate.",
+            "A process using a log does not prove who wrote its lines. Parser formats remain unverified. Reported IDs never authorize account actions. A place and server the log last confirmed more than five minutes ago stay shown with that age, but Join same game, Join same server and Copy need fresher evidence; last-known destinations are kept separate.",
             evidence.LastKnownUserId is { } known && evidence.LastKnownUserIdentityUtc is { } at
                 ? $"User {known.ToString(CultureInfo.InvariantCulture)} · {at.ToLocalTime():HH:mm:ss} · unverified" : "Unknown",
             leased && !evidence.Ambiguous ? evidence.CurrentDestination?.PlaceId : null,
@@ -198,12 +206,21 @@ public sealed record SessionLogView(string Correlation, string ReportedUserId, s
             leased && !evidence.Ambiguous ? evidence.CurrentDestination?.ObservedUtc : null);
     }
 
-    private static string LifecycleText(SessionEvidenceSnapshot evidence)
+    private static string LifecycleText(SessionEvidenceSnapshot evidence, string? lastConfirmed)
     {
         string state = evidence.Lifecycle == ObservedSessionLifecycle.Disconnected && evidence.DisconnectReason is { } reason
             ? $"Disconnected · reason {reason.ToString(CultureInfo.InvariantCulture)} · " + (reason == ClientLogObservation.AccountLaunchedElsewhereReason ? "account launched elsewhere"
                 : evidence.PlayerInitiatedDisconnect ? "you left" : "connection lost")
             : evidence.Lifecycle.ToString();
+        if (lastConfirmed is not null) state += " · " + lastConfirmed;
         return evidence.HumanCheckObservedUtc is null ? state : state + " · Roblox asked for a human check";
+    }
+
+    /// <summary>Whole minutes, so the text changes once a minute and an otherwise unchanged row does not refresh every tick.</summary>
+    private static string LastConfirmed(DateTimeOffset confirmedUtc, DateTimeOffset now)
+    {
+        long minutes = Math.Max(0L, (long)Math.Floor((now - confirmedUtc).TotalMinutes));
+        return minutes < 60 ? "last confirmed " + minutes.ToString(CultureInfo.InvariantCulture) + " min ago"
+            : "last confirmed " + (minutes / 60).ToString(CultureInfo.InvariantCulture) + " h " + (minutes % 60).ToString(CultureInfo.InvariantCulture) + " min ago";
     }
 }

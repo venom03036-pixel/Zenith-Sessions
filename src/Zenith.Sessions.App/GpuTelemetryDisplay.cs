@@ -5,6 +5,23 @@ namespace Zenith.Sessions.App;
 
 public sealed record GpuAdapterDisplay(string Identity, string Engine, string Dedicated, string Shared, string Status);
 
+/// <summary>The Sessions table's GPU cell for one client. Shown numbers come only from a fresh snapshot's confirmed client row.</summary>
+public static class ClientGpuText
+{
+    public const string Off = "Off in Settings", Unavailable = "Unavailable";
+    public static string Format(GpuClientTelemetry? client, bool fresh, bool enabled)
+    {
+        if (!enabled) return Off;
+        if (!fresh || client is null) return Unavailable;
+        bool engineKnown = client.BusiestEnginePercent is { } load && double.IsFinite(load) && load is >= 0 and <= 100;
+        if (!engineKnown && client.DedicatedBytes is null) return Unavailable;
+        string engine = engineKnown ? client.BusiestEnginePercent!.Value.ToString("0.0", CultureInfo.CurrentCulture) + "% busiest engine" : "Engine unavailable";
+        string memory = client.DedicatedBytes is { } bytes
+            ? (bytes / (double)CapacityPolicy.GiB).ToString("0.00", CultureInfo.CurrentCulture) + " GiB dedicated" : "dedicated unavailable";
+        return engine + " · " + memory;
+    }
+}
+
 /// <summary>Optional adapter evidence, aged on the existing presentation tick. No GPU polling or summed utilization.</summary>
 public sealed class GpuTelemetryDisplay : Observable
 {

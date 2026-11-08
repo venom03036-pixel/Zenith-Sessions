@@ -22,7 +22,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
     bool MuteArrivingClients = false, bool KeepSignInBrowserData = false, bool CheckRobloxUpdates = false, string DefaultClientArguments = "", bool ShortenWaitAfterJoin = false,
     string NativeLaunchMode = NativeLaunchModes.OfficialPageValue, IReadOnlyList<AcceptedBootstrapperPublisher>? AcceptedBootstrapperPublishers = null,
-    IReadOnlyList<NativeLaunchVerification>? NativeLaunchVerifications = null)
+    IReadOnlyList<NativeLaunchVerification>? NativeLaunchVerifications = null, bool ShowClientGpu = false, int KeepAwakeMinutes = 0)
 {
     // KeepSignInBrowserData and CheckRobloxUpdates also default off; they are optional schema-1 choices.
     // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients, DefaultClientArguments,
@@ -43,7 +43,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
-            || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes)
+            || OAuthCallbackPort is < 1024 or > 65535 || !IdleLockPolicy.IsValidMinutes(IdleLockMinutes) || !KeepAwakePolicy.IsValidMinutes(KeepAwakeMinutes)
             || !global::Zenith.Sessions.Core.PanicShortcut.TryParse(PanicShortcut, out _, out _)
             || DefaultClientArguments is null || !ExtraClientArgumentPolicy.TryParse(DefaultClientArguments, out var defaultArguments, out _)
             || !NativeLaunchModes.TryParse(NativeLaunchMode, out var launchMode))
