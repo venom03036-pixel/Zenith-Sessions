@@ -1,4 +1,5 @@
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -347,6 +348,25 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("automatic layout left the windows alone", shell.ClientWindowStatus);
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
+
+    // O-C5-2: the Settings help text under "When a client connects" lists every case in which a connected client is left
+    // alone and never counts again, so the N-B5a-6 rule (a client that connects during a manual window operation) is not
+    // learned only from the status line appended after that operation ends.
+    [Fact]
+    public void TheWhenAClientConnectsHelpTextNamesEveryCaseThatLeavesAConnectedClientAlone()
+    {
+        using var source = typeof(ClientWindowIntegrationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var document = XDocument.Load(source);
+        XNamespace presentation = "http://schemas.microsoft.com/winfx/2006/xaml/presentation", xaml = "http://schemas.microsoft.com/winfx/2006/xaml";
+        var choice = document.Descendants(presentation + "ComboBox").Single(element => (string?)element.Attribute(xaml + "Name") == "ClientArrivalLayoutChoice");
+        var help = choice.Parent!.Elements(presentation + "TextBlock")
+            .Select(element => (string?)element.Attribute("Text") ?? "")
+            .Single(text => text.StartsWith("Off by default.", StringComparison.Ordinal));
+        Assert.Contains("Zenith acts once per client", help);
+        Assert.Contains("Clients that were already running when Zenith started do not count", help);
+        Assert.Contains("A client that connects while you run a window operation (Arrange, Minimize, Restore or Resize) is left alone and does not count again", help);
+        Assert.Contains("Panic and Lock stop it", help);
+    }
 
     // C5 review: a PC where Windows cannot read another Windows user's client never has a complete scan. Before any scan shows
     // which clients were already running, a client that reports Connected is left alone and the window report says why, so
