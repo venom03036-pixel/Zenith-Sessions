@@ -182,6 +182,80 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task NativeTrialReviewChangedAfterTheQueueSavedTheTrialCancelsItSoAGeneralResumeCannotStartIt()=>OnUi(async ()=>
+    {
+        // The queue saved the trial request and passed its own stop check, then the review changed before
+        // the handler continued. A review change does not stop the queue, so the saved row still holds this
+        // request's in-memory trial consent; a later general Resume queue must not start it.
+        var child=new NativeEvidenceChild();
+        await using var shell=await NativeEvidenceShellAsync(child,new NativeEvidenceMonitor());
+        var request=await ChangeTrialReviewAfterTheQueueSavedItAsync(shell,()=>{});
+        Assert.Equal(0,child.Preparations);
+        shell.ToggleQueuePause.Execute(null);await shell.ToggleQueuePause.Execution;
+        Assert.Equal("Pause queue",shell.QueuePauseLabel);
+        await Task.WhenAny(child.Entered.Task,Task.Delay(300));
+        await System.Windows.Threading.Dispatcher.Yield(System.Windows.Threading.DispatcherPriority.ApplicationIdle);
+        Assert.Equal(0,child.Preparations);Assert.Equal(0,child.Starts);
+        Assert.Equal(LaunchState.Cancelled,Assert.Single(shell.Launches,row=>row.Id==request.Intent.OperationId).Operation.State);
+        Assert.False(shell.HasErrorNotice);
+        Assert.DoesNotContain("Trial queued",shell.NativeTrialStatus,StringComparison.Ordinal);
+    });
+
+    [Fact]
+    public Task NativeTrialReviewChangedAfterTheQueueSavedTheTrialReportsACancelThatCouldNotBeSaved()=>OnUi(async ()=>
+    {
+        var child=new NativeEvidenceChild();
+        await using var shell=await NativeEvidenceShellAsync(child,new NativeEvidenceMonitor());
+        var diagnostics=(ManagerDiagnostics)typeof(ShellViewModel).GetField("_diagnostics",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        long before=diagnostics.GetSnapshot().LatestSequence;
+        // A kept interrupted save makes the cancel's write fail, which also stops the queue.
+        await ChangeTrialReviewAfterTheQueueSavedItAsync(shell,()=>File.WriteAllText(Path.Combine(_root,"launch-queue.json.tmp"),"kept"));
+        Assert.Equal("The trial review changed after its request was queued, and that request could not be cancelled. Review it in the launch queue before choosing Resume queue.",shell.ErrorNotice);
+        Assert.Contains(diagnostics.GetSnapshot().Events,e=>e.Sequence>before&&e.Kind==ManagerEventKind.OperationFailed
+            &&e.Subsystem==ManagerSubsystem.Queue&&e.ErrorType==nameof(IOException));
+        Assert.False(queue(shell).IsHealthy);
+        shell.ToggleQueuePause.Execute(null);await shell.ToggleQueuePause.Execution;
+        await Task.WhenAny(child.Entered.Task,Task.Delay(300));
+        Assert.Equal(0,child.Preparations);Assert.Equal(0,child.Starts);
+        static LaunchCoordinator queue(ShellViewModel shell)=>(LaunchCoordinator)typeof(ShellViewModel).GetField("_launchQueue",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+    });
+
+    // Starts the trial, lets the queue save it and pass its own stop check, then changes the review (after
+    // beforeChange) while the handler's continuation is still queued behind this UI thread.
+    private static async Task<LaunchOperation> ChangeTrialReviewAfterTheQueueSavedItAsync(ShellViewModel shell,Action beforeChange)
+    {
+        const BindingFlags hidden=BindingFlags.Instance|BindingFlags.NonPublic;
+        static object Hidden(object owner,string name)=>owner.GetType().GetField(name,hidden)!.GetValue(owner)!;
+        var queue=(LaunchCoordinator)Hidden(shell,"_launchQueue");
+        var serial=(SemaphoreSlim)Hidden(queue,"_serial");var writer=(SemaphoreSlim)Hidden(Hidden(shell,"_queueStore"),"_writer");
+        var operations=(List<LaunchOperation>)Hidden(queue,"_operations");
+        using(var settle=new CancellationTokenSource(TimeSpan.FromSeconds(4)))
+            while((long)Hidden(queue,"_generation")!=(long)Hidden(queue,"_persistedStopGeneration"))await Task.Delay(5,settle.Token);
+        Assert.Empty(operations);
+        var review=Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview());
+        // Hold the queue file so the enqueue suspends inside its save and finishes on a pool thread.
+        Assert.True(await writer.WaitAsync(TimeSpan.FromSeconds(4)));
+        bool holdingWriter=true;
+        try
+        {
+            shell.StartNativeTrial.Execute(review);
+            using(var added=new CancellationTokenSource(TimeSpan.FromSeconds(4)))
+                while(operations.Count==0)await Task.Delay(5,added.Token);
+            writer.Release();holdingWriter=false;
+            // Block this UI thread until the enqueue leaves the queue lane, past its own stop check.
+            Assert.True(serial.Wait(TimeSpan.FromSeconds(4)));serial.Release();
+            Assert.False(shell.StartNativeTrial.Execution.IsCompleted);
+            var request=Assert.Single(operations.ToArray());Assert.Equal(LaunchState.Queued,request.State);
+            Assert.True(queue.IsTrialOperation(request.Intent.OperationId));
+            beforeChange();
+            shell.ServerBrowser.UsePreferredPlace(999);
+            await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(4));
+            return request;
+        }
+        finally{if(holdingWriter)writer.Release();}
+    }
+
+    [Fact]
     public Task NativeTrialReviewReentrantCommandNotificationCannotChangeTheConfirmedAccount()=>OnUi(async ()=>
     {
         var child=new NativeEvidenceChild();

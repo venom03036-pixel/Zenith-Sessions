@@ -201,7 +201,8 @@ public sealed partial class ShellViewModel
             _preserveStopNotice=false;
             request=await _launchQueue.EnqueueTrialAsync(review.Profile,stop.Token,new(review.PlayerId,review.AuthorizationGeneration),review.Destination);
             if(stop.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)
-                ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))return;
+                ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))
+            {await CancelAbandonedNativeTrialAsync(request);return;}
         }
         finally {if(ReferenceEquals(_nativeReviewStop,stop))_nativeReviewStop=null;}
         if(IsLocked||_shuttingDown||_lifetime.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch))return;
@@ -212,6 +213,21 @@ public sealed partial class ShellViewModel
         NativeTrialStatus=resumed?"Trial queued for "+review.SelectionSummary+". The private Roblox game page may open. Choose Play there. A process receipt alone does not verify its account or arrival."
             :"The trial was stopped before it could resume. Review the queue and create a fresh request.";
         Notice=NativeTrialStatus;
+    }
+    // The review went stale after the queue saved this request and passed its own stop check. A review
+    // change does not stop the queue, so the saved row keeps this request's in-memory trial consent and a
+    // later general Resume queue could start it without a current review. Cancel it durably, as the queue
+    // does for a stop during the save. Shutdown is left out: its Panic already revoked the consent, the
+    // queue is closing, and a restart reloads a never-started request as interrupted.
+    private async Task CancelAbandonedNativeTrialAsync(LaunchOperation request)
+    {
+        if(LaunchDescriptions.Terminal(request.State)||_shuttingDown||_lifetime.IsCancellationRequested)return;
+        try{await _launchQueue.CancelAsync(request.Intent.OperationId,CancellationToken.None);}
+        catch(Exception error)
+        {
+            Fail(error,ManagerSubsystem.Queue,"The trial review changed after its request was queued, and that request could not be cancelled. "
+                +"Review it in the launch queue before choosing Resume queue.");
+        }
     }
     private async Task DisposeNativeTrialFeaturesAsync()
     {
