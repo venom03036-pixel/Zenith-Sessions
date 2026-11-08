@@ -1,4 +1,5 @@
 using System.IO;
+using System.Net.Http;
 using System.Reflection;
 using Xunit;
 using Zenith.Sessions.App;
@@ -324,6 +325,99 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(0,child.Preparations);
     });
 
+    // Rule 13: a start's release read borrows the shell's anonymous public HTTP client. Exit cancels that read first, but a
+    // cancelled request can still be finishing when exit reaches the directory owner, so exit waits for the trial command
+    // before it releases the client, as it waits for an installation refresh and its read.
+    [Fact]
+    public Task ExitWaitsForATrialReleaseReadBeforeReleasingThePublicHttpClient()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        var http=(HttpClient)typeof(ShellViewModel).GetField("_publicHttp",BindingFlags.Instance|BindingFlags.NonPublic)!.GetValue(shell)!;
+        Task exit;
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            var read=await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            exit=shell.DisposeAsync().AsTask();
+            Assert.True(read.IsCancellationRequested); // Exit asks the read to stop before it waits for any owner.
+            // Give exit time to reach the directory owner; it may not release the client while the read is still finishing.
+            using(var window=new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                while(!window.IsCancellationRequested&&!exit.IsCompleted&&!IsReleased(http))await Task.Delay(10);
+            Assert.False(IsReleased(http),"Exit released the public HTTP client while the trial's release read was still finishing.");
+        }
+        finally{releases.Finish.TrySetResult();}
+        await exit.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.True(IsReleased(http)); // The owner still releases it once the read has finished.
+        Assert.Equal(1,releases.Calls);
+        static bool IsReleased(HttpClient client)
+        {
+            try{client.CancelPendingRequests();return false;}
+            catch(ObjectDisposedException){return true;}
+        }
+    });
+
+    // N-B8-5: a start whose last release answer is old asks Roblox again and waits for it (at most five seconds) before it
+    // re-checks the review and queues. The trial card says so while it waits, and the next status replaces that line.
+    [Fact]
+    public Task ATrialStartSaysItIsCheckingRobloxsReleaseWhileItWaitsForTheAnswer()=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release before this trial is queued",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.Contains("at most 5 seconds",shell.NativeTrialStatus,StringComparison.Ordinal);
+            Assert.Contains("Stop trial",shell.NativeTrialStatus,StringComparison.Ordinal);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.StartsWith("Trial queued for ",shell.NativeTrialStatus,StringComparison.Ordinal);
+        Assert.Equal(1,releases.Calls);
+    });
+
+    // The waiting line is only this start's own: Stop trial (or Panic, Lock, a selection change) replaces it with its reason,
+    // which is kept, and a review change that cancels the check puts back what the card said before the start.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task AStoppedReleaseCheckNeverLeavesTheTrialCardSayingItIsChecking(bool stopTrial)=>OnUi(async ()=>
+    {
+        var releases=new HeldReleaseRead();
+        await using var shell=await NativeEvidenceShellAsync(new NativeEvidenceChild(),new NativeEvidenceMonitor(),releases:releases);
+        string before=shell.NativeTrialStatus;
+        try
+        {
+            shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));
+            var read=await releases.Entered.Task.WaitAsync(TimeSpan.FromSeconds(6));
+            Assert.StartsWith("Checking Roblox's current release",shell.NativeTrialStatus,StringComparison.Ordinal);
+            if(stopTrial)shell.CancelNativeTrial.Execute(null);
+            else shell.SelectedAccount=shell.Accounts.Single(row=>row.Profile.Label=="Other synthetic profile");
+            Assert.True(read.IsCancellationRequested);
+        }
+        finally{releases.Finish.TrySetResult();}
+        await shell.StartNativeTrial.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        if(stopTrial)Assert.StartsWith("Trial stopped.",shell.NativeTrialStatus,StringComparison.Ordinal);
+        else Assert.Equal(before,shell.NativeTrialStatus);
+        Assert.Empty(shell.Launches);
+    });
+
+    // A release request that is still finishing after its cancellation: it returns only when the test lets it.
+    private sealed class HeldReleaseRead:IPublicRobloxClientReleaseDirectory
+    {
+        public int Calls;
+        internal TaskCompletionSource<CancellationToken> Entered {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Finish {get;}=EvidenceGate();
+        public async Task<PublicDirectoryResult<PublicRobloxClientRelease>> GetCurrentWindowsPlayerReleaseAsync(CancellationToken ct)
+        {
+            Interlocked.Increment(ref Calls);Entered.TrySetResult(ct);
+            await Finish.Task;
+            ct.ThrowIfCancellationRequested();
+            return new(PublicDirectoryState.Failure,null,"Synthetic failure.");
+        }
+    }
     private sealed class NativeReviewRepository(string root):IAccountRepository,IDisposable
     {
         private readonly AccountRepository _inner=new(root);
