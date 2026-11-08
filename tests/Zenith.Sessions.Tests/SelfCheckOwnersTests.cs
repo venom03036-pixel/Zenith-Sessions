@@ -8,10 +8,9 @@ namespace Zenith.Sessions.Tests;
 // Every owner a packaged self-check stage creates is shut down within a bound, so a stalled owner cannot hold the report.
 public sealed class SelfCheckOwnersTests
 {
-    // These owners have no worker to join, or bound their own shutdown, so a plain `await using` cannot hold the report:
-    // an in-memory SQLite probe, a synthetic fixture whose disposal is already complete, the report's own hash read, and the
-    // diagnostics journal, which waits at most 3 s for its writer and then cancels it.
-    private static readonly string[] UnboundedDisposalAllowed=["SqliteConnection","SyntheticNativePreparation","FileStream","ManagerDiagnostics"];
+    // These owners have no worker to join: an in-memory SQLite probe, an already-complete synthetic fixture,
+    // and the report's local hash-read stream. Diagnostics joins its writer even after cancellation, so needs the helper.
+    private static readonly string[] UnboundedDisposalAllowed=["SqliteConnection","SyntheticNativePreparation","FileStream"];
 
     [Fact]
     public void EverySelfCheckStageShutsItsWorkerOwnersDownThroughTheBoundedHelper()
@@ -24,6 +23,46 @@ public sealed class SelfCheckOwnersTests
                 || Array.IndexOf(UnboundedDisposalAllowed,created.Groups["type"].Value)<0)
             .Select(line=>line.File+":"+line.Line+": "+line.Text.Trim()).ToArray();
         Assert.Empty(unbounded);
+        var direct=files.SelectMany(file=>File.ReadAllLines(file).Select((line,index)=>(File:Path.GetFileName(file),Line:index+1,Text:line)))
+            .Where(line=>!line.Text.TrimStart().StartsWith("//",StringComparison.Ordinal)
+                && Regex.IsMatch(line.Text,@"\bawait\s+\w+\.DisposeAsync\s*\("))
+            .Select(line=>line.File+":"+line.Line).ToArray();
+        Assert.Empty(direct);
+    }
+
+    [Fact]
+    public async Task ExpiredWaitKeepsItsCauseEvenWhenTheOwnerFinishesBeforeTheContinuationRuns()
+    {
+        var owner=new StalledOwner();var clock=new ManualDeadline();
+        var workFailure=new InvalidDataException("Synthetic failure");
+        var run=SelfCheckOwners.UseAsync(owner,_=>Task.FromException(workFailure),TimeSpan.FromSeconds(2),clock);
+        clock.Expire();owner.Release();
+        var failure=await Assert.ThrowsAsync<TimeoutException>(()=>run);
+        Assert.Same(workFailure,failure.InnerException);
+        Assert.Equal(typeof(StalledOwner).FullName,SelfCheckOwners.StalledOwner(failure));
+    }
+
+    [Fact]
+    public async Task AnOwnersOwnTimeoutIsNotMislabelledAsAnExpiredShutdownWait()
+    {
+        var original=new TimeoutException("Synthetic owner failure");
+        var failure=await Assert.ThrowsAsync<TimeoutException>(()=>SelfCheckOwners.UseAsync(new FailedOwner(original),_=>Task.CompletedTask));
+        Assert.Same(original,failure);Assert.Null(SelfCheckOwners.StalledOwner(failure));
+    }
+
+    [Fact]
+    public async Task AStalledDiagnosticsWriterCannotHoldThePackagedReport()
+    {
+        var gate=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        string root=Path.Combine(Path.GetTempPath(),"zenith-diagnostics-stall-"+Guid.NewGuid().ToString("N"));
+        var journal=new Zenith.Sessions.Windows.ManagerDiagnostics(root,1,256,_=>gate.Task);
+        try
+        {
+            var failure=await Assert.ThrowsAsync<TimeoutException>(()=>SelfCheckOwners.UseAsync(journal,_=>Task.CompletedTask,TimeSpan.FromMilliseconds(20)));
+            Assert.Equal(typeof(Zenith.Sessions.Windows.ManagerDiagnostics).FullName,SelfCheckOwners.StalledOwner(failure));
+        }
+        finally { gate.TrySetResult();await journal.DisposeAsync(); }
+        Assert.False(Directory.Exists(root)); // No event was written; no filesystem cleanup is needed.
     }
 
     [Fact]
@@ -82,4 +121,18 @@ public sealed class SelfCheckOwnersTests
         public void Release()=>_stopped.TrySetResult();
     }
     private sealed class StalledOuterOwner : StalledOwner;
+    private sealed class FailedOwner(Exception failure) : IAsyncDisposable { public ValueTask DisposeAsync()=>new(Task.FromException(failure)); }
+    private sealed class ManualDeadline : TimeProvider
+    {
+        private TimerCallback? _callback;private object? _state;
+        public override ITimer CreateTimer(TimerCallback callback,object? state,TimeSpan dueTime,TimeSpan period)
+        { _callback=callback;_state=state;return new Timer(); }
+        public void Expire()=>_callback!(_state);
+        private sealed class Timer : ITimer
+        {
+            public bool Change(TimeSpan dueTime,TimeSpan period)=>true;
+            public void Dispose() { }
+            public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
+        }
+    }
 }

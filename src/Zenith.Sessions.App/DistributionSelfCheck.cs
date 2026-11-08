@@ -17,7 +17,8 @@ internal static class DistributionSelfCheck
 {
     private static readonly Guid FixtureId=new("76232fdc-843e-41c9-86b2-fab45cba55c7");
     private static readonly Guid SessionFixtureId=new("67fbfa82-8738-4a7f-96a7-5290353e81aa");
-    internal sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null,string? CauseType=null);
+    internal sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null,string? CauseType=null,
+        string? ReleaseErrorType=null,bool SharedResourcesRetained=false);
     private sealed class SyntheticHandoffStart : IPreparedNativeHandoffStart
     {
         public int Calls {get;private set;}
@@ -102,6 +103,8 @@ internal static class DistributionSelfCheck
         var cases=new List<Case>(); string stage="Isolated storage ownership"; bool owned=false; string? sqliteVersion=null; var elapsed=Stopwatch.StartNew();
         string? cleanupPhase=null,cleanupErrorType=null,step=null;int? cleanupPending=null,cleanupRemaining=null;
         GpuTelemetrySnapshot? gpuEvidence=null;ClientExecutableTrustResult? publisherEvidence=null;
+        AccountRepository? repository=null;ProtectedCredentialVault? vault=null;CredentialCleanupService? cleanup=null;
+        SettingsStore? settings=null;AccountIdentityProjection? setupProjection=null;Exception? stageFailure=null;
         using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(15)); var ct=deadline.Token;
         try
         {
@@ -119,8 +122,8 @@ internal static class DistributionSelfCheck
             await PackagedLayoutCheck.VerifyAsync(Path.Combine(root,"layout-check"),ct);
             cases.Add(new(stage,true));
 
-            using var repository=new AccountRepository(root); using var vault=new ProtectedCredentialVault(root);
-            using var cleanup=new CredentialCleanupService(repository,vault); using var settings=new SettingsStore(root);
+            repository=new AccountRepository(root);vault=new ProtectedCredentialVault(root);
+            cleanup=new CredentialCleanupService(repository,vault);settings=new SettingsStore(root);
             stage="Packaged native SQLite and profile round trip";
             await repository.InitializeAsync(ct);
             var existing=await repository.ReadAsync(new(),ct);
@@ -316,7 +319,7 @@ internal static class DistributionSelfCheck
 
             stage="Direct verified account creation";
             var setup = new SyntheticAccountSetup();
-            using (var setupProjection = new AccountIdentityProjection(root, repository, vault))
+            setupProjection = new AccountIdentityProjection(root, repository, vault);
             await SelfCheckOwners.UseAsync(new RobloxSessionLinkService(repository, vault, setup, setup, setupProjection), async setupService =>
             {
                 var beforeAdd = await repository.ReadAsync(new(PageSize: 1), ct);
@@ -564,16 +567,17 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,true));
 
             stage="Bounded typed diagnostics journal";
-            await using(var diagnostics=new ManagerDiagnostics(root))
+            var diagnostics=new ManagerDiagnostics(root);
+            await SelfCheckOwners.UseAsync(diagnostics, journal =>
             {
-                for(int index=0;index<520;index++) diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,typeof(IOException));
-                var snapshot=diagnostics.GetSnapshot();
+                for(int index=0;index<520;index++) journal.RecordFailure(ManagerSubsystem.Diagnostics,typeof(IOException));
+                var snapshot=journal.GetSnapshot();
                 if(snapshot.Events.Count!=512 || snapshot.TotalEvents!=520 || snapshot.ErrorCount!=520 || snapshot.Events[0].Sequence!=9 || snapshot.Events[^1].Sequence!=520
                     || snapshot.Events.Any(entry=>entry.Subsystem!=ManagerSubsystem.Diagnostics))
                     throw new InvalidDataException("The packaged diagnostic journal exceeded its bound, lost sequence coherence or dropped the failing subsystem.");
-                await diagnostics.DisposeAsync();
-                if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
-            }
+                return Task.CompletedTask;
+            });
+            if(diagnostics.GetSnapshot().Failure is not null) throw new IOException("Packaged diagnostic persistence failed.");
             cases.Add(new(stage,true));
 
             stage="Bounded diagnostic session projection";
@@ -792,10 +796,34 @@ internal static class DistributionSelfCheck
                 throw new InvalidDataException("Credential cleanup failed.");
             cases.Add(new(stage,true));
         }
-        catch(Exception ex) { cases.Add(FailedCase(stage,ex,step)); }
+        catch(Exception ex) { stageFailure=ex;cases.Add(FailedCase(stage,ex,step)); }
+        finally { ReleaseShared(cases,stage,step,stageFailure,setupProjection,settings,cleanup,vault,repository); }
         if(!owned) { Console.WriteLine("Distribution self-check refused an unowned data folder."); return 2; }
         return await WriteReportAsync(report,cases,new(sqliteVersion,elapsed.ElapsedMilliseconds,gpuEvidence,publisherEvidence,cleanupPhase,cleanupPending,cleanupRemaining,cleanupErrorType),
             AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies());
+    }
+
+    // A stalled owner can still hold a vault/projection/repository lease. Leave all its shared resources
+    // owned by this short-lived self-check process until process exit; disposing one underneath it would
+    // replace the real failure or invalidate a worker's semaphore. Other failures still release every store.
+    internal static void ReleaseShared(List<Case> cases,string stage,string? step,Exception? failure,params IDisposable?[] stores)
+    {
+        if(failure is not null && SelfCheckOwners.StalledOwner(failure) is not null)
+        {
+            int failed=cases.FindLastIndex(item=>!item.Passed);
+            if(failed>=0) cases[failed]=cases[failed] with { SharedResourcesRetained=true };
+            return;
+        }
+        foreach(var store in stores)
+        {
+            try { store?.Dispose(); }
+            catch(Exception ex)
+            {
+                int failed=cases.FindLastIndex(item=>!item.Passed);
+                if(failed>=0) cases[failed]=cases[failed] with { ReleaseErrorType=cases[failed].ReleaseErrorType??ex.GetType().Name };
+                else cases.Add(FailedCase(stage,ex,step));
+            }
+        }
     }
 
     // ErrorCode and FailingMethod locate one failure, and CauseType names the root exception's type when another exception
