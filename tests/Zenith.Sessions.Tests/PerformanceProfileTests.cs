@@ -60,6 +60,23 @@ public sealed class PerformanceProfileTests
     }
 
     [Fact]
+    public void PendingCapabilitiesNamePreviewRatesChosenByProfileNotTheLivePreviewsSessionsAlreadyShows()
+    {
+        // Sessions ships Previews > Preview checked clients with live thumbnails, so "live previews" cannot be pending.
+        // What no profile chooses yet is the preview rate: every profile keeps the one-second batch ceiling, and the
+        // copy's "once per second" must stay the enforced figure.
+        Assert.Equal(TimeSpan.FromSeconds(1), ClientPreviewLimits.MinimumBatchInterval);
+        foreach (var profile in Enum.GetValues<ManagerPerformanceProfile>())
+        {
+            string pending = new ManagerPerformanceSettings(Profile: profile).Resolve().PendingCapabilities;
+            Assert.DoesNotContain("live previews", pending, StringComparison.Ordinal);
+            Assert.Contains("preview update rates chosen by profile", pending, StringComparison.Ordinal);
+            Assert.Contains("under Previews", pending, StringComparison.Ordinal);
+            Assert.Contains("once per second", pending, StringComparison.Ordinal);
+        }
+    }
+
+    [Fact]
     public void AllFiveProfilesHaveDistinctIdentityAndCustomUsesExplicitValues()
     {
         var policies = Enum.GetValues<ManagerPerformanceProfile>().Select(profile => new ManagerPerformanceSettings(
