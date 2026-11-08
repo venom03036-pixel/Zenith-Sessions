@@ -17,7 +17,7 @@ internal static class DistributionSelfCheck
 {
     private static readonly Guid FixtureId=new("76232fdc-843e-41c9-86b2-fab45cba55c7");
     private static readonly Guid SessionFixtureId=new("67fbfa82-8738-4a7f-96a7-5290353e81aa");
-    private sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null);
+    internal sealed record Case(string Name,bool Passed,string? ErrorType=null,string? ErrorCode=null,string? Step=null,string? FailingMethod=null);
     private sealed class SyntheticHandoffStart : IPreparedNativeHandoffStart
     {
         public int Calls {get;private set;}
@@ -792,19 +792,36 @@ internal static class DistributionSelfCheck
             cases.Add(new(stage,false,ex.GetType().Name,$"0x{failure.HResult:X8}",step,method is null?null:$"{method.DeclaringType?.FullName}.{method.Name}"));
         }
         if(!owned) { Console.WriteLine("Distribution self-check refused an unowned data folder."); return 2; }
+        return await WriteReportAsync(report,cases,new(sqliteVersion,elapsed.ElapsedMilliseconds,gpuEvidence,publisherEvidence,cleanupPhase,cleanupPending,cleanupRemaining,cleanupErrorType),
+            AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies());
+    }
+
+    // What the stages gathered for the report: static values and counts only, never paths, messages or protected material.
+    internal sealed record RunFacts(string? SQLiteVersion=null,long ElapsedMs=0,GpuTelemetrySnapshot? GpuObservation=null,ClientExecutableTrustResult? Publisher=null,
+        string? CleanupPhase=null,int? CleanupPending=null,int? CleanupRemaining=null,string? CleanupErrorType=null);
+
+    // Once ownership is established the report is always written. A build that cannot be identified (a missing or redirected
+    // first-party dll, or one loaded from another folder) keeps the stage results, leaves every hash null, names the failure
+    // type in IdentityError and fails the run.
+    internal static async Task<int> WriteReportAsync(string report,IReadOnlyList<Case> cases,RunFacts facts,string baseDirectory,IEnumerable<Assembly> loaded)
+    {
+        BuildIdentity? identity=null;string? identityError=null;
         // Not the stage deadline: the report must still be written after a stage times out. Six local reads are bounded.
-        var identity=await IdentifyBuildAsync(AppContext.BaseDirectory,AppDomain.CurrentDomain.GetAssemblies(),CancellationToken.None);
+        try { identity=await IdentifyBuildAsync(baseDirectory,loaded,CancellationToken.None); }
+        // Type name only: the messages name first-party files and an I/O failure can carry a path (Rule 10).
+        catch(Exception ex) { identityError=ex.GetType().Name; }
         var result=new { FormatVersion=1,DevelopmentSelfCheck=true,ReleaseReady=false,CheckedUtc=DateTimeOffset.UtcNow,
-            AssemblySha256=identity.AssemblySha256,FirstPartySha256=identity.FirstPartySha256,FirstPartyIdentitySha256=identity.FirstPartyIdentitySha256,
-            Runtime=Environment.Version.ToString(),SQLiteVersion=sqliteVersion,ElapsedMs=elapsed.ElapsedMilliseconds,Cases=cases,
-            GpuObservation=gpuEvidence,
-            PublisherBoundary=new { Status=publisherEvidence?.Status.ToString(),Reason=publisherEvidence?.Reason.ToString(),NativeLaunchAuthorized=false },
-            CleanupDiagnostic=new { Phase=cleanupPhase,Pending=cleanupPending,Remaining=cleanupRemaining,ErrorType=cleanupErrorType } };
+            AssemblySha256=identity?.AssemblySha256,FirstPartySha256=identity?.FirstPartySha256,FirstPartyIdentitySha256=identity?.FirstPartyIdentitySha256,
+            IdentityError=identityError,Runtime=Environment.Version.ToString(),SQLiteVersion=facts.SQLiteVersion,ElapsedMs=facts.ElapsedMs,Cases=cases,
+            GpuObservation=facts.GpuObservation,
+            PublisherBoundary=new { Status=facts.Publisher?.Status.ToString(),Reason=facts.Publisher?.Reason.ToString(),NativeLaunchAuthorized=false },
+            CleanupDiagnostic=new { Phase=facts.CleanupPhase,Pending=facts.CleanupPending,Remaining=facts.CleanupRemaining,ErrorType=facts.CleanupErrorType } };
         string temporary=report+".tmp";
         try { await File.WriteAllTextAsync(temporary,JsonSerializer.Serialize(result,new JsonSerializerOptions { WriteIndented=true })); File.Move(temporary,report,true); }
         finally { if(File.Exists(temporary)) File.Delete(temporary); }
         Console.WriteLine(Summary(cases.Count(c=>c.Passed),PlannedStageCount,cases.FirstOrDefault(c=>!c.Passed)?.Name));
-        return cases.All(c=>c.Passed)?0:1;
+        if(identityError is not null) Console.WriteLine($"Distribution self-check could not identify the checked build ({identityError}); the report has no build hashes.");
+        return identityError is null && cases.All(c=>c.Passed)?0:1;
     }
 
     // Every stage RunAsync codes. Keep in step with $expectedCases in scripts/Check-ZenithSessionsManager.ps1.
