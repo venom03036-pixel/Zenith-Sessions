@@ -100,3 +100,47 @@ function Promote-ZenithRelease([string]$Source,[string]$Install,[string]$Pending
         throw
     }
 }
+function Get-ZenithRegistrationSnapshot($Paths) {
+    $shortcut=$null
+    if(Test-Path -LiteralPath $Paths.Shortcut){if((Get-Item -LiteralPath $Paths.Shortcut).Length -gt 1048576){throw 'The existing shortcut is unexpectedly large.'};$shortcut=[IO.File]::ReadAllBytes($Paths.Shortcut)}
+    $values=@();$exists=Test-Path -LiteralPath $Paths.Registry
+    if($exists){$key=Get-Item -LiteralPath $Paths.Registry;try{foreach($name in $key.GetValueNames()){$values+=@([pscustomobject]@{Name=$name;Value=$key.GetValue($name,$null,[Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames);Kind=$key.GetValueKind($name).ToString()})}}finally{$key.Dispose()}}
+    return [pscustomobject]@{Shortcut=$shortcut;RegistryExisted=$exists;Values=$values}
+}
+function Restore-ZenithRegistration($Paths,$Snapshot) {
+    if($null -eq $Snapshot.Shortcut){if(Test-Path -LiteralPath $Paths.Shortcut){Remove-Item -LiteralPath $Paths.Shortcut -Force}}
+    else{[IO.File]::WriteAllBytes($Paths.Shortcut,$Snapshot.Shortcut)}
+    if(Test-Path -LiteralPath $Paths.Registry){Remove-Item -LiteralPath $Paths.Registry -Recurse -Force}
+    if($Snapshot.RegistryExisted){
+        New-Item -Path $Paths.Registry -Force | Out-Null
+        $key=Get-Item -LiteralPath $Paths.Registry
+        try{foreach($entry in $Snapshot.Values){$key.SetValue($entry.Name,$entry.Value,[Microsoft.Win32.RegistryValueKind]$entry.Kind)}}finally{$key.Dispose()}
+    }
+}
+function Register-ZenithInstallation($Paths,[string]$Version) {
+    $shell=New-Object -ComObject WScript.Shell;$shortcut=$null
+    try{$shortcut=$shell.CreateShortcut($Paths.Shortcut);$shortcut.TargetPath=Join-Path $Paths.Install 'Zenith.Sessions.App.exe';$shortcut.WorkingDirectory=$Paths.Install;$shortcut.Save()}
+    finally{if($null -ne $shortcut){[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shortcut)};[void][Runtime.InteropServices.Marshal]::FinalReleaseComObject($shell)}
+    New-Item -Path $Paths.Registry -Force | Out-Null
+    $uninstall='powershell.exe -NoProfile -File "'+(Join-Path $Paths.Install 'Uninstall-ZenithSessions.ps1')+'"'
+    foreach($entry in @{DisplayName='Zenith Sessions Personal';DisplayVersion=$Version;Publisher='Zenith';InstallLocation=$Paths.Install;UninstallString=$uninstall;DisplayIcon=(Join-Path $Paths.Install 'Zenith.Sessions.App.exe')}.GetEnumerator()){New-ItemProperty -LiteralPath $Paths.Registry -Name $entry.Key -Value $entry.Value -PropertyType String -Force | Out-Null}
+    New-ItemProperty -LiteralPath $Paths.Registry -Name NoModify -Value 1 -PropertyType DWord -Force | Out-Null
+    New-ItemProperty -LiteralPath $Paths.Registry -Name NoRepair -Value 1 -PropertyType DWord -Force | Out-Null
+}
+function Complete-ZenithRegistration($Paths,[scriptblock]$Register,[scriptblock]$Restore) {
+    try{& $Register}
+    catch{
+        $original=$_;$recovery=@()
+        try{& $Restore}catch{$recovery+=@($_.Exception.GetType().Name)}
+        try{
+            foreach($path in @($Paths.Install,$Paths.Pending,$Paths.Previous)){[void](Assert-ZenithDistributionPath $path)}
+            Assert-ZenithOwnedInstall $Paths.Install
+            if(Test-Path -LiteralPath $Paths.Pending){throw 'Recovery stage already exists.'}
+            if(Test-Path -LiteralPath $Paths.Previous){Assert-ZenithOwnedInstall $Paths.Previous}
+            Move-Item -LiteralPath $Paths.Install -Destination $Paths.Pending
+            if(Test-Path -LiteralPath $Paths.Previous){Move-Item -LiteralPath $Paths.Previous -Destination $Paths.Install}
+        }catch{$recovery+=@($_.Exception.GetType().Name)}
+        if($recovery.Count -gt 0){throw ('Installation registration failed and rollback needs manual recovery: '+($recovery -join ', ')+'. Previous/pending files were preserved.')}
+        throw $original
+    }
+}

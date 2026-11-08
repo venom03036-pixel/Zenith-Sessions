@@ -336,6 +336,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public Command CancelAuthorization { get; }
     public event Action<ThemePreset>? ThemeChanged;
     public event Action? PanicRequested;
+    public ReleaseUpdatesViewModel ReleaseUpdates { get; }
 
     public ShellViewModel(string root, bool sample, Dispatcher dispatcher,IDesktopMonitor? monitor=null,
         IPublicRobloxDirectory? publicDirectory=null,IRobloxPublicServerDirectory? serverDirectory=null,IAccountRepository? accounts=null,
@@ -383,6 +384,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;
+        ReleaseUpdates=new(root,dispatcher,()=>!_shuttingDown&&!IsLocked&&QueueReady&&_latestQueue.Operations.All(operation=>LaunchDescriptions.Terminal(operation.State)&&!LaunchDescriptions.HasUnresolvedReservation(operation)),canOperate:()=>_ready&&!_shuttingDown&&!IsLocked);
         InitializeDirectoryFeatures(publicDirectory,serverDirectory,gameDirectory);
         InitializeDestinationCapacity();
         _favoriteStore=favoriteStore??new FavoriteDestinationsStore(root);
@@ -533,6 +535,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
             await RecipientBundles.LoadAsync(_lifetime.Token);
+            await ReleaseUpdates.InitializeAsync(_lifetime.Token);
             // Last, once everything else has opened: a saved guard on a Public network locks the dashboard at once, and nothing
             // opened after that point would otherwise be running outside the lock.
             ApplySavedPublicNetworkGuard();
@@ -1150,6 +1153,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         List<Type>? failed=null;
         void Step(Action step) { try { step(); } catch(Exception ex) { (failed??=[]).Add(ex.GetType()); } }
         Step(HoldQueuePresentation);Step(()=>MacroAssignments.CancelWork());Step(()=>MacroHostCatalog.CancelWork());
+        Step(ReleaseUpdates.CancelWork);
         Interlocked.Increment(ref _accountSetupEpoch);_preserveStopNotice=true;
         Step(ClearPrivateAccountObservations);
         // The installation stop clears the selection first, so the trial fence below keeps the Panic/Lock reason (Z1600).
@@ -1250,6 +1254,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(_shuttingDown) return;
         _shuttingDown=true;
         // Cancellation callbacks and presentation listeners are external to this owner. Every stop must still run if one throws.
+        StopShutdownStep(ReleaseUpdates.BeginShutdown);
         StopShutdownStep(ClearPrivateAccountObservations);
         StopShutdownStep(StopIdleLock);
         StopShutdownStep(StopKeepAwakeForShutdown);
@@ -1320,6 +1325,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
         await StopOwnerAsync(DisposeMacroAssignmentsAsync);
+        await StopOwnerAsync(()=>ReleaseUpdates.DisposeAsync());
         await StopOwnerAsync(()=>MacroHostCatalog.DisposeAsync());
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;

@@ -113,6 +113,18 @@ public sealed class SignedUpdateTests : IDisposable
         await Assert.ThrowsAsync<InvalidDataException>(() => new SignedUpdateStager(new LocalUpdateFeed(), new([Trust]), new Publisher()).StageAsync(new Uri(path), new(1, 0), Path.Combine(_root, "staging"), default));
         Assert.False(Directory.Exists(Path.Combine(_root, "staging")));
     }
+    [Fact]
+    public async Task OversizedCentralDirectoryIsRefusedBeforeZipEntryAllocation()
+    {
+        var setup = await Fixture(); byte[] zip = await File.ReadAllBytesAsync(setup.Package);
+        // This fixture has no ZIP comment: overstate the EOCD entry count, then sign the exact malformed ZIP.
+        zip[^14] = 0xff; zip[^13] = 0x7f; zip[^12] = 0xff; zip[^11] = 0x7f;
+        await File.WriteAllBytesAsync(setup.Package, zip);
+        await File.WriteAllBytesAsync(setup.Feed.LocalPath, Sign(Manifest with { PackageUri = new Uri(setup.Package).AbsoluteUri, PackageBytes = zip.Length, PackageSha256 = Convert.ToHexString(SHA256.HashData(zip)) }));
+        var publisher = new Publisher(); string stage = Path.Combine(_root, "staging");
+        await Assert.ThrowsAsync<InvalidDataException>(() => new SignedUpdateStager(new LocalUpdateFeed(), new([Trust]), publisher).StageAsync(setup.Feed, new(1, 0), stage, default));
+        Assert.Equal(0, publisher.Calls); Assert.Empty(Directory.GetDirectories(stage));
+    }
     private async Task<(Uri Feed, string Package)> Fixture(string? extra = null)
     {
         Directory.CreateDirectory(_root); string package = Path.Combine(_root, "package.zip");
