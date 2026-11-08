@@ -648,7 +648,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         RefreshAccountLaunchStates();
         SelectedAccount = Accounts.FirstOrDefault(a => a.Profile.Id == selected);
         }
-        finally { _publishingAccountRows=false; ReconcileSignedServerSelection(); }
+        finally { _publishingAccountRows=false; ReconcileSignedServerSelection(); ReconcileAccountObservationSelection(); }
         _selectAfterReload=null;
         AccountCount = allCount; _filteredTotal = page.Total; PageLabel = page.Total == 0 ? "No matching profiles" : $"{page.Page * 100 + 1}–{Math.Min(page.Total, (page.Page + 1) * 100)} of {page.Total} profiles";RecordOverviewLibraryLoaded();
         Raise(nameof(CanNext)); Raise(nameof(CanPrevious)); Raise(nameof(EmptyAccountsText));
