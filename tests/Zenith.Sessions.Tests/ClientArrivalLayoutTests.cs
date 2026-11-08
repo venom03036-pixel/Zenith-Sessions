@@ -65,6 +65,29 @@ public sealed class ClientArrivalLayoutTests
     }
 
     [Fact]
+    public void AClientStillListedWithoutAWindowOrWithAProblemDoesNotArriveAgainWhenItsWindowReturns()
+    {
+        var tracker = new ClientArrivalTracker();
+        var client = Client(20, 3);
+        Assert.Equal(new[] { 20 }, Pids(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)])));
+        // Still running but without a main window for one complete scan, for example while the client recreates it.
+        Assert.Empty(tracker.Observe(Scan(true, client with { Window = 0 }), [Log(client, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Slots(null));
+        Assert.Empty(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)]));
+        Assert.Equal(new[] { 20 }, Pids(tracker.Slots(null)));
+        // A row that could not be read this time still shows the process is running.
+        Assert.Empty(tracker.Observe(Scan(true, client with { Problem = "Synthetic access denied" }), [Log(client, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)]));
+        // A complete scan that lists more clients than the tracker can hold forgets nothing.
+        var crowd = Enumerable.Range(1000, ClientArrivalTracker.MaximumClients).Select(pid => Client(pid, 1) with { Window = 0 });
+        Assert.Empty(tracker.Observe(Scan(true, [.. crowd, client with { Window = 0 }]), [Log(client, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)]));
+        // Only a complete scan that no longer lists the process at all shows it left, and then the tracker forgets it.
+        Assert.Empty(tracker.Observe(Scan(true), []));
+        Assert.Equal(new[] { 20 }, Pids(tracker.Observe(Scan(true, client), [Log(client, ObservedSessionLifecycle.Connected)])));
+    }
+
+    [Fact]
     public void SlotsFollowLaunchQueueOrderThenProcessStartTimeAndNeverProcessIdFirst()
     {
         var queuedFirst = Client(300, 1); var queuedSecond = Client(200, 2); var outsideOld = Client(50, 10); var outsideNew = Client(40, 0.5);
