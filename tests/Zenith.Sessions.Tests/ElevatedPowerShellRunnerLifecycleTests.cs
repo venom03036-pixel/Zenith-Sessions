@@ -28,18 +28,22 @@ public sealed class ElevatedPowerShellRunnerLifecycleTests
     }
 
     [Fact]
-    public async Task AnApprovedAbandonedStartIsReleasedWithoutClaimingNothingRan()
+    public async Task AnApprovedAbandonedStartIsRetainedUntilItsActualExit()
     {
         var starting = new TaskCompletionSource<(Process?, ElevatedRunKind)>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var runner = new ElevatedPowerShellRunner(startProcess: _ => starting.Task);
+        var exited = new TaskCompletionSource<int>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var observing = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var runner = new ElevatedPowerShellRunner(startProcess: _ => starting.Task,
+            waitForExit: (_, _) => { observing.TrySetResult(); return exited.Task; });
         using var stop = new CancellationTokenSource();
-        bool reconciled = false;
-        var run = runner.RunAsync("synthetic", TimeSpan.FromSeconds(1), stop.Token, _ => reconciled = true);
+        var replies = new List<ElevatedRunOutcome>();
+        var run = runner.RunAsync("synthetic", TimeSpan.FromSeconds(1), stop.Token, replies.Add);
         stop.Cancel(); await Assert.ThrowsAnyAsync<OperationCanceledException>(() => run);
-        // Unstarted managed Process is just a disposable stand-in; no native helper exists.
         starting.SetResult((new Process(), ElevatedRunKind.Exited));
-        await runner.ReleaseAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
-        Assert.False(reconciled);
+        await observing.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var released = runner.ReleaseAsync(default); bool held = !released.IsCompleted;
+        exited.SetResult(0); await released.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(held); Assert.Equal(new(ElevatedRunKind.Exited, 0), Assert.Single(replies));
     }
 
     [Fact]
