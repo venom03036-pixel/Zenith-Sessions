@@ -201,6 +201,28 @@ public partial class MainWindow : Window
         }
         finally { _vm.DiscardNativeTrialReview(review); }
     }
+    private void ReviewFriendshipPairs(object sender, RoutedEventArgs e)
+    {
+        var review = _vm.CaptureFriendshipReview();
+        if (review is null) return;
+        try
+        {
+            var dialog = new Window { Owner = this, Title = "Review Roblox friendship pairs", Width = 660, Height = 560,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner, ResizeMode = ResizeMode.CanResize, MinWidth = 460, MinHeight = 360 };
+            dialog.SetResourceReference(BackgroundProperty, "AppBackground"); dialog.SetResourceReference(ForegroundProperty, "TextPrimary");
+            var layout = new System.Windows.Controls.DockPanel { Margin = new Thickness(18) };
+            var buttons = new System.Windows.Controls.StackPanel { Orientation = System.Windows.Controls.Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right, Margin = new Thickness(0,12,0,0) };
+            var cancel = new System.Windows.Controls.Button { Content = "Cancel", IsCancel = true, MinWidth = 90, Margin = new Thickness(0,0,8,0) };
+            var confirm = new System.Windows.Controls.Button { Content = "Befriend these pairs", MinWidth = 170 };
+            confirm.Click += (_, _) => dialog.DialogResult = true;
+            buttons.Children.Add(cancel); buttons.Children.Add(confirm); System.Windows.Controls.DockPanel.SetDock(buttons, System.Windows.Controls.Dock.Bottom); layout.Children.Add(buttons);
+            layout.Children.Add(new System.Windows.Controls.TextBox { Text = review.Summary, IsReadOnly = true, TextWrapping = TextWrapping.Wrap,
+                VerticalScrollBarVisibility = System.Windows.Controls.ScrollBarVisibility.Auto, Padding = new Thickness(10) });
+            dialog.Content = layout;
+            if (dialog.ShowDialog() == true) _vm.BefriendReviewedAccounts.Execute(review);
+        }
+        finally { _vm.DiscardFriendshipReview(review); }
+    }
     // Ctrl+F goes to the open page's search box. While locked the boxes sit behind the lock screen, so it does nothing, and it
     // does nothing on a page without a search box.
     private bool CanFindOnPage()=>!_vm.IsLocked&&ShellShortcuts.SearchBoxFor(_vm.Tab) is not null;

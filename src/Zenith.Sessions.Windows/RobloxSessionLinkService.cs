@@ -10,7 +10,7 @@ namespace Zenith.Sessions.Windows;
 /// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
     IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
-    Action<Type>? failed = null)
+    Action<Type>? failed = null, IRobloxAccountDataClient? accountData = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();
@@ -353,13 +353,13 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
             ObjectDisposedException.ThrowIf(_disposed, this);
             if (_disconnect is not null) throw new AccountLinkException("Another saved-session disconnect is in progress.");
             _disconnect = completion = new(TaskCreationOptions.RunContinuationsAsynchronously); active = _active;
-            if (active?.ProfileId == profileId) active.Invalidated = true;
+            if (active is not null && (active.ProfileId == profileId || active.RelatedProfileId == profileId)) active.Invalidated = true;
         }
         shareLinks?.ForgetTokens(profileId); // Sign-out: no anti-forgery token kept for this profile outlives its saved session.
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token);
         try
         {
-            if (active?.ProfileId == profileId) active.Cancel();
+            if (active is not null && (active.ProfileId == profileId || active.RelatedProfileId == profileId)) active.Cancel();
             // An uncooperative browser/network/storage owner is awaited to actual completion.
             if (active is not null) await active.Completion.Task.WaitAsync(stop.Token).ConfigureAwait(false);
             stop.Token.ThrowIfCancellationRequested();
@@ -506,6 +506,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         private int _finished;
         // Changed only under the service state gate, by AdoptSavedSessionAsync.
         public Guid ProfileId { get; set; } = profileId;
+        public Guid? RelatedProfileId { get; set; }
         public SavedSessionOperationKind Kind { get; } = kind;
         public CancellationToken Token { get; } = stop.Token;
         public bool Invalidated;
