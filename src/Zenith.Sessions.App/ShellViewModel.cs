@@ -1292,7 +1292,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task CleanupCredentialsAsync()
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
+        // Store-wide damage first: it fails every record, and the Retry button below cannot repair it either.
         CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
+            :result.StoreDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A shared file that every saved sign-in relies on ({ProtectedCredentialVault.WriterLockFileName} in the accounts.vault folder) is invalid, so Zenith stopped cleanup instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
             :result.RecordDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
             :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+CurrentSignInFolderNote();
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.RecordFailure(ManagerSubsystem.Vault); }
