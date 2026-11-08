@@ -43,6 +43,7 @@ public sealed partial class ClientWindowIntegrationTests
     [InlineData("window size","client-window-size","Sessions")]
     [InlineData("cpu priority","client-priority","Sessions")]
     [InlineData("previews","client-previews","Sessions")]
+    [InlineData("mute","client-sound","Sessions")]
     [InlineData("diagnostics filter","diagnostics-filters","Diagnostics")]
     public Task SettingsSearchOpensThePageOfAPreferenceElsewhereAndLeavesTheDraftUnchanged(string query,string id,string page)=>OnUi(async()=>
     {
@@ -50,7 +51,7 @@ public sealed partial class ClientWindowIntegrationTests
         await shell.InitializeAsync();shell.Navigate.Execute("Settings");
         shell.SpareRam="unfinished draft";shell.TileColumns="7";
         string saveStatus=shell.SaveStatus,width=shell.ClientContentWidth,filter=shell.DiagnosticFilter;
-        bool previews=shell.IsClientPreviewMode,warnings=shell.ShowWarnings;
+        bool previews=shell.IsClientPreviewMode,warnings=shell.ShowWarnings,muteArrivals=shell.MuteArrivingClients;
         string? pageWhenAsked=null;shell.SettingsSearchNavigationRequested+=_=>pageWhenAsked=shell.Tab;
         shell.SettingsSearchQuery=query;
         var entry=Assert.Single(shell.SettingsSearchResults.Where(e=>e.Id==id));
@@ -62,6 +63,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal("unfinished draft",shell.SpareRam);Assert.Equal("7",shell.TileColumns);Assert.Equal(saveStatus,shell.SaveStatus);
         Assert.Equal(width,shell.ClientContentWidth);Assert.Equal(filter,shell.DiagnosticFilter);Assert.Equal(warnings,shell.ShowWarnings);
         Assert.Equal(previews,shell.IsClientPreviewMode);Assert.False(shell.IsChangingClientPriority);Assert.Equal(0,shell.PendingPriorityRestoreCount);
+        Assert.Equal(muteArrivals,shell.MuteArrivingClients);Assert.False(shell.IsChangingClientSound);Assert.Equal(0,shell.PendingSoundRestoreCount);
         Assert.Empty(shell.Launches);Assert.False(shell.IsAuthorizing);
     });
     [Fact]
@@ -117,5 +119,11 @@ public sealed partial class ClientWindowIntegrationTests
             if(focus.Name.LocalName=="Button")Assert.Equal("{Binding ShowClientPreviewMode}",(string?)focus.Attribute("Command"));
         }
         Assert.Equal("Expander",Named(SettingsSearchDestinations.For(SettingsSearchTarget.ClientPriority)!.Focus).Name.LocalName);
+        // Client sound lands on the saved "Mute clients when they appear" option inside its section, never on Mute or Unmute.
+        var sound=SettingsSearchDestinations.For(SettingsSearchTarget.ClientSound)!;
+        Assert.Equal("ClientSoundTools",sound.Section);
+        var option=Named(sound.Focus);
+        Assert.Equal("CheckBox",option.Name.LocalName);
+        Assert.Equal("{Binding MuteArrivingClients}",(string?)option.Attribute("IsChecked"));
     }
 }

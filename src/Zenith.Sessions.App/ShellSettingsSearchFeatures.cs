@@ -79,6 +79,9 @@ internal static class SettingsSearchDestinations
         SettingsSearchTarget.ClientPriority => new("ClientPriorityTools", "ClientPriorityTools"),
         // Choosing the Previews view stays the user's step, so search focuses that button instead of switching the view.
         SettingsSearchTarget.Previews => new(null, "SessionsPreviewModeButton"),
+        // Mute and Unmute change running clients at once, so search lands on the saved option, which only edits the draft
+        // until Save all settings; focusing it never ticks it.
+        SettingsSearchTarget.ClientSound => new("ClientSoundTools", "MuteArrivingClientsOption"),
         SettingsSearchTarget.DiagnosticsFilters => new(null, "DiagnosticsFilterBox"),
         _ => null
     };

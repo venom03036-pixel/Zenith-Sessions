@@ -77,6 +77,12 @@ public sealed class SettingsSearchTests
     [InlineData("below normal", "client-priority", "ClientPriority", "Sessions")]
     [InlineData("previews", "client-previews", "Previews", "Sessions")]
     [InlineData("thumbnails", "client-previews", "Previews", "Sessions")]
+    [InlineData("mute", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("unmute", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("sound", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("audio", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("volume", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("mute when they appear", "client-sound", "ClientSound", "Sessions")]
     [InlineData("diagnostics filter", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     [InlineData("warnings", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     public void PreferencesOnOtherPagesRankFirstForTheirOwnWords(string query, string id, string target, string page)
