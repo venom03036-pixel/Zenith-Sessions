@@ -150,6 +150,28 @@ public sealed partial class ClientWindowIntegrationTests
     });
 
     [Fact]
+    public Task AnEvidenceExportThatFailsAsLockLandsIsJournaledByItsCauseNotItsWrapper() => OnUi(async () =>
+    {
+        var child = new NativeEvidenceChild(); await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
+        shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
+        await NativeEvidenceStartedAsync(shell);
+        using var output = new NativeEvidenceExportFolder(); string destination = Path.Combine(output.Path, "owned-report.json");
+        await File.WriteAllTextAsync(destination, "{\"PriorOwnedFixture\":true}"); File.SetAttributes(destination, FileAttributes.ReadOnly);
+        try
+        {
+            using var removal = new StagedReportRemoval(output.Path);
+            // The write has already failed, but its continuation waits for this UI step, so Lock lands first.
+            shell.ExportLaunchEvidence.Execute(destination); removal.Wait(); shell.Lock.Execute(null); await shell.ExportLaunchEvidence.Execution;
+        }
+        finally { File.SetAttributes(destination, FileAttributes.Normal); }
+        Assert.DoesNotContain("chosen folder", shell.ErrorNotice, StringComparison.Ordinal);
+        shell.Unlock.Execute(null); shell.RefreshDiagnostics.Execute(null);
+        var launchFailures = shell.DiagnosticRows.Where(row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.Launch)
+            .Select(row => row.Event.ErrorType).ToArray();
+        Assert.Contains("UnauthorizedAccessException", launchFailures);
+    });
+
+    [Fact]
     public Task EvidenceExportCannotOverwriteTheActualOwnedSettingsFileAndReportsFailure() => OnUi(async () =>
     {
         var child = new NativeEvidenceChild(); await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());

@@ -1,5 +1,4 @@
 using System.IO;
-using System.Reflection;
 using System.Text.Json;
 using System.Windows.Threading;
 using Zenith.Sessions.App;
@@ -43,7 +42,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Error");Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Info");
         vm.ShowInformation=false;vm.ShowWarnings=false;Assert.All(vm.DiagnosticRows,r=>Assert.Equal("Error",r.Level));
         string report=vm.BuildDiagnosticReport();using var parsed=JsonDocument.Parse(report);
-        Assert.Equal(1,parsed.RootElement.GetProperty("FormatVersion").GetInt32());
+        Assert.Equal(2,parsed.RootElement.GetProperty("FormatVersion").GetInt32());
         Assert.All(parsed.RootElement.GetProperty("Events").EnumerateArray(),e=>Assert.Equal("Error",e.GetProperty("Level").GetString()));
         Assert.DoesNotContain(secret,report);Assert.DoesNotContain(Data,report);Assert.DoesNotContain(secret,vm.BuildVisibleDiagnosticText());
         vm.DiagnosticFilter=secret;Assert.Empty(vm.DiagnosticRows);
@@ -67,6 +66,8 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         // An unsaved draft is not the active policy, so the report keeps the saved values.
         vm.CustomProcessSample="3000";vm.SpareRam=9.ToString(culture);
         string report=vm.BuildDiagnosticReport();using var parsed=JsonDocument.Parse(report);var root=parsed.RootElement;
+        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem, so a reader can tell it from format 1.
+        Assert.Equal(2,root.GetProperty("FormatVersion").GetInt32());
         Assert.True(root.TryGetProperty("Os",out var os),"The report has no Os section.");
         Assert.Equal(System.Runtime.InteropServices.RuntimeInformation.OSDescription,os.GetProperty("Description").GetString());
         Assert.Equal(Environment.OSVersion.Version.ToString(),os.GetProperty("Version").GetString());
@@ -170,12 +171,71 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         finally {File.SetAttributes(report,FileAttributes.Normal);}
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
         Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(folder,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
+        // The notice wrapper is not journaled: the row and the activity line keep the cause, so a denied target stays distinguishable.
+        Assert.Contains("Operation failed (UnauthorizedAccessException).",vm.Events[0]);
+        Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
         // A chosen folder that no longer exists is named as such, still without its path, and is not recreated.
         string gone=Path.Combine(_root,"gone");
         vm.ExportDiagnostics.Execute(Path.Combine(gone,"report.json"));await vm.ExportDiagnostics.Execution;
         Assert.DoesNotContain("data folder",vm.ErrorNotice);Assert.Contains("chosen folder",vm.ErrorNotice);Assert.DoesNotContain(gone,vm.ErrorNotice,StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(gone));
+        Assert.Contains("Operation failed (DirectoryNotFoundException).",vm.Events[0]);
+        Assert.Equal("IOException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
     });
+    [Fact]
+    public Task AnExportThatFailsAsLockLandsIsJournaledByItsCauseNotItsWrapper()=>OnUi(async ()=>
+    {
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        try
+        {
+            using var removal=new StagedReportRemoval(folder);
+            // The write has already failed, but its continuation waits for this UI step, so Lock lands first.
+            vm.ExportDiagnostics.Execute(report);removal.Wait();vm.Lock.Execute(null);await vm.ExportDiagnostics.Execution;
+        }
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        // The late branch kept the lock message and recorded the failure without a notice.
+        Assert.StartsWith("Controls locked",vm.Notice);Assert.DoesNotContain("chosen folder",vm.ErrorNotice);
+        vm.Unlock.Execute(null);
+        Assert.Equal("UnauthorizedAccessException",LatestFailureType(vm,ManagerSubsystem.Diagnostics));
+    });
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnExportThatFailsAfterPanicOrLockKeepsTheStopNoticeAndTheOldReport(bool locking)=>OnUi(async ()=>
+    {
+        // PanicOrLockDuringExportKeepsTheStopNotice covers a write that succeeds; this one fails after the stop has landed.
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        string folder=Path.Combine(_root,"share");Directory.CreateDirectory(folder);string report=Path.Combine(folder,"report.json");
+        await File.WriteAllTextAsync(report,"old report");File.SetAttributes(report,FileAttributes.ReadOnly);
+        string stop=locking?"Controls locked":"Panic stop";
+        try
+        {
+            using var removal=new StagedReportRemoval(folder);
+            // The write has already failed, but its continuation waits for this UI step, so the stop lands first.
+            vm.ExportDiagnostics.Execute(report);removal.Wait();
+            if(locking) vm.Lock.Execute(null);else vm.Panic.Execute(null);
+            await vm.ExportDiagnostics.Execution;
+        }
+        finally {File.SetAttributes(report,FileAttributes.Normal);}
+        // The stop owns the message: no error beside it and no failure line after it in the activity list.
+        Assert.StartsWith(stop,vm.Notice);
+        Assert.False(vm.HasErrorNotice,"An export that failed after the stop showed an error beside the stop notice.");
+        Assert.DoesNotContain(vm.Events,line=>line.Contains("Operation failed",StringComparison.Ordinal));
+        Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Empty(Directory.GetFiles(folder,"*.tmp"));
+        // The failure is still journaled once, by its cause, against Diagnostics.
+        if(locking) vm.Unlock.Execute(null);
+        vm.RefreshDiagnostics.Execute(null);
+        var failure=Assert.Single(vm.DiagnosticRows,row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==ManagerSubsystem.Diagnostics);
+        Assert.Equal("UnauthorizedAccessException",failure.Event.ErrorType);
+    });
+    private static string? LatestFailureType(ShellViewModel vm,ManagerSubsystem subsystem)
+    {
+        vm.RefreshDiagnostics.Execute(null);
+        return vm.DiagnosticRows.Where(row=>row.Event.Kind==ManagerEventKind.OperationFailed && row.Event.Subsystem==subsystem)
+            .MaxBy(row=>row.Event.Sequence)?.Event.ErrorType;
+    }
     [Fact]
     public Task FailureRowsCopyAndReportNameWhichSubsystemFailed()=>OnUi(async ()=>
     {
@@ -266,53 +326,53 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.StartsWith("Diagnostics active",vm.DiagnosticsStatus);Assert.DoesNotContain("refreshed",vm.DiagnosticsStatus);
         vm.Navigate.Execute("Diagnostics");Assert.StartsWith("Live view",vm.DiagnosticViewStatus);
     });
-    [Fact]
-    public Task ShareLinkCheckSaveFailureAndRemoveNeverWriteCodesToAnyDiagnosticsOutput()=>OnUi(async ()=>
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnEntryLostToADiskErrorIsNotCalledBusyOrRoutineOnceTheLogRecovers(bool monitoringStopped)=>OnUi(async ()=>
     {
-        // Synthetic values only. Every directory, client and store is a local fake; no account signs in and nothing reaches the network.
-        const string Code="Q7wE9rT2yU4iO6pA8sD1fG3hJ5kL0zXc",ShareCode="5d3f8a1b7c9e2f4a6b8c0d1e3f5a7b9c";
-        const string ShareUrl="https://www.roblox.com/share?code="+ShareCode+"&type=Server";
-        var client=new ShareClient(Code,ShareUrl);var store=new FailingReadStore(Code);var shown=new System.Text.StringBuilder();
-        var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor(),new NoPublicDirectory(),new NoServers(),
-            shareLinkClient:client,privateServerStore:store);
-        void Capture()=>shown.AppendLine(vm.Notice).AppendLine(vm.ShareLink.Status).AppendLine(vm.ShareLink.ResultTitle)
-            .AppendLine(vm.ShareLink.ResultDetail).AppendLine(vm.DestinationSearch.Status);
-        try
+        // The lost entry is a failure record, and nothing was busy: another program held the log for one write.
+        IDesktopMonitor monitor=monitoringStopped?new FaultingMonitor():new SyntheticMonitor();
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,monitor);await vm.InitializeAsync();
+        string log=Path.Combine(Data,"diagnostics","manager.jsonl");
+        await UntilAsync(()=>File.Exists(log));
+        vm.Navigate.Execute("Diagnostics");
+        if(monitoringStopped) await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("monitoring stopped",StringComparison.Ordinal);});
+        FileStream? blocker=null;
+        await UntilAsync(()=>(blocker=TryOpenDenyingWriters(log)) is not null);
+        using(blocker)
         {
-            await vm.InitializeAsync();await vm.SaveAccountAsync(AccountProfile.Create("Synthetic share tester"));
-            Guid profile=vm.SelectedAccount!.Profile.Id;
-            using(var vault=new ProtectedCredentialVault(Data))
-                await vault.SaveAsync(new(profile,RobloxSessionIdentity.Provider,123,1,"","",DateTimeOffset.MaxValue,"synthetic_player",
-                    AuthorizationHealth.Linked,RobloxSessionIdentity.Issuer,"123","synthetic-session-value"),default);
-            // Opening Join a game reads the saved list once; this store's read fails with a message that quotes the code.
-            vm.Navigate.Execute("JoinGame");vm.SetPreviewWindowVisible(true);await vm.ShareLink.ActiveOperation;Capture();
-            vm.ShareLink.LinkInput=ShareUrl;await vm.ShareLink.CheckAsync();Capture();Assert.True(vm.ShareLink.HasPrivateResult);
-            await vm.ShareLink.SaveAsFavoriteAsync();Capture();Assert.Single(vm.ShareLink.Saved);
-            vm.ShareLink.LinkInput=ShareUrl;await vm.ShareLink.CheckAsync();Capture(); // The client now throws, quoting the code and the link.
-            await vm.ShareLink.LoadSavedAsync();Capture();
-            vm.ShareLink.SelectedSaved=vm.ShareLink.Saved[0];await vm.ShareLink.RemoveSelectedAsync();Capture();Assert.Empty(vm.ShareLink.Saved);
-            vm.ServerBrowser.LinkInput=ShareUrl;await vm.DestinationSearch.SearchOrUseAsync();Capture(); // The Find box route.
-            Assert.Equal(3,client.Calls);Assert.Equal(1,store.Adds);Assert.Equal(1,store.Deletes);Assert.Equal(2,store.Reads);
-            // One synthetic launch request gives the evidence report something to export.
-            typeof(ShellViewModel).GetField("_latestQueue",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(vm,new LaunchQueueSnapshot(true,
-                [new(new(Guid.NewGuid(),profile,1,123,42,0,DateTimeOffset.UtcNow,1,HasExplicitDestination:true),LaunchState.Blocked,LaunchProblem.PreparationRejected,
-                    DateTimeOffset.UtcNow,ResourceBudget:new(1,1))]));
-            typeof(ShellViewModel).GetMethod("RefreshLaunchEvidence",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(vm,null);
-            vm.Navigate.Execute("Diagnostics");vm.RefreshDiagnostics.Execute(null);
-            shown.AppendLine(vm.BuildDiagnosticReport()).AppendLine(vm.BuildVisibleDiagnosticText()).AppendLine(vm.BuildNativeTrialEvidenceReport());
-            foreach(string line in vm.Events) shown.AppendLine(line);
-            Capture();
-            // Without recorded failures an empty log would pass, so the failures must be visible as typed events.
-            Assert.Contains(vm.DiagnosticRows,r=>r.Event.Kind==ManagerEventKind.OperationFailed);
+            vm.Fail(new IOException("synthetic"),ManagerSubsystem.Library);
+            await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return vm.DiagnosticsStatus.Contains("another program",StringComparison.Ordinal);});
         }
-        finally {await vm.DisposeAsync();} // Drains the diagnostics writer before its files are read.
-        string folder=Path.Combine(Data,"diagnostics");string[] files=Directory.GetFiles(folder);
-        Assert.Contains(Path.Combine(folder,"manager.jsonl"),files);
-        string written=string.Concat(files.Select(File.ReadAllText));Assert.Contains("\"OperationFailed\"",written,StringComparison.Ordinal);
-        // Only the last four characters of a private server code may ever be shown; the share code, link and query never.
-        foreach(string forbidden in new[]{Code[..^4],ShareCode,ShareUrl,"?code="})
-        {Assert.DoesNotContain(forbidden,shown.ToString(),StringComparison.Ordinal);Assert.DoesNotContain(forbidden,written,StringComparison.Ordinal);}
+        // The next successful write clears the failure text, so the header falls back to the skip count.
+        await vm.SaveAccountAsync(AccountProfile.Create("Saved after the log was released"));
+        await UntilAsync(()=>{vm.RefreshDiagnostics.Execute(null);return !vm.DiagnosticsStatus.Contains("another program",StringComparison.Ordinal);});
+        using var report=JsonDocument.Parse(vm.BuildDiagnosticReport());
+        long lost=report.RootElement.GetProperty("DroppedEvents").GetInt64();Assert.True(lost>=1,"No entry was lost to the held log.");
+        Assert.DoesNotContain("busy",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain("routine",vm.DiagnosticsStatus,StringComparison.OrdinalIgnoreCase);
+        string unwritten=$"{(lost==1?"1 event was":$"{lost} events were")} not written to the disk log";
+        Assert.Equal(monitoringStopped?$"Diagnostics recording · {unwritten} · monitoring stopped · view updates when refreshed"
+            :$"Diagnostics active · {unwritten}.",vm.DiagnosticsStatus);
     });
+    private static async Task UntilAsync(Func<bool> condition)
+    {
+        // Bounded wait for the background writer; the disk has no completion event to observe.
+        var deadline=DateTime.UtcNow.AddSeconds(10);
+        while(!condition())
+        {
+            if(DateTime.UtcNow>deadline) throw new TimeoutException("The diagnostics writer did not reach the expected state.");
+            await Task.Delay(10);
+        }
+    }
+    private static FileStream? TryOpenDenyingWriters(string path)
+    {
+        try {return new FileStream(path,FileMode.Open,FileAccess.Read,FileShare.Read);}
+        catch(IOException) {return null;}
+    }
+    // The end-to-end check that share-link and private-server codes never reach diagnostics is
+    // ClientWindowIntegrationTests.ShareLinkAndSavedPrivateServerFlowsLeaveNoCodeInTheDataFolderOrDiagnostics.
     [Fact]
     public Task LockThenUnlockRecordsBothTransitionsAndAnUnlockWhileUnlockedRecordsNothing()=>OnUi(async ()=>
     {
@@ -354,41 +414,6 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         public Task<RobloxSessionCredential> SignInAsync(Guid profileId,CancellationToken ct)=>throw new NotSupportedException("No sign-in expected.");
         public ValueTask DisposeAsync()=>ValueTask.FromException(new InvalidOperationException("synthetic owner cleanup could not be confirmed"));
     }
-    private sealed class ShareClient(string code,string link) : IRobloxShareLinkClient
-    {
-        public int Calls;
-        public void ForgetTokens(Guid profileId) { }
-        public void ForgetAllTokens() { }
-        // The first check resolves a private server; every later one fails with transport text that quotes the code and the link.
-        public Task<RobloxShareLinkResolution> ResolveAsync(RobloxShareLink shareLink,RobloxSessionCredential credential,RobloxShareLinkTokenScope scope,CancellationToken ct)
-            =>++Calls==1?Task.FromResult(new RobloxShareLinkResolution(RobloxShareLinkOutcome.PrivateServer,42,43,44,new ProtectedPrivateServerCode(code)))
-                :Task.FromException<RobloxShareLinkResolution>(new IOException("synthetic transport failure for "+link+" code "+code));
-    }
-    private sealed class FailingReadStore(string code) : IPrivateServerStore
-    {
-        private readonly List<SavedPrivateServer> _items=[];
-        public int Reads,Adds,Deletes;
-        // InvalidDataException is a type ShellViewModel.Fail would show verbatim, so forwarding it there would put the code in Notice.
-        public Task<IReadOnlyList<SavedPrivateServer>> ReadAsync(CancellationToken ct)
-        {Reads++;return Task.FromException<IReadOnlyList<SavedPrivateServer>>(new InvalidDataException("synthetic damaged list near code "+code));}
-        public Task<SavedPrivateServer> AddAsync(string name,long placeId,long universeId,long? ownerUserId,string? gameName,ProtectedPrivateServerCode protectedCode,CancellationToken ct)
-        {
-            Adds++;var saved=new SavedPrivateServer(Guid.NewGuid(),SavedPrivateServer.NormalizeName(name),placeId,universeId,ownerUserId,protectedCode.Last4,1).Validated();
-            _items.Add(saved);return Task.FromResult(saved);
-        }
-        public Task DeleteAsync(Guid id,long revision,CancellationToken ct)
-        {Deletes++;if(_items.RemoveAll(item=>item.Id==id && item.Revision==revision)==0) throw new PrivateServerConflictException();return Task.CompletedTask;}
-        public Task<ProtectedPrivateServerCode> ReadCodeAsync(Guid id,CancellationToken ct)=>throw new PrivateServerConflictException();
-    }
-    private sealed class NoPublicDirectory : IPublicRobloxDirectory
-    {
-        public Task<PublicDirectoryResult<PublicRobloxUser>> LookupUserAsync(long id,CancellationToken ct)=>throw new InvalidOperationException("No network expected.");
-        public Task<PublicDirectoryResult<PublicRobloxAvatar>> GetAvatarAsync(long id,CancellationToken ct)=>throw new InvalidOperationException("No network expected.");
-        public Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar,CancellationToken ct)=>throw new InvalidOperationException("No network expected.");
-        public void ClearMemoryCache() { }
-    }
-    private sealed class NoServers : IRobloxPublicServerDirectory
-    {public Task<RobloxPublicServerResult> BrowseAsync(RobloxPublicServerQuery query,CancellationToken ct)=>throw new InvalidOperationException("No network expected.");}
     private sealed class FaultingMonitor : IDesktopMonitor
     {
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)=>Task.FromException<DesktopSnapshot>(new InvalidOperationException("synthetic sampler fault"));

@@ -142,6 +142,16 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         Assert.False(NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id),types.Add).ReadFailed);Assert.Single(types);
         Assert.False(NativeLaunchDiagnosticPresentation.Faulted(Guid.Empty).ReadFailed);
     }
+    // M-L3-7: Project is the only validation site, so ReadCurrent validates a snapshot once per
+    // telemetry tick and classifies a snapshot that is both foreign and invalid exactly as Project does.
+    [Fact]
+    public void ReadCurrentClassifiesAForeignInvalidSnapshotExactlyAsProjectDoes()
+    {
+        var id=Guid.NewGuid();var bad=Snapshot(Guid.NewGuid()) with {UpdatedUtc=default};var projected=new List<Type>();var read=new List<Type>();
+        var expected=NativeLaunchDiagnosticPresentation.Project(id,bad,projected.Add);
+        var view=NativeLaunchDiagnosticPresentation.ReadCurrent(new Source{Read=_=>bad},id,()=>true,failed:read.Add);
+        Assert.Equal(new[]{typeof(System.IO.InvalidDataException)},projected);Assert.Equal(projected,read);Assert.Equal(expected,view);Assert.True(view!.ReadFailed);
+    }
     internal sealed class Source:INativeLaunchDiagnosticSource
     {
         public Func<Guid,NativeLaunchDiagnosticSnapshot?> Read=Snapshot;

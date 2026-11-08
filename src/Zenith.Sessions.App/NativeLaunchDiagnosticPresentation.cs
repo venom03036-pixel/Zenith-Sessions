@@ -122,12 +122,13 @@ public sealed record NativeLaunchDiagnosticPresentation
     /// operation shows the fixed read-fault text, and its exception type is reported through
     /// <paramref name="failed"/> so a provider bug is not mistaken for eviction. The message and inner error
     /// never cross this boundary. The failure is reported even when the view is no longer current; only the
-    /// stale view is withheld.
+    /// stale view is withheld. Validation is left to <see cref="Project"/> so a snapshot is validated once
+    /// per read and is classified exactly as Project classifies it.
     /// </summary>
     internal static NativeLaunchDiagnosticPresentation? ReadCurrent(INativeLaunchDiagnosticSource? source,Guid operationId,Func<bool> current,Action<Type>? failed=null)
     {
         if(!current())return null;NativeLaunchDiagnosticSnapshot? snapshot;bool faulted=false;
-        try{snapshot=source?.GetDiagnostic(operationId)?.Validated();}
+        try{snapshot=source?.GetDiagnostic(operationId);}
         catch(Exception error){snapshot=null;faulted=true;failed?.Invoke(error.GetType());}
         var value=faulted?Faulted(operationId):Project(operationId,snapshot,failed);return current()?value:null;
     }

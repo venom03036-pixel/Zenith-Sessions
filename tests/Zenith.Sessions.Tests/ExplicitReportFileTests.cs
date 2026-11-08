@@ -36,6 +36,8 @@ public sealed class ExplicitReportFileTests : IDisposable
         try {error=await Assert.ThrowsAsync<ReportFileException>(()=>ExplicitReportFile.WriteReportAsync(report,NewReport,Data,App,default));}
         finally {File.SetAttributes(report,FileAttributes.Normal);}
         Assert.IsType<UnauthorizedAccessException>(error.InnerException);
+        // Diagnostics records the cause, not this notice wrapper, so a denied target is not journaled as a plain IOException.
+        Assert.Equal(typeof(UnauthorizedAccessException),error.CauseType);
         Assert.Contains("chosen folder",error.Message);Assert.DoesNotContain(Share,error.Message,StringComparison.OrdinalIgnoreCase);
         Assert.Equal("old report",await File.ReadAllTextAsync(report));Assert.Equal(new[] {report},Directory.GetFiles(Share));
     }
@@ -45,7 +47,7 @@ public sealed class ExplicitReportFileTests : IDisposable
     {
         string folder=Path.Combine(Share,"removed");
         var error=await Assert.ThrowsAsync<ReportFileException>(()=>ExplicitReportFile.WriteReportAsync(Path.Combine(folder,"report.json"),NewReport,Data,App,default));
-        Assert.IsType<DirectoryNotFoundException>(error.InnerException);
+        Assert.IsType<DirectoryNotFoundException>(error.InnerException);Assert.Equal(typeof(DirectoryNotFoundException),error.CauseType);
         Assert.Contains("chosen folder is no longer available",error.Message);Assert.DoesNotContain(folder,error.Message,StringComparison.OrdinalIgnoreCase);
         Assert.False(Directory.Exists(folder));
     }
@@ -78,4 +80,21 @@ public sealed class ExplicitReportFileTests : IDisposable
             throw new InvalidOperationException("Unexpected test cleanup path.");
         if(Directory.Exists(full)) Directory.Delete(full,true);
     }
+}
+
+/// <summary>
+/// Signals when a staged report's temporary file is removed. A failed write removes it just before it throws and checks
+/// no cancellation after that, so a UI-thread test that waits here can land Panic or Lock before the export's continuation runs.
+/// </summary>
+internal sealed class StagedReportRemoval : IDisposable
+{
+    private readonly FileSystemWatcher _watcher;
+    private readonly ManualResetEventSlim _removed=new();
+    public StagedReportRemoval(string folder)
+    {
+        _watcher=new(folder,"*.tmp") {NotifyFilter=NotifyFilters.FileName};
+        _watcher.Deleted+=(_,_)=>_removed.Set();_watcher.EnableRaisingEvents=true;
+    }
+    public void Wait() {if(!_removed.Wait(TimeSpan.FromSeconds(10))) throw new TimeoutException("The staged report was not removed.");}
+    public void Dispose() {_watcher.Dispose();_removed.Dispose();}
 }

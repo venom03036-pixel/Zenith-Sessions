@@ -236,20 +236,24 @@ public sealed partial class ClientWindowIntegrationTests
     public Task ShareLinkAndSavedPrivateServerFlowsLeaveNoCodeInTheDataFolderOrDiagnostics() => OnUi(async () =>
     {
         // Synthetic values only. The account signs in through the local fakes above; the share-link client, game lookup and
-        // server list are local fakes. The saved list is the real DPAPI store on the fixture root, wrapped to inject one failure.
+        // server list are local fakes. The saved list is the real DPAPI store on the fixture root, wrapped to inject read failures.
         const string LinkCode = "Wq3Er7Ty1Ui5Op9As2Df6Gh0Jk4Lz8Xc", ShareCode = "c4e8a2f6b0d3e7a1c5f9b2d6e0a4c8f3";
         const string ShareUrl = "https://www.roblox.com/share?code=" + ShareCode + "&type=Server";
         string[] markers = [ShareCode, LinkCode[..^4]]; // Only the last four characters of a private server code may ever be shown.
         AssertCodeScanFindsPlantedMarkers(markers);
-        var shareClient = new DirectShareClient(LinkCode, ShareUrl); var store = new DirectPrivateServers(new PrivateServerStore(_root), LinkCode);
+        var shareClient = new DirectShareClient(LinkCode, ShareUrl); var store = new DirectPrivateServers(new PrivateServerStore(_root));
         var directory = new SearchDirectory(new()); var shell = DirectShell(_root, new DirectSignIn(), new DirectClient(), shareClient, store, directory);
         var shown = new StringBuilder(); string saved = Path.Combine(_root, "private-servers.dat");
-        void Capture() => shown.AppendLine(shell.Notice).AppendLine(shell.ShareLink.Status).AppendLine(shell.ShareLink.ResultTitle)
+        // ErrorNotice is where Fail shows an error, and it shows an InvalidDataException's message verbatim, so it is read with the rest.
+        void Capture() => shown.AppendLine(shell.Notice).AppendLine(shell.ErrorNotice).AppendLine(shell.ShareLink.Status).AppendLine(shell.ShareLink.ResultTitle)
             .AppendLine(shell.ShareLink.ResultDetail).AppendLine(shell.DestinationSearch.Status);
         try
         {
             await shell.InitializeAsync(); shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution;
-            Assert.Same(Assert.Single(shell.Accounts), shell.SelectedAccount);
+            Guid profile = Assert.Single(shell.Accounts).Profile.Id; Assert.Same(shell.Accounts[0], shell.SelectedAccount);
+            // Opening Join a game reads the saved list once. That read fails with a type ShellViewModel.Fail would show verbatim,
+            // so forwarding the store's exception there would put the code in ErrorNotice.
+            store.FailingReads.Enqueue(new InvalidDataException("synthetic damaged list near code " + LinkCode));
             shell.Navigate.Execute("JoinGame"); shell.SetPreviewWindowVisible(true); await shell.ShareLink.ActiveOperation; Capture();
             shell.ShareLink.LinkInput = ShareUrl; await shell.ShareLink.CheckAsync(); Capture();
             Assert.True(shell.ShareLink.HasPrivateResult); Assert.Contains("…" + LinkCode[^4..], shell.ShareLink.ResultDetail);
@@ -258,23 +262,27 @@ public sealed partial class ClientWindowIntegrationTests
             using (var code = await store.Inner.ReadCodeAsync(row.Id, default))
             { bool same = false; code.Reveal(span => same = span.SequenceEqual(LinkCode.AsSpan())); Assert.True(same); }
             Assert.Empty(FilesQuoting(_root, [saved], markers));
-            store.FailNextRead = true; await shell.ShareLink.LoadSavedAsync(); Capture(); // The store fails with text that quotes the code.
+            store.FailingReads.Enqueue(new IOException("synthetic lock on code " + LinkCode)); await shell.ShareLink.LoadSavedAsync(); Capture();
             await shell.ShareLink.LoadSavedAsync(); Capture(); shell.ShareLink.SelectedSaved = Assert.Single(shell.ShareLink.Saved);
             await shell.ShareLink.RemoveSelectedAsync(); Capture(); Assert.Empty(shell.ShareLink.Saved);
             // The client now fails with transport text that quotes the link and the code: once from the box, once from the Find box.
             shell.ShareLink.LinkInput = ShareUrl; await shell.ShareLink.CheckAsync(); Capture(); Assert.False(shell.ShareLink.HasResult);
             shell.ServerBrowser.LinkInput = ShareUrl; await shell.DestinationSearch.SearchOrUseAsync(); Capture();
-            Assert.Equal(3, shareClient.Calls); Assert.True(shareClient.UsedLinkedSession); Assert.Equal(1, store.FailedReads); Assert.Empty(directory.Queries);
+            Assert.Equal(3, shareClient.Calls); Assert.True(shareClient.UsedLinkedSession); Assert.Equal(2, store.FailedReads); Assert.Empty(directory.Queries);
+            // One synthetic launch request for this account gives the launch evidence report something to export.
+            var request = DiagnosticOperation(); PublishDiagnosticQueue(shell, request with { Intent = request.Intent with { ProfileId = profile } });
             shell.Navigate.Execute("Diagnostics"); shell.RefreshDiagnostics.Execute(null);
-            // An empty log would pass vacuously, so the injected store failure must be visible as a typed event.
+            // An empty log would pass vacuously, so the injected store failures must be visible as typed events.
             Assert.Contains(shell.DiagnosticRows, item => item.Event.Kind == ManagerEventKind.OperationFailed);
-            shown.AppendLine(shell.BuildDiagnosticReport()).AppendLine(shell.BuildVisibleDiagnosticText());
+            shown.AppendLine(shell.BuildDiagnosticReport()).AppendLine(shell.BuildVisibleDiagnosticText()).AppendLine(shell.BuildNativeTrialEvidenceReport());
             foreach (string line in shell.Events) shown.AppendLine(line);
             Capture();
         }
         finally { await shell.DisposeAsync(); } // Flushes and releases diagnostics, history, settings and the saved list before the scan.
-        string[] files = Directory.GetFiles(_root, "*", SearchOption.AllDirectories);
-        Assert.Contains(saved, files); Assert.Contains(Path.Combine(_root, "diagnostics", "manager.jsonl"), files);
+        string[] files = Directory.GetFiles(_root, "*", SearchOption.AllDirectories); string journal = Path.Combine(_root, "diagnostics", "manager.jsonl");
+        Assert.Contains(saved, files); Assert.Contains(journal, files);
+        // The failures reached the disk journal as typed records, so its clean scan below is not vacuous either.
+        Assert.Contains("\"OperationFailed\"", File.ReadAllText(journal), StringComparison.Ordinal);
         Assert.Empty(FilesQuoting(_root, files, markers)); // Names each leaking file relative to the data folder.
         foreach (string forbidden in markers.Append("?code=")) Assert.DoesNotContain(forbidden, shown.ToString(), StringComparison.Ordinal);
     });
@@ -327,15 +335,15 @@ public sealed partial class ClientWindowIntegrationTests
                 : Task.FromException<RobloxShareLinkResolution>(new System.Net.Http.HttpRequestException("synthetic failure for " + link + " code " + code));
         }
     }
-    /// <summary>The real store, plus one flagged read that fails with text quoting the code. Disposed by the shell with the store.</summary>
-    private sealed class DirectPrivateServers(PrivateServerStore inner, string code) : IPrivateServerStore, IDisposable
+    /// <summary>The real store, plus queued reads that each fail once with the queued exception. Disposed by the shell with the store.</summary>
+    private sealed class DirectPrivateServers(PrivateServerStore inner) : IPrivateServerStore, IDisposable
     {
         public PrivateServerStore Inner { get; } = inner;
-        public bool FailNextRead; public int FailedReads;
+        public readonly Queue<Exception> FailingReads = new(); public int FailedReads; // Read on the UI thread only, like the shell's own calls.
         public Task<IReadOnlyList<SavedPrivateServer>> ReadAsync(CancellationToken ct)
         {
-            if (!FailNextRead) return Inner.ReadAsync(ct);
-            FailNextRead = false; FailedReads++; return Task.FromException<IReadOnlyList<SavedPrivateServer>>(new IOException("synthetic lock on code " + code));
+            if (!FailingReads.TryDequeue(out var failure)) return Inner.ReadAsync(ct);
+            FailedReads++; return Task.FromException<IReadOnlyList<SavedPrivateServer>>(failure);
         }
         public Task<SavedPrivateServer> AddAsync(string name, long placeId, long universeId, long? ownerUserId, string? gameName, ProtectedPrivateServerCode protectedCode, CancellationToken ct)
             => Inner.AddAsync(name, placeId, universeId, ownerUserId, gameName, protectedCode, ct);

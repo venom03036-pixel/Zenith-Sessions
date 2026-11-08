@@ -110,7 +110,7 @@ public sealed partial class ShellViewModel
         catch(Exception error) when(error is not OperationCanceledException && (stop.IsCancellationRequested || IsLocked || _shuttingDown))
         {
             // A late disk/path failure stays observable as a typed event without replacing the stop or lock message.
-            _diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,error.GetType());
+            _diagnostics.RecordFailure(ManagerSubsystem.Diagnostics,FailureType(error));
         }
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
@@ -119,11 +119,13 @@ public sealed partial class ShellViewModel
     {
         bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
         string? stopped=live?null:_overviewMonitorStopped?"monitoring stopped":_libraryUnavailable?"startup needs attention":null;
-        // A disk-writer failure always wins so the header agrees with the storage footer.
+        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
+        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
+        string? unwritten=dropped<=0?null:dropped==1?"1 event was not written to the disk log":$"{dropped} events were not written to the disk log";
         DiagnosticsStatus=_diagnostics.Failure??(stopped is not null
-            ? $"{(dropped>0?$"Diagnostics busy: {dropped} routine events skipped":"Diagnostics recording")} · {stopped} · view updates when refreshed"
+            ? $"Diagnostics recording · {(unwritten is null?"":unwritten+" · ")}{stopped} · view updates when refreshed"
             : !live?"Diagnostics starting"
-            : dropped>0?$"Diagnostics busy: {dropped} routine events skipped.":"Diagnostics active · bounded to three log files");
+            : unwritten is not null?$"Diagnostics active · {unwritten}.":"Diagnostics active · bounded to three log files");
         // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
         if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
     }
@@ -175,9 +177,10 @@ public sealed partial class ShellViewModel
         var snapshot=_diagnosticSnapshot??_diagnostics.GetSnapshot();
         // Applied policy and committed limits only; unsaved drafts, the main account, sign-in and window-layout settings stay out.
         var performance=Volatile.Read(ref _activePerformance);var limits=Volatile.Read(ref _savedSettings).Capacity!;
+        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; advance it again whenever an allowlisted field is added.
         var report=new
         {
-            FormatVersion=1,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
+            FormatVersion=2,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),
             CreatedUtc=DateTimeOffset.UtcNow,Runtime=Environment.Version.ToString(),Architecture=RuntimeInformation.ProcessArchitecture.ToString(),
             Os=new {Description=RuntimeInformation.OSDescription,Version=Environment.OSVersion.Version.ToString()},
             Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
