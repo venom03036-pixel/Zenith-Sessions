@@ -31,6 +31,7 @@ public partial class MainWindow : Window
             InputBindings.Add(binding);
         // Settings search moves only within this window (OnClosed unsubscribes), so the layout check exercises it too.
         vm.SettingsSearchNavigationRequested+=OpenSearchedSetting;
+        vm.VaultPasswordPromptRequested+=ShowVaultPasswordPrompt;
         if (layoutCheckOnly) return;
         // Reopen where the window was left when that still suits the current displays; otherwise keep the centred default size.
         _startPlacement = ManagerWindowPlacementPolicy.Resolve(vm.ReadSavedManagerWindow(), ManagerWindowNative.Displays(), MinWidth, MinHeight);
@@ -129,6 +130,7 @@ public partial class MainWindow : Window
         SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; SystemParameters.StaticPropertyChanged -= OnSystemParameterChanged;
         _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
         _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;
+        _vm.VaultPasswordPromptRequested-=ShowVaultPasswordPrompt;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);
     }
     public async Task RequestExitAsync()
@@ -489,6 +491,29 @@ public partial class MainWindow : Window
         if (MessageBox.Show(this, ShellViewModel.DataEncryptionConfirmation, "Windows data-folder encryption",
             MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
             _vm.EncryptDataFolder.Execute(review);
+    }
+    private void UseVaultPasswordPrimary(object sender, RoutedEventArgs e) => ShowVaultPasswordPrompt(_vm.PrimaryVaultPasswordAction);
+    private void DisableVaultPassword(object sender, RoutedEventArgs e) => ShowVaultPasswordPrompt(VaultPasswordAction.Disable);
+    private void ShowVaultPasswordPrompt(VaultPasswordAction action)
+    {
+        var review = _vm.ReviewVaultPassword(action);
+        if (review is null) return;
+        var dialog = new VaultPasswordDialog(action, async password =>
+        {
+            var attempt = review ?? _vm.ReviewVaultPassword(action); review = null;
+            return attempt is not null && await _vm.ApplyVaultPasswordAsync(attempt, password);
+        }, () => _vm.VaultPasswordStatusText, _vm.CancelVaultPasswordOperation) { Owner = this };
+        _vm.PanicRequested += dialog.RequestStop;
+        try { dialog.ShowDialog(); }
+        finally { _vm.PanicRequested -= dialog.RequestStop; }
+    }
+    private async void ForgetProtectedSignIns(object sender, RoutedEventArgs e)
+    {
+        var review = _vm.ReviewVaultPassword(VaultPasswordAction.ForgetSignIns);
+        if (review is null) return;
+        if (MessageBox.Show(this, "Forget ALL saved sign-ins in this library?\n\nProfiles, groups and running clients remain. Automation is stopped. Saved sign-ins are invalidated and removed before the master-password control is removed. You must sign in to every account again. This cannot be undone and does not sign out Roblox on other devices.",
+            "Forget protected saved sign-ins", MessageBoxButton.YesNo, MessageBoxImage.Warning, MessageBoxResult.No) == MessageBoxResult.Yes)
+            await _vm.ApplyVaultPasswordAsync(review, ReadOnlyMemory<byte>.Empty);
     }
     private async void ExportProfiles(object sender, RoutedEventArgs e)
     {
