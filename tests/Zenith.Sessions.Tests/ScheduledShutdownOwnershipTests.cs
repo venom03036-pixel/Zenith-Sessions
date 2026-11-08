@@ -32,6 +32,27 @@ public sealed partial class ScheduledShutdownTests
         Assert.Equal(0, starts);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AFailedStartedToolWaitStopsTheHelperAndKeepsAnUnconfirmedOutcome(bool stopThrows)
+    {
+        var process = new ShutdownProcessProbe { FailWait = true, FailStop = stopThrows };
+        var runner = new ShutdownToolProcessRunner(_ => process);
+        Assert.Null(await runner.RunAsync("synthetic", [], TimeSpan.FromSeconds(10), default));
+        Assert.True(process.Stopped);
+        Assert.True(process.Disposed);
+    }
+
+    [Fact]
+    public async Task AHandleReleaseFaultCannotEraseAKnownSubmittedOutcome()
+    {
+        var process = new ShutdownProcessProbe { CompletedCode = 0, FailDispose = true };
+        var runner = new ShutdownToolProcessRunner(_ => process);
+        Assert.Equal(0, await runner.RunAsync("synthetic", [], TimeSpan.FromSeconds(10), default));
+        Assert.True(process.Disposed);
+    }
+
     [Fact]
     public Task ExitAbortsAnUnconfirmedScheduleThatMayHaveReachedWindows() => OnDispatcherAsync(async () =>
     {
@@ -123,11 +144,16 @@ public sealed partial class ScheduledShutdownTests
     {
         internal readonly TaskCompletionSource Waiting = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal bool Stopped, Disposed;
+        internal bool FailWait, FailStop, FailDispose;
         internal int? CompletedCode;
         public int? ExitCode => CompletedCode;
         public async Task WaitForExitAsync(CancellationToken ct)
-        { Waiting.TrySetResult(); if (CompletedCode is null) await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
-        public void Stop() => Stopped = true;
-        public void Dispose() => Disposed = true;
+        {
+            Waiting.TrySetResult();
+            if (FailWait) throw new InvalidOperationException("synthetic failed wait");
+            if (CompletedCode is null) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+        }
+        public void Stop() { Stopped = true; if (FailStop) throw new InvalidOperationException("synthetic failed stop"); }
+        public void Dispose() { Disposed = true; if (FailDispose) throw new InvalidOperationException("synthetic failed disposal"); }
     }
 }

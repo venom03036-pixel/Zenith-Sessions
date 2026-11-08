@@ -102,21 +102,30 @@ internal sealed class ShutdownToolProcessRunner : IShutdownToolRunner
         var start = new ProcessStartInfo(fileName) { UseShellExecute = false, CreateNoWindow = true };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         // Process creation stays off the caller's thread (the manager's UI thread). Nothing the tool prints is read or kept.
-        using var process = await Task.Run(() => { ct.ThrowIfCancellationRequested(); return _start(start); }, ct).ConfigureAwait(false)
+        var process = await Task.Run(() => { ct.ThrowIfCancellationRequested(); return _start(start); }, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Windows did not start the requested tool.");
-        using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
-        bound.CancelAfter(timeout);
-        try { await process.WaitForExitAsync(bound.Token).ConfigureAwait(false); return process.ExitCode; }
-        catch (OperationCanceledException) when (bound.IsCancellationRequested)
+        try
         {
-            // The tool may already have submitted the OS schedule. Killing it cannot undo that side effect: return its
-            // known exit code, or an unconfirmed result so the owner retains an abort obligation through Panic/Exit.
-            if (ReadExitCode(process) is { } completed) return completed;
-            try { process.Stop(); }
-            catch (Exception) { } // It exited or Windows refused to stop it; the result remains unconfirmed.
-            return null;
+            using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            bound.CancelAfter(timeout);
+            try { await process.WaitForExitAsync(bound.Token).ConfigureAwait(false); return process.ExitCode; }
+            catch (Exception)
+            {
+                // The tool may have submitted the OS schedule. Killing it cannot undo that side effect. Any failed wait,
+                // including cancellation, must stop the helper and retain a known exit code or an unconfirmed result.
+                if (ReadExitCode(process) is { } completed) return completed;
+                try { process.Stop(); }
+                catch (Exception) { } // It exited or Windows refused to stop it; the result remains unconfirmed.
+                return null;
+            }
         }
-        catch (Exception) { return null; } // A failed wait after start must not erase the possible OS side effect.
+        finally
+        {
+            // Releasing a handle must not erase the submitted outcome. Process.Dispose normally does not throw; the
+            // seam also exercises a failed cleanup without converting an accepted schedule into a pre-start failure.
+            try { process.Dispose(); }
+            catch (Exception) { }
+        }
     }
 
     private static int? ReadExitCode(IShutdownToolProcess process)
