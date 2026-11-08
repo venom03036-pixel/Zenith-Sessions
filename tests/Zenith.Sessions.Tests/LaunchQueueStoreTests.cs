@@ -238,7 +238,7 @@ public sealed class LaunchQueueStoreTests : IDisposable
         document["Queue"]!["Operations"]![0]!["State"]=JsonValue.Create(nameof(LaunchState.Preparing));
         if(kind=="missing-version")document.AsObject().Remove("Version");
         else if(kind=="string-version")document["Version"]="4";
-        else document["Version"]=9;
+        else document["Version"]=10;
         string path=Path.Combine(_root,"launch-queue.json"),unsupported=document.ToJsonString();await File.WriteAllTextAsync(path,unsupported);
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(LaunchQueueSnapshot.Empty,default));
@@ -249,7 +249,7 @@ public sealed class LaunchQueueStoreTests : IDisposable
     {
         using var store=new LaunchQueueStore(_root);await store.SaveAsync(LaunchQueueSnapshot.Empty,default);await store.SaveAsync(LaunchQueueSnapshot.Empty,default);
         string path=Path.Combine(_root,"launch-queue.json"),backup=await File.ReadAllTextAsync(path+".bak");
-        const string future="{\"Version\":9,\"Queue\":{\"FuturePayload\":true}}";await File.WriteAllTextAsync(path,future);
+        const string future="{\"Version\":10,\"Queue\":{\"FuturePayload\":true}}";await File.WriteAllTextAsync(path,future);
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(LaunchQueueSnapshot.Empty,default));
         Assert.Equal(future,await File.ReadAllTextAsync(path));Assert.Equal(backup,await File.ReadAllTextAsync(path+".bak"));Assert.False(File.Exists(path+".damaged"));

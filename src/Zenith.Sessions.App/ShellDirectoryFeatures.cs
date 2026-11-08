@@ -113,7 +113,7 @@ public sealed partial class ShellViewModel
         var shareLinkResolver=new RootPlaceShareLinkResolver(_linkService,publicDirectory as IPublicRobloxGameBatchDirectory ?? gameDirectory as IPublicRobloxGameBatchDirectory);
         ShareLink=new(shareLinkResolver,_privateServerStore,ServerBrowser,()=>SelectedAccount?.Profile.Id,CanUseDirectories,
             error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()),games:gameDirectory??publicDirectory as IPublicRobloxGameDirectory,
-            sessionRejected:(_,ct)=>ReloadAccountsAfterRejectedSessionAsync(ct));
+            sessionRejected:(_,ct)=>ReloadAccountsAfterRejectedSessionAsync(ct),removingSaved:StopPrivateTrialForRemoval);
         DestinationSearch=new(publicDirectory as IPublicRobloxGameSearchDirectory ?? gameDirectory as IPublicRobloxGameSearchDirectory,
             ServerBrowser,GameDetails,CanUseDestinationSearch,error=>_diagnostics.RecordFailure(ManagerSubsystem.Directory,error.GetType()),
             art:publicDirectory as IPublicRobloxGameArtDirectory ?? gameDirectory as IPublicRobloxGameArtDirectory,shareLinkHandler:RouteShareLinkAsync);

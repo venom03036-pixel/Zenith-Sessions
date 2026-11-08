@@ -30,6 +30,8 @@ public static class NativeRobloxHandoffRequest
     {
         ArgumentNullException.ThrowIfNull(context); ArgumentNullException.ThrowIfNull(ticket); ArgumentNullException.ThrowIfNull(time);
         context.Validated();
+        if (context.Destination.ServerKind == RobloxServerKind.Private)
+            throw new ArgumentException("Private-server trials require the official page's captured request.", nameof(context));
         if (browserTrackerId is <= 0 or > LaunchProcessReceipt.MaximumBrowserTrackerId) throw new ArgumentOutOfRangeException(nameof(browserTrackerId));
         if (joinAttemptId == Guid.Empty) throw new ArgumentException("A launch request needs a fresh join attempt ID.", nameof(joinAttemptId));
         if (ticket.IsConsumed) throw new ObjectDisposedException(nameof(ProtectedLaunchTicket));

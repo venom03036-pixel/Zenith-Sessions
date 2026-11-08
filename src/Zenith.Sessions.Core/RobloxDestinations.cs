@@ -10,7 +10,7 @@ public enum RobloxDestinationKind
     // Appended so the existing numeric values keep their meaning: a server (job) ID pasted without its place.
     UnresolvedJobWithoutPlace
 }
-public enum RobloxServerKind { Unknown, Public }
+public enum RobloxServerKind { Unknown, Public, Private }
 
 /// <summary>A requested destination only. It never establishes account identity, server availability, or arrival.</summary>
 public sealed class RobloxRequestedDestination
@@ -18,20 +18,24 @@ public sealed class RobloxRequestedDestination
     public long PlaceId { get; }
     public string? JobId { get; }
     public RobloxServerKind ServerKind { get; }
+    public PrivateServerReference? PrivateServer { get; }
 
-    public RobloxRequestedDestination(long placeId, string? jobId = null, RobloxServerKind serverKind = RobloxServerKind.Unknown)
+    public RobloxRequestedDestination(long placeId, string? jobId = null, RobloxServerKind serverKind = RobloxServerKind.Unknown, PrivateServerReference? privateServer = null)
     {
         if (placeId <= 0) throw new ArgumentOutOfRangeException(nameof(placeId), "Place IDs must be positive Int64 values.");
-        if (serverKind is not (RobloxServerKind.Unknown or RobloxServerKind.Public)) throw new ArgumentOutOfRangeException(nameof(serverKind));
+        if (!Enum.IsDefined(serverKind)) throw new ArgumentOutOfRangeException(nameof(serverKind));
+        if (serverKind == RobloxServerKind.Private ? privateServer is not { IsValid: true } || jobId is not null : privateServer is not null)
+            throw new ArgumentException("A private destination needs only its exact saved reference, never a public job ID.");
         if (jobId is not null && !TryNormalizeJobId(jobId, out _)) throw new ArgumentException("A server job ID must be a nonempty GUID in dashed format.", nameof(jobId));
         if (serverKind == RobloxServerKind.Public && jobId is null) throw new ArgumentException("A public server observation needs a job ID.", nameof(jobId));
         PlaceId = placeId;
         JobId = jobId is null ? null : Guid.ParseExact(jobId, "D").ToString("D");
         ServerKind = serverKind;
+        PrivateServer = privateServer;
     }
 
     // Builds only the documented HTTPS form. This method neither opens nor launches anything.
-    public Uri ToWebStartUri() => new("https://www.roblox.com/games/start?placeId=" + PlaceId.ToString(CultureInfo.InvariantCulture)
+    public Uri ToWebStartUri() => ServerKind == RobloxServerKind.Private ? throw new InvalidOperationException("A private destination needs its protected lease.") : new("https://www.roblox.com/games/start?placeId=" + PlaceId.ToString(CultureInfo.InvariantCulture)
         + (JobId is null ? "" : "&gameInstanceId=" + Uri.EscapeDataString(JobId)));
     public Uri ToGamePageUri() => new("https://www.roblox.com/games/" + PlaceId.ToString(CultureInfo.InvariantCulture));
     public override string ToString() => $"Requested Roblox destination {{ PlaceId = {PlaceId}, JobId = {JobId ?? "unspecified"}, ServerKind = {ServerKind}, Arrival = unverified }}";

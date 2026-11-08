@@ -160,9 +160,11 @@ public static class NativeTrialEvidence
             : reportedUser.Status == NativeTrialReportedStatus.ReportedMatchUnverified && reportedDestination.PlaceStatus == NativeTrialReportedStatus.ReportedMatchUnverified
                 && (job is null || reportedDestination.JobStatus == NativeTrialReportedStatus.ReportedMatchUnverified)
                 ? NativeTrialEvidenceOutcome.ReportedMatchUnverified : NativeTrialEvidenceOutcome.Unknown;
+        if (intent.PrivateServer is not null && outcome == NativeTrialEvidenceOutcome.ReportedMatchUnverified) outcome = NativeTrialEvidenceOutcome.Unknown;
         return view with { ReportedUser = reportedUser, ReportedDestination = reportedDestination, Outcome = outcome,
             Explanation = outcome == NativeTrialEvidenceOutcome.ReportedMismatchUnverified
                 ? "Unverified reported values differ from the expected account or destination. This is diagnostic evidence, not an authenticated account mapping."
+                : intent.PrivateServer is not null ? "The reported account and place cannot establish access to this saved private server. Confirm private arrival in the live client; no private-server proof is available."
                 : "Reported values are unverified diagnostics. Even matching IDs and an observed process do not prove account selection or arrival." };
     }
 

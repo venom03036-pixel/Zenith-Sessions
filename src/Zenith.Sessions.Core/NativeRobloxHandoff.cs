@@ -17,22 +17,28 @@ public sealed class NativeHandoffContext : IDisposable
     public long ExpectedUserId { get; }
     public long PendingAuthorizationGeneration { get; }
     public RobloxRequestedDestination Destination { get; }
+    [JsonIgnore] internal PrivateServerLaunchLease? PrivateLease { get; }
     public NativeHandoffContext(Guid launchOperationId, Guid profileId, long expectedUserId,
-        long pendingAuthorizationGeneration, RobloxRequestedDestination destination)
+        long pendingAuthorizationGeneration, RobloxRequestedDestination destination, PrivateServerLaunchLease? privateLease = null)
     {
         LaunchOperationId = launchOperationId; ProfileId = profileId; ExpectedUserId = expectedUserId;
         PendingAuthorizationGeneration = pendingAuthorizationGeneration; Destination = destination;
+        PrivateLease = privateLease;
         Validated();
     }
-    internal bool CanDispatch => Volatile.Read(ref _state) == 1;
+    internal bool CanDispatch => Volatile.Read(ref _state) == 1 && (PrivateLease is null || PrivateLease.IsActive);
     internal bool TryClaimCapture() => Interlocked.CompareExchange(ref _state, 1, 0) == 0;
-    internal bool TryBeginStart() => Interlocked.CompareExchange(ref _state, 3, 1) == 1;
-    public void Dispose() => Interlocked.Exchange(ref _state, 2);
+    internal bool TryBeginStart() => (PrivateLease is null || PrivateLease.IsActive) && Interlocked.CompareExchange(ref _state, 3, 1) == 1;
+    public void Dispose() { Interlocked.Exchange(ref _state, 2); PrivateLease?.Dispose(); }
     public NativeHandoffContext Validated()
     {
         if (OperationId == Guid.Empty || LaunchOperationId == Guid.Empty || ProfileId == Guid.Empty || ExpectedUserId <= 0
             || PendingAuthorizationGeneration is <= 0 or >= long.MaxValue - 1 || Destination is null)
             throw new ArgumentException("A native preparation needs a pinned operation, saved account, generation and destination.");
+        if (Destination.ServerKind == RobloxServerKind.Private
+            ? PrivateLease is not { IsActive: true } || PrivateLease.Reference != Destination.PrivateServer || PrivateLease.PlaceId != Destination.PlaceId
+            : PrivateLease is not null)
+            throw new ArgumentException("A private preparation needs the matching protected record lease.");
         return this;
     }
     public override string ToString() => "NativeHandoffContext { Binding = [redacted], Native identity = unverified }";
@@ -106,7 +112,7 @@ public static class NativeRobloxHandoff
     private static readonly HashSet<string> OuterNames = new(StringComparer.Ordinal)
     { "launchmode", "gameinfo", "launchtime", "placelauncherurl", "browsertrackerid", "robloxLocale", "gameLocale", "LaunchExp", "channel" };
     private static readonly HashSet<string> QueryNames = new(StringComparer.Ordinal)
-    { "request", "browserTrackerId", "placeId", "gameId", "isPlayTogetherGame", "joinAttemptId", "joinAttemptOrigin" };
+    { "request", "browserTrackerId", "placeId", "gameId", "isPlayTogetherGame", "joinAttemptId", "joinAttemptOrigin", "linkCode" };
 
     public static NativeHandoffCaptureResult Capture(NativeHandoffContext? context, string? currentPage,
         string? initiatingOrigin, string? original, TimeProvider? time = null)
@@ -127,7 +133,7 @@ public static class NativeRobloxHandoff
     {
         try { context = context?.Validated(); }
         catch (ArgumentException) { return new(NativeHandoffCaptureStatus.ContextRejected); }
-        if (context is null) return new(NativeHandoffCaptureStatus.ContextRejected);
+        if (context is null || context.Destination.ServerKind == RobloxServerKind.Private) return new(NativeHandoffCaptureStatus.ContextRejected);
         return Accept(context, original, time ?? TimeProvider.System);
     }
 
@@ -159,7 +165,7 @@ public static class NativeRobloxHandoff
             if (!Positive(values["launchtime"], out long milliseconds)) return new(NativeHandoffCaptureStatus.InvalidShape);
             DateTimeOffset issued = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
             if ((time.GetUtcNow() - issued).Duration() > TimeSpan.FromSeconds(30)) return new(NativeHandoffCaptureStatus.StaleTimestamp);
-            var destination = ParseDestination(values["placelauncherurl"], tracker, context.Destination);
+            var destination = ParseDestination(values["placelauncherurl"], tracker, context);
             if (destination != NativeHandoffCaptureStatus.AcceptedSourceGrammar) return new(destination);
             if (!context.TryClaimCapture()) return new(NativeHandoffCaptureStatus.OperationAlreadyCaptured);
             // Retain the original opaque request. Never rebuild or normalize its ticket-bearing URI.
@@ -170,8 +176,9 @@ public static class NativeRobloxHandoff
         { return new(NativeHandoffCaptureStatus.InvalidShape); }
     }
 
-    private static NativeHandoffCaptureStatus ParseDestination(string address, long tracker, RobloxRequestedDestination expected)
+    private static NativeHandoffCaptureStatus ParseDestination(string address, long tracker, NativeHandoffContext context)
     {
+        var expected = context.Destination;
         if (!address.StartsWith(Endpoint, StringComparison.Ordinal) || address.Contains('#') || address.Contains('\\')
             || address.Any(char.IsWhiteSpace)) return NativeHandoffCaptureStatus.InvalidShape;
         string[] fields = address[Endpoint.Length..].Split('&', 8);
@@ -183,14 +190,19 @@ public static class NativeRobloxHandoff
             if (equals < 1 || !QueryNames.Contains(field[..equals]) || !values.TryAdd(field[..equals], Decode(field[(equals + 1)..], true)))
                 return NativeHandoffCaptureStatus.InvalidShape;
         }
-        if (!values.TryGetValue("request", out string? request) || request is not ("RequestGame" or "RequestGameJob"))
+        if (!values.TryGetValue("request", out string? request) || request is not ("RequestGame" or "RequestGameJob" or "RequestPrivateGame"))
             return NativeHandoffCaptureStatus.UnsupportedVariant;
         if (!values.TryGetValue("browserTrackerId", out string? nestedTracker) || !Positive(nestedTracker, out long nested) || nested != tracker
             || !values.TryGetValue("placeId", out string? place) || !Positive(place, out long placeId)
-            || !values.TryGetValue("isPlayTogetherGame", out string? together) || together != "false"
             || !values.TryGetValue("joinAttemptId", out string? attempt) || !RobloxRequestedDestination.TryNormalizeJobId(attempt, out _)
             || !values.TryGetValue("joinAttemptOrigin", out string? origin)) return NativeHandoffCaptureStatus.InvalidShape;
         if (placeId != expected.PlaceId) return NativeHandoffCaptureStatus.DestinationMismatch;
+        if (request == "RequestPrivateGame")
+            return expected.ServerKind == RobloxServerKind.Private && values.Count == 6 && origin == "PlayButton"
+                && values.TryGetValue("linkCode", out string? code) && context.PrivateLease?.MatchesCode(code) == true
+                ? NativeHandoffCaptureStatus.AcceptedSourceGrammar : NativeHandoffCaptureStatus.DestinationMismatch;
+        if (expected.ServerKind == RobloxServerKind.Private) return NativeHandoffCaptureStatus.DestinationMismatch;
+        if (!values.TryGetValue("isPlayTogetherGame", out string? together) || together != "false") return NativeHandoffCaptureStatus.InvalidShape;
         if (request == "RequestGame")
             return expected.JobId is null && !values.ContainsKey("gameId") && origin == "PlayButton" && values.Count == 6
                 ? NativeHandoffCaptureStatus.AcceptedSourceGrammar : NativeHandoffCaptureStatus.DestinationMismatch;

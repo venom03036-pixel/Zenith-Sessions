@@ -56,6 +56,7 @@ public sealed partial class LaunchCoordinator
         IReadOnlyList<(AccountProfile Profile, LaunchAccountBinding? Binding)> recipients)
     {
         ArgumentNullException.ThrowIfNull(destination);
+        if(destination.ServerKind==RobloxServerKind.Private) throw new ArgumentException("Private servers require an explicit attended trial.",nameof(destination));
         var (generation, members) = CaptureMembers(recipients);
         return new(_batchReviewOwner, generation, destination, members);
     }
@@ -110,7 +111,7 @@ public sealed partial class LaunchCoordinator
             // chosen place (with or without an exact server) can be pinned again.
             if (!EndedBeforeAnyClient(previous)
                 || previous.Intent is not { } intent
-                || !intent.HasExplicitDestination || !HasValidDestination(intent)
+                || !intent.HasExplicitDestination || !HasValidDestination(intent) || intent.PrivateServer is not null
                 || intent.OperationId == Guid.Empty || intent.ProfileId != member.ProfileId || intent.UserId != binding.UserId
                 || intent.AuthorizationGeneration <= 0)
                 throw new ArgumentException("Retry requires a request for the same account that ended before any client started, with a chosen place.", nameof(recipients));

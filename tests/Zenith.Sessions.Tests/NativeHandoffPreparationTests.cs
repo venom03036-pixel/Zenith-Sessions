@@ -248,14 +248,14 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
         public required AccountRepository Repository;public required ProtectedCredentialVault Vault;public required AccountProfile Profile;
         public required RobloxSessionLinkService Service;public required Client Client;public AccountIdentityProjection? Projection;
         public LaunchIntent Intent=>new(_launchId,Profile.Id,Profile.Revision,123,1818,0,DateTimeOffset.UtcNow,1,HasExplicitDestination:true);
-        public static async Task<Fixture> Open(string root,bool projection=false)
+        public static async Task<Fixture> Open(string root,bool projection=false,IPrivateServerStore? privateServers=null)
         {
             var repository=new AccountRepository(root);await repository.InitializeAsync(default);
             var profile=await repository.SaveAsync(AccountProfile.Create("Manual alias") with{Notes="Keep notes"},default);
             var vault=new ProtectedCredentialVault(root);await vault.SaveAsync(new(profile.Id,RobloxSessionIdentity.Provider,123,1,"","",DateTimeOffset.MaxValue,
                 "old_player",AuthorizationHealth.Linked,RobloxSessionIdentity.Issuer,"123",Original),default);
             var metadata=projection?new AccountIdentityProjection(root,repository,vault):null;var client=new Client();
-            return new(){Repository=repository,Vault=vault,Profile=profile,Client=client,Projection=metadata,Service=new(repository,vault,client,new NoSignIn(),metadata)};
+            return new(){Repository=repository,Vault=vault,Profile=profile,Client=client,Projection=metadata,Service=new(repository,vault,client,new NoSignIn(),metadata,privateServers:privateServers)};
         }
         public async ValueTask DisposeAsync(){await Service.DisposeAsync();Projection?.Dispose();Vault.Dispose();Repository.Dispose();}
     }

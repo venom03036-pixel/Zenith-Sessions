@@ -7,10 +7,12 @@ public static class NativeHandoffNavigation
         => context is not null && address is not null
         && (RobloxHandoffProbePolicy.IsAllowedGamePage(new(context.ProfileId, context.ExpectedUserId,
                 context.PendingAuthorizationGeneration, context.Destination.PlaceId), address)
-            || string.Equals(address, context.Destination.ToWebStartUri().AbsoluteUri, StringComparison.Ordinal));
+            || (context.Destination.ServerKind == RobloxServerKind.Private
+                ? context.PrivateLease?.MatchesPage(address) == true
+                : string.Equals(address, context.Destination.ToWebStartUri().AbsoluteUri, StringComparison.Ordinal)));
 
     public static string InitialPage(NativeHandoffContext context)
-        => context.Destination.JobId is null
+        => context.Destination.ServerKind == RobloxServerKind.Private ? context.PrivateLease!.InitialPage() : context.Destination.JobId is null
             ? RobloxHandoffProbePolicy.CreateGamePageUri(new(context.ProfileId, context.ExpectedUserId,
                 context.PendingAuthorizationGeneration, context.Destination.PlaceId))
             : context.Destination.ToWebStartUri().AbsoluteUri;
