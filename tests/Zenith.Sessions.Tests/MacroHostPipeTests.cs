@@ -414,7 +414,9 @@ public sealed class MacroHostPipeTests
     public async Task AcceptThatKeepsFailingEndsTheEndpointAndDisposalReportsTheFailure()
     {
         // Repeated failed accepts cannot come from a client (see the test above), only from the endpoint itself. The
-        // worker must then stop after a bounded number of attempts, fault Completion and release the name.
+        // worker must then stop after a bounded number of attempts, fault Completion and release the name. This keeps the
+        // native reset: the injected accept never calls ConnectNamedPipe, so the second native reset fails
+        // (ERROR_PIPE_NOT_CONNECTED) and that reset failure ends the worker. The test below covers the limit itself.
         string name = Name(); int attempts = 0;
         var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name, Task.CompletedTask, (_, _) =>
         {
@@ -426,6 +428,32 @@ public sealed class MacroHostPipeTests
         Assert.IsType<IOException>(stopped); Assert.Same(stopped, disposal); Assert.True(server.Completion.IsFaulted);
         Assert.InRange(Volatile.Read(ref attempts), 2, MacroCatalogPipeServer.MaximumConsecutiveAcceptFailures + 1);
         // The name is no longer owned, so a restarted Personal serves the companion again.
+        await using var restarted = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name);
+        await using var client = new MacroCatalogPipeClient(name);
+        Assert.Equal(MacroCatalogState.Ready, (await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5))).State);
+    }
+
+    [Fact]
+    public async Task AcceptThatKeepsFailingWhileResetsSucceedStopsAtTheLimitAndReportsTheAcceptFailure()
+    {
+        // N-B9-2: with every reset succeeding, only the consecutive-failure limit can end the worker. It must make the
+        // first accept plus exactly MaximumConsecutiveAcceptFailures retries, reset after each retried failure, and fault
+        // Completion with the last accept failure. Past 100 attempts the accept waits for stop, so a missing limit fails
+        // this test without a hot retry loop.
+        string name = Name(); int attempts = 0, resets = 0; IOException? lastFailure = null;
+        var server = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name, Task.CompletedTask, (_, ct) =>
+        {
+            if (Interlocked.Increment(ref attempts) > 100) return Task.Delay(Timeout.Infinite, ct);
+            var failure = new IOException("Injected failed accept.");
+            Volatile.Write(ref lastFailure, failure);
+            return Task.FromException(failure);
+        }, _ => { Interlocked.Increment(ref resets); return true; });
+        var stopped = await Record.ExceptionAsync(() => server.Completion.WaitAsync(TimeSpan.FromSeconds(5)));
+        var disposal = await Record.ExceptionAsync(() => server.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5)));
+        Assert.Equal(MacroCatalogPipeServer.MaximumConsecutiveAcceptFailures + 1, Volatile.Read(ref attempts));
+        Assert.Equal(MacroCatalogPipeServer.MaximumConsecutiveAcceptFailures, Volatile.Read(ref resets));
+        Assert.NotNull(stopped); Assert.Same(Volatile.Read(ref lastFailure), stopped); Assert.Same(stopped, disposal);
+        Assert.True(server.Completion.IsFaulted);
         await using var restarted = new MacroCatalogPipeServer(new Source((_, _) => Task.FromResult(Ready())), name);
         await using var client = new MacroCatalogPipeClient(name);
         Assert.Equal(MacroCatalogState.Ready, (await client.GetPageAsync(new(), default).WaitAsync(TimeSpan.FromSeconds(5))).State);
