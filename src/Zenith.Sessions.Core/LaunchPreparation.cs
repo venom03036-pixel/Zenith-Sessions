@@ -6,7 +6,9 @@ namespace Zenith.Sessions.Core;
 public sealed class LaunchPreparationContext
 {
     public LaunchIntent OriginalIntent { get; }
-    internal LaunchPreparationContext(LaunchIntent intent) => OriginalIntent = intent;
+    public bool RequiresVerifiedExecutable { get; }
+    internal LaunchPreparationContext(LaunchIntent intent, bool requiresVerifiedExecutable = false)
+    { OriginalIntent = intent; RequiresVerifiedExecutable = requiresVerifiedExecutable; }
     public override string ToString() => "LaunchPreparationContext { Queue-owned preparation, no dispatch authority }";
 }
 

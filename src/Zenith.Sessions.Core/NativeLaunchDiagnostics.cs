@@ -4,13 +4,14 @@ public enum NativeLaunchDiagnosticStage { VerifyingExecutable, PreparingHandoff,
 public enum NativeLaunchCleanupStatus { NotStarted, Pending, Complete, Failed }
 public static class NativeLaunchDiagnosticLimits { public const int MaximumSnapshots = 128; }
 
-/// <summary>Fixed browser return facts only; no capture, credential, candidate, URI or protected mutation ID.</summary>
+/// <summary>Fixed capture return facts only (the mode that produced them included); no capture, credential, candidate, URI, ticket or protected mutation ID.</summary>
 public sealed record NativeBrowserPreparationFacts(RobloxHandoffProbeOutcome Outcome, NativeHandoffCaptureStatus? ShapeStatus = null,
-    DateTimeOffset? ObservedUtc = null)
+    DateTimeOffset? ObservedUtc = null, NativeLaunchMode Mode = NativeLaunchMode.OfficialPage)
 {
     public NativeBrowserPreparationFacts Validated()
     {
-        if (!Enum.IsDefined(Outcome) || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value) || ObservedUtc is { } time && time == default)
+        if (!Enum.IsDefined(Outcome) || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value) || ObservedUtc is { } time && time == default
+            || !Enum.IsDefined(Mode))
             throw new ArgumentException("The native browser diagnostic facts are invalid.");
         return this;
     }
@@ -27,17 +28,20 @@ public sealed record NativeLaunchDiagnosticSnapshot(Guid OperationId, long Revis
     NativeHandoffPreparationStatus? PreparationStatus = null, RobloxHandoffProbeOutcome? BrowserOutcome = null,
     NativeHandoffCaptureStatus? ShapeStatus = null, NativeHandoffAttemptStatus? DispatchStatus = null,
     DateTimeOffset? ExecutableObservedUtc = null, DateTimeOffset? PreparationObservedUtc = null,
-    DateTimeOffset? BrowserObservedUtc = null, DateTimeOffset? DispatchObservedUtc = null, DateTimeOffset? CleanupObservedUtc = null)
+    DateTimeOffset? BrowserObservedUtc = null, DateTimeOffset? DispatchObservedUtc = null, DateTimeOffset? CleanupObservedUtc = null,
+    NativeLaunchMode? LaunchMode = null)
 {
     public NativeLaunchDiagnosticSnapshot Validated()
     {
         if (OperationId == Guid.Empty || Revision <= 0 || StartedUtc == default || UpdatedUtc == default
             || !Enum.IsDefined(Stage) || !Enum.IsDefined(CleanupStatus) || Stopped != (Stage == NativeLaunchDiagnosticStage.Stopped)
+            || LaunchMode.HasValue && !Enum.IsDefined(LaunchMode.Value)
             || TrustStatus.HasValue != TrustReason.HasValue
             || TrustStatus.HasValue && !Enum.IsDefined(TrustStatus.Value)
             || TrustReason.HasValue && !Enum.IsDefined(TrustReason.Value)
-            || TrustStatus == ClientExecutableTrustStatus.VerifiedRobloxPublisher && TrustReason != ClientExecutableTrustReason.Verified
-            || TrustReason == ClientExecutableTrustReason.Verified && TrustStatus != ClientExecutableTrustStatus.VerifiedRobloxPublisher
+            // Verified pairs only with a verified status: the Roblox player's publisher, or a bootstrapper's accepted publisher (R-launch-17).
+            || TrustStatus is ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher && TrustReason != ClientExecutableTrustReason.Verified
+            || TrustReason == ClientExecutableTrustReason.Verified && TrustStatus is not (ClientExecutableTrustStatus.VerifiedRobloxPublisher or ClientExecutableTrustStatus.VerifiedAcceptedPublisher)
             || PreparationStatus.HasValue && !Enum.IsDefined(PreparationStatus.Value)
             || BrowserOutcome.HasValue && !Enum.IsDefined(BrowserOutcome.Value)
             || ShapeStatus.HasValue && !Enum.IsDefined(ShapeStatus.Value)

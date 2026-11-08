@@ -2,6 +2,8 @@
 
 Reviewed November 6, 2026. This is static, read-only source investigation, not a native launch, account sign-in, arrival, compatibility or optimization result. Neither reference application was executed or changed. No reference code was copied into Zenith. The repositories' working-file hashes below do not establish a clean tree or equivalence to installed binaries.
 
+Update 2026-11-08 (R-launch-17, owner decision): the conclusion below that Zenith accepts only the Roblox player and refuses to launch through a bootstrapper no longer holds as a rule. Zenith can now start an installed Bloxstrap, Fishstrap, Froststrap or Voidstrap when the user selects that bootstrapper's own row and has accepted its publisher once (Authenticode signature pinned by certificate thumbprint; unsigned refused); the bootstrapper applies its own client settings and Zenith still writes no client file. Cookie-file account switching and the other mechanisms named below remain excluded. See [HANDOFF.md](HANDOFF.md).
+
 ## What the existing Zenith launcher does
 
 `WindowsNativeAccountLaunchProvider` already composes a held, publisher-verified executable with an owned official-page handoff preparation, final protected-grant binding and one-use dispatch. `WindowsConfiguredNativeLaunchProvider` discovers/selects an installation and intentionally accepts the Roblox player rather than arbitrary bootstrapper executable names. Both advertise **Unverified** account launching; ordinary `LaunchAsync` rejects and `ConfirmArrivalAsync` returns false. The selected-account explicit trial is routed by `ShellNativeTrialFeatures`; it is not an ordinary enabled group launcher.

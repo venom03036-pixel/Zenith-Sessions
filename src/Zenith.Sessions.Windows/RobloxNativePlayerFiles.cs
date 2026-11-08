@@ -24,6 +24,17 @@ public static class RobloxNativePlayerFiles
     public static bool IsInventoryPlayer(string? path) => Matches(path, InventoryNames);
     /// <summary>True for RobloxPlayerInstaller.exe, the name Roblox's setup host serves its installer under and the only name the update verifier accepts.</summary>
     public static bool IsInstaller(string? path) => !string.IsNullOrEmpty(path) && Path.GetFileName(path).Equals(RobloxClientUpdate.InstallerFileName, StringComparison.OrdinalIgnoreCase);
+    /// <summary>
+    /// True for a Microsoft Store (packaged) client: the image lives under a WindowsApps folder. Only a whole path component
+    /// counts, so a folder merely named like it does not. The log probe and the installation suggestion share this one rule.
+    /// </summary>
+    public static bool IsPackagedPath(string? path)
+    {
+        if (string.IsNullOrEmpty(path)) return false;
+        foreach (string component in path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar))
+            if (component.Equals("WindowsApps", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
+    }
 
     private static bool Matches(string? path, IReadOnlyList<string> names)
     {

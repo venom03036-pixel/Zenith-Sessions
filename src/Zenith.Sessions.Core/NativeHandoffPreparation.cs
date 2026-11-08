@@ -2,21 +2,26 @@ using System.Text.Json.Serialization;
 
 namespace Zenith.Sessions.Core;
 
-/// <summary>Owned browser result. Every external scheme was cancelled; no native start occurred.</summary>
+/// <summary>
+/// Owned capture result. From the official page: every external scheme was cancelled. From the Direct ticket mode: the
+/// request Zenith built from an issued ticket (<see cref="Mode"/> says which). In both cases no native start occurred.
+/// </summary>
 public sealed class NativeBrowserCapture : IDisposable
 {
     private NativeHandoffCandidate? _candidate;
     private RobloxSessionCredential? _credential;
     public RobloxHandoffProbeOutcome Outcome { get; }
     public NativeHandoffCaptureStatus? ShapeStatus { get; }
+    /// <summary>Which mode produced this result; a fixed fact for Launch evidence, never authority.</summary>
+    public NativeLaunchMode Mode { get; }
     [JsonIgnore] public NativeHandoffCandidate? Candidate => Volatile.Read(ref _candidate);
     [JsonIgnore] public RobloxSessionCredential? CurrentCredential => Volatile.Read(ref _credential);
     public NativeBrowserCapture(RobloxHandoffProbeOutcome outcome, NativeHandoffCandidate? candidate = null,
-        RobloxSessionCredential? currentCredential = null, NativeHandoffCaptureStatus? shapeStatus = null)
+        RobloxSessionCredential? currentCredential = null, NativeHandoffCaptureStatus? shapeStatus = null, NativeLaunchMode mode = NativeLaunchMode.OfficialPage)
     {
-        if (!Enum.IsDefined(outcome) || shapeStatus.HasValue && !Enum.IsDefined(shapeStatus.Value))
+        if (!Enum.IsDefined(outcome) || shapeStatus.HasValue && !Enum.IsDefined(shapeStatus.Value) || !Enum.IsDefined(mode))
             throw new ArgumentException("The browser preparation outcome is invalid.");
-        Outcome = outcome; _candidate = candidate; _credential = currentCredential; ShapeStatus = shapeStatus;
+        Outcome = outcome; _candidate = candidate; _credential = currentCredential; ShapeStatus = shapeStatus; Mode = mode;
     }
     public NativeHandoffCandidate? TakeCandidate() => Interlocked.Exchange(ref _candidate, null);
     public void Dispose()
@@ -24,7 +29,7 @@ public sealed class NativeBrowserCapture : IDisposable
         Interlocked.Exchange(ref _candidate, null)?.Dispose();
         Interlocked.Exchange(ref _credential, null)?.Dispose();
     }
-    public override string ToString() => $"NativeBrowserCapture {{ Outcome = {Outcome}, Handoff = [redacted], Credential = [protected] }}";
+    public override string ToString() => $"NativeBrowserCapture {{ Outcome = {Outcome}, Mode = {Mode}, Handoff = [redacted], Credential = [protected] }}";
 }
 
 public interface IRobloxNativeHandoffCapture : IAsyncDisposable

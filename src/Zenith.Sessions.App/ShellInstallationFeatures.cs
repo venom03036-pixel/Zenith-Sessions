@@ -8,7 +8,12 @@ namespace Zenith.Sessions.App;
 public sealed class InstallationCandidateRow(ClientInstallationCandidate candidate, ClientReleaseMatch release = ClientReleaseMatch.NotChecked) : Observable
 {
     private ClientReleaseMatch _release = release;
+    private bool _suggested;
     public ClientInstallationCandidate Candidate { get; } = candidate;
+    // Refresh marks the one row the hints single out (ClientInstallationSuggestion) and preselects it. The mark stays on the
+    // row when the user selects another, so the suggestion can still be found; it is never saved anywhere.
+    public bool IsSuggested { get => _suggested; internal set { if (Set(ref _suggested, value)) Raise(nameof(Suggestion)); } }
+    public string Suggestion => IsSuggested ? "Suggested" : "";
     // When the inventory read this row's files. A release read before then says nothing about them: the player may have been
     // updated past it in between, and an equality comparison cannot tell an older player from a newer one.
     internal DateTimeOffset ObservedUtc { get; init; }
@@ -117,13 +122,16 @@ public sealed partial class ShellViewModel
     private bool _installationListPending;
     private const string InstallationReleaseStopped = "Release check stopped. The installations already found stay listed as not checked; refresh to ask Roblox's public version service again.";
     private const string InstallationNotChecked = "Refresh to inspect installed Roblox and compatible bootstrapper hints and to ask Roblox's public version service for its current release. No program will be downloaded, opened or changed.";
+    // Shown beside the inventory summary when ClientInstallationSuggestion singled out a row (R-launch-18). The preselection
+    // goes through the SelectedInstallation setter like a click, so the provider's acceptance and the trust check are unchanged.
+    private const string InstallationSuggested = "The native Roblox player the hints single out is preselected and marked Suggested. It is only a preselection: its publisher is checked again before any start, and you can select another row.";
     private string _installationStatus = InstallationNotChecked;
     private string _installationObserved = "Not checked";
     private string _installationReleaseStatus = "";
     private InstallationCandidateRow? _selectedInstallation;
     public ObservableCollection<InstallationCandidateRow> InstallationCandidates { get; } = [];
     public ObservableCollection<string> InstallationIssues { get; } = [];
-    public InstallationCandidateRow? SelectedInstallation { get => _selectedInstallation; set { if (Set(ref _selectedInstallation, value)) { CancelPublisherVerificationWork(); ConfigureNativeTrialInstallation(); Raise(nameof(CanVerifyInstallationPublisher)); } } }
+    public InstallationCandidateRow? SelectedInstallation { get => _selectedInstallation; set { if (Set(ref _selectedInstallation, value)) { CancelPublisherVerificationWork(); ConfigureNativeTrialInstallation(); Raise(nameof(CanVerifyInstallationPublisher)); RefreshBootstrapperLaunch(); } } }
     public string InstallationStatus { get => _installationStatus; private set => Set(ref _installationStatus, value); }
     public string InstallationObserved { get => _installationObserved; private set => Set(ref _installationObserved, value); }
     public string InstallationReleaseStatus { get => _installationReleaseStatus; private set => Set(ref _installationReleaseStatus, value); }
@@ -180,7 +188,12 @@ public sealed partial class ShellViewModel
             foreach (var issue in snapshot.Issues)
                 if (InstallationCandidateRow.IssueLine(issue) is var line && !InstallationIssues.Contains(line)) InstallationIssues.Add(line);
             InstallationObserved = snapshot.ObservedUtc.ToUniversalTime().ToString("u");
-            InstallationStatus = snapshot.Status + " · " + snapshot.Summary;
+            // Preselect the one row the hints single out, if any. Rows were copied from the candidates, so match by path (the
+            // consistency check above made paths unique). Never a Microsoft Store build, the launcher or a managed player.
+            var suggested = ClientInstallationSuggestion.Suggest(snapshot);
+            var suggestedRow = suggested is null ? null : Array.Find(rows, row => string.Equals(row.ExecutablePath, suggested.ExecutablePath, StringComparison.OrdinalIgnoreCase));
+            if (suggestedRow is not null) { suggestedRow.IsSuggested = true; SelectedInstallation = suggestedRow; }
+            InstallationStatus = snapshot.Status + " · " + snapshot.Summary + (suggestedRow is null ? "" : " " + InstallationSuggested);
             _installationListPending = false; Raise(nameof(CanVerifyInstallationPublisher));
             if (_clientReleases is null) return;
             _installationReleaseStop = releaseStop;

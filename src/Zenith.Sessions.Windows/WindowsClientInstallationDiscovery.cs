@@ -86,7 +86,8 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
             else
             {
                 var product=hint switch {ClientInstallationRegistryHint.BloxstrapInstallLocation=>ClientInstallationProduct.Bloxstrap,
-                    ClientInstallationRegistryHint.FishstrapInstallLocation=>ClientInstallationProduct.Fishstrap,_=>ClientInstallationProduct.Froststrap};
+                    ClientInstallationRegistryHint.FishstrapInstallLocation=>ClientInstallationProduct.Fishstrap,
+                    ClientInstallationRegistryHint.VoidstrapInstallLocation=>ClientInstallationProduct.Voidstrap,_=>ClientInstallationProduct.Froststrap};
                 if(!TryNormalizeDirectory(value,out var root)) {Issue(ClientInstallationIssueCode.InvalidHint,product,ClientInstallationHintSource.UninstallRegistry);continue;}
                 // A registered root that equals the default stays a standard location; any other registered root is labelled by the registration that named it.
                 if(!roots.Any(known=>known.Product==product && string.Equals(known.Root,root,StringComparison.OrdinalIgnoreCase))) roots.Add((product,root!,ClientInstallationHintSource.UninstallRegistry));
@@ -144,7 +145,8 @@ public sealed class WindowsClientInstallationDiscovery : IClientInstallationDisc
     {
         normalized=null;product=default;if(!TryNormalizeDirectory(value,out var path)) return false;
         string name=Path.GetFileName(path);product=name.ToLowerInvariant() switch
-        {"bloxstrap.exe"=>ClientInstallationProduct.Bloxstrap,"fishstrap.exe"=>ClientInstallationProduct.Fishstrap,"froststrap.exe"=>ClientInstallationProduct.Froststrap,_=>ClientInstallationProduct.Roblox};
+        {"bloxstrap.exe"=>ClientInstallationProduct.Bloxstrap,"fishstrap.exe"=>ClientInstallationProduct.Fishstrap,"froststrap.exe"=>ClientInstallationProduct.Froststrap,
+            "voidstrap.exe"=>ClientInstallationProduct.Voidstrap,_=>ClientInstallationProduct.Roblox};
         if(product==ClientInstallationProduct.Roblox && !RobloxNativePlayerFiles.IsInventoryPlayer(path)) return false;
         normalized=path;return true;
     }

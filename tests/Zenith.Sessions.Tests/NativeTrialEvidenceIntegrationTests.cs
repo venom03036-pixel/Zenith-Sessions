@@ -296,10 +296,11 @@ public sealed partial class ClientWindowIntegrationTests
         }
     }
 
+    // trialAvailable is false when the test saved a verified trial first (R-launch-0): ordinary launching is then on and the trial is not offered.
     private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null,
-        IPublicRobloxClientReleaseDirectory? releases=null)
+        IPublicRobloxClientReleaseDirectory? releases=null,bool trialAvailable=true)
     {
-        var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
+        var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner(), matchesExecutable: (_, identity) => identity == NativeEvidenceIdentity);
         // No installation discovery is injected, so a null release source would hand the shell its live public directory and
         // every trial start would ask Roblox (O-C9-4). The synthetic source answers at once; a held read is injected explicitly.
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor,
@@ -315,7 +316,7 @@ public sealed partial class ClientWindowIntegrationTests
             Assert.Equal(456, shell.SelectedAccount!.KnownUserId);
             shell.SelectedInstallation = NativeTrialMetadataOnlyInstallation(); shell.ServerBrowser.UsePreferredPlace(42);
             shell.Refresh.Execute(null); await shell.Refresh.Execution;
-            Assert.True(shell.IsReady); Assert.True(shell.QueueReady); Assert.True(shell.CanRunNativeTrial);
+            Assert.True(shell.IsReady); Assert.True(shell.QueueReady); Assert.Equal(trialAvailable, shell.CanRunNativeTrial);
             Assert.False(Directory.Exists(Path.Combine(_root, "signin-browser-data")));
             Assert.False(File.Exists(NativeTrialMetadataOnlyInstallation().ExecutablePath));
             return shell;
@@ -413,6 +414,7 @@ public sealed partial class ClientWindowIntegrationTests
             Directory.Delete(full, true);
         }
     }
+    private static readonly NativeLaunchExecutableIdentity NativeEvidenceIdentity = new(new('D', 64), new('E', 64), new('F', 64));
     private sealed class NativeEvidenceChild : IConfiguredNativeLaunchChild, INativeLaunchDiagnosticSource
     {
         public LaunchProcessReceipt Receipt { get; } = new(730001, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, DateTimeOffset.UtcNow);
@@ -425,6 +427,7 @@ public sealed partial class ClientWindowIntegrationTests
         public INativeLaunchDiagnosticSource? DiagnosticSource=>this;
         public NativeLaunchDiagnosticSnapshot? GetDiagnostic(Guid operationId)=>_diagnostic?.OperationId==operationId?_diagnostic:null;
         public bool CleanupHealthy => true;
+        public NativeLaunchExecutableIdentity? ExecutableIdentity => NativeEvidenceIdentity;
         public async Task<LaunchPreparationResult> PrepareAsync(LaunchPreparationContext context, CancellationToken ct)
         {
             Interlocked.Increment(ref Preparations); Entered.TrySetResult(context);

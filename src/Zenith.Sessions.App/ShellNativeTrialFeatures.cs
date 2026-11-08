@@ -6,7 +6,7 @@ namespace Zenith.Sessions.App;
 
 public sealed partial class ShellViewModel
 {
-    private readonly IRobloxNativeHandoffCapture _nativeCapture;
+    private readonly SelectableNativeHandoffCapture _nativeCapture;
     private readonly WindowsConfiguredNativeLaunchProvider _nativeLaunch;
     private int _nativeMetadataPending;
     private long _nativeTrialEpoch;
@@ -20,12 +20,14 @@ public sealed partial class ShellViewModel
     public string NativeTrialSelection=>ServerBrowser.HasDestinationDraft?"Search / Use the pending destination draft before reviewing a trial.":SelectedAccount is {KnownUserId:>0} row&&ServerBrowser.ReadyDestination is { } destination
         ?$"{row.Label} · expected player {row.KnownUserId} · place {destination.PlaceId}"+(destination.JobId is { } job?$" · server {job}":" · any server")
         :"Select a saved, signed-in account and an explicit game or server in Sessions → Join a game.";
-    // Only the file the provider accepted is the trial installation; a rejected row is never shown as one.
+    // Only the file the provider accepted is the trial installation (the native player, or since R-launch-17 an accepted
+    // bootstrapper's own executable); a rejected row is never shown as one.
     public string NativeTrialInstallation=>SelectedInstallation?.Candidate is not { } candidate?"Choose a native Roblox installation in Settings first."
-        :candidate.Product==ClientInstallationProduct.Roblox&&_nativeLaunch.Selected?candidate.ExecutablePath
+        :_nativeLaunch.Selected?candidate.ExecutablePath
         :"The selected installation is not usable for a native trial; see the trial status.";
+    // While a recorded trial has turned ordinary launching on (R-launch-0) the queue refuses a trial, so none is offered.
     public bool CanRunNativeTrial=>_ready&&QueueReady&&!IsSample&&!IsLocked&&!_shuttingDown&&!IsAuthorizing
-        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy
+        &&_nativeLaunch.Selected&&_nativeLaunch.CleanupHealthy&&!_nativeLaunch.IsBusy&&!IsNativeLaunchVerified
         &&SelectedAccount is {KnownUserId:>0,AuthorizationGeneration:>0}&&ServerBrowser.ReadyDestination is {PlaceId:>0};
     public AsyncCommand StartNativeTrial {get;private set;}=null!;
     public Command CancelNativeTrial {get;private set;}=null!;
@@ -41,15 +43,33 @@ public sealed partial class ShellViewModel
         internal ClientInstallationCandidate Installation {get;}
         internal long Epoch {get;}
         internal long Version {get;}
+        /// <summary>The saved native launch mode at review time (R-api-7); the trial status repeats what it does.</summary>
+        internal NativeLaunchMode Mode {get;}
         public string SelectionSummary {get;}
         public string InstallationSummary {get;}
-        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version)
+        /// <summary>The extra client arguments the direct start will add after Roblox's request, as saved now: this account's own set,
+        /// else the saved default, else none (R-launch-16). Shown in the review only; never logged.</summary>
+        public string ArgumentsSummary {get;}
+        /// <summary>What confirming does in the saved mode: open the page and wait for Play, or request a ticket and start the player.</summary>
+        public string LaunchModeSummary {get;}
+        internal NativeTrialReview(AccountRow row,RobloxRequestedDestination destination,ClientInstallationCandidate installation,long epoch,long version,string defaultClientArguments="",
+            NativeLaunchMode mode=NativeLaunchMode.OfficialPage)
         {
             Profile=row.Profile;PlayerId=row.KnownUserId!.Value;AuthorizationGeneration=row.AuthorizationGeneration!.Value;
-            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;
+            Destination=new(destination.PlaceId,destination.JobId,destination.ServerKind);Installation=installation;Epoch=epoch;Version=version;Mode=mode;
             SelectionSummary=$"{row.Label} · expected player {PlayerId} · place {Destination.PlaceId}"
                 +(Destination.JobId is { } job?$" · server {job}":" · any server");
-            InstallationSummary=installation.ExecutablePath;
+            // A bootstrapper installation (R-launch-17): Zenith starts the bootstrapper, which starts the player with its own settings.
+            bool bootstrapper=BootstrapperProducts.IsBootstrapper(installation.Product);
+            InstallationSummary=bootstrapper
+                ?$"{installation.ExecutablePath} (launch through {installation.Product}: it starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files)"
+                :installation.ExecutablePath;
+            ArgumentsSummary=bootstrapper?$"Extra client arguments: not passed (the start goes through {installation.Product})"
+                :ExtraClientArgumentPolicy.Describe(row.Profile.ExtraClientArguments,defaultClientArguments);
+            string started=bootstrapper?$"start {installation.Product} with that request":"start the selected native player itself";
+            LaunchModeSummary="Native launch mode: "+NativeLaunchModes.Label(mode)+". "+(mode==NativeLaunchMode.DirectTicket
+                ?$"Zenith will request a launch ticket with this account's saved sign-in and {started}; no Roblox page opens. This may start a real Roblox client."
+                :"Continue to the selected account's Roblox game page. Choosing Play there may start a real Roblox client.");
         }
         public override string ToString()=>"Selected-account native trial review";
     }
@@ -59,7 +79,8 @@ public sealed partial class ShellViewModel
         _nativeTrialReview=null;
         if(!CanRunNativeTrial || SelectedAccount is not { } selected || !Accounts.Contains(selected)
             ||ServerBrowser.ReadyDestination is not { } destination || SelectedInstallation?.Candidate is not { } installation)return null;
-        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion));
+        return _nativeTrialReview=new(selected,destination,installation,Interlocked.Read(ref _nativeTrialEpoch),Interlocked.Read(ref _nativeReviewVersion),_savedSettings.DefaultClientArguments,
+            SavedNativeLaunchMode);
     }
     public void DiscardNativeTrialReview(NativeTrialReview review)
     {Interlocked.CompareExchange(ref _nativeTrialReview,null,review);}
@@ -69,7 +90,7 @@ public sealed partial class ShellViewModel
         StartNativeTrial=new(StartNativeTrialAsync,error=>Fail(error,ManagerSubsystem.Launch));
         CancelNativeTrial=new(_=>{FenceNativeTrial(NativeTrialStoppedByUser);_launchQueue.SignalPanic();});
         PropertyChanged+=NativeTrialOwnerChanged;ServerBrowser.PropertyChanged+=NativeTrialDestinationChanged;
-        InitializeLaunchEvidenceFeatures();
+        InitializeLaunchEvidenceFeatures();InitializeNativeLaunchVerificationFeatures();
     }
     private void NativeTrialOwnerChanged(object? sender,PropertyChangedEventArgs args)
     {
@@ -98,12 +119,13 @@ public sealed partial class ShellViewModel
         var selection=SelectedInstallation?.Candidate;
         // The provider's own acceptance rule, not a looser copy: the launcher and bootstrapper-managed
         // players are present Roblox rows that Configure would reject, so they are never eligible.
-        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)?selection:null;
+        // This build offers standard-player trials only; bootstrapper inspection remains available.
+        var eligible=WindowsConfiguredNativeLaunchProvider.CanSelect(selection)&&selection!.Product==ClientInstallationProduct.Roblox?selection:null;
         // Revoke trial permission (and pause the queue) only when the trial installation can
         // actually change: off a selected native file, or onto a row the provider accepts. Moving
         // between rows that can never be the trial installation only updates the status text.
-        bool interrupted=false;
-        if(_nativeLaunch.Selected||eligible is not null)
+        bool interrupted=false, queueWasRunning=!EffectiveQueuePaused, selectionFenced=_nativeLaunch.Selected||eligible is not null;
+        if(selectionFenced)
         {
             interrupted=HasNativeTrialInProgress();
             InvalidateNativeTrialReview();
@@ -113,7 +135,11 @@ public sealed partial class ShellViewModel
         try
         {
             _nativeLaunch.Configure(eligible);
-            NativeTrialStatus=_nativeLaunch.Selected?"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified."
+            // A recorded trial for the saved mode and this row's product (R-launch-0) means ordinary launching is on through it.
+            NativeTrialStatus=_nativeLaunch.Selected?(SavedNativeLaunchVerification is { } verified&&IsNativeLaunchVerified?VerifiedNativeLaunchStatus(verified)
+                    :BootstrapperProducts.IsBootstrapper(eligible!.Product)
+                    ?$"Launch through {eligible.Product} selected for an explicit trial. {eligible.Product} starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files. Its signature is checked against the publisher you accepted, and the account and destination are checked again, before any start; compatibility remains unverified."
+                    :"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified.")
                 :selection is null?NoNativeInstallationSelected:UnsupportedNativeInstallation(SelectedInstallation);
         }
         catch(ArgumentException)
@@ -124,8 +150,10 @@ public sealed partial class ShellViewModel
         // The fence above is intended; replace the selection text and the stale "Trial queued" banner
         // so the user knows the trial stopped. A Panic or Lock reason keeps priority.
         if(interrupted&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice)NativeTrialStatus=Notice=NativeTrialStoppedBySelection;
+        else if(queueWasRunning&&!IsLocked&&!_shuttingDown&&!_preserveStopNotice&&selectionFenced)
+            Notice="The installation selection changed and the launch queue was paused. Review the selection, then choose Resume queue when ready.";
         PublishLaunchRelease();
-        RefreshNativeTrialFeatures();
+        RefreshNativeTrialFeatures();RefreshNativeLaunchVerification();
     }
     private const string NativeTrialStoppedBySelection="Trial stopped because the installation selection changed, and the launch queue is paused. Review any process-start receipt in the queue before retrying; existing Roblox clients remain open.";
     // Stop trial signals the queue's Panic, which pauses every queued request (other accounts' too), not only this trial; the
@@ -137,7 +165,9 @@ public sealed partial class ShellViewModel
             or LaunchState.Launching or LaunchState.Stabilizing)&&_launchQueue.IsTrialOperation(operation.Intent.OperationId));
     private const string NoNativeInstallationSelected="No native installation is selected. In Settings, choose Refresh installation, then select a present native Roblox player file.";
     private static string UnsupportedNativeInstallation(InstallationCandidateRow? row)=>row?.ManagedBy is { } owner
-        ?$"This Roblox player is managed by {owner}. Native trials are not supported for players managed by a bootstrapper; select a Roblox player that Roblox installed itself. The inventory row remains available for inspection."
+        ?$"This Roblox player is managed by {owner}. Native trials are not supported here: bootstrapper launching is deferred until its exact player can be associated with the launch. Select a Roblox player that Roblox installed itself. The inventory row remains available for inspection."
+        :row?.Candidate is { } candidate&&BootstrapperProducts.IsBootstrapper(candidate.Product)
+        ?$"This row is the {candidate.Product} bootstrapper. Native trials are not supported here: bootstrapper launching is deferred until its exact Roblox player can be associated with the launch. Publisher inspection remains available; use the standard Roblox player for this build."
         :"This installation is not supported for a native trial. Select a present native Roblox player file; the inventory row remains available for inspection.";
     private void FenceNativeTrial(string reason)
     {
@@ -210,6 +240,8 @@ public sealed partial class ShellViewModel
             stop.Token.ThrowIfCancellationRequested();
             _preserveStopNotice=false;
             request=await _launchQueue.EnqueueTrialAsync(review.Profile,stop.Token,new(review.PlayerId,review.AuthorizationGeneration),review.Destination);
+            // The one request that may later be recorded as verified (R-launch-0), with the mode and installation it actually uses.
+            _lastTrialStart=(request.Intent.OperationId,review.Mode,review.Installation.Product);
             if(stop.IsCancellationRequested||review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)
                 ||review.Version!=Interlocked.Read(ref _nativeReviewVersion))
             {await CancelAbandonedNativeTrialAsync(request);return;}
@@ -227,7 +259,7 @@ public sealed partial class ShellViewModel
         QueueExpanded=true;
         bool resumed=await _launchQueue.ResumeTrialAsync(request.Intent.OperationId,_lifetime.Token);
         if(review.Epoch!=Interlocked.Read(ref _nativeTrialEpoch)||_preserveStopNotice||IsLocked||_shuttingDown)return;
-        NativeTrialStatus=resumed?"Trial queued for "+review.SelectionSummary+". The private Roblox game page may open. Choose Play there. A process receipt alone does not verify its account or arrival."
+        NativeTrialStatus=resumed?"Trial queued for "+review.SelectionSummary+". "+DescribeNativeLaunchMode(review.Mode)
             :"The trial was stopped before it could resume. Review the queue and create a fresh request.";
         Notice=NativeTrialStatus;
     }
@@ -259,6 +291,7 @@ public sealed partial class ShellViewModel
         {
             try{await _nativeCapture.DisposeAsync();}
             catch(Exception error){ReportNativeTrialCleanupFailure(error);}
+            finally{(_launchTicketClient as IDisposable)?.Dispose();} // After the capture that borrowed it; kept tokens go with it.
         }
     }
     private void ReportNativeTrialCleanupFailure(Exception error)

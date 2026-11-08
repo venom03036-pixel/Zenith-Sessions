@@ -72,16 +72,20 @@ public sealed class ClientExecutableTrustTests : IDisposable
         Assert.Equal(ClientExecutableTrustStatus.Unknown, result.Status); Assert.Equal(reason, result.Reason);
     }
 
+    // Since R-launch-17 (owner decision 2026-11-08) a bootstrapper's own executable is evaluated under its per-product
+    // accepted-publisher policy (BootstrapperLaunchTests); a missing file is refused like a missing player, and nothing is
+    // created or started. A bootstrapper product never gets an implicit publisher.
     [Theory]
     [InlineData(ClientInstallationProduct.Bloxstrap)]
     [InlineData(ClientInstallationProduct.Fishstrap)]
     [InlineData(ClientInstallationProduct.Froststrap)]
-    public async Task BootstrapperHintsHaveNoImplicitPublisherPolicyOrFileProbe(ClientInstallationProduct product)
+    [InlineData(ClientInstallationProduct.Voidstrap)]
+    public async Task BootstrapperRowsAreEvaluatedUnderTheirOwnPolicyAndAMissingFileIsRefused(ClientInstallationProduct product)
     {
         var policy = new Policy(); await using var verifier = new WindowsClientExecutableTrust(policy);
         var result = await verifier.VerifyAsync(Candidate(Path.Combine(Root, product + ".exe"), product), default);
-        Assert.Equal(ClientExecutableTrustStatus.Unknown, result.Status);
-        Assert.Equal(ClientExecutableTrustReason.BootstrapperNotEvaluated, result.Reason);
+        Assert.Equal(ClientExecutableTrustStatus.Rejected, result.Status);
+        Assert.Equal(ClientExecutableTrustReason.MissingFile, result.Reason);
         Assert.Null(result.File); Assert.Null(result.Sha256); Assert.Equal(0, policy.Calls); Assert.False(Directory.Exists(Root));
     }
 
