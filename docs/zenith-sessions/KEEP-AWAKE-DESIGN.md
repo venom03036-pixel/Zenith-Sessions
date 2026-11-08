@@ -3,7 +3,7 @@
 Owner decision 2026-11-08: adopt RoALT's anti-AFK capability as Zenith's own built-in plan, with the project's own gate. Roblox disconnects
 a client that gets no input for 20 minutes. Every N minutes (default 15, bounded) Zenith brings each client forward, sends it one F13 press
 through the single input executor, and restores the window that was in front. Off by default; refused by the capability gate until the live
-background input isolation trial marks background input Verified, exactly like Launch and run. Built in lane D6b, test-first, with fakes.
+background input isolation trial marks background input Supported, exactly like Launch and run. Built in lane D6b, test-first, with fakes.
 This reverses the recorded review position that anti-idle actions were out of scope (FEATURE-COMPARISON.md rows 51 and the paragraph
 before 48; REQUIREMENTS-LEDGER.md CAP-13-05); the reversal is recorded in [HANDOFF.md](HANDOFF.md). RoALT (MIT) was a reference for the
 capability only; no code, text or branding was reused, and Zenith's version differs where the constraints below say so.
@@ -26,13 +26,13 @@ capability only; no code, text or branding was reused, and Zenith's version diff
 asked and permits a gated feature only while "Background macros & broadcast" is `Supported`. Today that capability is `Unverified`, so
 `KeepClientsAwake` (and `LaunchAndRun`, which is listed for the same reason and still has no code behind it) are refused with an
 explanation that names the feature, the capability and the live input isolation trial. The shell checks the gate when the choice is saved
-and again at every tick, so flipping the capability after the trial needs no other change. Nothing reads the gate's answer from a cached
+and again at every tick; a future supported capability still requires a qualified production transport. Nothing reads the gate's answer from a cached
 copy.
 
 ## The plan (`KeepAwakeRunner`, Core)
 
 One tick, over the clients of the latest fresh and complete scan that have a window Windows answers for (no unreadable row, no hung or
-not-responding client), at most 32 per tick (the rest wait for the next one); each client in turn, one lease at a time:
+not-responding client), at most 32 per tick (a rotating cursor gives the tail a turn on the next tick of the same scan order); each client in turn, one lease at a time:
 
 1. `IKeepAwakeInputExecutor.Register(client)` turns the exact client incarnation (PID, start time, HWND) into a registered
    `TargetedInputTarget` of the verified transport. Null means "could not be registered": no key.
@@ -105,3 +105,7 @@ other window; the client's idle timer resets (it is not disconnected after 20 mi
 window is back in front after each tick; a tick while the user types defers and takes no window; Panic during a tick stops it and leaves
 every client in a consistent key state. Only then is "Background macros & broadcast" marked Supported, which lets the gate permit the
 feature.
+
+## Completion repair 0.60-keepawake
+
+Scheduling starts only after manager initialization. Panic stops an armed or in-flight feature; an inert gate or missing transport keeps its explanation and offers no Resume. Schedule generations suppress late cancelled results after Resume or saving Off/On. Saving a changed interval cancels old work. Registration errors expose only their type. The live exercise now requires actual successful first, later and restore foreground requests and records refusal counts; zero input cannot pass. Rotation alone does not prove clients stay connected when the total cycle exceeds the idle interval.

@@ -39,6 +39,6 @@ public sealed class CapabilityGate
             _ => required.State.ToString()
         };
         return new(false, $"{name} is saved but not running. It sends input to Roblox clients, so it is refused until the live " +
-            $"input isolation trial marks the {BackgroundInputCapability} capability Verified (it is {state}). Nothing was sent to any client.");
+            $"input isolation trial marks the {BackgroundInputCapability} capability Supported (it is {state}). Nothing was sent to any client.");
     }
 }

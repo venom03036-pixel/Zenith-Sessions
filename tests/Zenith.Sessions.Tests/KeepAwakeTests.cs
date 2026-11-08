@@ -168,8 +168,25 @@ public sealed class KeepAwakeTests
         Assert.False(result.ForegroundRestored);
         Assert.Contains("3 more", result.Summary, StringComparison.Ordinal);
 
+        // The deferred tail must actually get a turn on the next tick.
+        var next = await fixture.Runner.RunAsync(clients, default).WaitAsync(Deadline);
+        Assert.Equal(clients[KeepAwakeRunner.MaximumClients].ProcessKey, next.Clients[0].Client);
+        Assert.Equal(clients.Length, result.Clients.Concat(next.Clients).Select(r => r.Client).Distinct().Count());
+
         var empty = await fixture.Runner.RunAsync([], default).WaitAsync(Deadline);
         Assert.Empty(empty.Clients); Assert.Equal(0, empty.Pressed);
+    }
+
+    [Fact]
+    public async Task RegistrationFailureKeepsOnlyTheErrorTypeAndDoesNotSendInput()
+    {
+        await using var fixture = new Fixture(previousForeground: 0);
+        fixture.Executor.RegistrationError = new InvalidOperationException("secret registration payload");
+        var result = await fixture.Runner.RunAsync([fixture.Client(1000)], default);
+        Assert.Equal(KeepAwakeOutcome.NotRegistered, result.Clients[0].Outcome);
+        Assert.Contains("InvalidOperationException", result.Clients[0].Explanation, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", result.Clients[0].Explanation, StringComparison.Ordinal);
+        Assert.Empty(fixture.Transport.Attempts);
     }
 
     private sealed class Fixture : IAsyncDisposable
@@ -198,9 +215,11 @@ public sealed class KeepAwakeTests
         private readonly ConcurrentDictionary<int, Guid> _registrations = new();
         private readonly ConcurrentDictionary<int, bool> _unregistered = new();
         public TargetedInputCoordinator Coordinator => coordinator;
+        public Exception? RegistrationError { get; set; }
         public void Unregister(int pid) => _unregistered[pid] = true;
         public TargetedInputTarget? Register(SessionObservation client)
         {
+            if (RegistrationError is { } error) throw error;
             if (_unregistered.ContainsKey(client.ProcessId)) return null;
             var registration = _registrations.GetOrAdd(client.ProcessId, _ => Guid.NewGuid());
             return new(registration, client.ProcessId, client.ProcessStartUtcTicks, client.Window, new PixelRectangle(0, 0, 800, 600), 1);

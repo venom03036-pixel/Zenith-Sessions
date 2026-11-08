@@ -84,6 +84,12 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
             await vm.RunKeepAwakeTickAsync();
             Assert.Empty(input.Transport.Attempts); Assert.Null(vm.KeepAwakeDue);
             Assert.False(vm.CanResumeKeepAwake);
+            vm.Panic.Execute(null);
+            Assert.Contains("input isolation trial", vm.KeepAwakeStatus, StringComparison.Ordinal);
+            Assert.False(vm.CanResumeKeepAwake);
+            vm.Lock.Execute(null); vm.Unlock.Execute(null);
+            Assert.Contains("input isolation trial", vm.KeepAwakeStatus, StringComparison.Ordinal);
+            Assert.False(vm.CanResumeKeepAwake);
         }
         finally { await vm.DisposeAsync(); }
 
@@ -173,6 +179,66 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
             Assert.True(tick.IsCompletedSuccessfully);
             Assert.DoesNotContain(input.Transport.Accepted, c => !c.Cleanup);
             Assert.Null(vm.KeepAwakeDue);
+        }
+        finally { await vm.DisposeAsync(); }
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task LateCancelledTickCannotOverwriteAResumedOrChangedSchedule(bool saveOffAndOn) => OnDispatcherAsync(async () =>
+    {
+        var input = new Executor();
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(700), keepAwakeInput: input,
+            foregroundSwitch: new Foreground(0x5000), userIdle: new Idle(TimeSpan.FromHours(1)), capabilityGate: Verified);
+        try
+        {
+            await vm.InitializeAsync();
+            vm.KeepAwakeMinutes = 5; vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+            vm.Refresh.Execute(null); await vm.Refresh.Execution;
+            input.Transport.Hold = new(TaskCreationOptions.RunContinuationsAsynchronously);
+            var tick = vm.RunKeepAwakeTickAsync();
+            await input.Transport.Held.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            vm.Panic.Execute(null);
+            if (saveOffAndOn)
+            {
+                vm.KeepAwakeMinutes = 0; vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+                vm.KeepAwakeMinutes = 5; vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+            }
+            else vm.ResumeKeepAwake.Execute(null);
+            string resumedStatus = vm.KeepAwakeStatus;
+            Assert.Contains("First press", resumedStatus, StringComparison.Ordinal);
+            input.Transport.Hold.SetResult();
+            await tick.WaitAsync(TimeSpan.FromSeconds(30));
+            Assert.Equal(resumedStatus, vm.KeepAwakeStatus);
+            Assert.Equal(TimeSpan.FromMinutes(5), vm.KeepAwakeDue);
+            Assert.False(vm.CanResumeKeepAwake);
+        }
+        finally { input.Transport.Hold?.TrySetResult(); await vm.DisposeAsync(); }
+    });
+
+    [Fact]
+    public Task AnEarlyTickDoesNotConsumeTheScheduleBeforeInitializationFinishes() => OnDispatcherAsync(async () =>
+    {
+        var store = new Zenith.Sessions.Windows.SettingsStore(_root);
+        await store.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(KeepAwakeMinutes: 5), default);
+        var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(600), keepAwakeInput: new Executor(),
+            foregroundSwitch: new Foreground(0), userIdle: new Idle(TimeSpan.FromHours(1)), capabilityGate: Verified);
+        bool earlyTickRan = false;
+        vm.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName == nameof(vm.KeepAwakeStatus) && !vm.IsReady && !earlyTickRan)
+            {
+                earlyTickRan = true;
+                Assert.True(vm.RunKeepAwakeTickAsync().IsCompletedSuccessfully);
+            }
+        };
+        try
+        {
+            await vm.InitializeAsync();
+            Assert.True(earlyTickRan);
+            Assert.Equal(TimeSpan.FromMinutes(5), vm.KeepAwakeDue);
+            Assert.Contains("First press", vm.KeepAwakeStatus, StringComparison.Ordinal);
         }
         finally { await vm.DisposeAsync(); }
     });

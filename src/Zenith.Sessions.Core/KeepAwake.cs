@@ -129,6 +129,7 @@ public sealed class KeepAwakeRunner
     private static readonly TargetedInputSignal[] Press = [new(TargetedInputKind.KeyDown, F13VirtualKey), new(TargetedInputKind.KeyUp, F13VirtualKey)];
     private readonly IKeepAwakeInputExecutor _executor;
     private readonly IForegroundWindowSwitch _foreground;
+    private int _nextClientIndex;
 
     public KeepAwakeRunner(IKeepAwakeInputExecutor executor, IForegroundWindowSwitch foreground)
     {
@@ -140,6 +141,8 @@ public sealed class KeepAwakeRunner
     {
         ArgumentNullException.ThrowIfNull(clients);
         int count = Math.Min(clients.Count, MaximumClients);
+        int start = clients.Count == 0 ? 0 : _nextClientIndex % clients.Count;
+        _nextClientIndex = clients.Count == 0 ? 0 : (start + count) % clients.Count;
         var rows = new KeepAwakeClientResult[count];
         nint previous;
         try { previous = _foreground.Current; } catch (Exception) { previous = 0; }
@@ -148,7 +151,7 @@ public sealed class KeepAwakeRunner
         {
             for (int index = 0; index < count; index++)
             {
-                var client = clients[index];
+                var client = clients[(start + index) % clients.Count];
                 if (stopped || ct.IsCancellationRequested)
                 {
                     stopped = true;
@@ -174,7 +177,10 @@ public sealed class KeepAwakeRunner
         var key = client.ProcessKey;
         TargetedInputTarget? target;
         try { target = _executor.Register(client); }
-        catch (Exception) { target = null; }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        { return new(key, KeepAwakeOutcome.Cancelled, "Stopped while registering this client's window; no key was sent."); }
+        catch (Exception error)
+        { return new(key, KeepAwakeOutcome.NotRegistered, $"This client's window could not be registered ({error.GetType().Name}); no key was sent."); }
         if (target is not { IsValid: true })
             return new(key, KeepAwakeOutcome.NotRegistered, "This client's window could not be registered with the input transport, so no key was sent to it.");
         var opened = _executor.Coordinator.TryOpen(target, TargetedInputPurpose.KeepAwake);

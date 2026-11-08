@@ -24,6 +24,7 @@ public sealed partial class ShellViewModel
     private Task _keepAwakeTick = Task.CompletedTask;
     private int _keepAwakeMinutes;
     private bool _keepAwakeStopped;
+    private long _keepAwakeGeneration;
     private string _keepAwakeStatus = KeepAwakeOffStatus;
     private IReadOnlyList<KeepAwakeChoice> _keepAwakeChoices = KeepAwakePolicy.ChoicesFor(0);
     private Command? _resumeKeepAwake;
@@ -39,7 +40,8 @@ public sealed partial class ShellViewModel
     internal Task KeepAwakeWork => _keepAwakeTick;
     private int SavedKeepAwakeMinutes => _savedSettings.KeepAwakeMinutes;
     /// <summary>Panic or Lock stopped the feature, the saved choice is on, and the dashboard is unlocked.</summary>
-    public bool CanResumeKeepAwake => _keepAwakeStopped && SavedKeepAwakeMinutes > 0 && !IsLocked && !_shuttingDown && _ready;
+    public bool CanResumeKeepAwake => _keepAwakeStopped && SavedKeepAwakeMinutes > 0 && !IsLocked && !_shuttingDown && _ready
+        && !IsSample && _keepAwakeRunner is not null && _capabilityGate.Check(GatedFeature.KeepClientsAwake).Permitted;
     /// <summary>The explicit restart after Panic or Lock. The first press follows after the saved gap.</summary>
     public Command ResumeKeepAwake => _resumeKeepAwake ??= new(_ =>
     {
@@ -54,7 +56,11 @@ public sealed partial class ShellViewModel
         _keepAwakeRunner = input is null ? null : new(input, foreground ?? new WindowsForegroundWindowSwitch());
         _userIdle = userIdle ?? new WindowsUserInputIdleSource();
         _capabilityGate = gate ?? new();
-        PropertyChanged += (_, args) => { if (args.PropertyName is nameof(IsLocked) or nameof(IsReady)) Raise(nameof(CanResumeKeepAwake)); };
+        PropertyChanged += (_, args) =>
+        {
+            if (args.PropertyName is nameof(IsLocked) or nameof(IsReady)) Raise(nameof(CanResumeKeepAwake));
+            if (args.PropertyName == nameof(IsReady) && _ready) ScheduleKeepAwake();
+        };
     }
 
     // UI thread, after settings load or a save that changed the choice. Saving it on after it was off also clears a Panic or Lock stop.
@@ -69,6 +75,8 @@ public sealed partial class ShellViewModel
     /// <summary>Says what the saved choice means now and arms the one timer for the first press when something will run.</summary>
     private void ScheduleKeepAwake()
     {
+        _keepAwakeGeneration++;
+        _keepAwakeStop?.Cancel();
         _keepAwakeTimer?.Stop();
         if (_shuttingDown) return;
         int minutes = SavedKeepAwakeMinutes;
@@ -78,6 +86,7 @@ public sealed partial class ShellViewModel
         if (!gate.Permitted) { KeepAwakeStatus = gate.Explanation; return; }
         if (IsSample) { KeepAwakeStatus = "Sample mode: Keep clients awake is saved but sends nothing, because sample mode has no real clients."; return; }
         if (_keepAwakeRunner is null) { KeepAwakeStatus = "Keep clients awake is saved but not running: this build has no verified input transport for Roblox clients yet. Nothing was sent to any client."; return; }
+        if (!_ready) { KeepAwakeStatus = "Waiting for the manager to finish opening the library. No client is brought forward or sent a key."; return; }
         ArmKeepAwake(TimeSpan.FromMinutes(minutes));
         KeepAwakeStatus = $"On. Every {KeepAwakePolicy.Duration(minutes)} each client is brought forward, sent one F13 press through the input owner, and the window that was in front is put back. First press in {KeepAwakePolicy.Duration(minutes)}.";
     }
@@ -113,26 +122,27 @@ public sealed partial class ShellViewModel
             ArmKeepAwake(wait); return;
         }
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        long generation = _keepAwakeGeneration;
         _keepAwakeStop = stop;
         try
         {
             var result = await runner.RunAsync(clients, stop.Token);
-            if (stop.IsCancellationRequested) { KeepAwakeStatus = KeepAwakeStoppedStatus; return; }
+            if (stop.IsCancellationRequested || generation != _keepAwakeGeneration) return;
             KeepAwakeStatus = result.Summary + $" Next press in {KeepAwakePolicy.Duration(minutes)}.";
             AddEvent($"Keep clients awake: sent F13 to {result.Pressed} of {result.Clients.Count} clients.");
         }
-        catch (OperationCanceledException) { KeepAwakeStatus = KeepAwakeStoppedStatus; return; }
-        catch (Exception ex) when (!stop.IsCancellationRequested)
+        catch (OperationCanceledException) when (stop.IsCancellationRequested) { return; }
+        catch (Exception ex) when (!stop.IsCancellationRequested && generation == _keepAwakeGeneration)
         {
             Fail(ex, ManagerSubsystem.KeepAwake, "Keep clients awake could not finish a press. Only the error type was saved to Diagnostics; the next press is still scheduled.");
         }
-        catch (Exception) { KeepAwakeStatus = KeepAwakeStoppedStatus; return; }
+        catch (Exception) { return; } // A replaced/cancelled owner cannot publish over the current schedule.
         finally
         {
             if (ReferenceEquals(_keepAwakeStop, stop)) _keepAwakeStop = null;
             stop.Dispose();
         }
-        if (!_shuttingDown && !_keepAwakeStopped && !IsLocked) ArmKeepAwake(wait);
+        if (!_shuttingDown && !_keepAwakeStopped && !IsLocked && generation == _keepAwakeGeneration) ArmKeepAwake(wait);
     }
 
     // The clients of the latest fresh, complete scan that have a window Windows answers for; a hung or unreadable row gets no key.
@@ -152,6 +162,9 @@ public sealed partial class ShellViewModel
     // A StopOperations step for Panic and Lock. Only ResumeKeepAwake, or saving the choice on after off, clears it; Unlock does not.
     private void StopKeepAwake()
     {
+        bool active = _keepAwakeTimer is { IsEnabled: true } || !_keepAwakeTick.IsCompleted;
+        if (!active) return; // Preserve the gate/transport explanation for a feature that never ran.
+        _keepAwakeGeneration++;
         _keepAwakeStopped = true;
         _keepAwakeTimer?.Stop();
         _keepAwakeStop?.Cancel();
@@ -161,6 +174,7 @@ public sealed partial class ShellViewModel
     // Exit: nothing new may start and a tick in flight is cancelled; DisposeOwnersAsync then joins it.
     private void StopKeepAwakeForShutdown()
     {
+        _keepAwakeGeneration++;
         if (_keepAwakeTimer is { } timer) { timer.Stop(); timer.Tick -= KeepAwakeTick; _keepAwakeTimer = null; }
         _keepAwakeStop?.Cancel();
     }
