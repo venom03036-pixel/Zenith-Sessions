@@ -804,6 +804,18 @@
         <Setter Property="Padding" Value="10,7"/>
         <Setter Property="FontSize" Value="13"/>
         <Setter Property="Cursor" Value="Hand"/>
+        <!-- The drop-down creates rows only for what it shows (QUALITY_STATUS F-4): a long list, or a
+             UI Automation client walking the window, must not create one ComboBoxItem per item.
+             It still scrolls by item, as the earlier StackPanel host did. -->
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+        <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+        <Setter Property="ItemsPanel">
+            <Setter.Value>
+                <ItemsPanelTemplate>
+                    <VirtualizingStackPanel/>
+                </ItemsPanelTemplate>
+            </Setter.Value>
+        </Setter>
         <Setter Property="Template">
             <Setter.Value>
                 <ControlTemplate TargetType="{x:Type ComboBox}">
@@ -858,8 +870,8 @@
                                     CornerRadius="4"
                                     Padding="4"
                                     Margin="0,4,0,0">
-                                <ScrollViewer SnapsToDevicePixels="True">
-                                    <StackPanel IsItemsHost="True" KeyboardNavigation.DirectionalNavigation="Contained"/>
+                                <ScrollViewer SnapsToDevicePixels="True" CanContentScroll="{TemplateBinding ScrollViewer.CanContentScroll}">
+                                    <ItemsPresenter KeyboardNavigation.DirectionalNavigation="Contained"/>
                                 </ScrollViewer>
                             </Border>
                         </Popup>

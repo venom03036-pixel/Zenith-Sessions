@@ -133,20 +133,23 @@ public partial class MacroEditorViewModelTests
         });
 
     /// <summary>
-    /// Dispatcher-thread CPU one layout pass of the production editor may use. Measured on
-    /// 2026-11-08: the heaviest pass, the first layout of 10,000 actions, used 0.4-1.0 s and
-    /// allocated about 110 MB, most of it for the route-target lists (QUALITY_STATUS F-4). In a
-    /// loaded full run passes stayed under 0.52 s of CPU while their waits grew to 32 s, so the
-    /// budget counts CPU: a busy machine does not fail it, a pass that computes for 114 s does.
-    /// Some full runs put the editor in F-4's slow state (2.7-35 s per pass); these tests then
-    /// fail on purpose, naming the pass and its CPU, until F-4 is fixed.
+    /// Dispatcher-thread CPU one layout pass of the production editor may use. The heaviest pass
+    /// is the first layout of 10,000 actions: on 2026-11-08 it used 0.4-1.0 s and allocated about
+    /// 110 MB, most of it for the route-target lists; since those lists are built once per change
+    /// and selected by item it uses 0.2-0.5 s and about 20 MB (QUALITY_STATUS F-4). In a loaded
+    /// full run passes stayed under 0.52 s of CPU while their waits grew to 32 s, so the budget
+    /// counts CPU: a busy machine does not fail it, a pass that computes for 114 s does. Before the
+    /// shared ComboBox drop-down was virtualized, some full runs put the editor in F-4's slow state
+    /// (2.7-35 s per pass), where a UI Automation walk of the window created a ComboBoxItem for every
+    /// jump destination; these tests failed there on purpose, naming the pass and its CPU.
     /// </summary>
     private static readonly TimeSpan LayoutPassCpuBudget = TimeSpan.FromSeconds(3);
 
     /// <summary>
     /// Dispatcher-thread CPU a whole navigation body may use, including editor work outside layout
-    /// passes such as selecting an action. Measured alone: 1.7-4.3 s; the most was the 10,000-action
-    /// rapid-thumb body, which allocated 673 MB (F-4).
+    /// passes such as selecting an action. Measured alone: 1.7-4.3 s before the F-4 route-list fix,
+    /// the most being the 10,000-action rapid-thumb body, which allocated 673 MB; 1.2-1.9 s and at
+    /// most 190 MB after it.
     /// </summary>
     private static readonly TimeSpan NavigationBodyCpuBudget = TimeSpan.FromSeconds(15);
 

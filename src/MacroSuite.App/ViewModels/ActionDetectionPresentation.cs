@@ -59,7 +59,7 @@ public sealed partial class ActionPropertiesViewModel
             return $"{flow} Recoverable condition failure → {inherited}{RouteDescription((int)failure)}. Invalid image or configuration → Stop and show the error.";
         }
     }
-    private string ResolvedDestination(Guid? id) => RouteTargets.FirstOrDefault(target => target.StepId == id)?.DisplayName ?? "Choose a destination";
+    private string ResolvedDestination(Guid? id) => FindRouteTarget(id)?.DisplayName ?? "Choose a destination";
     private string RouteDescription(int route) => (FlowRoute)route switch
     {
         FlowRoute.Continue => "Continue to the next action in this scope",

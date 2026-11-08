@@ -488,31 +488,100 @@ public sealed partial class ActionPropertiesViewModel : ObservableObject
     }
     public System.Drawing.Rectangle? ImageSearchRegion => _imageSearchRegion;
     public string ImageSearchAreaSummary => DescribeImageSearchArea();
-    public Guid? AppearanceTargetStepId { get => _appearanceTargetStepId; set { if (!_loading && value.HasValue) SetProperty(ref _appearanceTargetStepId, value); } }
+    public Guid? AppearanceTargetStepId { get => _appearanceTargetStepId; set => SetRouteTargetId(ref _appearanceTargetStepId, value, nameof(SelectedAppearanceTarget)); }
     public int AppearanceCooldownMs { get => _appearanceCooldownMs; set => SetProperty(ref _appearanceCooldownMs, Math.Clamp(value, 50, 60_000)); }
-    public IReadOnlyList<ActionRouteTarget> RouteTargets
+    /// <summary>
+    /// Jump destinations for the two destination ComboBoxes and the outcome summaries. The list is
+    /// O(actions) to build, so it is built once and reused until its inputs change: the steps
+    /// (<see cref="RefreshRouteTargets"/>), the loaded action, or a saved destination that is not
+    /// listed yet (QUALITY_STATUS F-4). Applying still checks the live steps (<see cref="ValidateRouteTarget"/>).
+    /// </summary>
+    public IReadOnlyList<ActionRouteTarget> RouteTargets => EnsureRouteTargets();
+    // The ComboBoxes select by item; a SelectedValuePath search evaluates a binding against every
+    // destination. Rebuilding the choice list temporarily clears the ComboBox selection. That
+    // transition must not erase the stable destination saved in the draft, so null is ignored,
+    // and no selection is reported until the new list is in place (see RaiseRouteTargetsChanged).
+    public ActionRouteTarget? SelectedRouteTarget
     {
-        get
-        {
-            var targets = _editor.GetRouteTargets().ToList();
-            foreach (Guid id in new[] { _routeTargetStepId, _appearanceTargetStepId }.OfType<Guid>().Distinct())
-                if (!targets.Any(t => t.StepId == id))
-                    targets.Add(new ActionRouteTarget(id, "Unavailable destination — choose another action"));
-            return targets;
-        }
+        get => _replacingRouteTargets ? null : FindRouteTarget(_routeTargetStepId);
+        set { if (value is not null) RouteTargetStepId = value.StepId; }
+    }
+    public ActionRouteTarget? SelectedAppearanceTarget
+    {
+        get => _replacingRouteTargets ? null : FindRouteTarget(_appearanceTargetStepId);
+        set { if (value is not null) AppearanceTargetStepId = value.StepId; }
     }
     public int OnNotSatisfiedRouteIndex { get => _onNotSatisfiedRouteIndex; set => SetProperty(ref _onNotSatisfiedRouteIndex, Math.Clamp(value, 0, 4)); }
     public int OnFailureRouteIndex { get => _onFailureRouteIndex; set => SetProperty(ref _onFailureRouteIndex, Math.Clamp(value, 0, 4)); }
-    // Rebuilding the choice list temporarily clears ComboBox.SelectedValue. That binding
-    // transition must not erase the stable destination saved in the draft.
-    public Guid? RouteTargetStepId { get => _routeTargetStepId; set { if (!_loading && value.HasValue) SetProperty(ref _routeTargetStepId, value); } }
+    public Guid? RouteTargetStepId { get => _routeTargetStepId; set => SetRouteTargetId(ref _routeTargetStepId, value, nameof(SelectedRouteTarget)); }
     public int RouteRetryCount { get => _routeRetryCount; set => SetProperty(ref _routeRetryCount, Math.Clamp(value, 0, 20)); }
     public int RouteRetryDelayMs { get => _routeRetryDelayMs; set => SetProperty(ref _routeRetryDelayMs, Math.Clamp(value, 10, 10_000)); }
     public void RefreshRouteTargets()
     {
-        OnPropertyChanged(nameof(RouteTargets));
+        InvalidateRouteTargets();
+        RaiseRouteTargetsChanged();
         OnPropertyChanged(nameof(RouteTargetStepId));
         OnPropertyChanged(nameof(AppearanceTargetStepId));
+    }
+    private const string UnavailableRouteTargetName = "Unavailable destination — choose another action";
+    private List<ActionRouteTarget>? _routeTargets;
+    private Dictionary<Guid, ActionRouteTarget>? _routeTargetsById;
+    private bool _replacingRouteTargets;
+    private void InvalidateRouteTargets()
+    {
+        _routeTargets = null;
+        _routeTargetsById = null;
+    }
+    private void RaiseRouteTargetsChanged()
+    {
+        // A ComboBox whose selected item is not in the new list drops it and writes null back
+        // (ignored). Its binding then re-reads the selected item while that selection change is
+        // still running, and a value read then is kept without being selected (index -1). So
+        // report no selection while the list is replaced, and the saved destination afterwards.
+        _replacingRouteTargets = true;
+        try { OnPropertyChanged(nameof(RouteTargets)); }
+        finally { _replacingRouteTargets = false; }
+        OnPropertyChanged(nameof(SelectedRouteTarget));
+        OnPropertyChanged(nameof(SelectedAppearanceTarget));
+    }
+    private List<ActionRouteTarget> EnsureRouteTargets()
+    {
+        if (_routeTargets is { } cached) return cached;
+        IReadOnlyList<ActionRouteTarget> live = _editor.GetRouteTargets();
+        var targets = new List<ActionRouteTarget>(live.Count + 2);
+        var byId = new Dictionary<Guid, ActionRouteTarget>(live.Count + 2);
+        for (int i = 0; i < live.Count; i++)
+            if (byId.TryAdd(live[i].StepId, live[i])) targets.Add(live[i]);
+        AddUnavailable(_routeTargetStepId);
+        AddUnavailable(_appearanceTargetStepId);
+        _routeTargetsById = byId;
+        return _routeTargets = targets;
+
+        void AddUnavailable(Guid? id)
+        {
+            if (id is not { } value || byId.ContainsKey(value)) return;
+            var unavailable = new ActionRouteTarget(value, UnavailableRouteTargetName);
+            byId.Add(value, unavailable);
+            targets.Add(unavailable);
+        }
+    }
+    private ActionRouteTarget? FindRouteTarget(Guid? id)
+    {
+        if (id is not { } value) return null;
+        EnsureRouteTargets();
+        return _routeTargetsById!.TryGetValue(value, out var target) ? target : null;
+    }
+    private void SetRouteTargetId(ref Guid? field, Guid? value, string selectedItemProperty, [System.Runtime.CompilerServices.CallerMemberName] string idProperty = "")
+    {
+        if (_loading || !value.HasValue || !SetProperty(ref field, value, idProperty)) return;
+        if (_routeTargetsById is { } byId && !byId.ContainsKey(value.Value))
+        {
+            // Set from code to a destination that is not listed: list it as unavailable.
+            InvalidateRouteTargets();
+            RaiseRouteTargetsChanged();
+            return;
+        }
+        OnPropertyChanged(selectedItemProperty);
     }
     public bool ShowPresenceImageFields => ShowControlFlowFields && _conditionKindIndex >= 2;
     public string PresenceTemplateSummary => string.IsNullOrWhiteSpace(_currentPresenceTemplatePath)
@@ -643,6 +712,7 @@ public sealed partial class ActionPropertiesViewModel : ObservableObject
     public void LoadFrom(MacroStep? step)
     {
         _loading = true;
+        InvalidateRouteTargets();
         try
         {
             bool keepBodyKey = step is IfThenElseStep or LoopStep && step.StepId == _sourceStepId;
