@@ -43,7 +43,7 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Error");Assert.Contains(vm.DiagnosticRows,r=>r.Level=="Info");
         vm.ShowInformation=false;vm.ShowWarnings=false;Assert.All(vm.DiagnosticRows,r=>Assert.Equal("Error",r.Level));
         string report=vm.BuildDiagnosticReport();using var parsed=JsonDocument.Parse(report);
-        Assert.Equal(2,parsed.RootElement.GetProperty("FormatVersion").GetInt32());
+        Assert.Equal(3,parsed.RootElement.GetProperty("FormatVersion").GetInt32());
         Assert.All(parsed.RootElement.GetProperty("Events").EnumerateArray(),e=>Assert.Equal("Error",e.GetProperty("Level").GetString()));
         Assert.DoesNotContain(secret,report);Assert.DoesNotContain(Data,report);Assert.DoesNotContain(secret,vm.BuildVisibleDiagnosticText());
         vm.DiagnosticFilter=secret;Assert.Empty(vm.DiagnosticRows);
@@ -67,8 +67,8 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         // An unsaved draft is not the active policy, so the report keeps the saved values.
         vm.CustomProcessSample="3000";vm.SpareRam=9.ToString(culture);
         string report=vm.BuildDiagnosticReport();using var parsed=JsonDocument.Parse(report);var root=parsed.RootElement;
-        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem, so a reader can tell it from format 1.
-        Assert.Equal(2,root.GetProperty("FormatVersion").GetInt32());
+        // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; format 3 added the ClientLogs section (opt-in typed Roblox client log entries).
+        Assert.Equal(3,root.GetProperty("FormatVersion").GetInt32());
         Assert.True(root.TryGetProperty("Os",out var os),"The report has no Os section.");
         Assert.Equal(System.Runtime.InteropServices.RuntimeInformation.OSDescription,os.GetProperty("Description").GetString());
         Assert.Equal(Environment.OSVersion.Version.ToString(),os.GetProperty("Version").GetString());

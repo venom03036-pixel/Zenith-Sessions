@@ -104,9 +104,10 @@ public sealed partial class ShellViewModel
     private const string LaunchReleaseStartedNote = "A Roblox client was started from the selected player after it was compared, so Roblox may have updated it as it started. Starts from it are no longer held for that release; refresh installations to compare it again.";
     // A start asks Roblox again only when its last answer is older than PublicClientReleaseCache.Lifetime, and waits at most this.
     private static readonly TimeSpan LaunchReleaseReadLimit = TimeSpan.FromSeconds(5);
-    // The trial card while that start waits for Roblox's answer; declared after LaunchReleaseReadLimit, which it names.
+    // The trial card while that start waits for Roblox's answer; declared after LaunchReleaseReadLimit, which it names. Stop trial
+    // is the queue's Panic signal, which pauses every queued request, not only this trial, so the line says so before it is chosen.
     private static readonly string LaunchReleaseChecking = "Checking Roblox's current release before this trial is queued; this takes at most "
-        + ((int)LaunchReleaseReadLimit.TotalSeconds).ToString(CultureInfo.InvariantCulture) + " seconds. Choose Stop trial to cancel it.";
+        + ((int)LaunchReleaseReadLimit.TotalSeconds).ToString(CultureInfo.InvariantCulture) + " seconds. Choose Stop trial to cancel it; that also pauses the launch queue.";
     private CancellationTokenSource? _installationStop;
     // Set only while the local list is shown and Roblox's answer is still awaited: Cancel check then stops that request alone.
     private CancellationTokenSource? _installationReleaseStop;
@@ -152,7 +153,7 @@ public sealed partial class ShellViewModel
         _installationStop = stop; long generation = _installationGeneration;
         bool Current() => !stop.IsCancellationRequested && generation == _installationGeneration && !IsLocked && !_shuttingDown;
         _installationListPending = true; IsInstallationDiscoveryBusy = true;
-        InstallationCandidates.Clear(); InstallationIssues.Clear(); SelectedInstallation = null;
+        InstallationCandidates.Clear(); InstallationIssues.Clear(); SelectedInstallation = null; RefreshUpdateOffer(announce: false);
         InstallationObserved = "Checking…"; InstallationStatus = "Reading bounded installation metadata. Native account launch remains unavailable.";
         InstallationReleaseStatus = _clientReleases is null ? "" : "Asking Roblox's public version service for its current release…";
         try
@@ -228,6 +229,7 @@ public sealed partial class ShellViewModel
         var row = _nativeLaunch.Selected ? SelectedInstallation : null;
         Volatile.Write(ref _launchRelease, row is null ? null : new(row.Release, row.Candidate.ExecutablePath, row.ComparedWith?.ClientVersionUpload ?? ""));
         _launchQueue.Signal();
+        RefreshUpdateOffer(announce: false);
     }
     // A newer answer read for a start fills the listed rows in place and restates the summary. An answer older than the rows,
     // kept when this refresh's own read failed or was stopped, is never applied: the rows stay "Not checked" and nothing holds.
@@ -287,7 +289,8 @@ public sealed partial class ShellViewModel
     // still older, as releases only move forward); a row that answer predates stays "Not checked" and never holds (Rule 16).
     // Only the exception type is recorded, never its text. Dispatcher: while Roblox is asked the trial card says the start is
     // waiting and for how long; afterwards it shows what it said before, unless Stop trial, Panic, Lock or a selection change
-    // replaced the line meanwhile, whose reason is kept.
+    // replaced the line meanwhile, whose reason is kept. A review change (another account or destination) cancels `ct` and
+    // sets no line: the cancellation reaches the start, which then says the trial was not started (StartNativeTrialAsync).
     private async Task ReadLaunchReleaseAsync(CancellationToken ct)
     {
         if (_releaseCache is null || _releaseCache.IsFresh) return;
@@ -322,7 +325,7 @@ public sealed partial class ShellViewModel
             summary += owner.Current ? $" The {owner.Name}-managed player matches that release."
                 : $" The {owner.Name}-managed player does not match that release; {owner.Name}, not Roblox, decides when that copy updates and may keep an older version.";
         if (nativeStale || owners.Any(owner => !owner.Current))
-            summary += " Only Roblox's default live channel is checked; Zenith never downloads or installs updates.";
+            summary += " Only Roblox's default live channel is checked. Nothing is downloaded or installed unless you choose Download Roblox update and then confirm Install Roblox update.";
         return summary;
     }
     private void ReportInstallationFailure(Exception error)
@@ -348,5 +351,6 @@ public sealed partial class ShellViewModel
         InstallationCandidates.Clear(); InstallationIssues.Clear(); SelectedInstallation = null;
         InstallationObserved = "Not checked"; InstallationReleaseStatus = "";
         InstallationStatus = checking ? "Installation check stopped. Refresh explicitly to check again; no program was opened or changed." : InstallationNotChecked;
+        RefreshUpdateOffer(announce: false);
     }
 }

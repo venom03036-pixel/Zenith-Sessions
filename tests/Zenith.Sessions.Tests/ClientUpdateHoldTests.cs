@@ -270,8 +270,8 @@ public sealed class ClientUpdateHoldTests : IDisposable
     }
 
     // A process sample older than three seconds, or one that missed a client, leaves the running count untrusted until the
-    // next fresh one, and every start waits either way. A row held for an update keeps that reason through it; only the
-    // comparison, re-read each time, can end the hold early.
+    // next fresh one, and every start waits either way. A row held for an update keeps that reason through a short run of
+    // them (the trusted count that held it is still recent); only the comparison, re-read each time, can end the hold early.
     [Fact]
     public Task AnUntrustedProcessSampleNeitherStartsNorEndsAnUpdateHold() => OnUi(async () =>
     {
@@ -279,6 +279,9 @@ public sealed class ClientUpdateHoldTests : IDisposable
         await using var shell = await Ready(monitor, releases);
         await SelectPlayerAsync(shell); await monitor.ParkAsync();
         var held = Candidate() with { State = LaunchState.Blocked, Problem = LaunchProblem.InsufficientCapacity, HoldReason = LaunchHoldReason.ClientUpdate };
+        // Held as every hold begins: on a fresh count of one running client.
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, held).Hold);
         foreach (var untrusted in new[] { monitor.Snapshot(running: 1) with { ProcessInventoryComplete = false }, monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)) })
         {
             Publish(shell, untrusted);
@@ -294,6 +297,67 @@ public sealed class ClientUpdateHoldTests : IDisposable
         Publish(shell, monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)));
         var lifted = Admission(shell, held);
         Assert.False(lifted.Allowed); Assert.Equal(LaunchHoldReason.ResourceHeadroom, lifted.Hold);
+    });
+
+    // The grace a held row gets without a trusted count is measured from the newest trusted inventory's observation time and
+    // is twice the three-second evidence limit: the 1 Hz sampler's alternating samples stay inside it, a lasting failure does not.
+    [Theory]
+    [InlineData(0, true)]
+    [InlineData(6, true)]
+    [InlineData(6.001, false)]
+    [InlineData(60, false)]
+    [InlineData(-1, false)] // Dated in the future: not evidence of anything.
+    public void AHeldRowKeepsItsReasonWithoutATrustedCountOnlyWhileTheNewestTrustedInventoryIsWithinTheGrace(double secondsAgo, bool keeps)
+    {
+        var now = new DateTimeOffset(2026, 11, 8, 12, 0, 0, TimeSpan.Zero);
+        Assert.Equal(LaunchReservationProjection.MaximumEvidenceAge * 2, ClientUpdateHold.UntrustedSampleGrace);
+        Assert.Equal(keeps, ClientUpdateHold.KeepsHoldWithoutTrustedCount(now.AddSeconds(-secondsAgo), now));
+        // Before any trusted inventory there is nothing to keep the reason on.
+        Assert.False(ClientUpdateHold.KeepsHoldWithoutTrustedCount(default, now));
+    }
+
+    // A monitoring failure that outlasts the grace (an incomplete inventory, one older than the limit, or a failed enumeration,
+    // sample after sample): no running count supports the update claim any more, so the row stops saying it starts once no
+    // client runs and waits, like every other start, for fresh complete process evidence. Starts stay refused throughout.
+    [Fact]
+    public Task AHeldRowStopsClaimingAClientRunsOnceUntrustedSamplesOutlastTheNewestTrustedOne() => OnUi(async () =>
+    {
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release() };
+        await using var shell = await Ready(monitor, releases);
+        await SelectPlayerAsync(shell); await monitor.ParkAsync();
+        var held = Candidate() with { State = LaunchState.Blocked, Problem = LaunchProblem.InsufficientCapacity, HoldReason = LaunchHoldReason.ClientUpdate };
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, held).Hold);
+        DesktopSnapshot[] untrusted =
+        [
+            monitor.Snapshot(running: 1) with { ProcessInventoryComplete = false },
+            monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)),
+            monitor.Snapshot(running: 0) with { Problem = "Synthetic process enumeration failure." }
+        ];
+        // Within the grace each kind keeps the reason (the N-B8-4 rule).
+        foreach (var sample in untrusted)
+        {
+            Publish(shell, sample);
+            var kept = Admission(shell, held);
+            Assert.False(kept.Allowed); Assert.Equal(LaunchHoldReason.ClientUpdate, kept.Hold);
+        }
+        // The failure has now lasted longer than the grace: the newest trusted inventory is older than it.
+        AgeTrustedInventory(shell, ClientUpdateHold.UntrustedSampleGrace + TimeSpan.FromSeconds(1));
+        foreach (var sample in untrusted)
+        {
+            Publish(shell, sample);
+            var lapsed = Admission(shell, held);
+            Assert.False(lapsed.Allowed, lapsed.Explanation);
+            Assert.Equal(LaunchHoldReason.ResourceHeadroom, lapsed.Hold);
+            Assert.Contains("fresh complete process evidence", lapsed.Explanation, StringComparison.Ordinal);
+            Assert.DoesNotContain("once no Roblox client is running", lapsed.Explanation, StringComparison.Ordinal);
+        }
+        // The next trusted sample decides again: a client running holds the row once more, none running starts it.
+        Publish(shell, monitor.Snapshot(running: 1));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, Admission(shell, held).Hold);
+        Publish(shell, monitor.Snapshot(running: 0));
+        var started = Admission(shell, held);
+        Assert.True(started.Allowed, started.Explanation);
     });
 
     // The queue saves (and fsyncs and republishes) a waiting row only when its reason changes. Samples that alternate between
@@ -364,6 +428,9 @@ public sealed class ClientUpdateHoldTests : IDisposable
     }
     private static LaunchAdmission Admission(ShellViewModel shell, LaunchOperation candidate, params LaunchOperation[] reservations)
         => (LaunchAdmission)typeof(ShellViewModel).GetMethod("ReadCandidateLaunchAdmission", Private)!.Invoke(shell, [candidate, reservations])!;
+    // Dates the newest trusted process inventory the Shell noted that far back, as a monitoring failure lasting that long leaves it.
+    private static void AgeTrustedInventory(ShellViewModel shell, TimeSpan by)
+        => typeof(ShellViewModel).GetField("_trustedInventoryUtcTicks", Private)!.SetValue(shell, (DateTimeOffset.UtcNow - by).UtcTicks);
     // The queue's Changed event, as the coordinator raises it after saving a snapshot.
     private static void Observe(ShellViewModel shell, LaunchQueueSnapshot snapshot)
         => typeof(ShellViewModel).GetMethod("QueueChanged", Private)!.Invoke(shell, [snapshot]);

@@ -46,6 +46,7 @@ The original requirements also cover account groups and backups, launch orchestr
 - `WindowsSessionLogCorrelator` bounds discovery, file reads, and holder checks. `SessionEvidence` separates current facts from last-known facts and fences replay, file replacement, partial lines, an unread log tail, and competing ownership. `NativeTrialEvidence` projects fresh process presence and reported player/place/job values for review.
 - Launch-to-log: `NativeRobloxHandoff.Capture` keeps the validated browser tracker as its own number (never the URI). It travels beside the process receipt into `LaunchProcessReceipt.BrowserTrackerId`. A queue holding one is saved as format 8; other queues stay format 7. `WindowsSessionLogCorrelator` reads bounded log heads (64 KiB, lines before the first join) and reports a `LaunchLogLink` per launch, separate from the holder binding. That link survives a client restarting under a new PID. It is corroboration only and proves neither the account nor arrival. The tracker line shapes are unverified against a real client.
 - Reported matching IDs remain diagnostic. Hold that boundary when wiring the new UI. Use separate statuses for requested destination, observed local process, reported player/server, and verified arrival. Never route input from a manual profile label, PID alone, file order, or uncorroborated log claims. [Tracking verification](NATIVE-TRIAL-EVIDENCE-VERIFICATION.md#backend-054-log-tail-coverage)
+- Round 4 (2026-11-08) reversed one recorded privacy decision on the owner's instruction: the saved Diagnostics report may now carry recent Roblox client log tails, but only as the typed fields the correlator's own parser extracts (time, kind, place and server IDs, disconnect code), only when "Include Roblox client log entries" is ticked before that save, and never as raw lines, player IDs, URLs or paths. Copy diagnostics and every report saved without the tick are unchanged. [Design](CLIENT-LOG-TAILS-DESIGN.md)
 
 ### Owned-experience Open Cloud bridge
 
@@ -81,6 +82,10 @@ dotnet vstest $assembly "--ResultsDirectory:$build" "--Logger:trx;LogFileName=ha
 ```
 
 The Luau verifier uses the official 0.745 CLI binaries stored with the isolated artifacts. Its generated fixture configures synthetic IDs and runs the same production Script against simulated services. [Runner](../../scripts/Test-ZenithOwnedExperienceBridge.ps1)
+
+### Decisions reversed by the owner (2026-11-08)
+
+- The release summary's promise that "Zenith never downloads or installs updates" is withdrawn. Round 4 (R-launch-9, covering R-shell-19) adds an opt-in automatic release check (default off) and an explicit two-step download and run of Roblox's own installer, verified by Windows with the existing trust code and started only after the user confirms; see [the design](ROBLOX-UPDATE-DESIGN.md). Still excluded: launching through a bootstrapper, writing the client's settings or FFlag files, and any unconfirmed install.
 
 ## Next work in order
 

@@ -90,6 +90,14 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | R-accounts-4 | Account headshots load with one batched lookup per page instead of three sequential requests per account. | Account pictures for a page load in batched requests instead of one request per player. | `65829e7` |
 | R-research-11 | HTTP clients are tested over a real loopback socket, so production handler settings (no redirects, no cookie jar) are exercised. | The share-link and server-list clients are tested over a real loopback socket, so their real handler settings are exercised. | `db9d57c` |
 
+### Round 4
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-shell-20 | Deletes Roblox client logs older than a day or over 50 MB on demand, never a running client's. | Diagnostics > Roblox client logs: Check old logs counts the Player logs older than the days you choose and shows their size; Delete these logs asks first, then removes exactly those files, each re-checked, keeping logs newer than the cutoff, logs a running client holds and logs the correlator is watching. Age only (no size rule), nothing automatic. | lane D8 |
+| R-launch-9 (also covers R-shell-19) | Checks the Roblox version 3 s after start and every 30 minutes, and can install the official update once the installer is verified as signed by Roblox Corporation; refuses while clients or launches are active. | Settings > Roblox installation > Roblox updates: an opt-in automatic check (default off) 3 s after start and every 30 minutes, the same anonymous read as Refresh installation, announcing a pending update once; Download Roblox update fetches Roblox's own installer for that release from setup.rbxcdn.com (64 MB and 5-minute bounds, fresh temp folder, no redirects or browser headers) and has Windows verify its signature from Roblox Corporation with the existing trust code, holding the verified file read-only; Install Roblox update asks first, says how many clients are running (the installer closes every one), then runs it with no arguments and waits up to 10 minutes, never ending it. Both steps wait while an installation check, publisher check or native trial runs; Panic and Lock cancel and discard. | lane D8 |
+| R-shell-17 | The support report includes the last few hundred raw lines of up to five Roblox client logs, with keyword redaction. | Diagnostics > Save report: an "Include Roblox client log entries" tick, off at start and cleared after each report it was included in, adds for the newest 8 Player logs written in the last day the time, kind, place and server IDs and disconnect code of the lines Zenith's own parser recognises (last 256 KiB and newest 200 recognised lines per log). No line text is kept, so no URL, ticket, chat or path can appear; player IDs are dropped too. Copy diagnostics never includes them; the sample profile cannot turn it on. | lane D8 |
+
 ## Not copied: techniques Zenith excludes
 
 | RoALT feature | Why Zenith does not do it |
@@ -112,7 +120,6 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Launching without the official page | R-api-7, R-launch-13 | Request launch tickets directly with the saved session and drop the per-account sign-in window. Faster, but it reverses the decision to capture the official page's own request |
 | Hands-free batch launching | R-launch-0, R-launch-2 | Enable ordinary single and group launches end to end (after the planned live trial), and shorten waits when the previous client reports joining |
 | Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Launch through Bloxstrap-style tools (they write client settings files on Zenith's behalf), pass extra client arguments, or preselect an installation automatically |
-| Roblox updates | R-launch-9, R-shell-19 | Check for and install the official Roblox update from inside Zenith (download and run a signed installer) |
 | Presence and account data | R-api-6, R-accounts-9, R-instances-2, R-api-13, R-accounts-14 | Ask Roblox, with each account's own session, whether it is online or in game, and show account details (Robux, Premium, verification); keep in-game state visible past 5 minutes |
 | Signed-in server browsing | R-launch-12, R-api-8, R-api-14 | Send a saved session to the server list for Recommended and latency sorts, friend counts, and listing or buying the account's private servers (spends Robux) |
 | Social automation | R-api-16, R-accounts-15 | Friend your own saved accounts with each other automatically |
@@ -122,7 +129,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Client control | R-instances-7, R-instances-12, R-instances-16, R-instances-18, R-instances-15 | A hard CPU cap per client, force-closing a stuck client, windows below Roblox's minimum size, a system-wide upload limit, per-client GPU numbers |
 | Idle kick | R-instances-17 | Anti-AFK by focusing clients and sending a key. Not recommended: it is idle-policy evasion and bypasses Zenith's single input path |
 | App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
-| Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-shell-21, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, scheduled shutdown, a same-pass retry for pending headshots |
+| Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-21, R-research-6 (R-shell-20, cleaning old Roblox logs, R-shell-17, typed client log entries in the support report, and R-launch-9 with R-shell-19, the Roblox update check and verified installer run, were approved and built in round 4) | Public-network guard, a news tab, localization, scheduled shutdown, a same-pass retry for pending headshots |
 | Not RoALT, found by this loop | M-L1a-6, R-research-10, R-shell-13 | Whether one 401 from the share-link endpoint should mark a session as needing sign-in; recording live Roblox responses for tests (network access); moving the data folder |
 
 ## Needs live accounts or clients

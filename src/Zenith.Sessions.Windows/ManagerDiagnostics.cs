@@ -13,7 +13,7 @@ public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImpo
 /// without any free text. Append new members only; the live journal and the report carry the name.
 /// </summary>
 public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
-    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound }
+    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ClientLogs,ClientUpdate }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable
