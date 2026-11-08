@@ -31,10 +31,11 @@ internal sealed class ClientPreviewFrameSignal : IDisposable
     public void Dispose() { if (Interlocked.Exchange(ref _disposed, 1) == 0) _signal.Dispose(); }
 }
 
-/// <summary>Pure limits/QPC and owned native-buffer sampling. Never opens a process/window or creates capture objects.</summary>
+/// <summary>Pure limits/QPC/mip-level choice and owned native-buffer sampling. Never opens a process/window or creates capture objects.</summary>
 internal static class ClientPreviewBufferReader
 {
     internal const long MaximumSurfaceBudget = 192L * 1024 * 1024;
+    /// <summary>The budget's one readback allowance: all cached GPU mip chains and staging textures together, and any mapped plane.</summary>
     internal const uint MaximumReadbackBytes = 64 * 1024 * 1024;
     internal static bool FitsBudget(IReadOnlyList<PreviewSurfaceSize> sizes)
     {
@@ -45,8 +46,9 @@ internal static class ClientPreviewBufferReader
             if (!size.Valid) return false;
             sum += size.ReservedBytes * 3; largest = Math.Max(largest, size.ReservedBytes);
         }
-        // Two pooled surfaces and one held surface per source, one transient drain frame,
-        // and at most one checked SoftwareBitmap readback. Managed outputs are separately <=230400 bytes each.
+        // Two pooled surfaces and one held surface per source, one transient drain frame, and the GPU readback cache
+        // (mip chain plus small staging copy), which ClientPreviewGpuReadback keeps within MaximumReadbackBytes.
+        // Managed outputs are separately <=230400 bytes each.
         return sum + largest + MaximumReadbackBytes <= MaximumSurfaceBudget;
     }
     internal static (int Width, int Height) OutputSize(PreviewSurfaceSize source)
@@ -56,6 +58,26 @@ internal static class ClientPreviewBufferReader
         return (long)source.Width * ClientPreviewLimits.MaximumHeight >= (long)source.Height * ClientPreviewLimits.MaximumWidth
             ? (ClientPreviewLimits.MaximumWidth, Math.Max(1, (int)((long)source.Height * ClientPreviewLimits.MaximumWidth / source.Width)))
             : (Math.Max(1, (int)((long)source.Width * ClientPreviewLimits.MaximumHeight / source.Height)), ClientPreviewLimits.MaximumHeight);
+    }
+    /// <summary>
+    /// The deepest GPU mip level that still covers the output in both directions. The GPU box-filters down to it and
+    /// only that level is read back; the CPU step then only ever shrinks it to OutputSize (never upscales).
+    /// </summary>
+    internal static int ReadbackLevel(PreviewSurfaceSize source)
+    {
+        var output = OutputSize(source); int level = 0;
+        while (true)
+        {
+            PreviewSurfaceSize current = LevelSize(source, level), next = LevelSize(source, level + 1);
+            if (next == current || next.Width < output.Width || next.Height < output.Height) return level;
+            level++;
+        }
+    }
+    /// <summary>D3D11 mip dimensions: each level halves (rounding down) and never drops below one pixel.</summary>
+    internal static PreviewSurfaceSize LevelSize(PreviewSurfaceSize source, int level)
+    {
+        if (!source.Valid || level is < 0 or > 30) throw new ArgumentException("The preview surface or mip level is outside the capture limits.");
+        return new(Math.Max(1, source.Width >> level), Math.Max(1, source.Height >> level));
     }
     internal static bool TryTimestamp(long surfaceTicks, long previousTicks, long qpc, long frequency,
         DateTimeOffset now, out DateTimeOffset capturedUtc)
@@ -70,15 +92,22 @@ internal static class ClientPreviewBufferReader
         capturedUtc = new(utc, TimeSpan.Zero); return true;
     }
     internal static byte[] CopyBgra(nint pointer, uint capacity, int startIndex, int stride, PreviewSurfaceSize source, CancellationToken ct)
+        => CopyBgra(pointer, capacity, startIndex, stride, source, OutputSize(source), ct);
+    /// <summary>Nearest-neighbour samples an owned, already GPU-reduced BGRA plane into a preview no larger than it.</summary>
+    internal static byte[] CopyBgra(nint pointer, uint capacity, int startIndex, int stride, PreviewSurfaceSize source,
+        (int Width, int Height) output, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested();
         if (!source.Valid || pointer == 0 || capacity is 0 or > MaximumReadbackBytes || startIndex < 0
             || Math.Abs((long)stride) < source.Width * 4L) throw new ArgumentException("The preview bitmap plane is outside its owned buffer.");
+        if (output.Width <= 0 || output.Height <= 0 || output.Width > source.Width || output.Height > source.Height
+            || output.Width > ClientPreviewLimits.MaximumWidth || output.Height > ClientPreviewLimits.MaximumHeight)
+            throw new ArgumentException("The preview output must fit inside the sampled plane and the preview limits.");
         long last = startIndex + (source.Height - 1L) * stride;
         long low = Math.Min(startIndex, last), high = Math.Max(startIndex, last) + source.Width * 4L;
         if (low < 0 || high > capacity || high > int.MaxValue || (nuint)pointer > nuint.MaxValue - (nuint)high)
             throw new ArgumentException("The preview bitmap plane exceeds its checked capacity.");
-        var output = OutputSize(source); var pixels = new byte[checked(output.Width * output.Height * 4)];
+        var pixels = new byte[checked(output.Width * output.Height * 4)];
         for (int y = 0; y < output.Height; y++)
         {
             ct.ThrowIfCancellationRequested(); int sy = (int)((long)y * source.Height / output.Height);

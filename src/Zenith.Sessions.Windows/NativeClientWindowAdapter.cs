@@ -12,6 +12,7 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
     // https://learn.microsoft.com/windows/win32/api/shellscalingapi/nf-shellscalingapi-getscalefactorformonitor
     // https://learn.microsoft.com/windows/win32/api/winuser/nf-winuser-setthreaddpiawarenesscontext
     private static readonly string[] AllowedExecutables = ["RobloxPlayerBeta.exe", "RobloxPlayer.exe", "Roblox.exe"];
+    internal static IReadOnlyList<string> ClientExecutables { get; } = Array.AsReadOnly(AllowedExecutables);
     // Pixel APIs execute in a synchronous PMv2 thread scope, restored before any await. No process-wide DPI change.
     public ClientDisplayList Displays(CancellationToken ct)
     {
@@ -41,8 +42,15 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         catch (Win32Exception) { return new(Array.Empty<ClientDisplay>(), "Windows could not establish a physical-coordinate display context."); }
     }
 
-    internal static bool SameClient(SessionObservation session)
+    internal static bool SameClient(SessionObservation session) => SameClient(session, AllowedExecutables);
+
+    /// <summary>
+    /// The same PID/start/top-level-HWND/owner identity check. Only the executable allow-list is a parameter, so a test
+    /// can name its own host process; production callers always use the Roblox list above.
+    /// </summary>
+    internal static bool SameClient(SessionObservation session, IReadOnlyList<string> allowedExecutables)
     {
+        ArgumentNullException.ThrowIfNull(allowedExecutables);
         if (session.ProcessId <= 0 || session.ProcessStartUtcTicks <= 0 || session.Window == 0 || !Native.IsWindow(session.Window)
             || Native.GetAncestor(session.Window, 2) != session.Window) return false;
         Native.GetWindowThreadProcessId(session.Window, out uint owner);
@@ -53,7 +61,7 @@ internal sealed class NativeClientWindowAdapter : IClientWindowAdapter
         var image = new StringBuilder(1024); uint length = (uint)image.Capacity;
         if (!Native.QueryFullProcessImageName(process, 0, image, ref length)) return false;
         string name = Path.GetFileName(image.ToString());
-        if (!AllowedExecutables.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
+        if (!allowedExecutables.Contains(name, StringComparer.OrdinalIgnoreCase)) return false;
         Native.GetWindowThreadProcessId(session.Window, out owner);
         return owner == session.ProcessId && Native.IsWindow(session.Window) && Native.WaitForSingleObject(process, 0) == 258;
     }
