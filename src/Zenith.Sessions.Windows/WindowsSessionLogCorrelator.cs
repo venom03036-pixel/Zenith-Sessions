@@ -58,6 +58,9 @@ internal interface IClientLogProbe : IDisposable
 /// DisposeAsync cancels and awaits the actual owner; it never abandons native work or starts replacement workers.
 /// A failed pass is retried by the same owner on a later offer; only consecutive failures end it. A failed discovery
 /// keeps every bound reader and its published facts; only a failure after a reader was touched resets them all.
+/// Each failure the owner recovers from is passed to the optional recoveredFailure callback as its exception type only,
+/// on the worker thread, at most once per pass; the callback must not block. The failure that ends the owner is not
+/// passed to it: that one surfaces from DisposeAsync.
 /// </summary>
 public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 {
@@ -93,6 +96,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
     private readonly IClientLogProbe _probe;
+    private readonly Action<Type>? _recoveredFailure;
     private readonly Channel<Input> _inputs = Channel.CreateBounded<Input>(new BoundedChannelOptions(1)
         { SingleReader = true, SingleWriter = false, FullMode = BoundedChannelFullMode.DropOldest });
     private readonly CancellationTokenSource _stop = new();
@@ -109,12 +113,15 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private int TurnBytes => Math.Min(_options.BytesPerReader, _options.SharedReadBytes);
     private int ReaderByteBudget => Math.Max(1, TurnBytes - 64);
 
-    public WindowsSessionLogCorrelator(SessionLogCorrelatorOptions? options = null, TimeProvider? timeProvider = null)
-        : this(new WindowsClientLogProbe(), options, timeProvider) { }
+    public WindowsSessionLogCorrelator(SessionLogCorrelatorOptions? options = null, TimeProvider? timeProvider = null,
+        Action<Type>? recoveredFailure = null)
+        : this(new WindowsClientLogProbe(), options, timeProvider, recoveredFailure) { }
 
-    internal WindowsSessionLogCorrelator(IClientLogProbe probe, SessionLogCorrelatorOptions? options = null, TimeProvider? timeProvider = null)
+    internal WindowsSessionLogCorrelator(IClientLogProbe probe, SessionLogCorrelatorOptions? options = null, TimeProvider? timeProvider = null,
+        Action<Type>? recoveredFailure = null)
     {
         _options = (options ?? new()).Validated(); _clock = timeProvider ?? TimeProvider.System;
+        _recoveredFailure = recoveredFailure;
         _probe = probe; _worker = Task.Run(RunAsync);
     }
 
@@ -151,6 +158,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 }
                 if (_lastPass is { } prior && _clock.GetElapsedTime(prior) < TimeSpan.FromSeconds(1)) continue;
                 _lastPass = _clock.GetTimestamp();
+                Type? recovered = null;
                 try
                 {
                     var discoveryFailure = await PassAsync(input, _stop.Token).ConfigureAwait(false);
@@ -158,8 +166,9 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                     // The pass already kept every reader and published. A failed discovery still counts as a failed
                     // pass, so a persistent probe fault ends this owner on the fifth in a row and surfaces at DisposeAsync.
                     else if (++_consecutiveFailures == MaximumConsecutivePassFailures) discoveryFailure.Throw();
+                    else recovered = discoveryFailure.SourceException.GetType();
                 }
-                catch (Exception) when (!_stop.IsCancellationRequested && _consecutiveFailures < MaximumConsecutivePassFailures - 1)
+                catch (Exception failure) when (!_stop.IsCancellationRequested && _consecutiveFailures < MaximumConsecutivePassFailures - 1)
                 {
                     // A pass that failed after touching a reader is not terminal: drop every cursor, mark all rows
                     // Unavailable, and rediscover on the next offer, which the 1 s pass gate already rate-limits. A failed
@@ -167,7 +176,11 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                     _consecutiveFailures++;
                     ClearReaders(); _candidates = new(Array.Empty<ClientLogCandidate>(), false); _lastDiscovery = null;
                     Publish(Volatile.Read(ref _latest), [], SessionLogCorrelationStatus.Unavailable);
+                    recovered = failure.GetType();
                 }
+                // A recovered failure is reported once, by type only (Rule 10), outside the recovery handler: a fault in
+                // the report itself ends this owner and surfaces at DisposeAsync instead of being taken for a pass failure.
+                if (recovered is not null) _recoveredFailure?.Invoke(recovered);
             }
         }
         catch (OperationCanceledException) when (_stop.IsCancellationRequested) { }
