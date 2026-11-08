@@ -12,7 +12,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-7 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-7",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxLaunchTicketClientTests.GetsTheAssertionThenPostsTheTicketRequestWithHonestHeadersAndReadsTheTicketHeader",
@@ -43,7 +44,7 @@
       ],
       "redEvidence": "Before the change the test project did not build: `dotnet build tests/Zenith.Sessions.Tests -m:2 -nr:false` ended \"Build FAILED\" with 74 errors, e.g. \"error CS0246: The type or namespace name 'RobloxLaunchTicketClient' could not be found\", \"error CS0103: The name 'RobloxLaunchTicketOutcome' does not exist in the current context\", \"'ProtectedLaunchTicket' could not be found\", \"'IRobloxLaunchTicketClient' could not be found\", \"The name 'NativeLaunchMode' does not exist in the current context\", \"error CS0117: 'RobloxHandoffProbeOutcome' does not contain a definition for 'Refused'\" and \"... for 'RateLimited'\" (DirectTicketNativeHandoffCaptureTests.cs, RobloxLaunchTicketClientTests.cs, NativeLaunchModeSettingsTests.cs, NativeAccountLaunchProviderTests.cs). After the implementation one existing guard then failed for the right reason and was fixed in the catalog entry, not the test: SettingsSearchTests.ResultBoundAndAllReturnedMetadataStayFixedAcrossUntrustedQueries \"Assert.InRange() Failure: Value not in range Actual: 413\" (the new search description exceeded the 260-character bound; shortened to 254).",
       "historicalCommit": "fc2211a",
-      "trial": "In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty-body case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.",
+      "trial": "In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty JSON object {} case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.",
       "question": "",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -87,7 +88,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-launch-2 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-launch-2",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.LaunchPacingTests.AJoinReportForTheExactReceiptEndsTheStabilizationWaitButNotBeforeTheLaunchSpacing",
@@ -116,7 +118,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-launch-16 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-launch-16",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ExtraClientArgumentsTests.ArgumentsSplitOnSpacesAndTheSavedFormIsSingleSpaced",
@@ -185,7 +188,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-launch-18 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-launch-18",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientInstallationSuggestionTests.ATypicalInstallSuggestsTheRegisteredPlayerAndNeverTheLauncherBesideIt",
@@ -391,7 +395,7 @@
       "tests": [],
       "redEvidence": "",
       "historicalCommit": "",
-      "trial": "In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved and cancellation/Lock/Panic removes transient sign-in material. For browser-profile reuse, explicitly opt in, sign in twice, verify Roblox auth is cleared between runs, then use Forget sign-in browser data and confirm removal. Captcha reduction is not guaranteed.",
+      "trial": "In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved, provider navigation discards the entire transient browser profile, and cancellation/Lock/Panic removes transient sign-in material. Separately, use ordinary Roblox sign-in to test the explicitly opted-in browser-device-data retention: sign in twice, verify Roblox authentication is cleared between runs, then use Forget sign-in browser data and confirm removal. Provider navigation never supplies the retained-profile reuse case. Captcha reduction is not guaranteed.",
       "question": "",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -409,7 +413,7 @@
       "tests": [],
       "redEvidence": "",
       "historicalCommit": "",
-      "trial": "In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved and cancellation/Lock/Panic removes transient sign-in material. For browser-profile reuse, explicitly opt in, sign in twice, verify Roblox auth is cleared between runs, then use Forget sign-in browser data and confirm removal. Captcha reduction is not guaranteed.",
+      "trial": "In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved, provider navigation discards the entire transient browser profile, and cancellation/Lock/Panic removes transient sign-in material. Separately, use ordinary Roblox sign-in to test the explicitly opted-in browser-device-data retention: sign in twice, verify Roblox authentication is cleared between runs, then use Forget sign-in browser data and confirm removal. Provider navigation never supplies the retained-profile reuse case. Captcha reduction is not guaranteed.",
       "question": "",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -422,7 +426,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#Z1559 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#Z1559",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.OwnedRobloxHandoffProbeCleanupTests.ExitStopsWaitingForACleanupStillWaitingOnItsBrowserAfterTenSecondsAndLeavesTheMarkedFolderForTheNextStart",
@@ -493,7 +498,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-instances-7 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-instances-7",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientProcessPriorityTests.CapCpuPutsTheClientInAJobThisRunHoldsAndRestoreLiftsTheCapWithoutLeavingTheJob",
@@ -526,7 +532,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-instances-12 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-instances-12",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientCloseOperationsTests",
@@ -553,7 +560,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-instances-18 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-instances-18",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.UploadLimitPolicyTests",
@@ -577,7 +585,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-instances-15 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-instances-15",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.GpuTelemetryTests.ClientNumbersAreAttributedOnlyToAPidConfirmedWithItsStartTimeAfterTheCollection",
@@ -609,7 +618,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-instances-2 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-instances-2",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.SessionEvidenceTests.AConnectedDestinationOlderThanTheEvidenceAgeStaysLastKnownUntilTheLogShowsATransition",
@@ -658,7 +668,7 @@
       ],
       "redEvidence": "KeepAwakeSettingsTests ran against the unchanged code first: Failed 7 / Passed 0. Messages: \"Saving settings dropped the chosen keep-awake time.\" · \"A keep-awake time of 25 minutes was accepted; it must be refused as an invalid setting.\" · \"Settings has no control for keeping clients awake.\" · \"Searching settings for 'anti-afk' does not find Keep clients awake.\" (and the same for 'afk', 'keep awake', 'idle kick'). KeepAwakeTests and KeepAwakeIntegrationTests reference the new types (CapabilityGate, KeepAwakePolicy, KeepAwakeRunner, IKeepAwakeInputExecutor, IForegroundWindowSwitch, ShellViewModel.KeepAwakeMinutes/KeepAwakeDue/RunKeepAwakeTickAsync), so before the change they could not compile; they were written before the implementation and first run with it. The one assertion that failed on the first green run (KeepAwakeIntegrationTests Panic case, \"Assert.Empty() Failure: Collection was not empty\") exposed that the input owner correctly releases an uncertain cancelled F13 down with its own cleanup up; the test's assertion was narrowed to ordinary (non-cleanup) commands and now pins that release.",
       "historicalCommit": "da5d0dc",
-      "trial": "live input isolation trial: with the trial's verified transport for Roblox client windows (the held item Z1702, composed as IKeepAwakeInputExecutor) and two owned accounts in running clients, confirm that each tick's F13 reaches only the client it was sent to and no other window; that a client the feature covers is not disconnected after 20 idle minutes (its idle timer resets from this press, which RoALT's source says posted keys do not achieve, so the trial also decides whether the transport is posted messages to the exact HWND or a foreground executor that refuses when the target is not in front); that the earlier foreground window is back after each tick; that a tick while the user types defers and takes no window; and that Panic during a tick leaves every client in a consistent key state. Only then is \"Background macros & broadcast\" marked Supported, which lets CapabilityGate permit the feature (recorded as LIVE-EXERCISES.md case keep-awake-press).",
+      "trial": "",
       "question": "Keep keep-awake, background macros and broadcast disabled in this first live-test build while a production target-isolation transport is evaluated separately under Z1702?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -671,7 +681,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-12 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-12",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.DiscordAlertTests.WebhookAddressesAreAcceptedOnlyForExactDiscordHostsOverHttpsWithTheWebhookPathShape",
@@ -706,7 +717,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-17 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-17",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.DiscordPresenceTests.PresenceTextNamesTheCountAndTheGameFromLocalKnowledgeOnlyAndStaysBounded",
@@ -738,7 +750,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-shell-21 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-shell-21",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ScheduledShutdownTests.SettingsOffersTheShutdownControlsTheFooterShowsTheCountdownAndTheGuideNamesIt",
@@ -770,7 +783,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-18 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-18",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.PublicNetworkGuardTests.OnlyAConnectedPublicNetworkThatReachesTheInternetCountsAsPublic",
@@ -805,7 +819,7 @@
       "tests": [],
       "redEvidence": "",
       "historicalCommit": "",
-      "trial": "In a clean disposable Windows guest, use an explicitly approved release host, embedded public key and Authenticode publisher. Verify valid update staging and an explicitly approved apply on next start; reject altered signatures, ZIP/content/inventory changes, expired/downgrade manifests and unsigned publishers. Test missing .NET/WebView2, declined prerequisite install, first install, update rollback, Start-menu/Apps registration, and uninstall with both data-preserve and separately confirmed data-delete choices. No unattended install or real data deletion is authorized by this offline record.",
+      "trial": "",
       "question": "Which public HTTPS release host, signing-key custodian and Authenticode publisher certificate/fingerprint distribution should the production build trust?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -823,7 +837,7 @@
       "tests": [],
       "redEvidence": "",
       "historicalCommit": "",
-      "trial": "In a clean disposable Windows guest, use an explicitly approved release host, embedded public key and Authenticode publisher. Verify valid update staging and an explicitly approved apply on next start; reject altered signatures, ZIP/content/inventory changes, expired/downgrade manifests and unsigned publishers. Test missing .NET/WebView2, declined prerequisite install, first install, update rollback, Start-menu/Apps registration, and uninstall with both data-preserve and separately confirmed data-delete choices. No unattended install or real data deletion is authorized by this offline record.",
+      "trial": "Prerequisite: resolve R-shell-14 production host/key/publisher trust, provide an explicitly accepted signed build and choose a clean disposable Windows guest. In a clean disposable Windows guest, use an explicitly approved release host, embedded public key and Authenticode publisher. Verify valid update staging and an explicitly approved apply on next start; reject altered signatures, ZIP/content/inventory changes, expired/downgrade manifests and unsigned publishers. Test missing .NET/WebView2, declined prerequisite install, first install, update rollback, Start-menu/Apps registration, and uninstall with both data-preserve and separately confirmed data-delete choices. No unattended install or real data deletion is authorized by this offline record.",
       "question": "",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -899,7 +913,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-launch-9 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-launch-9",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientUpdateInstallerTests.TheInstallerAddressComesOnlyFromAValidUploadName",
@@ -942,7 +957,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-shell-20 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-shell-20",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxClientLogCleanupTests.SurveyCountsOnlyPlayerLogsOlderThanTheCutoffAndKeepsWatchedHeldAndNewerOnes",
@@ -976,7 +992,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-shell-17 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-shell-17",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxClientLogTailsTests.TailsKeepOnlyRecognisedShapesAsTypedFieldsAndNeverRawText",
@@ -1014,7 +1031,7 @@
       "tests": [],
       "redEvidence": "",
       "historicalCommit": "",
-      "trial": null,
+      "trial": "",
       "question": "Ship DevForum announcements plus a confirmed external Newsroom button until a valid official Newsroom RSS/Atom URL is supplied?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -1027,7 +1044,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C3-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C3-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.DiagnosticsViewModelTests.TheDiagnosticsHeaderShowsTheStateAndTheSkipCountBeforeItIsTrimmed",
@@ -1049,7 +1067,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C4-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C4-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.HighContrastHoverTests.TheSelectedSegmentKeepsItsFillAndReadableLabelWhileThePointerIsOverIt",
@@ -1100,7 +1119,7 @@
       ],
       "redEvidence": "Both tests pass on the current code (the finding is a coverage gap), so RED was shown by temporarily applying the two regressions the reviewer described and running the new tests: (1) SetTheme switched to ThemeManager.Apply(Application.Current.Resources, theme): \"Assert.Equal() Failure: Collections differ ... Expected: [\"PackagedLayoutCheck.cs\", \"SessionsThemes.cs\"] Actual: [\"MainWindow.xaml.cs\", \"PackagedLayoutCheck.cs\", \"SessionsThemes.cs\"]\"; (2) the pressed Edge width changed from 6 to 9: \"high contrast black: the IconButton 28's 9 px pressed bar reaches its glyph, which starts 7.500055687043067 px in.\" and \"high contrast white: the IconButton's 10 px pressed bar reaches its glyph, which starts 9.113559422031347 px in.\" (4 of 6 rows failed; the SecondaryButton rows, whose label starts 13 px in, passed as expected). Run: dotnet test tests/Zenith.Sessions.Tests -m:2 -nr:false --filter \"<the two new tests>\" -> Failed: 5, Passed: 2, Total: 7. Both mutations were then reverted with git checkout (git diff on src shows only the doc-comment change).",
       "historicalCommit": "dbec874",
-      "trial": "Not checked on screen with Windows High Contrast switched on while the app is open; the live SetTheme path is pinned by a source check, not by a rendered window.",
+      "trial": "",
       "question": "May this coverage-only item be excluded from the runtime failing-before requirement, with the new assertions and recorded mutation proof retained?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -1113,7 +1132,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C2-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C2-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.LaunchQueueGuideTests.TheGuideSaysOnlyARefusedStartLengthensTheWaitNotATimeoutExpiryStopOrChangedAccount",
@@ -1134,7 +1154,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C2-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C2-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.LaunchPacingTests.RepeatedRefusalPauseTextNamesNoSingleCauseAndSaysWhatAResumeDoes",
@@ -1156,7 +1177,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C2-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C2-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.LaunchPacingTests.RefusedRowTextNamesNoSingleCauseAndPointsToLaunchEvidence"
@@ -1183,7 +1205,7 @@
       ],
       "redEvidence": "No RED test was possible: the change is a comment correction and a test rename with the test body left as it was, so there is no behaviour a failing assertion could pin. Evidence the finding existed: `grep -n` at commit 3f2a438 showed src/Zenith.Sessions.App/ShellDirectoryFeatures.cs:396 \"// A spread review reads the loaded server list once, here, and freezes each account's server.\" and tests/Zenith.Sessions.Tests/LaunchBatchQueueTests.cs:586 \"public async Task ASpreadReviewFreezesItsOwnServerForEachAccountAndThePlaceForTheRest()\", while the same test's body asserts Assert.All(review.Recipients, member => Assert.Same(review.Destination, member.Destination)) and line 434 of the same shell file already says the queue hands servers only to recorded requests.",
       "historicalCommit": "3c85865ff5dbac80427eeb98647537e362d92545",
-      "trial": null,
+      "trial": "",
       "question": "May this documentation-only correction be excluded from the failing-before requirement while retaining the corrected text and existing behavior?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -1196,7 +1218,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C2-5 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C2-5",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RequestedServerSelectionTests.ASpreadCarriesCountsAndDestinationsOnlySoExplainRecordedIsItsOneWording",
@@ -1218,7 +1241,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C5-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C5-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.TheWhenAClientConnectsHelpTextNamesEveryCaseThatLeavesAConnectedClientAlone"
@@ -1238,7 +1262,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C5-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C5-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.AManualOperationThatFailsStillReportsTheClientThatConnectedDuringIt"
@@ -1258,7 +1283,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C5-4 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C5-4",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.AFollowUpRequestWithNothingToTileSaysWhyAndClearsTheEarlierRequestsRows",
@@ -1279,7 +1305,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C7-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C7-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.PublicDirectorySharedRulesTests.EachPublicDirectoryRuleIsWrittenOnce",
@@ -1310,7 +1337,7 @@
       ],
       "redEvidence": "A test rename changes no behaviour, so no failing test could be written for it (same class as a comment correction). Before-state recorded instead, on the built test project: `dotnet test --no-build --filter \"FullyQualifiedName~ShareLinkViewModelTests.AUniverseOnlyLink\"` -> Passed! Failed: 0, Passed: 5, Total: 5 (old name, five rows); `dotnet test --no-build --filter \"FullyQualifiedName~ShareLinkViewModelTests.AUniverseOnlyLinkSaysItCannotBeOpenedOnlyWhenTheListingAnsweredWithoutTheUniverse\"` -> \"No test matches the given testcase filter\".",
       "historicalCommit": "0239db1",
-      "trial": null,
+      "trial": "",
       "question": "May this documentation-only correction be excluded from the failing-before requirement while retaining the corrected text and existing behavior?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -1343,7 +1370,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C1-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C1-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxSignInPresentationTests.StartupReportsMoreLeftoversThanOneSignInMayCheckForReview",
@@ -1364,7 +1392,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C1-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C1-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ShareLinkViewModelTests.ACheckTheSavedSessionOwnerStoppedSaysSoInsteadOfStayingOnChecking",
@@ -1387,7 +1416,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C1-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C1-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxSessionLinkServiceTests.ShareLinkResolutionOnAProfileBeingRemovedSaysTheProfileIsRemovedWithoutARequest",
@@ -1414,7 +1444,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C9-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C9-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientUpdateHoldTests.AHeldRowStopsClaimingAClientRunsOnceUntrustedSamplesOutlastTheNewestTrustedOne",
@@ -1436,7 +1467,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C9-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C9-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.AStoppedReleaseCheckNeverLeavesTheTrialCardSayingItIsChecking",
@@ -1460,7 +1492,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C9-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C9-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.StopTrialSaysItAlsoPausesTheLaunchQueueBeforeAndAfterItIsChosen",
@@ -1481,7 +1514,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C9-4 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C9-4",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientWindowIntegrationTests.AnEvidenceShellsTrialStartReadsTheSyntheticReleaseNotRobloxs"
@@ -1581,7 +1615,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C8-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C8-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.SessionLogCorrelatorTests.ALogNamingTheTrackerOfALaunchThatBeganAfterItWasCreatedStillLinksTheLaunchItBelongsTo",
@@ -1602,7 +1637,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C8-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C8-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.SessionLogCorrelatorTests.ALinkedLaunchSaysAnEarlierLaunchWithTheSameTrackerMayOwnItsLogOnlyWhileThatLaunchHasNone",
@@ -1631,7 +1667,7 @@
       ],
       "redEvidence": "No RED test was possible: this is a pure documentation correction on the LaunchLogLinkStatus XML summaries; the code's behaviour is unchanged and already matched the corrected text. The added test is a characterization test that passes before and after the doc change; it pins the tie-alone case the old doc described wrongly (it would fail if a tie alone ever made a launch Ambiguous). The \"last head read failed after earlier successes keeps the launch NotLinked\" behaviour was already pinned by SessionLogCorrelatorTests.AnIncompleteHeadIsNoLongerReopenedOnceNothingHoldsItsLogAndItsLengthSettled (\"still-held\" shape).",
       "historicalCommit": "55f39fa",
-      "trial": null,
+      "trial": "",
       "question": "May this documentation-only correction be excluded from the failing-before requirement while retaining the corrected text and existing behavior?",
       "exclusion": "",
       "source": "round4/work-items-r4.json and round4/historical-outcomes.json"
@@ -1644,7 +1680,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-1 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-1",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.ArrivalMuteLeavesAloneAClientTheFirstScanCouldNotRead",
@@ -1665,7 +1702,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.AClickDuringAnArrivalRetryIsKeptAndReachesWindowsWhenTheRetryEnds",
@@ -1686,7 +1724,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt",
@@ -1709,7 +1748,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-4 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-4",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.PerformanceProfileTests.PendingCapabilitiesNamePreviewRatesChosenByProfileNotTheLivePreviewsSessionsAlreadyShows"
@@ -1729,7 +1769,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-5 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-5",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientPreviewPresentationTests.PendingRestoreLabelNamesEverySettingARestoreCanCover"
@@ -1749,7 +1790,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C6-6 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C6-6",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientAudioMuteTests.AMuteOfAPartlyMutedClientSaysUnmuteThenMuteMutesAllOfIt",
@@ -1771,7 +1813,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C10-2 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C10-2",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.TargetedInputCoordinatorTests.TheInputOwnerExposesNoInternalsToAnyAssembly",
@@ -1793,7 +1836,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C10-3 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C10-3",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.TargetedMacroExecutionTests.AStopThatLandsDuringAKeySendEndsTheRunAsThatStopNotAsAnInputRejection"
@@ -1813,7 +1857,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C10-5 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C10-5",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "MacroSuite.Infrastructure.Tests.WpfTestApplicationTests.FinishedBody_LeavesNoHangGuardTimerPending",
@@ -1834,7 +1879,8 @@
       "state": "Verified",
       "summary": "Original regression repair retained; its named tests are included in the merged suites.",
       "evidence": [
-        "round4/historical-outcomes.json#O-C10-6 ROUND4-INTEGRATION-VERIFICATION.md"
+        "round4/historical-outcomes.json#O-C10-6",
+        "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
       "tests": [
         "MacroSuite.Core.Tests.Capture.CaptureSchedulerTests.Subscribe_StartsLoopAndDeliversFrames",
@@ -1965,7 +2011,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-7 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-7",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.RobloxLaunchTicketClientTests.GetsTheAssertionThenPostsTheTicketRequestWithHonestHeadersAndReadsTheTicketHeader",
@@ -1996,7 +2043,7 @@
       ],
       "redEvidence": "Before the change the test project did not build: `dotnet build tests/Zenith.Sessions.Tests -m:2 -nr:false` ended \"Build FAILED\" with 74 errors, e.g. \"error CS0246: The type or namespace name 'RobloxLaunchTicketClient' could not be found\", \"error CS0103: The name 'RobloxLaunchTicketOutcome' does not exist in the current context\", \"'ProtectedLaunchTicket' could not be found\", \"'IRobloxLaunchTicketClient' could not be found\", \"The name 'NativeLaunchMode' does not exist in the current context\", \"error CS0117: 'RobloxHandoffProbeOutcome' does not contain a definition for 'Refused'\" and \"... for 'RateLimited'\" (DirectTicketNativeHandoffCaptureTests.cs, RobloxLaunchTicketClientTests.cs, NativeLaunchModeSettingsTests.cs, NativeAccountLaunchProviderTests.cs). After the implementation one existing guard then failed for the right reason and was fixed in the catalog entry, not the test: SettingsSearchTests.ResultBoundAndAllReturnedMetadataStayFixedAcrossUntrustedQueries \"Assert.InRange() Failure: Value not in range Actual: 413\" (the new search description exceeded the 260-character bound; shortened to 254).",
       "historicalCommit": "fc2211a",
-      "trial": "In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty-body case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.",
+      "trial": "In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty JSON object {} case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.",
       "question": "",
       "exclusion": "",
       "source": "round4/work-items-r4.json alsoCovers"
@@ -2104,7 +2151,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-12 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-12",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.DiscordAlertTests.WebhookAddressesAreAcceptedOnlyForExactDiscordHostsOverHttpsWithTheWebhookPathShape",
@@ -2139,7 +2187,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-api-18 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-api-18",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.PublicNetworkGuardTests.OnlyAConnectedPublicNetworkThatReachesTheInternetCountsAsPublic",
@@ -2168,7 +2217,8 @@
       "state": "Built, needs live trial",
       "summary": "Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.",
       "evidence": [
-        "round4/historical-outcomes.json#R-launch-9 LIVE-EXERCISES.md"
+        "round4/historical-outcomes.json#R-launch-9",
+        "LIVE-EXERCISES.md"
       ],
       "tests": [
         "Zenith.Sessions.Tests.ClientUpdateInstallerTests.TheInstallerAddressComesOnlyFromAValidUploadName",

@@ -7,7 +7,7 @@ The complete **93-ID** ledger is [ROUND4-STATUS.md](ROUND4-STATUS.md) / [ROUND4-
 Remaining offline acceptance work:
 
 1. Finish important review repairs for settings-save/stop ordering and unresolved elevated upload-limit helpers. Retain genuine failing-before tests and merged passing evidence.
-2. Finish regression-evidence reconciliation, including M-L1a-6's historical replay; verify every Verified item's named test on the final merged build.
+2. Finish the merged evidence audit; M-L1a-6's historical replay is complete, and every Verified item's named test must pass again on the final merged build.
 3. Complete final independent whole-change review, immutable patch-risk assessment and documentation reconciliation.
 4. Confirm every lane is merged, promote the final reviewed candidate to main and pass all six suites, zero-warning Release builds and all 43 packaged stages **twice on that exact commit**.
 5. List any remaining minor findings and owner decisions. Only then give the owner the staged build and precise attended trial sequence.

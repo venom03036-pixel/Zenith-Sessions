@@ -6,7 +6,7 @@ No live acceptance is claimed. Execute trials only after the final offline gate 
 
 Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.
 
-In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty-body case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.
+In an attended isolated standard-player trial, save Direct ticket mode. Confirm GET /v1/client-assertion/ has no request body and POST /v1/authentication-ticket/ sends the returned clientAssertion (or the supported empty JSON object {} case), with honest Zenith headers and at most one CSRF retry. Confirm the one-use ticket launches the selected identity at the reviewed public place/exact server, and rotated sessions are identity-checked before persistence. Repeat cancellation/Lock/Panic and refused/challenged responses; no browser-header spoofing, public fallback or unreviewed retry is permitted. This mode needs its own executable-bound qualification; Official page stays the default.
 
 ## R-launch-0 — Built, needs live trial
 
@@ -90,13 +90,13 @@ In a disposable NTFS data folder on an EFS-capable Windows edition, explicitly e
 
 Roblox-hosted Google/Apple sign-in navigation and opt-in retained sign-in browser data are implemented without saving provider passwords or provider sessions as Roblox credentials.
 
-In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved and cancellation/Lock/Panic removes transient sign-in material. For browser-profile reuse, explicitly opt in, sign in twice, verify Roblox auth is cleared between runs, then use Forget sign-in browser data and confirm removal. Captcha reduction is not guaranteed.
+In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved, provider navigation discards the entire transient browser profile, and cancellation/Lock/Panic removes transient sign-in material. Separately, use ordinary Roblox sign-in to test the explicitly opted-in browser-device-data retention: sign in twice, verify Roblox authentication is cleared between runs, then use Forget sign-in browser data and confirm removal. Provider navigation never supplies the retained-profile reuse case. Captcha reduction is not guaranteed.
 
 ## R-accounts-8 — Built, needs live trial
 
 Roblox-hosted Google/Apple sign-in navigation and opt-in retained sign-in browser data are implemented without saving provider passwords or provider sessions as Roblox credentials.
 
-In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved and cancellation/Lock/Panic removes transient sign-in material. For browser-profile reuse, explicitly opt in, sign in twice, verify Roblox auth is cleared between runs, then use Forget sign-in browser data and confirm removal. Captcha reduction is not guaranteed.
+In the final app, use a disposable owner-controlled Google/Apple-backed Roblox account and complete the provider flow yourself. Confirm only the verified Roblox identity is saved, provider navigation discards the entire transient browser profile, and cancellation/Lock/Panic removes transient sign-in material. Separately, use ordinary Roblox sign-in to test the explicitly opted-in browser-device-data retention: sign in twice, verify Roblox authentication is cleared between runs, then use Forget sign-in browser data and confirm removal. Provider navigation never supplies the retained-profile reuse case. Captcha reduction is not guaranteed.
 
 ## R-instances-7 — Built, needs live trial
 
@@ -168,7 +168,7 @@ Which public HTTPS release host, signing-key custodian and Authenticode publishe
 
 Signed release verification, staged-content integrity and explicit per-user distribution tooling are built. No production trust keys/feed or ReleaseReady package is supplied.
 
-In a clean disposable Windows guest, use an explicitly approved release host, embedded public key and Authenticode publisher. Verify valid update staging and an explicitly approved apply on next start; reject altered signatures, ZIP/content/inventory changes, expired/downgrade manifests and unsigned publishers. Test missing .NET/WebView2, declined prerequisite install, first install, update rollback, Start-menu/Apps registration, and uninstall with both data-preserve and separately confirmed data-delete choices. No unattended install or real data deletion is authorized by this offline record.
+Prerequisite: resolve R-shell-14 production host/key/publisher trust, provide an explicitly accepted signed build and choose a clean disposable Windows guest. In a clean disposable Windows guest, use an explicitly approved release host, embedded public key and Authenticode publisher. Verify valid update staging and an explicitly approved apply on next start; reject altered signatures, ZIP/content/inventory changes, expired/downgrade manifests and unsigned publishers. Test missing .NET/WebView2, declined prerequisite install, first install, update rollback, Start-menu/Apps registration, and uninstall with both data-preserve and separately confirmed data-delete choices. No unattended install or real data deletion is authorized by this offline record.
 
 ## R-research-12 — Built, needs live trial
 

@@ -40,7 +40,7 @@ Release tooling has empty production trust and no default feed. The collapsed Se
 ## Remaining integration work
 
 1. Finish the currently identified important review repairs: delayed Save settings resuming Roblox update checks after Panic, and unresolved elevated upload-limit work overlapping a later policy mutation. Each needs genuine failing-before evidence and a merged passing rerun.
-2. Finish the evidence audit, including actual M-L1a-6 pre-fix 401 replay. Verify every named regression exists and passes; preserve failures and historical sources without claiming compile errors as red proof.
+2. Finish the final merged evidence audit. M-L1a-6 now has genuine historical replay proof and 71 passing affected tests; all 99 Verified regression references have retained passing evidence. Verify each again in the final merged suites; preserve failures and historical sources without counting compile errors as red proof.
 3. Reconcile current documents and the ledger, remove draft acceptance wording only when the required evidence exists, and record remaining minors explicitly.
 4. Commit the entire candidate, audit all lane heads as ancestors, and run the full gate twice without changing any source between or during runs.
 5. Complete a fresh whole-change review and immutable patch-risk assessment. Fix every critical/important finding and repeat the loop. A full review with only minors may stop with those minors listed.
@@ -65,6 +65,6 @@ The six suites are Zenith.Sessions, Zenith.Sessions.CapabilityHarness, MacroSuit
 
 ## Live handoff
 
-Only after the offline completion gate, give the owner the exact staged build/hash and the [attended trial list](ROUND4-LIVE-TRIALS.md). Start with isolated data and one standard-player account. Correct player/destination/executable evidence must precede a second account; scale only when each prior stage passes. Private joining, cross-Windows backup, elevation, sign-in providers, actual input isolation and signed installation are separate trials. Do not claim these already work.
+Only after the offline completion gate, give the owner the exact staged build/hash and the [attended trial list](ROUND4-LIVE-TRIALS.md). Start with isolated data and one standard-player account. Correct player/destination/executable evidence must precede a second account; scale only when each prior stage passes. Private joining, cross-Windows backup, elevation, sign-in providers, signed installation are separate trials. Actual input-isolation trials are future work only after the Z1702 decision and production transport implementation. Do not claim these already work.
 
 The prior checkpoint-0.57 handoff is preserved at [round4/history/HANDOFF.md](round4/history/HANDOFF.md); its pause statement and old technical limits are historical.
