@@ -133,14 +133,17 @@ public sealed class ClientWindowArrangementTests
     }
 
     [Fact]
-    public async Task StableProcessOrderAndChosenMonitorAreFrozenBeforeAsynchronousWork()
+    public async Task CallerSlotOrderAndChosenMonitorAreFrozenBeforeAsynchronousWork()
     {
         var adapter = new Adapter { Monitors = [Display("primary") with { IsPrimary = true, WorkArea = new(0, 0, 1920, 1080) }, Display()] };
         using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
         SessionObservation[] selected = [Session(40), Session(10), Session(30)];
         var result = await operations.ArrangeAsync(selected, Display().Id, new(), default);
         Assert.True(result.AllApplied); Assert.False(result.Cancelled);
-        Assert.Equal(new[] { 10, 30, 40 }, adapter.Moves.Select(move => move.Session.ProcessId));
+        // The caller's slot order (launch order) fills the cells; the provider no longer re-sorts by PID.
+        Assert.Equal(new[] { 40, 10, 30 }, adapter.Moves.Select(move => move.Session.ProcessId));
+        Assert.Equal(new[] { 40, 10, 30 }, result.Results.Select(row => row.Session.ProcessId));
+        Assert.True(adapter.Moves[0].Bounds.X < adapter.Moves[1].Bounds.X);
         Assert.All(adapter.Moves, move => Assert.True(Display().WorkArea.Contains(move.Bounds)));
     }
 
@@ -153,7 +156,7 @@ public sealed class ClientWindowArrangementTests
         var request = operations.ArrangeAsync(selected, Display().Id, new(), default);
         selected[0] = Session(99); selected[1] = Session(98); lane.Release();
         Assert.True((await request).AllApplied);
-        Assert.Equal(new[] { 3, 8 }, adapter.Moves.Select(move => move.Session.ProcessId));
+        Assert.Equal(new[] { 8, 3 }, adapter.Moves.Select(move => move.Session.ProcessId));
     }
 
     [Fact]
@@ -259,6 +262,22 @@ public sealed class ClientWindowArrangementTests
         var row = Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results);
         Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Single(adapter.Moves);
         Assert.Contains("different scale", row.Explanation);
+        // The client is still on its old monitor, so the copy must not describe a move to the target that never happened.
+        Assert.Contains("did not reach the selected monitor", row.Explanation); Assert.Contains("Arrange again", row.Explanation);
+        Assert.DoesNotContain("resized itself", row.Explanation);
+    }
+
+    [Fact]
+    public async Task CrossScaleClientWhoseMonitorIsUnknownAfterTheMoveIsNotDescribedAsMovedOrNotMoved()
+    {
+        var adapter = CrossScaleAdapter((_, bounds) => Rescaled(bounds, true)); var source = adapter.Monitors[1];
+        // Geometry is readable before the move but not after it, so where the client ended up is unknown.
+        adapter.GeometryQuery = _ => adapter.Moves.Count == 0 ? new(new(100, 100, 800, 600), new(108, 131, 784, 561), source) : null;
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var row = Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results);
+        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Single(adapter.Moves);
+        Assert.Contains("did not confirm these bounds", row.Explanation);
+        Assert.DoesNotContain("resized itself", row.Explanation); Assert.DoesNotContain("did not reach", row.Explanation);
     }
 
     [Fact]

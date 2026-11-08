@@ -3,12 +3,15 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
-public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = null, string? PreferredDisplayId = null)
+public sealed record ClientWindowLayoutSettings(ClientWindowTileOptions? Tile = null, string? PreferredDisplayId = null,
+    ClientArrivalWindowAction ArrivalAction = ClientArrivalWindowAction.None)
 {
     public ClientWindowLayoutSettings Validated()
     {
         if (PreferredDisplayId is not null && (PreferredDisplayId.Length is < 1 or > 100 || PreferredDisplayId.Any(char.IsControl)))
             throw new InvalidDataException("The preferred display identifier is invalid.");
+        // Optional within schema 1: files without it keep windows alone when clients connect, and older builds ignore it.
+        if (!Enum.IsDefined(ArrivalAction)) throw new InvalidDataException("The automatic window layout choice is invalid.");
         return this with { Tile = (Tile ?? new()).Validated() };
     }
 }

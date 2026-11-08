@@ -345,6 +345,56 @@ public sealed class ClientOverviewCoordinatorTests
         await owner.StopAsync();
     }
 
+    [Fact]
+    public async Task ReleasePublicationsSayWhetherAnActiveRosterIsReplacedOrAnOverviewIsStarting()
+    {
+        var clock = new ManualClock();
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            // A first explicit overview start behind pinned-preview cleanup is not a roster replacement.
+            var pinnedProvider = new Provider();
+            await using (var pinnedOwner = new ClientPreviewCoordinator(pinnedProvider, clock))
+            {
+                pinnedOwner.Start([Target()]); var pinned = await pinnedProvider.NextAsync();
+                await Reply(pinnedOwner, pinned, 1, Picture(pinned, clock));
+                pinnedProvider.ReleaseGate = release.Task;
+                pinnedOwner.StartOverview([Target(), Target(2)]);
+                var starting = pinnedOwner.GetSnapshot();
+                Assert.True(starting.Stopping); Assert.False(starting.Running);
+                Assert.Equal(ClientPreviewMode.Overview, starting.Mode); Assert.Equal(2, starting.Results.Count);
+                Assert.False(starting.RosterReplacement);
+                await pinnedProvider.NextReleaseAsync();
+                pinnedOwner.Stop(); release.SetResult();
+            }
+
+            release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var provider = new Provider();
+            await using var owner = new ClientPreviewCoordinator(provider, clock);
+            owner.StartOverview([Target(), Target(2)]); var first = await provider.NextAsync();
+            await Reply(owner, first, 2, Picture(first, clock), Picture(first, clock, 1));
+            provider.ReleaseGate = release.Task;
+            owner.UpdateOverviewTargets([Target(), Target(2), Target(3)]);
+            Assert.True(owner.GetSnapshot().Stopping); Assert.True(owner.GetSnapshot().RosterReplacement);
+            await provider.NextReleaseAsync();
+            // Expiring a retained frame republishes the same pending replacement.
+            clock.Advance(TimeSpan.FromSeconds(4));
+            var expired = owner.GetSnapshot();
+            Assert.Equal(ClientPreviewStatus.Stale, expired.Results[0].Status); Assert.True(expired.RosterReplacement);
+            // An explicit Start while that cleanup is pending is a start, not a roster change.
+            owner.StartOverview([Target(), Target(2), Target(3)]);
+            Assert.True(owner.GetSnapshot().Stopping); Assert.False(owner.GetSnapshot().RosterReplacement);
+            owner.UpdateOverviewTargets([Target(), Target(2)]);
+            Assert.True(owner.GetSnapshot().RosterReplacement);
+            owner.Stop();
+            Assert.Empty(owner.GetSnapshot().Results); Assert.False(owner.GetSnapshot().RosterReplacement);
+            release.SetResult();
+            await owner.StopAsync();
+            Assert.False(owner.GetSnapshot().Stopping); Assert.False(owner.GetSnapshot().RosterReplacement);
+        }
+        finally { release.TrySetResult(); }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

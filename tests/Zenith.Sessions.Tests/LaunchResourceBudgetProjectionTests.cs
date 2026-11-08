@@ -159,6 +159,9 @@ public sealed class LaunchResourceBudgetProjectionTests
     public void CandidateIndependentPressurePreservesSustainedCpuAndRecoveryGuards()
     {
         var tracker = new ResourcePressureTracker(); PressureDecision? last = null;
+        // A healthy reading first establishes CPU history; a cold start already at 85% holds until it drops.
+        var established = Sample() with { ObservedUtc = Now.AddSeconds(-1) };
+        Assert.False(tracker.Observe(established, CapacityPolicy.EvaluateSystemPressure(established, new(), established.ObservedUtc), established.ObservedUtc).Held);
         for (int second = 0; second <= 15; second++)
         {
             var sample = Sample() with { ObservedUtc = Now.AddSeconds(second), CpuPercent = 85 };

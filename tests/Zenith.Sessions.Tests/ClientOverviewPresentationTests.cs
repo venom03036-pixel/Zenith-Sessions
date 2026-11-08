@@ -120,6 +120,39 @@ public sealed partial class ClientPreviewPresentationTests
     });
 
     [Fact]
+    public Task FirstOverviewStartBehindPinnedPreviewCleanupSaysStartingNotRosterUpdate()=>OnUi(async()=>
+    {
+        var clock=new Clock();var provider=new PreviewProvider();
+        var pinnedRelease=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var rosterRelease=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        await using var vm=new ClientPreviewsViewModel(provider,Dispatcher.CurrentDispatcher,()=>true,clock:clock);
+        try
+        {
+            vm.ObserveInventory(Inventory(clock,2));await Until(()=>vm.OverviewRows.Count==2);
+            // Pinned Sessions previews own the capture source before the overview is started.
+            vm.Start([vm.OverviewRows[0].CaptureTarget!],clock.GetUtcNow().AddMinutes(3));var pinned=await provider.NextAsync();
+            pinned.Reply.SetResult(Frames(pinned,clock.GetUtcNow()));await DriveUntil(clock,()=>vm.Rows.Count==1 && vm.Rows[0].HasImage);
+            string active=vm.RefreshSummary;
+            provider.ReleaseGate=pinnedRelease.Task;vm.StartOverview(clock.GetUtcNow().AddMinutes(3));
+            await DriveUntil(clock,()=>vm.IsOverview && vm.IsReleasing && vm.RefreshSummary!=active);
+            // A first explicit start is not a roster change, and previews are not off either.
+            Assert.DoesNotContain("roster",vm.RefreshSummary);Assert.DoesNotContain("Previews are off",vm.RefreshSummary);
+            Assert.Contains("Starting overview previews",vm.RefreshSummary);
+            pinnedRelease.SetResult();
+            // The worker keeps its batch interval on the controlled clock; skip any cancelled pinned batch.
+            CaptureCall overview;
+            do {var next=provider.NextAsync();await DriveUntil(clock,()=>next.IsCompleted);overview=await next;} while(overview.Targets.Count!=2);
+            overview.Reply.SetResult(Frames(overview,clock.GetUtcNow()));await DriveUntil(clock,()=>vm.IsRunning && vm.OverviewRows.All(row=>row.HasImage));
+            active=vm.RefreshSummary;
+            // A third client appears while the overview runs: that release is a roster change.
+            provider.ReleaseGate=rosterRelease.Task;vm.ObserveInventory(Inventory(clock,3,2));
+            await DriveUntil(clock,()=>vm.IsReleasing && vm.OverviewRows.Count==3 && vm.RefreshSummary!=active);
+            Assert.Contains("Updating the observed tile roster",vm.RefreshSummary);
+        }
+        finally {pinnedRelease.TrySetResult();rosterRelease.TrySetResult();provider.UnblockAll();}
+    });
+
+    [Fact]
     public Task OverviewReusesFrozenBitmapsWhenAnotherBatchChangesTheSnapshot()=>OnUi(async()=>
     {
         var clock=new Clock();var provider=new PreviewProvider();

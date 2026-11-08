@@ -105,7 +105,7 @@ public sealed partial class ShellViewModel
     private void ClientWindowShellStateChanged(object? sender, PropertyChangedEventArgs args)
     {
         if (args.PropertyName is nameof(HasSelectedSession) or nameof(IsReady) or nameof(IsLocked))
-        { Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); }
+        { Raise(nameof(CanEditClientSize)); Raise(nameof(CanResizeClients)); Raise(nameof(CanResumeClientArrivalLayout)); }
     }
     private void SessionSelectionChanged(object? sender, PropertyChangedEventArgs args)
     { if (!_updatingSessionChecks && args.PropertyName == nameof(SessionRow.IsChecked)) NotifyClientSelection(); }
@@ -234,8 +234,8 @@ public sealed partial class ShellViewModel
         ClientWindowTileOptions options;
         try { options = ReadClientLayoutDraft().Tile!; }
         catch (ArgumentException error) { ClientWindowStatus = error.Message; return; }
-        // Recipient identities and geometry preferences are immutable for this operation.
-        var selected = PinClientWindowSelection();
+        // Recipient identities and geometry preferences are immutable for this operation. Cells follow launch order, not PID.
+        var selected = ClientWindowSlotOrder.Order(PinClientWindowSelection(), Volatile.Read(ref _latestQueue));
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _arrangeStop = stop; long generation = _windowOperationsGeneration;
         IsArrangingClients = true; ClientPlacementResults.Clear();
@@ -273,9 +273,11 @@ public sealed partial class ShellViewModel
     private void StopClientWindowOperations()
     {
         Interlocked.Increment(ref _windowOperationsGeneration);
-        if (_arrangeStop is not null || _displayStop is not null)
+        if (_arrangeStop is not null || _displayStop is not null || _arrivalStop is not null)
             ClientWindowStatus = "Window operations stopped. Requests already sent to Windows cannot be undone automatically.";
-        _arrangeStop?.Cancel(); _displayStop?.Cancel();
+        // Clients waiting for an automatic arrangement are dropped; they count as seen, so they are not arranged later.
+        _arrivedClients = null;
+        _arrangeStop?.Cancel(); _displayStop?.Cancel(); _arrivalStop?.Cancel();
         if (_monitor is IClientWindowBatchControl batch) batch.CancelWindowOperations();
         else if (_monitor is IClientWindowArranger arranger) arranger.CancelWindowOperations();
         else (_monitor as IClientWindowResizer)?.CancelWindowOperations();
@@ -283,7 +285,7 @@ public sealed partial class ShellViewModel
     private async Task DisposeClientWindowFeaturesAsync()
     {
         StopClientWindowOperations();
-        try { await Task.WhenAll(RefreshClientDisplays.Execution, ArrangeClients.Execution, MinimizeCheckedClients.Execution, RestoreCheckedClients.Execution, ResizeCheckedClients.Execution); }
+        try { await Task.WhenAll(RefreshClientDisplays.Execution, ArrangeClients.Execution, MinimizeCheckedClients.Execution, RestoreCheckedClients.Execution, ResizeCheckedClients.Execution, _arrivalWork); }
         catch (OperationCanceledException) { }
         PropertyChanged -= ClientWindowShellStateChanged;
         foreach (var row in Sessions) row.PropertyChanged -= SessionSelectionChanged;
@@ -332,6 +334,7 @@ public sealed partial class ShellViewModel
         TileGap = options.GapDip.ToString(CultureInfo.InvariantCulture);
         TileMinimumWidth = options.MinimumWidthDip.ToString(CultureInfo.InvariantCulture);
         TileMinimumHeight = options.MinimumHeightDip.ToString(CultureInfo.InvariantCulture);
+        ClientArrivalAction = settings.ArrivalAction;
     }
     private ClientWindowLayoutSettings ReadClientLayoutDraft()
     {
@@ -347,7 +350,7 @@ public sealed partial class ShellViewModel
         if (gap is < 0 or > 64) throw new ArgumentException("Gap must be between 0 and 64 logical pixels.");
         if (width is < 160 or > 8192) throw new ArgumentException("Minimum width must be between 160 and 8192 logical pixels.");
         if (height is < 120 or > 8192) throw new ArgumentException("Minimum height must be between 120 and 8192 logical pixels.");
-        return new ClientWindowLayoutSettings(new(gap, width, height, columns), _preferredDisplayId).Validated();
+        return new ClientWindowLayoutSettings(new(gap, width, height, columns), _preferredDisplayId, ClientArrivalAction).Validated();
     }
     private bool TryReadClientLayoutDraft(out ClientWindowLayoutSettings? settings)
     {

@@ -67,6 +67,59 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
         faulting=true;int before=thrown;await Until(()=>thrown>before && Reports()==2);
     });
     [Fact]
+    public Task ManualRefreshReportsADisplayFaultEvenWhenTheLoopStepShowsItsSampleFirst()=>OnUi(async()=>
+    {
+        var monitor=new Monitor();await using var shell=Create(monitor);
+        bool Current()=>shell.ProcessInventoryStatus.StartsWith("Process inventory sampled",StringComparison.Ordinal) && !Field<bool>(shell,"_presentationFaulted");
+        await shell.InitializeAsync();await Until(()=>shell.Overview.ObservedProcesses==8 && Current());
+        // Only presenting an incomplete scan fails, so the loop's own complete samples keep presenting and clear the fault.
+        shell.PropertyChanged+=(_,e)=>
+        {
+            if(e.PropertyName==nameof(ShellViewModel.ProcessInventoryStatus) && shell.ProcessInventoryStatus.StartsWith("Process scan incomplete",StringComparison.Ordinal))
+                throw new InvalidOperationException("Synthetic presentation fault.");
+        };
+        int Reports()=>shell.Events.Count(text=>text.Contains("Display update failed",StringComparison.Ordinal));
+        var dispatcher=Dispatcher.CurrentDispatcher;monitor.RefreshThread=Thread.CurrentThread;
+        async Task RefreshWith(Func<DesktopSnapshot,Task<DesktopSnapshot>> hook)
+        {
+            // A refresh that waited for the loop's sample samples on the pool instead; it then shows a complete scan, so retry.
+            for(int attempt=0;attempt<5;attempt++)
+            {
+                monitor.OnRefresh=hook;shell.Refresh.Execute(null);await shell.Refresh.Execution;
+                if(monitor.OnRefresh is null) return;
+            }
+            Assert.Fail("The refresh never sampled on the dispatcher thread.");
+        }
+        object? Pending() {object? pending=Field<object?>(shell,"_pendingSamplePresentation");return pending?.GetType().GetProperty("Snapshot")!.GetValue(pending);}
+        void AssertRefreshReportedTheFault(int reports)
+        {
+            // The step that showed the forced sample reported its fault once; the refresh then must not claim it is current.
+            Assert.Equal(reports,Reports());
+            Assert.DoesNotContain("Latest available observations shown",shell.Notice);
+            Assert.Contains("Monitoring and launch safety checks continue",shell.Notice);
+            Assert.True(shell.HasErrorNotice,"The refresh did not report that it could not show the latest measurements.");
+            Assert.StartsWith("Refresh could not show the latest measurements",shell.ErrorNotice);
+        }
+        // The loop's coalesced step is already queued and the busy dispatcher reaches it only after the refresh has
+        // published its forced presentation, so that step shows (and fails) it and the refresh's own step finds nothing.
+        await RefreshWith(sample=>
+        {
+            var incomplete=sample with {ProcessInventoryComplete=false};
+            Invoke(shell,"ScheduleSampleUi");
+            dispatcher.BeginInvoke(DispatcherPriority.Send,new Action(()=>SpinWait.SpinUntil(()=>ReferenceEquals(Pending(),incomplete),TimeSpan.FromSeconds(5))));
+            return Task.Run(()=>incomplete);
+        });
+        AssertRefreshReportedTheFault(1);
+        // The refresh's own step meets the same fault: same report, through the same path.
+        shell.DismissError.Execute(null);await Until(Current);
+        await RefreshWith(sample=>Task.FromResult(sample with {ProcessInventoryComplete=false}));
+        AssertRefreshReportedTheFault(2);
+        // A refresh whose presentation completes still says so.
+        shell.DismissError.Execute(null);await Until(Current);
+        shell.Refresh.Execute(null);await shell.Refresh.Execution;
+        Assert.Equal("Latest available observations shown. Measurement times are listed.",shell.Notice);Assert.False(shell.HasErrorNotice);
+    });
+    [Fact]
     public Task QueueStorageFailureMasksCachedCountsAndPreservesInterruptedMetadata()=>OnUi(async()=>
     {
         await using var shell=Create(new Monitor());await shell.InitializeAsync();await Until(()=>shell.Overview.QueuedRequests==0);
@@ -200,17 +253,23 @@ public sealed class OverviewWorkspaceIntegrationTests:IDisposable
     private static T Field<T>(object target,string name)=>(T)(target.GetType().GetField(name,BindingFlags.NonPublic|BindingFlags.Instance)!.GetValue(target)!);
     private static void SetField(object target,string name,object value)=>target.GetType().GetField(name,BindingFlags.NonPublic|BindingFlags.Instance)!.SetValue(target,value);
     private static void Invoke(object target,string name,object value)=>target.GetType().GetMethod(name,BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(target,[value]);
+    private static void Invoke(object target,string name)=>target.GetType().GetMethod(name,BindingFlags.NonPublic|BindingFlags.Instance)!.Invoke(target,null);
     private static Task OnUi(Func<Task> action)=>OverviewWorkspacePresentationTests.OnSta(action);
     private static async Task Until(Func<bool> condition)
     {var elapsed=Stopwatch.StartNew();while(!condition()){if(elapsed.Elapsed>TimeSpan.FromSeconds(6)) throw new TimeoutException("The owned Overview fixture did not publish the expected state.");await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);await Task.Delay(5);}}
     private sealed class Monitor:IDesktopMonitor
     {
         public bool Fail;public int Calls;private long _revision;
+        // Runs once, inside the sampler's serial section, for a call made on RefreshThread: the loop samples on the pool,
+        // so only a manual Refresh that did not wait for the sampler calls from the dispatcher thread.
+        public Thread? RefreshThread;public Func<DesktopSnapshot,Task<DesktopSnapshot>>? OnRefresh;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();Interlocked.Increment(ref Calls);if(Fail) throw new IOException("Synthetic monitor failure.");var now=DateTimeOffset.UtcNow;
             var rows=Enumerable.Range(1,8).Select(pid=>new SessionObservation(pid,new DateTime(2026,1,1).Ticks,"Synthetic",0,"Synthetic",false,true,1,1,0,now)).ToArray();
-            return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows,ProcessObservedUtc:now,ProcessRevision:Interlocked.Increment(ref _revision),ProcessInventoryComplete:true));
+            var snapshot=new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows,ProcessObservedUtc:now,ProcessRevision:Interlocked.Increment(ref _revision),ProcessInventoryComplete:true);
+            if(Thread.CurrentThread==RefreshThread && Interlocked.Exchange(ref OnRefresh,null) is { } hook) return hook(snapshot);
+            return Task.FromResult(snapshot);
         }
         public Task<bool> FocusAsync(SessionObservation row,CancellationToken ct)=>throw new InvalidOperationException("No native focus expected.");
         public Task<bool> RequestCloseAsync(SessionObservation row,CancellationToken ct)=>throw new InvalidOperationException("No native close expected.");

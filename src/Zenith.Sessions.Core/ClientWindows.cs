@@ -1,6 +1,11 @@
 namespace Zenith.Sessions.Core;
 
 public enum ClientWindowAction { Minimize, Restore }
+/// <summary>
+/// What Zenith does with client windows when a client first reports Connected in its log. None (the default) leaves windows
+/// alone; Arrange tiles every connected client on the saved monitor; Minimize minimizes the client that connected.
+/// </summary>
+public enum ClientArrivalWindowAction { None, Arrange, Minimize }
 public sealed record WindowActionResult(bool Applied,string Explanation);
 
 public interface IClientWindowControl
@@ -43,6 +48,7 @@ public sealed record ClientWindowArrangementResult(IReadOnlyList<ClientWindowPla
 public interface IClientWindowArranger
 {
     Task<ClientDisplayList> GetDisplaysAsync(CancellationToken ct);
+    /// <summary>Tiles the clients in the order given (see <see cref="ClientWindowSlotOrder"/>): the first client gets the first cell.</summary>
     Task<ClientWindowArrangementResult> ArrangeAsync(IReadOnlyList<SessionObservation> sessions, string displayId,
         ClientWindowTileOptions options, CancellationToken ct);
     void CancelWindowOperations();

@@ -190,8 +190,8 @@ paging or hard faults. Read-only counters never verify an account or arrival.
 No history is persisted and no per-account polling loops/timers are created.
 Optional client previews are off by default. Select up to four observed windows
 in Sessions, choose Previews, then start. Outputs fit 320x180 without upscaling
-and update at most 1 Hz; Windows internal capture can run faster and original-size
-readback remains. Hidden/minimized/locked/pressured contexts stop and clear them.
+and update at most 1 Hz; Windows internal capture can run faster. Only a GPU-reduced
+copy is read back. Hidden/minimized/locked/pressured contexts stop and clear them.
 Images expire after 3 seconds and are never persisted or used to verify an account.
 Real-client capture availability and CPU/GPU overhead remain unverified.
 The two unmodified Windows SDK projection DLLs have explicit provenance and

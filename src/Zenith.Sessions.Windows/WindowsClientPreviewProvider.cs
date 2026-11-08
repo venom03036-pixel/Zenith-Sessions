@@ -4,7 +4,6 @@ using Windows.Foundation;
 using Windows.Graphics.Capture;
 using Windows.Graphics.DirectX;
 using Windows.Graphics.DirectX.Direct3D11;
-using Windows.Graphics.Imaging;
 using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
@@ -12,7 +11,8 @@ namespace Zenith.Sessions.Windows;
 /// <summary>
 /// Explicit optional WGC window previews, one D3D device and one readback owner. No desktop fallback,
 /// input, client modification or disk output. Native compositor cadence can exceed the output cadence.
-/// Original-size GPU-to-CPU SoftwareBitmap readback still occurs before bounded output sampling.
+/// Each frame is box-filtered on this provider's own GPU device and only the smallest mip level that still
+/// covers the 320x180 output is copied to the CPU (ClientPreviewGpuReadback); the CPU only samples that level.
 /// </summary>
 public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
 {
@@ -21,11 +21,27 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
     private readonly ClientPreviewSelectedRotation _rotation = new();
     private readonly Dictionary<ClientPreviewTarget, long> _delivered = [];
     private IDirect3DDevice? _device;
+    private ClientPreviewGpuReadback? _readback;
     private nint _devicePointer, _contextPointer;
     private long _epoch, _generation, _lastBatch;
     private int _disposing;
     private Task? _dispose;
     private bool _deviceFailed;
+    private readonly IReadOnlyList<string> _clientExecutables;
+    private long _lastReadback;
+
+    public WindowsClientPreviewProvider() : this(NativeClientWindowAdapter.ClientExecutables) { }
+
+    /// <summary>Test seam: only the executable allow-list changes; every PID/start/HWND/visibility check still runs.</summary>
+    internal WindowsClientPreviewProvider(IReadOnlyList<string> clientExecutables)
+        => _clientExecutables = clientExecutables ?? throw new ArgumentNullException(nameof(clientExecutables));
+
+    /// <summary>Width and height of the last GPU level copied into CPU memory (packed into one value). Diagnostic only.</summary>
+    internal PreviewSurfaceSize LastReadbackSize
+    { get { long value = Volatile.Read(ref _lastReadback); return new((int)(value >> 32), (int)value); } }
+
+    /// <summary>GPU bytes held by the readback cache; zero once released. Diagnostic only; read while no batch runs.</summary>
+    internal long ReadbackCachedBytes => _readback?.CachedBytes ?? 0;
 
     public async Task<IReadOnlyList<ClientPreviewResult>> CaptureAsync(IReadOnlyList<ClientPreviewTarget> targets, long generation, CancellationToken ct)
     {
@@ -46,7 +62,7 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
     /// <summary>
     /// Overview batches share the existing device/readback owner. Only attempted prefix rows are
     /// returned; the coordinator schedules the remaining roster. Retaining four native sources
-    /// does not make original-size readback cheaper or promise a per-window frame rate.
+    /// does not promise a per-window frame rate.
     /// </summary>
     public async Task<ClientPreviewBatchResult> CaptureBatchAsync(IReadOnlyList<ClientPreviewTarget> targets, long generation, CancellationToken ct)
     {
@@ -165,36 +181,9 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
             if (Stopped(epoch, ct)) return Result(target, ClientPreviewStatus.Cancelled);
             state = CheckTarget(target);
             if (state != ClientPreviewStatus.Ready) { drop = true; return Result(target, state); }
-            // No cancellable AsTask/timeout race: the borrowed frame and device remain alive until the
-            // actual native operation reaches its terminal state. Cancellation here is deliberately soft.
-            using var bitmap = await SoftwareBitmap.CreateCopyFromSurfaceAsync(frame.Surface).AsTask().ConfigureAwait(false);
-            if (Stopped(epoch, ct)) return Result(target, ClientPreviewStatus.Cancelled);
-            state = CheckTarget(target);
-            if (state != ClientPreviewStatus.Ready) { drop = true; return Result(target, state); }
-            if (bitmap.BitmapPixelFormat != BitmapPixelFormat.Bgra8 || bitmap.PixelWidth != source.Size.Width || bitmap.PixelHeight != source.Size.Height)
-            { drop = true; return Result(target, ClientPreviewStatus.Failed); }
-            byte[] pixels;
-            using (var buffer = bitmap.LockBuffer(BitmapBufferAccessMode.Read))
-            using (var reference = buffer.CreateReference())
-            {
-                if (buffer.GetPlaneCount() != 1) return Result(target, ClientPreviewStatus.Failed);
-                var plane = buffer.GetPlaneDescription(0);
-                if (plane.Width != source.Size.Width || plane.Height != source.Size.Height) return Result(target, ClientPreviewStatus.Failed);
-                nint memory = 0;
-                try
-                {
-                    // Query the reference's native identity, not a CLR RCW/CCW cast. Pointer lifetime is
-                    // bounded by reference + locked buffer + bitmap + borrowed frame in this scope.
-                    Guid iid = new("5B0D3235-4DBA-4D44-865E-8F1D0E4FD04D");
-                    var projected = reference as WinRT.IWinRTObject ?? throw new InvalidOperationException("The bitmap reference has no native projection.");
-                    Marshal.ThrowExceptionForHR(Marshal.QueryInterface(projected.NativeObject.ThisPtr, in iid, out memory));
-                    var getBuffer = Marshal.GetDelegateForFunctionPointer<GetBuffer>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(memory), 3 * nint.Size));
-                    Marshal.ThrowExceptionForHR(getBuffer(memory, out nint data, out uint capacity));
-                    if (capacity > reference.Capacity) throw new InvalidOperationException("The native bitmap capacity is inconsistent.");
-                    pixels = ClientPreviewBufferReader.CopyBgra(data, capacity, plane.StartIndex, plane.Stride, source.Size, ct);
-                }
-                finally { ReleasePointer(ref memory); }
-            }
+            // The GPU copy, mip generation and map finish synchronously on this lane while the borrowed frame and
+            // device are held; no native work is abandoned on a timer. Cancellation is checked before and after.
+            byte[] pixels = ReadSmall(frame.Surface, source.Size, ct);
             if (Stopped(epoch, ct)) return Result(target, ClientPreviewStatus.Cancelled);
             state = CheckTarget(target);
             if (state != ClientPreviewStatus.Ready) { drop = true; return Result(target, state); }
@@ -211,12 +200,31 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         { drop = true; return Result(target, error is NotSupportedException or UnauthorizedAccessException or DllNotFoundException or EntryPointNotFoundException ? ClientPreviewStatus.Unsupported : ClientPreviewStatus.Failed); }
         finally { if (drop) Drop(target); }
     }
+    private byte[] ReadSmall(IDirect3DSurface surface, PreviewSurfaceSize size, CancellationToken ct)
+    {
+        var readback = _readback ?? throw new InvalidOperationException("The preview readback was released.");
+        nint access = 0, texture = 0;
+        try
+        {
+            // Query the surface's native identity, not a CLR cast. The texture reference lives only in this scope,
+            // inside the borrowed frame's lifetime.
+            var projected = surface as WinRT.IWinRTObject ?? throw new InvalidOperationException("The capture surface has no native projection.");
+            Guid accessId = new("A9B3D012-3DF2-4EE3-B8D1-8695F457D3C1"), textureId = new("6F15AAF2-D208-4E89-9AB4-489535D34F9C");
+            ClientPreviewGpuReadback.Check(Marshal.QueryInterface(projected.NativeObject.ThisPtr, in accessId, out access));
+            var getInterface = Marshal.GetDelegateForFunctionPointer<GetInterface>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(access), 3 * nint.Size));
+            ClientPreviewGpuReadback.Check(getInterface(access, in textureId, out texture));
+            byte[] pixels = readback.Read(texture, size, ct, out var read);
+            Volatile.Write(ref _lastReadback, (long)read.Width << 32 | (uint)read.Height);
+            return pixels;
+        }
+        finally { ReleasePointer(ref texture); ReleasePointer(ref access); }
+    }
     private bool Stopped(long epoch, CancellationToken ct) => ct.IsCancellationRequested || Volatile.Read(ref _disposing) != 0 || epoch != Volatile.Read(ref _epoch);
-    private static ClientPreviewStatus CheckTarget(ClientPreviewTarget target)
+    private ClientPreviewStatus CheckTarget(ClientPreviewTarget target)
     {
         if (!OperatingSystem.IsWindows() || target is null || !target.Process.IsValid || target.Process.HostId is not null || target.Window == 0) return ClientPreviewStatus.InvalidClient;
         var session = new SessionObservation(target.Process.ProcessId, target.Process.ProcessStartUtcTicks, "", target.Window, "", false, false, 0, 0, null, DateTimeOffset.UtcNow);
-        if (!NativeClientWindowAdapter.SameClient(session)) return ClientPreviewStatus.InvalidClient;
+        if (!NativeClientWindowAdapter.SameClient(session, _clientExecutables)) return ClientPreviewStatus.InvalidClient;
         if (Native.IsIconic(target.Window)) return ClientPreviewStatus.Minimized;
         return Native.IsWindowVisible(target.Window) ? ClientPreviewStatus.Ready : ClientPreviewStatus.Hidden;
     }
@@ -227,13 +235,27 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         try
         {
             Marshal.ThrowExceptionForHR(Native.D3D11CreateDevice(0, 1, 0, 0x20, 0, 0, 7, out _devicePointer, out _, out _contextPointer));
+            ProtectSharedContext(_devicePointer);
+            _readback = new ClientPreviewGpuReadback(_devicePointer, _contextPointer);
             Guid iid = new("54EC77FA-1377-44E6-8C32-88FD5F44C84C");
             Marshal.ThrowExceptionForHR(Marshal.QueryInterface(_devicePointer, in iid, out dxgi));
             Marshal.ThrowExceptionForHR(Native.CreateDirect3D11DeviceFromDXGIDevice(dxgi, out inspectable));
             _device = WinRT.MarshalInterface<IDirect3DDevice>.FromAbi(inspectable);
         }
-        catch { ReleasePointer(ref _contextPointer); ReleasePointer(ref _devicePointer); throw; }
+        catch { _readback?.Dispose(); _readback = null; ReleasePointer(ref _contextPointer); ReleasePointer(ref _devicePointer); throw; }
         finally { ReleasePointer(ref inspectable); ReleasePointer(ref dxgi); }
+    }
+    /// <summary>
+    /// The free-threaded WGC frame pool shares this private device. Multithread protection serializes its use of the
+    /// immediate context with this lane's copy/mip/map calls. Best effort: an older runtime without it keeps the lane's
+    /// own serialization.
+    /// </summary>
+    private static void ProtectSharedContext(nint device)
+    {
+        Guid iid = new("9B7E4E00-342C-4106-A19F-4F2704F689F0");
+        if (Marshal.QueryInterface(device, in iid, out nint multithread) < 0 || multithread == 0) return;
+        try { Marshal.GetDelegateForFunctionPointer<SetMultithreadProtected>(Marshal.ReadIntPtr(Marshal.ReadIntPtr(multithread), 5 * nint.Size))(multithread, 1); }
+        finally { Marshal.Release(multithread); }
     }
     private static GraphicsCaptureItem CreateItem(nint window)
     {
@@ -271,6 +293,8 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         try { _sources.ReleaseAll(); } catch (ClientPreviewException) { failed = true; }
         if (_sources.Count == 0)
         {
+            // The readback borrows the device/context pointers, so its textures go first.
+            try { _readback?.Dispose(); _readback = null; } catch { failed = true; }
             try { _device?.Dispose(); _device = null; } catch { failed = true; }
             if (_device is null) { ReleasePointer(ref _contextPointer); ReleasePointer(ref _devicePointer); }
         }
@@ -351,7 +375,8 @@ public sealed class WindowsClientPreviewProvider : IClientPreviewBatchProvider
         }
     }
     [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int CreateForWindow(nint self, nint window, ref Guid iid, out nint item);
-    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int GetBuffer(nint self, out nint data, out uint capacity);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int GetInterface(nint self, in Guid iid, out nint value);
+    [UnmanagedFunctionPointer(CallingConvention.StdCall)] private delegate int SetMultithreadProtected(nint self, int protect);
     private static class Native
     {
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsIconic(nint window);

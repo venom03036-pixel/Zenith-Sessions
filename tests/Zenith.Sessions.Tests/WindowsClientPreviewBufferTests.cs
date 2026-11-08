@@ -16,6 +16,62 @@ public sealed class WindowsClientPreviewBufferTests
     public void OutputFitsThePreviewAndNeverUpscales(int width, int height, int outputWidth, int outputHeight)
         => Assert.Equal((outputWidth, outputHeight), ClientPreviewBufferReader.OutputSize(new(width, height)));
 
+    [Theory]
+    [InlineData(1920, 1080, 2, 480, 270)]
+    [InlineData(3840, 2160, 3, 480, 270)]
+    [InlineData(1280, 720, 2, 320, 180)]
+    [InlineData(641, 361, 1, 320, 180)]
+    [InlineData(1366, 768, 2, 341, 192)]
+    [InlineData(400, 800, 2, 100, 200)]
+    [InlineData(1, 8192, 5, 1, 256)]
+    [InlineData(639, 359, 0, 639, 359)]
+    [InlineData(320, 180, 0, 320, 180)]
+    [InlineData(200, 100, 0, 200, 100)]
+    public void ReadbackUsesTheSmallestGpuLevelThatStillCoversThePreview(int width, int height, int level, int levelWidth, int levelHeight)
+    {
+        PreviewSurfaceSize source = new(width, height);
+        Assert.Equal(level, ClientPreviewBufferReader.ReadbackLevel(source));
+        var read = ClientPreviewBufferReader.LevelSize(source, level);
+        Assert.Equal(new PreviewSurfaceSize(levelWidth, levelHeight), read);
+        // The read level is never smaller than the output, so the CPU step only ever shrinks it.
+        var output = ClientPreviewBufferReader.OutputSize(source);
+        Assert.True(read.Width >= output.Width && read.Height >= output.Height);
+        var next = ClientPreviewBufferReader.LevelSize(source, level + 1);
+        Assert.True(next.Width < output.Width || next.Height < output.Height || next == read);
+    }
+
+    [Fact]
+    public void ExplicitOutputSamplingNeverUpscalesTheReadLevel()
+    {
+        nint memory = Marshal.AllocHGlobal(32);
+        try
+        {
+            for (int index = 0; index < 8; index++) Marshal.WriteInt32(memory, index * 4, index + 1);
+            // A 4x2 level sampled into 2x1 keeps the top row's first and third pixels.
+            byte[] result = ClientPreviewBufferReader.CopyBgra(memory, 32, 0, 16, new(4, 2), (2, 1), default);
+            Assert.Equal(new byte[] { 1, 0, 0, 255, 3, 0, 0, 255 }, result);
+            Assert.Throws<ArgumentException>(() => ClientPreviewBufferReader.CopyBgra(memory, 32, 0, 16, new(4, 2), (5, 1), default));
+            Assert.Throws<ArgumentException>(() => ClientPreviewBufferReader.CopyBgra(memory, 32, 0, 16, new(4, 2), (0, 1), default));
+        }
+        finally { Marshal.FreeHGlobal(memory); }
+    }
+
+    [Theory]
+    [InlineData(3840, 2160)]
+    [InlineData(8192, 1012)]
+    [InlineData(1012, 8192)]
+    [InlineData(2880, 2880)]
+    public void OneGpuReadbackEntryForTheLargestAllowedSourceFitsTheBudgetsReadbackAllowance(int width, int height)
+    {
+        // The shared surface budget already reserves MaximumReadbackBytes for readback; the mip chain plus staging
+        // copy (or the full-size staging copy when mips are unavailable) must fit inside it.
+        PreviewSurfaceSize source = new(width, height);
+        Assert.True(source.Valid);
+        long mipped = ClientPreviewGpuReadback.EntryBytes(source, ClientPreviewBufferReader.ReadbackLevel(source));
+        Assert.InRange(mipped, source.ReservedBytes + 1, ClientPreviewBufferReader.MaximumReadbackBytes);
+        Assert.InRange(ClientPreviewGpuReadback.EntryBytes(source, 0), 1, ClientPreviewBufferReader.MaximumReadbackBytes);
+    }
+
     [Fact]
     public void AggregateBudgetIncludesPoolsHeldDrainAndOneNativeCpuReadback()
     {

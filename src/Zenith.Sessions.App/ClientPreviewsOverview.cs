@@ -144,10 +144,11 @@ public sealed partial class ClientPreviewsViewModel
         && inventory.ProcessObservedUtc is { } completed && row.ObservedUtc<=completed
         && row.ObservedUtc-now<=ClientPreviewLimits.MaximumFutureSkew && now-row.ObservedUtc<=RecentClientHistoryReducer.MaximumInventoryAge
         && row.ProcessStartUtcTicks<=row.ObservedUtc.UtcTicks;
-    // An overview roster change publishes Running=false/Stopping=true with the retained exact-identity
-    // results while Core releases the previous sources. Stop, failed cleanup and disposal publish no
-    // results; Fence and lease expiry are excluded by CanRetainOverviewPixels.
-    private static bool OverviewRosterRelease(ClientPreviewSnapshot snapshot)=>!snapshot.Running && snapshot.Stopping
+    // A pending overview request publishes Running=false/Stopping=true with its roster results while Core
+    // releases the previous sources: a roster change (RosterReplacement, with the retained exact-identity
+    // frames) or an explicit start behind earlier cleanup, such as pinned Sessions previews. Stop, failed
+    // cleanup and disposal publish no results; Fence and lease expiry are excluded by CanRetainOverviewPixels.
+    private static bool OverviewRequestAwaitingRelease(ClientPreviewSnapshot snapshot)=>!snapshot.Running && snapshot.Stopping
         && snapshot.Mode==ClientPreviewMode.Overview && snapshot.Results.Count>0;
     private bool CanRetainOverviewPixels(ClientPreviewSnapshot snapshot)=>IsOverview && snapshot.Mode==ClientPreviewMode.Overview
         && Volatile.Read(ref _stopReason) is null && _canUse() && OverviewInventoryFresh(_clock.GetUtcNow())

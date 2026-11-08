@@ -113,8 +113,9 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
         long generation = Interlocked.Read(ref _generation);
         ArgumentNullException.ThrowIfNull(sessions); ArgumentNullException.ThrowIfNull(options); options.Validated();
         if (sessions.Count > 128) throw new ArgumentException("Select at most 128 clients in one arrangement request.", nameof(sessions));
-        var ordered = sessions.OrderBy(session => session.ProcessId).ThenBy(session => session.ProcessStartUtcTicks)
-            .ThenBy(session => session.Window.ToInt64()).ToArray();
+        // Copy before the first await, in the caller's slot order (ClientWindowSlotOrder): the first client gets the first cell.
+        // Later caller selection changes cannot redirect queued work.
+        var ordered = sessions.ToArray();
         if (ordered.Length == 0) return new(Array.Empty<ClientWindowPlacementResult>(), false, "Check the clients to arrange.");
         var results = new List<ClientWindowPlacementResult>(ordered.Length);
         bool acquired = false;
@@ -147,12 +148,15 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
                 if (posted != WindowPostStatus.Accepted)
                 { results.Add(new(session, bounds, Map(posted), PostExplanation(posted))); continue; }
                 var (confirmed, invalid) = await ConfirmBoundsAsync(session, bounds, display, generation, ct).ConfigureAwait(false);
+                // Whether the client reported the target monitor after the move; null when that is unknown (no check or no geometry).
+                bool? reachedTarget = null;
                 if (crossScale && !confirmed && !invalid && !Stopped(generation, ct))
                 {
                     // Post the same rectangle exactly once more, only after the client reports the target monitor and scale
                     // (so this post cannot cause another scale change) and behind the same display and panic checks.
                     var landed = await Task.Run(() => adapter.Geometry(session)).ConfigureAwait(false);
-                    if (landed is { IsValid: true } && SameDisplay(landed.Display, display))
+                    reachedTarget = landed is { IsValid: true } ? SameDisplay(landed.Display, display) : null;
+                    if (reachedTarget == true)
                     {
                         if (!await DisplayStillCurrentAsync(display, ct).ConfigureAwait(false))
                         { results.Add(new(session, bounds, ClientWindowPlacementStatus.DisplayUnavailable, "Display workarea or scale changed. Refresh displays before arranging again.")); continue; }
@@ -171,7 +175,8 @@ internal sealed class ClientWindowOperations(SemaphoreSlim lane, IClientWindowAd
                     Stopped(generation, ct) ? "The resize was posted before cancellation; completion is unconfirmed and cannot be recalled."
                         : invalid ? "The observed client or window changed after the request."
                         : confirmed ? "Physical window bounds confirmed without requesting activation."
-                        : crossScale ? "The client resized itself when it moved to a monitor with a different scale. Arrange again; if the size still differs, client size constraints may apply."
+                        : reachedTarget == true ? "The client resized itself when it moved to a monitor with a different scale. Arrange again; if the size still differs, client size constraints may apply."
+                        : reachedTarget == false ? "The client did not reach the selected monitor, which uses a different scale. Arrange again; if it stays on its current monitor, the client may be limiting where its window can go."
                         : "Windows accepted the request but did not confirm these bounds. Client size constraints may apply."));
             }
             return Finish();
