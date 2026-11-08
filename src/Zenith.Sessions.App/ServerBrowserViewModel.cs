@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Globalization;
 using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.App;
@@ -14,11 +15,16 @@ public sealed class PublicServerRow(RobloxPublicServer server)
     public string Availability=>Server.HasOpenSlots?"Space reported":"Full when observed";
     public string Ping=>Server.Ping is >=0?$"{Server.Ping} ms":"Unavailable";
     public string Observed=>Server.ObservedUtc.ToLocalTime().ToString("HH:mm:ss");
+    /// <summary>Reported players over reported capacity, clamped to 0..1 for the fill meter. Capacity is advisory.</summary>
+    public double FillRatio=>Server.MaxPlayers<=0?0:Math.Clamp((double)Server.Playing/Server.MaxPlayers,0,1);
+    public string Fps=>Server.Fps is { } fps && double.IsFinite(fps) && fps>=0?fps.ToString("0.0",CultureInfo.CurrentCulture):"Unavailable";
 }
 
-/// <summary>User-initiated, one-page public browsing. No polling, launch, vault access or raw-link persistence.</summary>
+/// <summary>User-initiated public browsing, one 25-row page per click. No polling, launch, vault access or raw-link persistence.</summary>
 public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
 {
+    /// <summary>Four 25-row pages of one remote query; a later page drops the oldest rows, so memory stays bounded.</summary>
+    public const int MaximumLoadedRows=100;
     private readonly IRobloxPublicServerDirectory _directory;
     private readonly Func<bool> _canUse;
     private readonly TimeProvider _clock;
@@ -30,11 +36,12 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     private string _input="",_status="Paste a Roblox game or public server link, or use an account's preferred game.";
     private string? _cursor;
     private DateTimeOffset _notBefore;
-    private bool _busy,_stopping,_rowsUsable,_replacingDestination;
+    private bool _busy,_stopping,_rowsUsable,_replacingDestination,_droppedOlderRows;
     private RobloxRequestedDestination? _destination;
     private PublicServerRow? _selected;
     private RobloxPublicServer? _requestedServerObservation;
-    // Retain one raw page for reversible page-local ping sorting. Remote query changes discard it.
+    // The loaded rows of the current remote query, oldest first, at most MaximumLoadedRows; kept raw so local ping
+    // sorting is reversible. A server seen again keeps only its newest observation. Remote query changes discard them all.
     private PublicServerRow[] _pageRows=[];
     private ServerOrderChoice _serverOrder;
     private bool _hideFull;
@@ -42,7 +49,7 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
         new(ServerOrderChoice.ServerDefault,"Server order"),
         new(ServerOrderChoice.MostFull,"Most full · Roblox order"),
         new(ServerOrderChoice.MostEmpty,"Most empty · Roblox order"),
-        new(ServerOrderChoice.BestPing,"Best reported ping · this page")]);
+        new(ServerOrderChoice.BestPing,"Best reported ping · loaded pages")]);
     public ServerOrderChoice SelectedServerOrder
     {
         get=>_serverOrder;
@@ -67,12 +74,13 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
     {
         ServerOrderChoice.MostFull=>"Roblox is asked for occupancy descending across pages. Capacity is advisory and can change.",
         ServerOrderChoice.MostEmpty=>"Roblox is asked for occupancy ascending across pages. Capacity is advisory and can change.",
-        ServerOrderChoice.BestPing=>"Lowest reported ping on this page only; unknown ping is last. Requests use ascending occupancy. This is not a client latency test or a global ranking.",
-        _=>"Original ascending server order from Roblox. Browse starts over and Next loads another page."
+        ServerOrderChoice.BestPing=>"Lowest reported ping among the loaded pages only; unknown ping is last. Requests use ascending occupancy. This is not a client latency test or a global ranking.",
+        _=>"Original ascending server order from Roblox. Browse starts over, and Load next 25 adds another page below the loaded rows."
     })+(HideFull?" Roblox is asked to exclude full servers before paging.":" Full servers may be included.");
     public string PageSummary=>_pageRows.Length==0?"No server observations loaded. Browse explicitly to load at most 25 rows."
-        :HideFull && Servers.Count==0?$"All {_pageRows.Length} observations on this page were full. Show full servers or use Next when available."
-        :$"Showing {Servers.Count} of {_pageRows.Length} observations on this page"+(HideFull?" · full servers hidden.":".");
+        :HideFull && Servers.Count==0?$"All {_pageRows.Length} loaded observations were full. Show full servers or load the next 25 when available."
+        :$"Showing {Servers.Count} of {_pageRows.Length} loaded observations"+(HideFull?" · full servers hidden":"")
+            +(_droppedOlderRows?$" · older rows were dropped; only the newest {MaximumLoadedRows} are kept":"")+".";
     public string LinkInput
     {
         get=>_input;
@@ -166,9 +174,9 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
         _rowsUsable=false;ClearRequestedObservation();
         _requestStop=CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);IsBusy=true;Raise(nameof(CanNext));Raise(nameof(CanUseServer));
         Status="Loading one page of public server observations…";
-        return _active=FetchAsync(query,generation,_requestStop);
+        return _active=FetchAsync(query,next,generation,_requestStop);
     }
-    private async Task FetchAsync(RobloxPublicServerQuery query,long generation,CancellationTokenSource stop)
+    private async Task FetchAsync(RobloxPublicServerQuery query,bool next,long generation,CancellationTokenSource stop)
     {
         bool Current()=>!_stopping && !stop.IsCancellationRequested && generation==_generation && _canUse();
         void RejectPage()
@@ -196,9 +204,12 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
                     || result.Servers.Select(s=>Guid.ParseExact(s.JobId,"D")).Distinct().Count()!=result.Servers.Count
                     || result.NextPageCursor is { } cursor && (cursor.Length is <1 or >2048 || cursor.Any(char.IsControl)))
                 {RejectPage();return;}
-                ClearRows();
+                var page=result.Servers.Select(server=>new PublicServerRow(server)).ToArray();bool dropped=false;
+                // Browse starts the list over; Load next 25 adds its page to the same query's loaded rows. The used cursor is spent either way.
+                if(next) {_cursor=null;page=AddPage(_pageRows,page,out dropped);}
+                else ClearRows();
                 if(!Current())return;
-                _pageRows=result.Servers.Select(server=>new PublicServerRow(server)).ToArray();_rowsUsable=true;ApplyPageView();
+                _pageRows=page;_droppedOlderRows|=dropped;_rowsUsable=true;ApplyPageView();
                 if(!Current())return;
                 _cursor=result.NextPageCursor;
             }
@@ -254,10 +265,22 @@ public sealed class ServerBrowserViewModel : Observable,IAsyncDisposable
         }
         if(generation!=_generation)return;
         var now=_clock.GetUtcNow();
-        SelectedServer=selected is not null && Servers.Contains(selected) && IsFresh(selected.Server,now)?selected:null;
+        // A selected server that a later page observed again follows to its newest row.
+        var kept=selected is null?null:Array.Find(visible,row=>ReferenceEquals(row,selected))??Array.Find(visible,row=>SameServer(row,selected));
+        SelectedServer=kept is not null && IsFresh(kept.Server,now)?kept:null;
         Raise(nameof(PageSummary));Raise(nameof(CanUseServer));
     }
-    private void ClearRows() {_rowsUsable=false;_pageRows=[];_cursor=null;Servers.Clear();SelectedServer=null;Raise(nameof(PageSummary));Raise(nameof(CanNext));}
+    // Pages repeat servers as players come and go: the newest copy replaces the older one and takes its newer place.
+    private static PublicServerRow[] AddPage(PublicServerRow[] loaded,PublicServerRow[] page,out bool dropped)
+    {
+        var renewed=page.Select(row=>Guid.ParseExact(row.JobId,"D")).ToHashSet();
+        var rows=loaded.Where(row=>!renewed.Contains(Guid.ParseExact(row.JobId,"D"))).Concat(page).ToArray();
+        dropped=rows.Length>MaximumLoadedRows;
+        return dropped?rows[^MaximumLoadedRows..]:rows;
+    }
+    private static bool SameServer(PublicServerRow row,PublicServerRow other)=>row.Server.PlaceId==other.Server.PlaceId
+        && Guid.TryParseExact(row.JobId,"D",out var id) && Guid.TryParseExact(other.JobId,"D",out var otherId) && id==otherId;
+    private void ClearRows() {_rowsUsable=false;_pageRows=[];_cursor=null;_droppedOlderRows=false;Servers.Clear();SelectedServer=null;Raise(nameof(PageSummary));Raise(nameof(CanNext));}
     private bool IsCurrentRow(PublicServerRow row)=>_rowsUsable && _pageRows.Contains(row) && Servers.Contains(row)
         && _destination?.PlaceId==row.Server.PlaceId;
     private static bool IsFresh(RobloxPublicServer server,DateTimeOffset now)=>server.ObservedUtc!=default

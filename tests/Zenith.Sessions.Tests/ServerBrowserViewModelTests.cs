@@ -258,10 +258,10 @@ public sealed class ServerBrowserViewModelTests
         var directory=new FakeDirectory {Result=new(RobloxPublicServerStatus.PageLimit,[Observation(1,20)],"next-page",null,"Synthetic full page")};
         await using var vm=new ServerBrowserViewModel(directory);vm.UsePreferredPlace(Place);vm.HideFull=true;
         vm.Browse.Execute(null);await vm.Browse.Execution;
-        Assert.Empty(vm.Servers);Assert.Contains("All 1 observations on this page were full",vm.PageSummary);Assert.True(vm.CanNext);
+        Assert.Empty(vm.Servers);Assert.Contains("All 1 loaded observations were full",vm.PageSummary);Assert.True(vm.CanNext);
         directory.Result=new(RobloxPublicServerStatus.Complete,[Observation(2,2)],null,null,"Synthetic next page");
         vm.Next.Execute(null);await vm.Next.Execution;
-        Assert.Equal("next-page",directory.Queries[1].Cursor);Assert.Single(vm.Servers);Assert.Contains("Showing 1 of 1",vm.PageSummary);
+        Assert.Equal("next-page",directory.Queries[1].Cursor);Assert.Single(vm.Servers);Assert.Contains("Showing 1 of 2 loaded observations",vm.PageSummary);
         Assert.All(directory.Queries,query=>Assert.True(query.ExcludeFullGames));
         vm.HideFull=false;Assert.Empty(vm.Servers);Assert.False(vm.CanNext);Assert.Equal(2,directory.Queries.Count);
     }
@@ -279,9 +279,9 @@ public sealed class ServerBrowserViewModelTests
         vm.SelectedServer=vm.Servers[0];var previous=vm.SelectedServer;
         directory.Pending=null;directory.Result=new(RobloxPublicServerStatus.PageLimit,[Observation(4,20),Observation(5,3,ping:9)],"following",null,"Synthetic second page");
         vm.Next.Execute(null);await vm.Next.Execution;
-        Assert.Equal("remote-asc-next",directory.Queries[1].Cursor);Assert.Null(vm.SelectedServer);Assert.DoesNotContain(previous!,vm.Servers);
-        Assert.Equal(Observation(5,3).JobId,vm.Servers[0].JobId);
-        Assert.Equal(2,vm.Servers.Count);Assert.DoesNotContain(vm.Servers,row=>row.Server.JobId==Observation(1,20).JobId);
+        // The next page is added to the loaded one, so the selection stays and best ping orders every loaded row; unknown ping is last.
+        Assert.Equal("remote-asc-next",directory.Queries[1].Cursor);Assert.Same(previous,vm.SelectedServer);
+        Assert.Equal(new[]{1,5,3,2,4}.Select(id=>Observation(id,1).JobId),vm.Servers.Select(row=>row.JobId));
         vm.SelectedServerOrder=ServerOrderChoice.MostEmpty;vm.Browse.Execute(null);await vm.Browse.Execution;
         Assert.Null(directory.Queries[2].Cursor);Assert.All(directory.Queries,query=>{Assert.Equal(25,query.PageSize);Assert.Equal(1,query.MaxPages);});
     }
@@ -321,7 +321,8 @@ public sealed class ServerBrowserViewModelTests
         Assert.Single(directory.Queries);Assert.Single(vm.Servers);Assert.True(vm.CanNext);Assert.Contains("No request was sent",vm.Status);
         directory.Result=new(RobloxPublicServerStatus.Complete,[Observation(2,1,when:clock.GetUtcNow())],null,null,"Synthetic next page");
         clock.Advance(TimeSpan.FromSeconds(2));vm.Next.Execute(null);await vm.Next.Execution;
-        Assert.Equal(2,directory.Queries.Count);Assert.Equal("next",directory.Queries[1].Cursor);Assert.Equal(Observation(2,1).JobId,Assert.Single(vm.Servers).JobId);
+        Assert.Equal(2,directory.Queries.Count);Assert.Equal("next",directory.Queries[1].Cursor);
+        Assert.Equal(new[]{Observation(1,1).JobId,Observation(2,1).JobId},vm.Servers.Select(row=>row.JobId));
     }
     [Theory]
     [InlineData(RobloxPublicServerStatus.Complete)]
@@ -338,20 +339,63 @@ public sealed class ServerBrowserViewModelTests
         Assert.Contains("No public servers were returned in this response",vm.Status);Assert.DoesNotContain("request limit",vm.Status);
     }
     [Fact]
-    public async Task MultiplePagesAndLocalPingOrdersRetainOnlyTheCurrentTwentyFiveObservations()
+    public async Task MultiplePagesAndLocalPingOrdersRetainAtMostTheNewestHundredObservations()
     {
         var directory=new FakeDirectory();await using var vm=new ServerBrowserViewModel(directory);vm.UsePreferredPlace(Place);
-        for(int page=0;page<5;page++)
+        for(int page=0;page<6;page++)
         {
             directory.Result=new(RobloxPublicServerStatus.PageLimit,Enumerable.Range(1+page*25,25)
                 .Select(id=>Observation(id,id%2==0?20:1)).ToArray(),$"page-{page+1}",null,"Synthetic bounded page");
             var command=page==0?vm.Browse:vm.Next;command.Execute(null);await command.Execution;
-            vm.SelectedServerOrder=ServerOrderChoice.BestPing;Assert.Equal(25,vm.Servers.Count);
-            vm.SelectedServerOrder=ServerOrderChoice.ServerDefault;Assert.Equal(25,vm.Servers.Count);
-            Assert.Equal(directory.Result.Servers.Select(row=>row.JobId).Order(),vm.Servers.Select(row=>row.JobId).Order());
+            int loaded=Math.Min(100,(page+1)*25);
+            vm.SelectedServerOrder=ServerOrderChoice.BestPing;Assert.Equal(loaded,vm.Servers.Count);
+            vm.SelectedServerOrder=ServerOrderChoice.ServerDefault;Assert.Equal(loaded,vm.Servers.Count);
+            // Four 25-row pages fit; each later page drops the oldest rows so memory stays bounded.
+            Assert.Equal(Enumerable.Range(Math.Max(1,(page+1)*25-99),loaded).Select(id=>Observation(id,1).JobId),vm.Servers.Select(row=>row.JobId));
+            Assert.Equal(page>=4,vm.PageSummary.Contains("only the newest 100 are kept",StringComparison.Ordinal));
         }
-        Assert.Equal(5,directory.Queries.Count);vm.CancelWork(true);vm.HideFull=true;vm.HideFull=false;
+        Assert.Equal(6,directory.Queries.Count);vm.CancelWork(true);vm.HideFull=true;vm.HideFull=false;
         Assert.Empty(vm.Servers);Assert.False(vm.CanNext);Assert.Null(vm.SelectedServer);
+        Assert.DoesNotContain("newest 100",vm.PageSummary,StringComparison.Ordinal);
+    }
+    [Fact]
+    public async Task LoadNextAddsItsRowsAndARepeatedServerKeepsOnlyItsNewestObservation()
+    {
+        var first=new RobloxPublicServer(Place,Job,5,20,null,40,DateTimeOffset.UtcNow);
+        var directory=new FakeDirectory {Result=new(RobloxPublicServerStatus.PageLimit,[Observation(1,3),first,Observation(2,8)],"page-2",null,"Synthetic first page")};
+        await using var vm=new ServerBrowserViewModel(directory);vm.UsePreferredPlace(Place);vm.Browse.Execute(null);await vm.Browse.Execution;
+        vm.SelectedServer=vm.Servers[1];
+        // Roblox repeats servers across pages as players move; the same GUID in another letter case is the same server.
+        var renewed=first with {JobId=Job.ToUpperInvariant(),Playing=7,Fps=59.94};
+        directory.Result=new(RobloxPublicServerStatus.Complete,[Observation(3,1),renewed],null,null,"Synthetic second page");
+        vm.Next.Execute(null);await vm.Next.Execution;
+        Assert.Equal("page-2",directory.Queries[1].Cursor);
+        Assert.Equal(new[]{Observation(1,3).JobId,Observation(2,8).JobId,Observation(3,1).JobId,renewed.JobId},vm.Servers.Select(row=>row.JobId));
+        var latest=vm.Servers[3];Assert.Same(renewed,latest.Server);Assert.Equal("7 / 20",latest.Occupancy);
+        Assert.Same(latest,vm.SelectedServer);Assert.True(vm.CanUseServer);Assert.False(vm.CanNext);
+        Assert.Equal("Showing 4 of 4 loaded observations.",vm.PageSummary);
+        vm.UseServer.Execute(null);Assert.Equal(7,vm.RequestedServerObservation!.Playing);Assert.Equal(Job,vm.Destination!.JobId);
+        // A changed order still discards every loaded page, and Browse starts the list over with one page.
+        vm.SelectedServerOrder=ServerOrderChoice.MostFull;Assert.Empty(vm.Servers);Assert.False(vm.CanNext);Assert.Equal(2,directory.Queries.Count);
+        directory.Result=new(RobloxPublicServerStatus.PageLimit,[Observation(4,2)],"again",null,"Synthetic restart");
+        vm.Browse.Execute(null);await vm.Browse.Execution;
+        Assert.Null(directory.Queries[2].Cursor);Assert.Equal(Observation(4,2).JobId,Assert.Single(vm.Servers).JobId);Assert.Null(vm.SelectedServer);
+    }
+    [Theory]
+    [InlineData(5,20,0.25)]
+    [InlineData(0,20,0.0)]
+    [InlineData(20,20,1.0)]
+    [InlineData(21,20,1.0)]
+    [InlineData(-1,20,0.0)]
+    [InlineData(3,0,0.0)]
+    public void ARowsFillMeterIsReportedPlayersOverCapacityClampedToTheBar(int playing,int maxPlayers,double expected)
+        =>Assert.Equal(expected,new PublicServerRow(new(Place,Job,playing,maxPlayers,null,null,DateTimeOffset.UtcNow)).FillRatio,6);
+    [Fact]
+    public void ARowShowsReportedFpsToOneDecimalAndSaysWhenItIsUnavailable()
+    {
+        Assert.Matches("^59[.,]9$",Row(59.94).Fps);Assert.Matches("^0[.,]0$",Row(0).Fps);
+        foreach(double? fps in new double?[]{null,double.NaN,double.PositiveInfinity,-1})Assert.Equal("Unavailable",Row(fps).Fps);
+        static PublicServerRow Row(double? fps)=>new(new(Place,Job,1,20,fps,null,DateTimeOffset.UtcNow));
     }
     private static RobloxPublicServer Observation(int id,int playing,int maxPlayers=20,int? ping=null,DateTimeOffset? when=null)
         =>new(Place,$"00000000-0000-0000-0000-{id:D12}",playing,maxPlayers,null,ping,when??DateTimeOffset.UtcNow);
