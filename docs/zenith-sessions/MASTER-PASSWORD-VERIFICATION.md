@@ -35,6 +35,8 @@ Dispatch acceptance is recorded under the same short key gate as Lock. A request
 
 `password-review-acceptance.trx`: 65/65 focused password, presentation and dispatch cases passed. A preceding mixed-format fixture raced a transient file-sharing denial during atomic replacement; its bounded reader retry and unconditional owner drain now preserve the original assertion outcome instead of masking it with disposal failure. No actual native process was started.
 
+The same new legacy and accepted-dispatch fixtures were then executed against the pre-repair `3f890d9` vault implementation: `password-review-before.trx` records both intended behavioral failures. `Run-BeforeReviewProof.ps1` restores the exact fixed source bytes in its finally block. Rebuilding the fixed implementation passes both again in `artifacts/sessions-tests-0.51-d4-portable/portable-codec-and-master-after.trx` (16/16 combined cases, including 14 independent portable-codec cases). No compile failure was counted as the failing-before proof.
+
 ## Integrated checkpoint
 
 Integration retained all existing account observations, update, diagnostics, News and process-control owners while adding password lock/disposal. Dashboard unlock still restores the saved update-check schedule. The merged password/idle-lock/shutdown checks passed **85/85**, no skips (`artifacts/completion-integration/password-integrated.trx`). Follow-up review of legacy envelopes and the Lock/dispatch boundary remains separate from this checkpoint.
