@@ -1324,13 +1324,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         }
     }
     private LaunchAdmission ReadLaunchAdmission(IReadOnlyList<LaunchOperation> operations)
-        => ReadLaunchAdmissionForBudget(operations,LaunchResourceBudget.FromSettings(Volatile.Read(ref _savedSettings).Capacity!));
+        => ReadLaunchAdmissionForBudget(operations,LaunchResourceBudget.FromSettings(Volatile.Read(ref _savedSettings).Capacity!),false);
     private LaunchResourceBudget ReadNewLaunchBudget(LaunchIntent _)
         => LaunchResourceBudget.FromSettings(Volatile.Read(ref _savedSettings).Capacity!);
     private LaunchAdmission ReadCandidateLaunchAdmission(LaunchOperation candidate,IReadOnlyList<LaunchOperation> operations)
-        => candidate.ResourceBudget is { } budget?ReadLaunchAdmissionForBudget(operations,budget)
+        => candidate.ResourceBudget is { } budget?ReadLaunchAdmissionForBudget(operations,budget,LaunchDescriptions.AwaitsClientUpdate(candidate))
             :new(false,"The request has no recorded memory budget. Review it before starting.");
-    private LaunchAdmission ReadLaunchAdmissionForBudget(IReadOnlyList<LaunchOperation> operations,LaunchResourceBudget budget)
+    /// <param name="heldForUpdate">The candidate already waits on a Roblox update: a fresh count of at least one running client held it.</param>
+    private LaunchAdmission ReadLaunchAdmissionForBudget(IReadOnlyList<LaunchOperation> operations,LaunchResourceBudget budget,bool heldForUpdate)
     {
         var observed=Volatile.Read(ref _resourceAdmission);
         if(observed is null || IsLocked || _shuttingDown) return new(false,"Monitoring is not ready or controls are locked.");
@@ -1338,10 +1339,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var limits=Volatile.Read(ref _savedSettings).Capacity!;var now=DateTimeOffset.UtcNow;
         var projection=LaunchReservationProjection.Evaluate(new(true,operations),snapshot,limits,now);
         // Checked before headroom: it is the reason the user can act on, and it changes only when clients open or close.
-        // Possible clients this queue started count as running; the fresh complete inventory makes the count trustworthy.
+        // Possible clients this queue started count as running; only a fresh complete inventory makes the count trustworthy.
+        // A stale or incomplete one refuses every start below anyway, so a row already held (on a fresh count of at least one)
+        // stays held until the next fresh sample: deciding on an untrusted count would re-save the queue and switch the row's
+        // text between two explanations on every such sample. The comparison is still re-read, so it can end the hold meanwhile.
         // The selected row's comparison (and its file) is read only while a client may run: with none, nothing can close.
-        if(projection.ForecastsKnown && projection.FreshProcessInventory && projection.OccupiedForAdmission>0
-            && ClientUpdateHold.Evaluate(LaunchReleaseMatchForHold(),projection.OccupiedForAdmission) is {Hold:true} update)
+        int running=projection.FreshProcessInventory?projection.OccupiedForAdmission:heldForUpdate?1:0;
+        if(projection.ForecastsKnown && running>0
+            && ClientUpdateHold.Evaluate(LaunchReleaseMatchForHold(),running) is {Hold:true} update)
             return new(false,update.Reason,LaunchHoldReason.ClientUpdate);
         var decision=CapacityPolicy.Evaluate(snapshot.Resources,limits,projection.Reservations,projection.OccupiedForAdmission,now,budget);
         return new(admission.Allowed && projection.ForecastsKnown && projection.FreshProcessInventory && decision.SamplesHealthy && decision.MemoryOnlySlots>0,

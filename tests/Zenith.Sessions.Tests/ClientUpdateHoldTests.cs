@@ -269,6 +269,71 @@ public sealed class ClientUpdateHoldTests : IDisposable
         Assert.DoesNotContain(nameof(LaunchOperation.HoldReason), JsonSerializer.Serialize(new LaunchQueueSnapshot(false, [row.Operation])), StringComparison.Ordinal);
     }
 
+    // A process sample older than three seconds, or one that missed a client, leaves the running count untrusted until the
+    // next fresh one, and every start waits either way. A row held for an update keeps that reason through it; only the
+    // comparison, re-read each time, can end the hold early.
+    [Fact]
+    public Task AnUntrustedProcessSampleNeitherStartsNorEndsAnUpdateHold() => OnUi(async () =>
+    {
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release() };
+        await using var shell = await Ready(monitor, releases);
+        await SelectPlayerAsync(shell); await monitor.ParkAsync();
+        var held = Candidate() with { State = LaunchState.Blocked, Problem = LaunchProblem.InsufficientCapacity, HoldReason = LaunchHoldReason.ClientUpdate };
+        foreach (var untrusted in new[] { monitor.Snapshot(running: 1) with { ProcessInventoryComplete = false }, monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)) })
+        {
+            Publish(shell, untrusted);
+            var kept = Admission(shell, held);
+            Assert.False(kept.Allowed, kept.Explanation);
+            Assert.Equal(LaunchHoldReason.ClientUpdate, kept.Hold); Assert.Equal(ClientUpdateHold.Explanation, kept.Explanation);
+            // A request that is not held yet is never newly held on a count that cannot be trusted.
+            var queued = Admission(shell, Candidate());
+            Assert.False(queued.Allowed); Assert.Equal(LaunchHoldReason.ResourceHeadroom, queued.Hold);
+        }
+        // Once the comparison stops holding (here the selection is cleared), the row waits only for a fresh sample.
+        shell.SelectedInstallation = null;
+        Publish(shell, monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)));
+        var lifted = Admission(shell, held);
+        Assert.False(lifted.Allowed); Assert.Equal(LaunchHoldReason.ResourceHeadroom, lifted.Hold);
+    });
+
+    // The queue saves (and fsyncs and republishes) a waiting row only when its reason changes. Samples that alternate between
+    // fresh and untrusted, as on a PC busy with clients, must not save it or switch its text each time.
+    [Fact]
+    public Task AHeldRowIsNotSavedAgainWhileProcessSamplesAlternateBetweenFreshAndUntrusted() => OnUi(async () =>
+    {
+        var monitor = new Monitor(); var releases = new Releases { Answer = Release() };
+        await using var shell = await Ready(monitor, releases);
+        await SelectPlayerAsync(shell); await monitor.ParkAsync();
+        var phase = new Phase(); var store = new MemoryQueue(); var provider = new NoStart();
+        // The real Shell admission behind a memory queue. Each admission publishes its step's sample first and then reports
+        // the step it read, so the test knows which sample each queue decision used.
+        await using var queue = new LaunchCoordinator(store, provider, (_, _) => Task.FromResult(true), _ => new(false, "Unused"),
+            stabilization: TimeSpan.Zero, stagger: TimeSpan.Zero, budgetResolver: _ => new(G(.1), G(.1)),
+            candidateAdmission: (candidate, others) =>
+            {
+                int step = phase.Step; Publish(shell, Phase.Sample(monitor, step));
+                var admission = (LaunchAdmission)typeof(ShellViewModel).GetMethod("ReadCandidateLaunchAdmission", Private)!.Invoke(shell, [candidate, others])!;
+                phase.Evaluated = step; return admission;
+            });
+        await queue.InitializeAsync(default);
+        var row = await queue.EnqueueAsync(AccountProfile.Create("Held for an update") with { Revision = 3, PreferredPlaceId = 42 }, default, new(456, 7));
+        await queue.SetPausedAsync(false, default);
+        await Until(() => store.Row(row.Intent.OperationId) is { State: LaunchState.Blocked, HoldReason: LaunchHoldReason.ClientUpdate });
+        int saves = Volatile.Read(ref store.Saves);
+        // The queue decides one sample at a time, so once the last step is read every earlier decision's save has finished.
+        for (int step = 1; step <= 8; step++)
+        {
+            phase.Step = step; queue.Signal();
+            await Until(() => phase.Evaluated == step);
+        }
+        Assert.Equal(saves, Volatile.Read(ref store.Saves));
+        Assert.Equal(LaunchHoldReason.ClientUpdate, store.Row(row.Intent.OperationId)!.HoldReason);
+        Assert.Equal(0, provider.Calls);
+    });
+
+    private static async Task Until(Func<bool> condition)
+    { using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5)); while (!condition()) await Task.Delay(5, stop.Token); }
+
     private async Task<ShellViewModel> Ready(Monitor monitor, Releases? releases)
     {
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, monitor, installationDiscovery: _inventory, clientReleases: releases);
@@ -303,6 +368,36 @@ public sealed class ClientUpdateHoldTests : IDisposable
     private static void Observe(ShellViewModel shell, LaunchQueueSnapshot snapshot)
         => typeof(ShellViewModel).GetMethod("QueueChanged", Private)!.Invoke(shell, [snapshot]);
 
+    // Which sample the queue's next admission reads: even steps are fresh and complete with one client running; odd steps are
+    // untrusted, alternately missing a client and older than the three-second limit.
+    private sealed class Phase
+    {
+        public volatile int Step, Evaluated = -1;
+        public static DesktopSnapshot Sample(Monitor monitor, int step) => (step % 4) switch
+        {
+            1 => monitor.Snapshot(running: 1) with { ProcessInventoryComplete = false },
+            3 => monitor.Snapshot(running: 1, processAge: TimeSpan.FromSeconds(4)),
+            _ => monitor.Snapshot(running: 1)
+        };
+    }
+    private sealed class MemoryQueue : ILaunchQueueStore
+    {
+        private LaunchQueueSnapshot _last = LaunchQueueSnapshot.Empty; public int Saves;
+        public LaunchOperation? Row(Guid id) => Volatile.Read(ref _last).Operations.FirstOrDefault(row => row.Intent.OperationId == id);
+        public Task<LaunchQueueSnapshot> LoadAsync(CancellationToken ct) => Task.FromResult(Volatile.Read(ref _last));
+        // Counted before the row is visible, so a test that sees a saved row also sees its save counted.
+        public Task SaveAsync(LaunchQueueSnapshot snapshot, CancellationToken ct)
+        { Interlocked.Increment(ref Saves); Volatile.Write(ref _last, snapshot with { Operations = snapshot.Operations.ToArray() }); return Task.CompletedTask; }
+    }
+    // Admission holds every start in these fixtures, so a call here is a failure the test reports.
+    private sealed class NoStart : ILaunchProvider
+    {
+        public int Calls;
+        public ProviderCapability AccountLaunch { get; } = new("Synthetic", CapabilityState.Supported, "No native capability proof");
+        public Task<ProviderLaunchResult> LaunchAsync(LaunchIntent intent, CancellationToken ct)
+        { Interlocked.Increment(ref Calls); return Task.FromResult(new ProviderLaunchResult(ProviderLaunchStatus.RejectedBeforeStart)); }
+        public Task<bool> ConfirmArrivalAsync(LaunchIntent intent, ProviderLaunchResult observed, CancellationToken ct) => Task.FromResult(false);
+    }
     private sealed class Releases : IPublicRobloxClientReleaseDirectory
     {
         public int Calls; public PublicRobloxClientRelease? Answer; public Exception? Throw;
@@ -333,16 +428,25 @@ public sealed class ClientUpdateHoldTests : IDisposable
     }
     private sealed class Monitor : IDesktopMonitor
     {
-        private long _revision;
-        public DesktopSnapshot Snapshot(int running = 0)
+        private long _revision; private volatile bool _park;
+        private readonly TaskCompletionSource _parked = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        // processAge dates the process inventory (not the system memory sample) that far back.
+        public DesktopSnapshot Snapshot(int running = 0, TimeSpan processAge = default)
         {
-            var now = DateTimeOffset.UtcNow;
-            var rows = Enumerable.Range(0, running).Select(index => new SessionObservation(70001 + index, now.AddMinutes(-5).UtcTicks, "Fixture", 0, "",
-                false, false, (long)G(.5), (long)G(.5), 1, now.AddMilliseconds(-1), PrivateWorkingSetBytes: (long)G(.25))).ToArray();
+            var now = DateTimeOffset.UtcNow; var observed = now - processAge;
+            var rows = Enumerable.Range(0, running).Select(index => new SessionObservation(70001 + index, observed.AddMinutes(-5).UtcTicks, "Fixture", 0, "",
+                false, false, (long)G(.5), (long)G(.5), 1, observed.AddMilliseconds(-1), PrivateWorkingSetBytes: (long)G(.25))).ToArray();
             return new(new(now, G(32), G(20), G(64), G(10), 10), rows,
-                ProcessObservedUtc: now, ProcessRevision: Interlocked.Increment(ref _revision), ProcessInventoryComplete: true);
+                ProcessObservedUtc: observed, ProcessRevision: Interlocked.Increment(ref _revision), ProcessInventoryComplete: true);
         }
-        public Task<DesktopSnapshot> SampleAsync(CancellationToken ct) { ct.ThrowIfCancellationRequested(); return Task.FromResult(Snapshot()); }
+        // Parks the Shell's own 1 Hz sampler until disposal cancels it, so only the samples a test publishes reach admission.
+        public Task ParkAsync() { _park = true; return _parked.Task.WaitAsync(TimeSpan.FromSeconds(5)); }
+        public async Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested();
+            if (_park) { _parked.TrySetResult(); await Task.Delay(Timeout.Infinite, ct); }
+            return Snapshot();
+        }
         public Task<bool> FocusAsync(SessionObservation session, CancellationToken ct) => throw new InvalidOperationException("No native action expected.");
         public Task<bool> RequestCloseAsync(SessionObservation session, CancellationToken ct) => throw new InvalidOperationException("No native action expected.");
     }
