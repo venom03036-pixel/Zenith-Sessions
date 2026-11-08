@@ -40,6 +40,17 @@ public sealed class PortableBackupServiceTests : IDisposable
     }
 
     [Fact]
+    public async Task TheServiceAlsoStripsLocalLaunchArgumentsFromDirectDocumentInputs()
+    {
+        await using var destination = await Library.Create(Path.Combine(_root, "destination"));
+        using var document = Document();
+        document.Profiles[0] = document.Profiles[0] with { ExtraClientArguments = "--imported-argument" };
+        Assert.True((await destination.Service.ImportAsync(document, false, default)).Complete);
+        var imported = Assert.Single((await destination.Accounts.ReadAsync(new(), default)).Items);
+        Assert.Equal("", imported.ExtraClientArguments);
+    }
+
+    [Fact]
     public async Task ExistingPlayerIsKeptWithoutEvenValidatingTheOlderBackupCookie()
     {
         await using var destination = await Library.Create(Path.Combine(_root, "destination"));

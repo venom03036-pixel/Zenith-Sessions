@@ -78,7 +78,8 @@ public sealed class PortableBackupService(IAccountRepository profiles, Protected
             {
                 if (!keys.Add(Key(profile))) { kept++; continue; }
                 Guid id = Guid.NewGuid(); map.Add(profile.Id, id);
-                created.Add((profile with { Id = id, RobloxUserId = null, Revision = 0, UpdatedUtc = DateTimeOffset.UtcNow }).Validated());
+                // Enforce the import allowlist here as well as the file codec; a direct model caller is not a local launch approval.
+                created.Add((profile with { Id = id, RobloxUserId = null, Revision = 0, UpdatedUtc = DateTimeOffset.UtcNow, ExtraClientArguments = "" }).Validated());
             }
             if (profiles is not IAccountMetadataImport metadata) throw new InvalidOperationException("This library does not support atomic profile and group imports.");
             groups = await metadata.ImportMetadataAsync(source.Groups.OrderBy(group => group.SortOrder).ToArray(), created, ct).ConfigureAwait(false);
