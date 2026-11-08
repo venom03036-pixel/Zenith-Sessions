@@ -50,7 +50,70 @@ public sealed class SessionEvidenceTests
         Assert.True(registry.Apply(Observation(stream,ClientLogFact.UserIdentityObserved,20) with {LoggedUtc=later,ReadUtc=later},later));
         var state=Assert.Single(registry.Snapshot(Now.AddMinutes(6)));
         Assert.Null(state.CurrentDestination);Assert.Equal(SyntheticClientLogFixtures.Job,state.LastKnownDestination!.JobId);
-        Assert.Equal(Now,state.LastKnownDestination.ObservedUtc);Assert.Equal(ObservedSessionLifecycle.Unknown,state.Lifecycle);Assert.Null(state.Stream);
+        Assert.Equal(Now,state.LastKnownDestination.ObservedUtc);
+        // Owner decision 2026-11-08 (R-instances-2): the aged destination is kept as last-known while the same bound
+        // log still says Connected, instead of tearing the binding down; the fresh identity line stays its own fact.
+        Assert.Equal(ObservedSessionLifecycle.Connected,state.Lifecycle);Assert.Equal(stream,state.Stream);
+        Assert.True(state.ConnectedToLastKnownDestination);Assert.Equal(SyntheticClientLogFixtures.User,state.ObservedUserId);
+    }
+    [Fact]
+    public void AConnectedDestinationOlderThanTheEvidenceAgeStaysLastKnownUntilTheLogShowsATransition()
+    {
+        var registry=new SessionEvidenceRegistry();var key=Key();var stream=Stream();registry.RegisterProcess(key,Now);registry.CorroborateLog(Proof(key,stream),Now);
+        registry.Apply(Observation(stream,ClientLogFact.Joining),Now);registry.Apply(Observation(stream,ClientLogFact.Connected,10),Now);
+        var later=Now.AddMinutes(10);Assert.True(registry.RegisterProcess(key,later));
+        var state=Assert.Single(registry.Snapshot(later));
+        Assert.Null(state.CurrentDestination);Assert.False(state.CanAuthorizeAccountAction);
+        Assert.Equal(ObservedSessionLifecycle.Connected,state.Lifecycle);Assert.Equal(stream,state.Stream);Assert.False(state.Ambiguous);
+        Assert.True(state.ConnectedToLastKnownDestination);
+        Assert.Equal(SyntheticClientLogFixtures.Job,state.LastKnownDestination!.JobId);Assert.Equal(Now,state.LastKnownDestination.ObservedUtc);
+        Assert.True(registry.Apply(Observation(stream,ClientLogFact.Teleporting,20) with {LoggedUtc=later,ReadUtc=later},later));
+        var teleporting=Assert.Single(registry.Snapshot(later));
+        Assert.Equal(ObservedSessionLifecycle.Teleporting,teleporting.Lifecycle);Assert.False(teleporting.ConnectedToLastKnownDestination);
+        Assert.Null(teleporting.CurrentDestination);Assert.Equal(SyntheticClientLogFixtures.Job,teleporting.LastKnownDestination!.JobId);
+    }
+    [Fact]
+    public void TheLeaseLapsingAfterTheEvidenceAgeDropsTheRememberedConnectionToUnknown()
+    {
+        var registry=new SessionEvidenceRegistry();var key=Key();var stream=Stream();registry.RegisterProcess(key,Now);
+        Assert.True(registry.CorroborateLog(new(key,stream,SessionLogCorrelationKind.ResourceHolderDiagnostic,Guid.NewGuid(),Now,Now.AddSeconds(25)),Now));
+        registry.Apply(Observation(stream,ClientLogFact.Joining),Now);registry.Apply(Observation(stream,ClientLogFact.Connected,10),Now);
+        var renewed=Now.AddMinutes(5).AddSeconds(50);
+        Assert.True(registry.CorroborateLog(new(key,stream,SessionLogCorrelationKind.ResourceHolderDiagnostic,Guid.NewGuid(),renewed,renewed.AddSeconds(25)),renewed));
+        var held=Assert.Single(registry.Snapshot(Now.AddMinutes(6)));
+        Assert.True(held.ConnectedToLastKnownDestination);Assert.Equal(ObservedSessionLifecycle.Connected,held.Lifecycle);Assert.Null(held.CurrentDestination);
+        var lapsed=Assert.Single(registry.Snapshot(Now.AddMinutes(6).AddSeconds(20)));
+        Assert.False(lapsed.ConnectedToLastKnownDestination);Assert.Equal(ObservedSessionLifecycle.Unknown,lapsed.Lifecycle);Assert.Null(lapsed.Stream);
+        Assert.Equal(SyntheticClientLogFixtures.Job,lapsed.LastKnownDestination!.JobId);
+    }
+    [Fact]
+    public void AnUnreadTailAfterTheEvidenceAgeWithholdsTheRememberedConnectionUntilTheTailIsRead()
+    {
+        var registry=new SessionEvidenceRegistry();var key=Key();var stream=Stream();registry.RegisterProcess(key,Now);registry.CorroborateLog(Proof(key,stream),Now);
+        registry.Apply(Observation(stream,ClientLogFact.Joining),Now);registry.Apply(Observation(stream,ClientLogFact.Connected,10),Now);
+        var later=Now.AddMinutes(10);
+        Assert.True(Assert.Single(registry.Snapshot(later)).ConnectedToLastKnownDestination);
+        Assert.Equal(0,registry.ApplyBatch(Batch(stream,1,20) with {HasMore=true},later));
+        var pending=Assert.Single(registry.Snapshot(later));
+        Assert.True(pending.AwaitingLogTail);Assert.False(pending.ConnectedToLastKnownDestination);Assert.Equal(ObservedSessionLifecycle.Unknown,pending.Lifecycle);
+        Assert.Equal(SyntheticClientLogFixtures.Job,pending.LastKnownDestination!.JobId);
+        Assert.Equal(0,registry.ApplyBatch(Batch(stream,2,20),later));
+        var complete=Assert.Single(registry.Snapshot(later));
+        Assert.False(complete.AwaitingLogTail);Assert.True(complete.ConnectedToLastKnownDestination);Assert.Null(complete.CurrentDestination);
+    }
+    [Fact]
+    public void AJoinLoggedAfterTheDestinationAgedOutIsANewJoinNotAConflict()
+    {
+        // Before the owner's decision the state had been forgotten by then, so such a join was accepted; that stays so.
+        var registry=new SessionEvidenceRegistry();var key=Key();var stream=Stream();registry.RegisterProcess(key,Now);registry.CorroborateLog(Proof(key,stream),Now);
+        registry.Apply(Observation(stream,ClientLogFact.Joining),Now);registry.Apply(Observation(stream,ClientLogFact.Connected,10),Now);
+        var later=Now.AddMinutes(10);var job=Guid.NewGuid();
+        Assert.True(registry.Apply(Observation(stream,ClientLogFact.Joining,20) with {LoggedUtc=later,ReadUtc=later,PlaceId=999,JobId=job},later));
+        var joining=Assert.Single(registry.Snapshot(later));
+        Assert.False(joining.Ambiguous);Assert.Equal(ObservedSessionLifecycle.Joining,joining.Lifecycle);Assert.False(joining.ConnectedToLastKnownDestination);
+        Assert.Equal(SyntheticClientLogFixtures.Job,joining.LastKnownDestination!.JobId);Assert.Equal(Now,joining.LastKnownDestination.ObservedUtc);
+        Assert.True(registry.Apply(Observation(stream,ClientLogFact.Connected,30) with {LoggedUtc=later,ReadUtc=later},later));
+        Assert.Equal(job,Assert.Single(registry.Snapshot(later)).CurrentDestination!.JobId);
     }
     [Fact]
     public void IdentityEvidenceExpiresEvenWhenTheObservedProcessStillExists()

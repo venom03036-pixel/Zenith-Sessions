@@ -90,6 +90,12 @@ Each was built as Zenith's own implementation, test-first, reviewed and merged. 
 | R-accounts-4 | Account headshots load with one batched lookup per page instead of three sequential requests per account. | Account pictures for a page load in batched requests instead of one request per player. | `65829e7` |
 | R-research-11 | HTTP clients are tested over a real loopback socket, so production handler settings (no redirects, no cookie jar) are exercised. | The share-link and server-list clients are tested over a real loopback socket, so their real handler settings are exercised. | `db9d57c` |
 
+### Round 4 (owner decisions of 2026-11-08)
+
+| ID | RoALT capability | Zenith's version | Commit |
+|---|---|---|---|
+| R-instances-2 | In-game state stays visible for the whole session: In game with place and job until a teleport, disconnect or exit. | A connected client's place and server stay on its Sessions row past the five-minute evidence age, marked "last confirmed N min ago", until its log shows a join, teleport, disconnect or exit, the log binding lapses or a tail is unread. Join same game, Join same server and Copy still need evidence under five minutes. | lane D6b |
+
 ## Not copied: techniques Zenith excludes
 
 | RoALT feature | Why Zenith does not do it |
@@ -113,7 +119,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Hands-free batch launching | R-launch-0, R-launch-2 | Enable ordinary single and group launches end to end (after the planned live trial), and shorten waits when the previous client reports joining |
 | Bootstrappers and extra arguments | R-launch-17, R-launch-16, R-launch-18 | Launch through Bloxstrap-style tools (they write client settings files on Zenith's behalf), pass extra client arguments, or preselect an installation automatically |
 | Roblox updates | R-launch-9, R-shell-19 | Check for and install the official Roblox update from inside Zenith (download and run a signed installer) |
-| Presence and account data | R-api-6, R-accounts-9, R-instances-2, R-api-13, R-accounts-14 | Ask Roblox, with each account's own session, whether it is online or in game, and show account details (Robux, Premium, verification); keep in-game state visible past 5 minutes |
+| Presence and account data | R-api-6, R-accounts-9, R-api-13, R-accounts-14 | Ask Roblox, with each account's own session, whether it is online or in game, and show account details (Robux, Premium, verification). R-instances-2 (keep in-game state visible past 5 minutes) was decided and built in round 4 |
 | Signed-in server browsing | R-launch-12, R-api-8, R-api-14 | Send a saved session to the server list for Recommended and latency sorts, friend counts, and listing or buying the account's private servers (spends Robux) |
 | Social automation | R-api-16, R-accounts-15 | Friend your own saved accounts with each other automatically |
 | Notifications and presence sharing | R-api-12, R-shell-22, R-api-17 | Discord webhook alerts and Discord rich presence, opt-in only |

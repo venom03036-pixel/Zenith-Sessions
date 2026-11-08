@@ -612,7 +612,7 @@
             <StackPanel>
               <StackPanel Orientation="Horizontal">
                 <TextBlock Text="Sessions" Style="{StaticResource PageTitle}" VerticalAlignment="Center" />
-                <ContentControl Style="{StaticResource InfoTip}" Margin="10,2,0,0" ToolTip="Native process observations with separate, read-only log diagnostics. Reported player and place IDs are unverified; they never authorize account actions." AutomationProperties.Name="About session observations" />
+                <ContentControl Style="{StaticResource InfoTip}" Margin="10,2,0,0" ToolTip="Native process observations with separate, read-only log diagnostics. Reported player and place IDs are unverified; they never authorize account actions. A place and server the log last confirmed more than five minutes ago stay shown with that age while the client's log still says it is connected; Join same game, Join same server and Copy need fresher evidence." AutomationProperties.Name="About session observations" />
               </StackPanel>
               <TextBlock Text="{Binding ProcessInventoryStatus}" ToolTip="{Binding ProcessInventoryStatus}" Style="{StaticResource CaptionLine}" Margin="0,2,0,0" />
             </StackPanel>
@@ -730,7 +730,7 @@
                 <GridViewColumn Header="Client" Width="110" DisplayMemberBinding="{Binding ProcessLabel}" />
                 <GridViewColumn Header="Observed state" Width="220" DisplayMemberBinding="{Binding Status}" />
                 <GridViewColumn Header="Reported UserId" Width="145" DisplayMemberBinding="{Binding Log.ReportedUserId}" />
-                <GridViewColumn Header="Reported PlaceId" Width="145" DisplayMemberBinding="{Binding Log.CurrentPlace}" />
+                <GridViewColumn Header="Reported PlaceId" Width="265" DisplayMemberBinding="{Binding Log.CurrentPlace}" />
                 <GridViewColumn Header="Log evidence" Width="225" DisplayMemberBinding="{Binding Log.Correlation}" />
                 <GridViewColumn Header="Working set" Width="110" DisplayMemberBinding="{Binding MemoryDisplay}" />
                 <GridViewColumn Header="Private commit" Width="120" DisplayMemberBinding="{Binding PrivateCommitBytes}" />

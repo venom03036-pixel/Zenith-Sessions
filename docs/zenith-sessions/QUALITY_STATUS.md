@@ -625,3 +625,9 @@ Round 3's reviews graded 3 findings important (lanes C4, C5 and C10); each was f
 | O-C10-3 | I confirmed the fixer's side note. | src/Zenith.MacroHost.Execution/TargetedMacroPlayer.cs:131-133 (pre-existing; found by the N-B9-4 fixer, not recorded) | Open |
 | O-C10-5 | Test-harness hygiene (Rule 12). | tests/MacroSuite.Infrastructure.Tests/WpfTestApplication.cs:47,53 and tests/MacroSuite.Infrastructure.Tests/ViewModels/RecordingPipelineTest | Open |
 | O-C10-6 | Subscribe_StartsLoopAndDeliversFrames failed once in my full Core run with 'Expected fakeService.LastReturnedFrame!.IsDisposed to be true, but found False.' It passed in 3 reruns of the class and in a full rerun (761/761). | tests/MacroSuite.Core.Tests/Capture/CaptureSchedulerTests.cs:129 (pre-existing; not touched by this lane) | Open |
+
+### Round 4 — RoALT capabilities adopted by owner decision (2026-11-08)
+
+| ID | Capability | Impact | Status | Evidence |
+|---|---|---|---|---|
+| R-instances-2 | In-game state stays visible for the whole session. Before: after five minutes in one server the row's place, server and state turned to Unknown and the log binding was torn down. Now (owner's resolution): the place and server stay shown with "last confirmed N min ago" while the same bound log still says Connected and no join, teleport, disconnect, exit, lease lapse or unread tail has been seen; the destination is last-known, so Join same game, Join same server and Copy still need evidence under five minutes. The reported user keeps the five-minute rule (the decision named place and server); recovery after Zenith's own restart is unchanged (old lines stay rejected). | high | Verified | lane D6b · SessionEvidenceTests.AConnectedDestinationOlderThanTheEvidenceAgeStaysLastKnownUntilTheLogShowsATransition (+3 new, 1 reversed) · SessionLogProjectionTests.APlaceAndServerLastConfirmedOverFiveMinutesAgoStayShownWithThatAgeButAreNotOfferedForJoinOrCopy (+1) · reversal recorded in HANDOFF.md |
