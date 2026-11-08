@@ -163,6 +163,34 @@ public sealed class NativeHandoffCoordinatorTests : IDisposable
         Assert.Equal(NativeHandoffAttemptStatus.StartedUnverified, result.Status); Assert.Same(prepared.Receipt, result.ProcessReceipt);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AStartedOrUncertainReceiptCarriesTheCandidateTrackerBesideTheOriginalReceipt(bool uncertain)
+    {
+        using var repository = new AccountRepository(_root); using var vault = new ProtectedCredentialVault(_root);
+        var fixture = await Prepare(repository, vault); using var candidate = SyntheticHandoff.Capture(fixture.Context, fixture.Clock);
+        using var prepared = new Prepared { Outcome = uncertain ? NativeHandoffDispatchOutcome.Uncertain : NativeHandoffDispatchOutcome.StartedUnverified };
+        await using var coordinator = new NativeHandoffCoordinator(vault);
+        var result = await coordinator.DispatchAsync(candidate, fixture.Grant, fixture.Intent, prepared, (_, _) => Task.FromResult(true), () => true, Admission, default);
+        Assert.Equal(uncertain ? NativeHandoffAttemptStatus.Uncertain : NativeHandoffAttemptStatus.StartedUnverified, result.Status);
+        Assert.Same(prepared.Receipt, result.ProcessReceipt); Assert.Null(result.ProcessReceipt!.BrowserTrackerId);
+        Assert.Equal(long.Parse(SyntheticHandoff.Tracker, System.Globalization.CultureInfo.InvariantCulture), result.BrowserTrackerId);
+        Assert.DoesNotContain(SyntheticHandoff.Ticket, JsonSerializer.Serialize(result));
+    }
+
+    [Fact]
+    public async Task ARefusedAttemptHasNoReceiptAndNoTracker()
+    {
+        using var repository = new AccountRepository(_root); using var vault = new ProtectedCredentialVault(_root);
+        var fixture = await Prepare(repository, vault); using var candidate = SyntheticHandoff.Capture(fixture.Context, fixture.Clock); using var prepared = new Prepared();
+        await using var coordinator = new NativeHandoffCoordinator(vault);
+        var result = await coordinator.DispatchAsync(candidate, fixture.Grant, fixture.Intent, prepared, (_, _) => Task.FromResult(true), () => true,
+            () => new(false, "Synthetic refusal"), default);
+        Assert.Equal(NativeHandoffAttemptStatus.AdmissionDenied, result.Status); Assert.Equal(0, prepared.Starts);
+        Assert.Null(result.ProcessReceipt); Assert.Null(result.BrowserTrackerId);
+    }
+
     [Fact]
     public async Task CancellationWhileRequestValidationWaitsClosesPreparationBeforeStart()
     {
@@ -204,6 +232,7 @@ public sealed class NativeHandoffCoordinatorTests : IDisposable
     private sealed class Prepared : IPreparedNativeHandoffStart
     {
         public int Starts; public string? Original; public bool Throw; public ManualResetEventSlim? Release;
+        public NativeHandoffDispatchOutcome Outcome = NativeHandoffDispatchOutcome.StartedUnverified;
         public TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public LaunchProcessReceipt Receipt { get; } = new(700002, DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks, DateTimeOffset.UtcNow);
         public NativeHandoffDispatchResult Start(string original)
@@ -211,7 +240,7 @@ public sealed class NativeHandoffCoordinatorTests : IDisposable
             Interlocked.Increment(ref Starts); Original = original; Started.TrySetResult();
             if (Release is not null && !Release.Wait(TimeSpan.FromSeconds(5))) throw new TimeoutException("Synthetic gate exceeded its bound.");
             if (Throw) throw new IOException(original);
-            return new(NativeHandoffDispatchOutcome.StartedUnverified, Receipt);
+            return new(Outcome, Receipt);
         }
         public void Dispose() => Original = null;
     }

@@ -150,6 +150,42 @@ public sealed class LaunchQueueStoreTests : IDisposable
         using var current=JsonDocument.Parse(await File.ReadAllTextAsync(path));Assert.Equal(7,current.RootElement.GetProperty("Version").GetInt32());
         Assert.Equal(legacy,await File.ReadAllTextAsync(path+".bak"));Assert.Equal(snapshot.Operations,(await store.LoadAsync(default)).Operations);
     }
+    private static LaunchOperation TrackedOperation()
+    {
+        var original=Fixture().Operations[0];var recorded=DateTimeOffset.UtcNow;
+        return original with{State=LaunchState.ClientStartedUnverified,Problem=LaunchProblem.ClientStartedUnverified,UpdatedUtc=recorded,
+            ProcessReceipt=new(700001,recorded.AddMinutes(-1).UtcTicks,recorded,1234567890)};
+    }
+    [Fact]
+    public async Task AReceiptTrackerIsSavedAsFormatEightAndReadBackWhileAQueueWithoutOneStaysFormatSeven()
+    {
+        var operation=TrackedOperation();string path=Path.Combine(_root,"launch-queue.json");
+        using var store=new LaunchQueueStore(_root);await store.SaveAsync(new(true,[operation]),default);
+        string json=await File.ReadAllTextAsync(path);
+        using(var parsed=JsonDocument.Parse(json))Assert.Equal(8,parsed.RootElement.GetProperty("Version").GetInt32());
+        Assert.Contains("\"BrowserTrackerId\":1234567890",json);
+        foreach(string forbidden in new[]{"gameinfo","roblox-player:","PlaceLauncher"})Assert.DoesNotContain(forbidden,json,StringComparison.OrdinalIgnoreCase);
+        using(var reopened=new LaunchQueueStore(_root))Assert.Equal(operation,Assert.Single((await reopened.LoadAsync(default)).Operations));
+        var untracked=operation with{ProcessReceipt=operation.ProcessReceipt! with{BrowserTrackerId=null}};
+        await store.SaveAsync(new(true,[untracked]),default);json=await File.ReadAllTextAsync(path);
+        using(var parsed=JsonDocument.Parse(json))Assert.Equal(7,parsed.RootElement.GetProperty("Version").GetInt32());
+        Assert.DoesNotContain("BrowserTrackerId",json);
+        Assert.Equal(untracked,Assert.Single((await store.LoadAsync(default)).Operations));
+    }
+    [Theory]
+    [InlineData(4)]
+    [InlineData(7)]
+    public async Task AnOlderFormatCarryingATrackerIsPreservedAsUnsupportedRatherThanReadOrReplaced(int version)
+    {
+        Directory.CreateDirectory(_root);string path=Path.Combine(_root,"launch-queue.json");
+        string older=JsonSerializer.Serialize(new{Version=version,Queue=new LaunchQueueSnapshot(true,[TrackedOperation()])});
+        Assert.Contains("\"BrowserTrackerId\":1234567890",older);await File.WriteAllTextAsync(path,older);
+        using var store=new LaunchQueueStore(_root);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
+        Assert.Equal(LaunchQueueBlockerKind.UnsupportedFormat,store.RecoveryBlocker?.Kind);
+        await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(LaunchQueueSnapshot.Empty,default));
+        Assert.Equal(older,await File.ReadAllTextAsync(path));Assert.False(File.Exists(path+".damaged"));
+    }
     public static IEnumerable<object[]> OlderFormatPreparationMarkers()
     {
         foreach(int version in new[]{1,2,3,4})
@@ -202,7 +238,7 @@ public sealed class LaunchQueueStoreTests : IDisposable
         document["Queue"]!["Operations"]![0]!["State"]=JsonValue.Create(nameof(LaunchState.Preparing));
         if(kind=="missing-version")document.AsObject().Remove("Version");
         else if(kind=="string-version")document["Version"]="4";
-        else document["Version"]=8;
+        else document["Version"]=9;
         string path=Path.Combine(_root,"launch-queue.json"),unsupported=document.ToJsonString();await File.WriteAllTextAsync(path,unsupported);
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(LaunchQueueSnapshot.Empty,default));
@@ -213,7 +249,7 @@ public sealed class LaunchQueueStoreTests : IDisposable
     {
         using var store=new LaunchQueueStore(_root);await store.SaveAsync(LaunchQueueSnapshot.Empty,default);await store.SaveAsync(LaunchQueueSnapshot.Empty,default);
         string path=Path.Combine(_root,"launch-queue.json"),backup=await File.ReadAllTextAsync(path+".bak");
-        const string future="{\"Version\":8,\"Queue\":{\"FuturePayload\":true}}";await File.WriteAllTextAsync(path,future);
+        const string future="{\"Version\":9,\"Queue\":{\"FuturePayload\":true}}";await File.WriteAllTextAsync(path,future);
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.LoadAsync(default));
         await Assert.ThrowsAsync<InvalidDataException>(()=>store.SaveAsync(LaunchQueueSnapshot.Empty,default));
         Assert.Equal(future,await File.ReadAllTextAsync(path));Assert.Equal(backup,await File.ReadAllTextAsync(path+".bak"));Assert.False(File.Exists(path+".damaged"));

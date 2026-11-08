@@ -161,7 +161,7 @@ public sealed class LaunchResourceBudgetStoreTests : IDisposable
     public async Task UnknownFuturePrimaryOrBackupCannotBeOverwrittenOrSelectedAsAnOlderFallback(string location)
     {
         using var store = new LaunchQueueStore(_root); await SeedBackup(store);
-        const string future = "{\"Version\":8,\"Queue\":{\"FutureResourceCosts\":true}}";
+        const string future = "{\"Version\":9,\"Queue\":{\"FutureResourceCosts\":true}}";
         if (location == "primary") await Write(future);
         else
         {

@@ -10,6 +10,12 @@ internal interface ITopLevelWindows
 
     /// <summary>The main-window test .NET's Process.MainWindowHandle applies: no owner window and visible.</summary>
     bool IsUnownedAndVisible(nint window);
+
+    /// <summary>Whether the window is visible now. A window closed since it was found reads as not visible.</summary>
+    bool IsVisible(nint window);
+
+    /// <summary>Windows' own "Not responding" test: the window's thread has not processed messages for about 5 s.</summary>
+    bool IsHung(nint window);
 }
 
 internal interface ITopLevelWindowVisitor
@@ -88,6 +94,11 @@ internal sealed class NativeTopLevelWindows : ITopLevelWindows
 
     public bool IsUnownedAndVisible(nint window) => Native.GetWindow(window, OwnerWindow) == 0 && Native.IsWindowVisible(window);
 
+    public bool IsVisible(nint window) => window != 0 && Native.IsWindowVisible(window);
+
+    // IsHungAppWindow reads the window thread's input state; it sends no message to the window.
+    public bool IsHung(nint window) => window != 0 && Native.IsHungAppWindow(window);
+
     private static bool Visit(nint window, nint state)
     {
         // A window closed during the pass reports no process and can never match a client.
@@ -103,5 +114,6 @@ internal sealed class NativeTopLevelWindows : ITopLevelWindows
         [DllImport("user32.dll")] internal static extern nint GetWindow(nint window, uint command);
         [DllImport("user32.dll")] internal static extern uint GetWindowThreadProcessId(nint window, out uint processId);
         [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsWindowVisible(nint window);
+        [DllImport("user32.dll")] [return: MarshalAs(UnmanagedType.Bool)] internal static extern bool IsHungAppWindow(nint window);
     }
 }

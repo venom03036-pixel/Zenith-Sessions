@@ -31,6 +31,21 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         Assert.Equal(0, borrowed.Calls); Assert.Equal(0, borrowed.Disposals);
     }
 
+    [Theory]
+    [InlineData(ProviderLaunchStatus.ClientStartedUnverified, true)]
+    [InlineData(ProviderLaunchStatus.Uncertain, true)]
+    [InlineData(ProviderLaunchStatus.Uncertain, false)]
+    public async Task TheChildsTrackerIsKeptOnlyBesideAValidReceipt(ProviderLaunchStatus status, bool receipt)
+    {
+        await using var h = new Harness(); h.Slot.Configure(Candidate());
+        var ready = await h.Slot.PrepareAsync(Context(), default); await using var handle = ready.Prepared!;
+        h.Children[0].Handle!.Reply = new(status, ProcessId: receipt ? 12345 : null,
+            ProcessStartUtcTicks: receipt ? DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks : null, BrowserTrackerId: 1234567890);
+        using var boundary = Boundary(handle.DispatchIntent);
+        var result = await handle.DispatchAsync(boundary, default);
+        Assert.Equal(status, result.Status); Assert.Equal(receipt ? 1234567890 : null, result.BrowserTrackerId);
+    }
+
     [Fact]
     public async Task SelectionIsExplicitTransientCopiedAndNeverCreatesAChildByItself()
     {

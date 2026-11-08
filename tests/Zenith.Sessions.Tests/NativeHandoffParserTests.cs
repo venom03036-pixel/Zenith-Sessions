@@ -26,6 +26,16 @@ public sealed class NativeHandoffParserTests
         candidate.Dispose(); Assert.True(candidate.IsConsumed);
     }
 
+    [Fact]
+    public void CaptureKeepsTheValidatedBrowserTrackerAsASeparateNonSecretField()
+    {
+        var clock = new HandoffClock(); var context = SyntheticHandoff.Context();
+        using var candidate = Capture(context, SyntheticHandoff.Uri(context, clock), clock).Candidate!;
+        Assert.Equal(long.Parse(SyntheticHandoff.Tracker, CultureInfo.InvariantCulture), candidate.BrowserTrackerId);
+        string json = JsonSerializer.Serialize(candidate);
+        Assert.Contains(SyntheticHandoff.Tracker, json); Assert.DoesNotContain(SyntheticHandoff.Ticket, json); Assert.DoesNotContain("gameinfo", json);
+    }
+
     [Theory]
     [InlineData("duplicate")]
     [InlineData("unknown")]

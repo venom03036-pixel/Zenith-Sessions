@@ -44,6 +44,7 @@ The original requirements also cover account groups and backups, launch orchestr
 ### Process, player, and server evidence
 
 - `WindowsSessionLogCorrelator` bounds discovery, file reads, and holder checks. `SessionEvidence` separates current facts from last-known facts and fences replay, file replacement, partial lines, an unread log tail, and competing ownership. `NativeTrialEvidence` projects fresh process presence and reported player/place/job values for review.
+- Launch-to-log: `NativeRobloxHandoff.Capture` keeps the validated browser tracker as its own number (never the URI). It travels beside the process receipt into `LaunchProcessReceipt.BrowserTrackerId`. A queue holding one is saved as format 8; other queues stay format 7. `WindowsSessionLogCorrelator` reads bounded log heads (64 KiB, lines before the first join) and reports a `LaunchLogLink` per launch, separate from the holder binding. That link survives a client restarting under a new PID. It is corroboration only and proves neither the account nor arrival. The tracker line shapes are unverified against a real client.
 - Reported matching IDs remain diagnostic. Hold that boundary when wiring the new UI. Use separate statuses for requested destination, observed local process, reported player/server, and verified arrival. Never route input from a manual profile label, PID alone, file order, or uncorroborated log claims. [Tracking verification](NATIVE-TRIAL-EVIDENCE-VERIFICATION.md#backend-054-log-tail-coverage)
 
 ### Owned-experience Open Cloud bridge

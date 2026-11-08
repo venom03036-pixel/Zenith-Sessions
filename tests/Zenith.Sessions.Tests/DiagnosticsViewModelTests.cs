@@ -317,6 +317,17 @@ public sealed class DiagnosticsViewModelTests : IDisposable
         Assert.DoesNotContain("Live view",vm.DiagnosticViewStatus);Assert.StartsWith("Updates when refreshed",vm.DiagnosticViewStatus);
     });
     [Fact]
+    public Task ARecoveredLogCorrelationFailureIsRecordedAsClientMonitoringByTypeOnly()=>OnUi(async ()=>
+    {
+        // The correlator reports from its own worker thread; the rows already show Unavailable, so no error notice is raised.
+        await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();
+        await Task.Run(()=>vm.RecordRecoveredLogCorrelationFailure(typeof(ArgumentException)));
+        vm.Navigate.Execute("Diagnostics");vm.RefreshDiagnostics.Execute(null);
+        var row=Assert.Single(vm.DiagnosticRows,r=>r.Event.Kind==ManagerEventKind.OperationFailed);
+        Assert.Equal(ManagerSubsystem.Telemetry,row.Event.Subsystem);Assert.Equal("ArgumentException",row.Event.ErrorType);
+        Assert.False(vm.HasErrorNotice);
+    });
+    [Fact]
     public Task AHealthyMonitorKeepsTheLiveDiagnosticsWording()=>OnUi(async ()=>
     {
         await using var vm=new ShellViewModel(Data,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor());await vm.InitializeAsync();

@@ -115,7 +115,17 @@ public sealed class RecentClientHistoryViewModel : Observable, IAsyncDisposable
         {
             var token = _lifetime.Token;
             var check = await Task.Run(() => probe.Check(ended, now, token), CancellationToken.None);
-            if (!_stopping && !_trackingFailed && _history.RecordFaultCheck(ended, check)) { Publish(); StartSaveIfNeeded(); }
+            if (_stopping || _trackingFailed) return;
+            bool recorded;
+            try { recorded = _history.RecordFaultCheck(ended, check); }
+            catch (ArgumentException inconsistent)
+            {
+                // One result that does not fit this end (for example a fault time after the check time) is recorded as
+                // an incomplete check for this client only; later clients are still checked.
+                recorded = _history.RecordFaultCheck(ended, new ClientFaultCheck(now, Complete: false));
+                _failed(inconsistent);
+            }
+            if (recorded) { Publish(); StartSaveIfNeeded(); }
         }
         catch (OperationCanceledException) when (_lifetime.IsCancellationRequested) { }
         catch (Exception error)

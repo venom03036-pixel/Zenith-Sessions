@@ -14,7 +14,10 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
     private static RecentClientHistoryEntry Ended(SessionProcessKey key, DateTimeOffset lastSeen, DateTimeOffset gone)
         => new(Guid.NewGuid(), key, lastSeen, lastSeen, gone);
 
-    [Fact]
+    // Opt-in (ZENITH_RUN_NATIVE_CRASH_TESTS=1): it crashes a real process, so Windows writes an error report on the PC.
+    // The default run keeps the record matching and crash-dump counting covered by the two synthetic tests below.
+    [NativeCrashFact]
+    [Trait(TestCategory.Name, TestCategory.NativeCrash)]
     public async Task FindsWindowsFaultRecordForTheExactCrashedProcessOnly()
     {
         // Test-owned helper: an inbox Windows PowerShell process that ends through Environment.FailFast.
@@ -42,6 +45,12 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
         Assert.NotNull(check.FaultRecordedUtc); Assert.Equal(0x80131623u, check.ExceptionCode);
         Assert.InRange(check.FaultRecordedUtc!.Value, lastSeen, check.CheckedUtc);
         Assert.Equal(ClientEndCause.Crashed, (Ended(key, lastSeen, check.CheckedUtc) with { FaultCheck = check }).Validated(ended: true).EndCause);
+        // A check made just before Windows wrote that record must not report it: a fault later than the check time would
+        // make the result inconsistent with the end it was asked about.
+        var before = check.FaultRecordedUtc!.Value.AddTicks(-1);
+        var early = probe.Check(Ended(key, lastSeen, before), before, default);
+        (Ended(key, lastSeen, before) with { FaultCheck = early }).Validated(ended: true);
+        Assert.Null(early.FaultRecordedUtc); Assert.Null(early.ExceptionCode);
         // The same pid with any other creation time is a different process.
         var later = DateTimeOffset.UtcNow;
         var other = probe.Check(Ended(key with { ProcessStartUtcTicks = started + 1 }, lastSeen.AddTicks(1), later), later, default);
@@ -78,6 +87,23 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
         Assert.False(partial.Complete); Assert.Equal(3, partial.CrashDumps);
         using var stop = new CancellationTokenSource(); stop.Cancel();
         Assert.ThrowsAny<OperationCanceledException>(() => missingLog.Check(Ended(key, lastSeen, gone), DateTimeOffset.UtcNow, stop.Token));
+    }
+
+    [Fact]
+    public void CrashDumpFoldersAndLogRootsComeFromOneSharedListOfRobloxFolders()
+    {
+        // One list of current-user Roblox folders, so the log and crash-record probes cannot drift apart.
+        string local = Path.Combine(_root, "local");
+        Assert.Equal(new[]
+        {
+            (Path.Combine(local, "Roblox", "logs"), ClientLogVariant.Win32),
+            (Path.Combine(local, "Packages", RobloxClientFolders.PackageFamilyName, "LocalState", "logs"), ClientLogVariant.Uwp),
+        }, RobloxClientFolders.LogRoots(local));
+        Assert.Equal(RobloxClientFolders.LogRoots(local).Select(root => Path.Combine(root.Path, "crashes", "reports")),
+            WindowsClientFaultProbe.DefaultDumpFolders(local));
+        Assert.Empty(WindowsClientFaultProbe.DefaultDumpFolders(""));
+        using var logs = new WindowsClientLogProbe();
+        Assert.Equal(RobloxClientFolders.LogRoots(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData)), logs.Roots);
     }
 
     [Fact]

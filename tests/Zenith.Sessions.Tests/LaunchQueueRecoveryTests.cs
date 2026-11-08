@@ -100,7 +100,7 @@ public sealed class LaunchQueueRecoveryTests : IDisposable
     }
 
     [Theory]
-    [InlineData(8)] [InlineData(999)]
+    [InlineData(9)] [InlineData(999)]
     public async Task MissingPrimaryDoesNotDowngradeOrIgnoreAnUnsupportedFutureBackup(int version)
     {
         var bytes = await Write(".bak", new(false, [Row()]), version);

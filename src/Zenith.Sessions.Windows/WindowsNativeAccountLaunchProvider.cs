@@ -179,11 +179,15 @@ public sealed class WindowsNativeAccountLaunchProvider : IPreparingLaunchProvide
     private static ProviderLaunchResult Describe(NativeHandoffAttempt attempt)
     {
         var receipt = attempt.ProcessReceipt is { IsValid: true } valid ? valid : null;
+        // The request's non-secret tracker travels only beside a valid receipt, never on its own.
+        long? tracker = receipt is null ? null : attempt.BrowserTrackerId;
         if (attempt.Status == NativeHandoffAttemptStatus.StartedUnverified && receipt is not null)
-            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: receipt.ProcessId, ProcessStartUtcTicks: receipt.ProcessStartUtcTicks);
+            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: receipt.ProcessId, ProcessStartUtcTicks: receipt.ProcessStartUtcTicks,
+                BrowserTrackerId: tracker);
         if (!Enum.IsDefined(attempt.Status) || attempt.Status is NativeHandoffAttemptStatus.Uncertain or NativeHandoffAttemptStatus.StartedUnverified
             || attempt.ProcessReceipt is not null)
-            return new(ProviderLaunchStatus.Uncertain, ProcessId: receipt?.ProcessId, ProcessStartUtcTicks: receipt?.ProcessStartUtcTicks);
+            return new(ProviderLaunchStatus.Uncertain, ProcessId: receipt?.ProcessId, ProcessStartUtcTicks: receipt?.ProcessStartUtcTicks,
+                BrowserTrackerId: tracker);
         return Rejected();
     }
     private static bool Cleanup(NativeHandoffPreparation? native, WindowsNativeHandoffPreparation? executable)

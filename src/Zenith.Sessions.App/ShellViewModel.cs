@@ -457,7 +457,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             LoadClientDisplaysOnce(); // After the Ready notice, so a monitor-read failure is not overwritten by it.
             // Start the owned diagnostic worker only after initialization succeeds. Isolated
             // sample/injected-monitor tests never inspect unrelated desktop logs.
-            if (!IsSample && _monitor is WindowsDesktopMonitor) _logCorrelator = new();
+            if (!IsSample && _monitor is WindowsDesktopMonitor) _logCorrelator = new(recoveredFailure: RecordRecoveredLogCorrelationFailure);
             // The safety sampler owns a pool loop; only its coalesced presentation step uses the dispatcher.
             var monitorStop=_lifetime.Token;_monitorTask = Task.Run(() => MonitorLoopAsync(monitorStop));
             stage=ManagerSubsystem.Directory;await DestinationFavorites.LoadAsync(_lifetime.Token);
@@ -811,7 +811,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var snapshot = await _monitor.SampleAsync(ct).ConfigureAwait(false);
         // One bounded, pure reducer on the existing sample lane; no row-owned task/timer.
         await Task.Run(()=>_telemetryHistory.Observe(snapshot,DateTimeOffset.UtcNow),ct).ConfigureAwait(false);
-        _logCorrelator?.Offer(snapshot);
+        // Launches whose receipts carry a browser tracker are offered too, so their own client logs can be found by tracker.
+        _logCorrelator?.Offer(snapshot,launches:LaunchLogExpectation.From(Volatile.Read(ref _latestQueue)));
         var memory = snapshot.Resources;var now=DateTimeOffset.UtcNow;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;
         var projection=LaunchReservationProjection.Evaluate(Volatile.Read(ref _latestQueue),snapshot,limits,now);
@@ -1064,6 +1065,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     /// <summary>Any thread. False once this shell's log has begun closing, so the caller must keep its own record.</summary>
     internal bool TryRecordUnhandled(Type errorType)=>_diagnostics.TryRecord(ManagerEventKind.OperationFailed,errorType);
+    /// <summary>
+    /// Any thread (the log correlator's worker calls it). A pass the correlator recovered from is recorded by type only
+    /// (Rule 10). No notice: its rows already read Unavailable and the next pass retries; a failure that ends the
+    /// correlator surfaces when it is disposed.
+    /// </summary>
+    internal void RecordRecoveredLogCorrelationFailure(Type errorType)=>_diagnostics.RecordFailure(ManagerSubsystem.Telemetry,errorType);
     /// <summary>Flushes and closes this shell's log; idempotent, and later records are ignored. Used only when nothing else will flush it.</summary>
     internal ValueTask CloseDiagnosticsAsync()=>_diagnostics.DisposeAsync();
     // Raised even when the text is unchanged, so the footer's live region announces a repeated notice, such as a second copy, again.

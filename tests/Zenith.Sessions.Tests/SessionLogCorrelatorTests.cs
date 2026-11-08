@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.IO;
 using System.Runtime.InteropServices;
@@ -280,6 +281,76 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
         }
         Assert.Equal(5, probe.Discoveries);
         await Assert.ThrowsAsync<InvalidOperationException>(() => worker.DisposeAsync().AsTask());
+        Assert.True(probe.Disposed);
+    }
+
+    private static async Task<Type[]> Reported(ConcurrentQueue<Type> reported, int count)
+    {
+        long began = Stopwatch.GetTimestamp();
+        while (reported.Count < count && Stopwatch.GetElapsedTime(began) < TimeSpan.FromSeconds(5)) await Task.Delay(10);
+        return reported.ToArray();
+    }
+
+    [Fact]
+    public async Task EveryRecoveredPassFailureReportsItsExceptionTypeOnce()
+    {
+        // A recovered pass must leave a trace: a failed discovery, and a programming error after a reader was touched.
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock(); var reported = new ConcurrentQueue<Type>();
+        var probe = new Probe(Log, Key()) { DiscoverFailure = new ArgumentException(@"Synthetic fault naming C:\Users\someone\logs.") };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock, recoveredFailure: reported.Enqueue);
+        worker.Offer(Desktop(Key()), Key().HostId);
+        var failed = await After(worker);
+        Assert.Equal(SessionLogCorrelationStatus.Unavailable, Assert.Single(failed.Sessions).Correlation);
+        Assert.Equal(new[] { typeof(ArgumentException) }, await Reported(reported, 1)); // The type crosses, never the message.
+
+        clock.Advance(1000); worker.Offer(Desktop(Key()), Key().HostId);
+        var bound = await After(worker, failed.Revision);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, Assert.Single(bound.Sessions).Correlation);
+        Assert.Single(reported); // A healthy pass reports nothing.
+
+        probe.DuringQuery = () => { probe.DuringQuery = null; throw new NullReferenceException(); };
+        clock.Advance(5000); worker.Offer(Desktop(Key()), Key().HostId); // The holder query is due again and throws once.
+        var reset = await After(worker, bound.Revision);
+        Assert.Equal(SessionLogCorrelationStatus.Unavailable, Assert.Single(reset.Sessions).Correlation);
+        Assert.Equal(new[] { typeof(ArgumentException), typeof(NullReferenceException) }, await Reported(reported, 2));
+
+        clock.Advance(1000); worker.Offer(Desktop(Key()), Key().HostId);
+        var next = await After(worker, reset.Revision);
+        Assert.Equal(SessionLogCorrelationStatus.ResourceHolderObserved, Assert.Single(next.Sessions).Correlation);
+        await worker.DisposeAsync(); // Each recovered failure was already reported, so disposal does not throw.
+        Assert.Equal(2, reported.Count);
+    }
+
+    [Fact]
+    public async Task TheTerminalPassFailureSurfacesAtDisposalAndIsNotReportedAsRecovered()
+    {
+        Write(SyntheticClientLogFixtures.Identity);
+        var clock = new Clock(); var reported = new ConcurrentQueue<Type>();
+        var probe = new Probe(Log, Key()) { EveryDiscoverFailure = new InvalidOperationException("Synthetic persistent probe fault.") };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock, recoveredFailure: reported.Enqueue);
+        long revision = 0;
+        for (int pass = 0; pass < 5; pass++)
+        {
+            if (pass != 0) clock.Advance(1000);
+            worker.Offer(Desktop(Key()), Key().HostId);
+            revision = (await After(worker, revision)).Revision;
+        }
+        await Assert.ThrowsAsync<InvalidOperationException>(() => worker.DisposeAsync().AsTask());
+        Assert.Equal(Enumerable.Repeat(typeof(InvalidOperationException), 4), reported);
+    }
+
+    [Fact]
+    public async Task AFailingRecoveryReportEndsTheWorkerAndSurfacesAtDisposal()
+    {
+        // The report is not swallowed either: a recorder fault is an owned worker failure, observable when disposed.
+        Write(SyntheticClientLogFixtures.Identity);
+        var probe = new Probe(Log, Key()) { DiscoverFailure = new OperationCanceledException() };
+        var worker = new WindowsSessionLogCorrelator(probe, timeProvider: new Clock(),
+            recoveredFailure: _ => throw new FormatException("Synthetic recorder fault."));
+        worker.Offer(Desktop(Key()), Key().HostId);
+        Assert.Equal(SessionLogCorrelationStatus.Unavailable, Assert.Single((await After(worker)).Sessions).Correlation);
+        await Assert.ThrowsAsync<FormatException>(() => worker.DisposeAsync().AsTask());
         Assert.True(probe.Disposed);
     }
 

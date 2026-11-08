@@ -17,8 +17,12 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
     private bool _disposed;
     public string Path { get; }
     private static readonly JsonSerializerOptions Json = new() { UnmappedMemberHandling = JsonUnmappedMemberHandling.Disallow };
-    // The first fourteen fields are always written. End evidence is written only when present, so a row without it keeps
-    // the original shape that earlier versions read; a row with it is rejected by them and left untouched (no repair).
+    // Store format 1 stays readable and writable by builds that predate end evidence: they require format 1, exactly these
+    // two tables and payloads of exactly the fourteen original fields, and they select and insert only ordinal and payload.
+    // So the payload always keeps those fourteen fields, and end evidence goes in the optional per-row evidence column,
+    // NULL when there is none. An earlier build therefore reads and clears this history; when it saves, the rows it
+    // rewrites lose their evidence (their cause reads Unknown again). Payloads with the evidence fields inline, which the
+    // first end-evidence build wrote, are still read and are rewritten in the fourteen-field shape on the next save.
     private sealed record Stored(Guid EntryId, string? HostId, int Pid, long Start, long First, long Last, long Absent,
         long? Close, long? User, long? UserTime, long? Place, Guid? Job, long? Universe, long? DestinationTime,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Hung = null,
@@ -28,7 +32,23 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Complete = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Fault = null,
         [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? Code = null,
-        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null);
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null)
+    {
+        public Evidence InlineEvidence() => new(Hung, Disconnected, Reason, Checked, Complete, Fault, Code, Dumps);
+    }
+    private sealed record Evidence(
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Hung = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Disconnected = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Reason = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Checked = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] bool? Complete = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] long? Fault = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] uint? Code = null,
+        [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)] int? Dumps = null)
+    {
+        public static Evidence None { get; } = new();
+    }
+    private const string EvidenceColumnQuery = "SELECT count(*) FROM pragma_table_info('history_entries') WHERE name='evidence'";
     private static readonly string[] RequiredFields = ["EntryId", "HostId", "Pid", "Start", "First", "Last", "Absent", "Close", "User", "UserTime", "Place", "Job", "Universe", "DestinationTime"];
     public RecentClientHistoryStore(string root)
     {
@@ -109,7 +129,10 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         { if (!meta.Read()) throw new InvalidDataException(); revision = meta.GetInt64(0); if (meta.Read()) throw new InvalidDataException(); }
         command.CommandText = "SELECT count(*) FROM history_meta";
         if (Convert.ToInt64(command.ExecuteScalar()) != 1) throw new InvalidDataException();
-        command.CommandText = "SELECT ordinal,length(CAST(payload AS BLOB)),payload FROM history_entries ORDER BY ordinal LIMIT 101";
+        command.CommandText = EvidenceColumnQuery;
+        bool evidenceColumn = Convert.ToInt64(command.ExecuteScalar()) == 1;
+        command.CommandText = "SELECT ordinal,length(CAST(payload AS BLOB)),payload,"
+            + (evidenceColumn ? "length(CAST(evidence AS BLOB)),evidence" : "NULL,NULL") + " FROM history_entries ORDER BY ordinal LIMIT 101";
         var entries = new List<RecentClientHistoryEntry>();
         using (var rows = command.ExecuteReader())
             while (rows.Read())
@@ -118,15 +141,29 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
                 if (entries.Count >= RecentClientHistoryReducer.MaximumEnded || rows.GetInt64(0) != entries.Count
                     || rows.GetInt64(1) is < 1 or > MaximumEntryBytes) throw new InvalidDataException();
                 string payload = rows.GetString(2);
-                using var document = JsonDocument.Parse(payload, new JsonDocumentOptions { MaxDepth = 3 });
-                var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var property in document.RootElement.EnumerateObject()) if (!fields.Add(property.Name)) throw new InvalidDataException();
+                var fields = FieldNames(payload);
                 if (!RequiredFields.All(fields.Contains)) throw new InvalidDataException();
                 var stored = JsonSerializer.Deserialize<Stored>(payload, Json) ?? throw new InvalidDataException();
-                entries.Add(ToEntry(stored));
+                var evidence = stored.InlineEvidence();
+                if (!rows.IsDBNull(4))
+                {
+                    // Evidence is in the payload or in its column, never both, and a stored column value is never empty.
+                    if (rows.GetInt64(3) is < 1 or > MaximumEntryBytes || fields.Count != RequiredFields.Length) throw new InvalidDataException();
+                    string column = rows.GetString(4);
+                    if (FieldNames(column).Count == 0) throw new InvalidDataException();
+                    evidence = JsonSerializer.Deserialize<Evidence>(column, Json) ?? throw new InvalidDataException();
+                }
+                entries.Add(ToEntry(stored, evidence));
             }
         ct.ThrowIfCancellationRequested();
         return new RecentClientHistorySnapshot(1, revision, Array.AsReadOnly(entries.ToArray())).Validated();
+    }
+    private static HashSet<string> FieldNames(string json)
+    {
+        using var document = JsonDocument.Parse(json, new JsonDocumentOptions { MaxDepth = 3 });
+        var fields = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var property in document.RootElement.EnumerateObject()) if (!fields.Add(property.Name)) throw new InvalidDataException();
+        return fields;
     }
     private void Save(RecentClientHistorySnapshot snapshot, CancellationToken ct)
     {
@@ -150,10 +187,15 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         using var tx = db.BeginTransaction();
         using var command = db.CreateCommand(); command.Transaction = tx;
         RecentClientHistorySnapshot previous;
-        if (existing) previous = Read(db, tx, ct);
+        if (existing)
+        {
+            previous = Read(db, tx, ct);
+            command.CommandText = EvidenceColumnQuery;
+            if (Convert.ToInt64(command.ExecuteScalar()) == 0) { command.CommandText = "ALTER TABLE history_entries ADD COLUMN evidence TEXT"; command.ExecuteNonQuery(); }
+        }
         else
         {
-            command.CommandText = "CREATE TABLE history_meta(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL); CREATE TABLE history_entries(ordinal INTEGER PRIMARY KEY,payload TEXT NOT NULL); PRAGMA user_version=1; INSERT INTO history_meta VALUES(1,0);";
+            command.CommandText = "CREATE TABLE history_meta(id INTEGER PRIMARY KEY CHECK(id=1),revision INTEGER NOT NULL); CREATE TABLE history_entries(ordinal INTEGER PRIMARY KEY,payload TEXT NOT NULL,evidence TEXT); PRAGMA user_version=1; INSERT INTO history_meta VALUES(1,0);";
             command.ExecuteNonQuery(); previous = RecentClientHistorySnapshot.Empty;
         }
         if (snapshot.Revision < previous.Revision || snapshot.Revision == previous.Revision && !snapshot.Entries.SequenceEqual(previous.Entries))
@@ -161,10 +203,13 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
         command.CommandText = "DELETE FROM history_entries"; command.ExecuteNonQuery();
         for (int index = 0; index < snapshot.Entries.Count; index++)
         {
-            ct.ThrowIfCancellationRequested(); string payload = JsonSerializer.Serialize(ToStored(snapshot.Entries[index]), Json);
-            if (Encoding.UTF8.GetByteCount(payload) > MaximumEntryBytes) throw new InvalidDataException();
-            command.CommandText = "INSERT INTO history_entries(ordinal,payload) VALUES($ordinal,$payload)";
-            command.Parameters.Clear(); command.Parameters.AddWithValue("$ordinal", index); command.Parameters.AddWithValue("$payload", payload); command.ExecuteNonQuery();
+            ct.ThrowIfCancellationRequested(); var entry = snapshot.Entries[index];
+            string payload = JsonSerializer.Serialize(ToStored(entry), Json);
+            var end = ToEvidence(entry); string? evidence = end == Evidence.None ? null : JsonSerializer.Serialize(end, Json);
+            if (Encoding.UTF8.GetByteCount(payload) > MaximumEntryBytes || evidence is not null && Encoding.UTF8.GetByteCount(evidence) > MaximumEntryBytes) throw new InvalidDataException();
+            command.CommandText = "INSERT INTO history_entries(ordinal,payload,evidence) VALUES($ordinal,$payload,$evidence)";
+            command.Parameters.Clear(); command.Parameters.AddWithValue("$ordinal", index); command.Parameters.AddWithValue("$payload", payload);
+            command.Parameters.AddWithValue("$evidence", (object?)evidence ?? DBNull.Value); command.ExecuteNonQuery();
         }
         command.CommandText = "UPDATE history_meta SET revision=$revision WHERE id=1"; command.Parameters.Clear(); command.Parameters.AddWithValue("$revision", snapshot.Revision); command.ExecuteNonQuery();
         ct.ThrowIfCancellationRequested(); tx.Commit();
@@ -172,19 +217,20 @@ public sealed class RecentClientHistoryStore : ISessionHistoryStore, IDisposable
     private static Stored ToStored(RecentClientHistoryEntry entry) => new(entry.EntryId, entry.Process.HostId, entry.Process.ProcessId,
         entry.Process.ProcessStartUtcTicks, entry.FirstObservedUtc.UtcTicks, entry.LastObservedUtc.UtcTicks, entry.NoLongerObservedUtc!.Value.UtcTicks,
         entry.CloseRequestedUtc?.UtcTicks, entry.LastKnownUserId, entry.LastKnownUserIdentityUtc?.UtcTicks,
-        entry.LastKnownDestination?.PlaceId, entry.LastKnownDestination?.JobId, entry.LastKnownDestination?.UniverseId, entry.LastKnownDestination?.ObservedUtc.UtcTicks,
-        entry.NotRespondingUtc?.UtcTicks, entry.DisconnectedUtc?.UtcTicks, entry.DisconnectReason, entry.FaultCheck?.CheckedUtc.UtcTicks,
-        entry.FaultCheck?.Complete, entry.FaultCheck?.FaultRecordedUtc?.UtcTicks, entry.FaultCheck?.ExceptionCode, entry.FaultCheck?.CrashDumps);
-    private static RecentClientHistoryEntry ToEntry(Stored item)
+        entry.LastKnownDestination?.PlaceId, entry.LastKnownDestination?.JobId, entry.LastKnownDestination?.UniverseId, entry.LastKnownDestination?.ObservedUtc.UtcTicks);
+    private static Evidence ToEvidence(RecentClientHistoryEntry entry) => new(entry.NotRespondingUtc?.UtcTicks, entry.DisconnectedUtc?.UtcTicks,
+        entry.DisconnectReason, entry.FaultCheck?.CheckedUtc.UtcTicks, entry.FaultCheck?.Complete, entry.FaultCheck?.FaultRecordedUtc?.UtcTicks,
+        entry.FaultCheck?.ExceptionCode, entry.FaultCheck?.CrashDumps);
+    private static RecentClientHistoryEntry ToEntry(Stored item, Evidence end)
     {
         if ((item.Place.HasValue || item.Job.HasValue || item.Universe.HasValue || item.DestinationTime.HasValue) && !(item.Place.HasValue && item.Job.HasValue && item.DestinationTime.HasValue)) throw new InvalidDataException();
-        if (item.Checked.HasValue != item.Complete.HasValue || item.Checked.HasValue != item.Dumps.HasValue
-            || !item.Checked.HasValue && (item.Fault.HasValue || item.Code.HasValue)) throw new InvalidDataException();
+        if (end.Checked.HasValue != end.Complete.HasValue || end.Checked.HasValue != end.Dumps.HasValue
+            || !end.Checked.HasValue && (end.Fault.HasValue || end.Code.HasValue)) throw new InvalidDataException();
         return new RecentClientHistoryEntry(item.EntryId, new(item.HostId, item.Pid, item.Start), Utc(item.First), Utc(item.Last), Utc(item.Absent),
             item.Close is { } close ? Utc(close) : null, item.User, item.UserTime is { } userTime ? Utc(userTime) : null,
             item.Place is { } place ? new(place, item.Job!.Value, item.Universe, Utc(item.DestinationTime!.Value)) : null,
-            item.Hung is { } hung ? Utc(hung) : null, item.Disconnected is { } disconnected ? Utc(disconnected) : null, item.Reason,
-            item.Checked is { } checkedAt ? new(Utc(checkedAt), item.Complete!.Value, item.Fault is { } fault ? Utc(fault) : null, item.Code, item.Dumps!.Value) : null)
+            end.Hung is { } hung ? Utc(hung) : null, end.Disconnected is { } disconnected ? Utc(disconnected) : null, end.Reason,
+            end.Checked is { } checkedAt ? new(Utc(checkedAt), end.Complete!.Value, end.Fault is { } fault ? Utc(fault) : null, end.Code, end.Dumps!.Value) : null)
             .Validated(ended: true);
     }
     private static DateTimeOffset Utc(long ticks) => new(ticks, TimeSpan.Zero);
