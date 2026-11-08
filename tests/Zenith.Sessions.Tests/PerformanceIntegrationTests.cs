@@ -148,30 +148,31 @@ public sealed partial class PerformanceIntegrationTests : IDisposable
         var healthyBy=DateTime.UtcNow.AddSeconds(5);
         while(!vm.PressureNotice.Contains("healthy",StringComparison.OrdinalIgnoreCase) && DateTime.UtcNow<healthyBy) await Task.Delay(20);
         Assert.Contains("healthy",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
-        monitor.Arm(2);
-        // Hold the dispatcher past the three-second continuity limit. The 1 Hz safety samples must not wait for it.
-        bool sampled=monitor.Sampled.Wait(TimeSpan.FromSeconds(5));
-        Assert.True(sampled,"No safety sample was taken while the dispatcher was busy.");
+        // Hold the dispatcher for a fixed second past the three-second continuity limit. The 1 Hz safety samples must not
+        // wait for it: a sampler that did would leave a gap longer than the limit, and the pressure tracker would restart
+        // recovery ("waiting for coherent", then "recovering") once the dispatcher is free again.
+        var stall=CapacityPolicy.ResourceSampleExpiry+TimeSpan.FromSeconds(1);
+        int before=monitor.Calls;var held=System.Diagnostics.Stopwatch.StartNew();
+        Thread.Sleep(stall);
+        held.Stop();int during=monitor.Calls-before;
+        Assert.True(during>=3,$"Only {during} safety samples were taken while the dispatcher was held for {held.Elapsed.TotalSeconds:0.0} s.");
         vm.Refresh.Execute(null);await vm.Refresh.Execution;
         Assert.Contains("healthy",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("coherent",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
         Assert.DoesNotContain("recovering",vm.PressureNotice,StringComparison.OrdinalIgnoreCase);
     });
-    // Each call is a new healthy measurement stamped now; once armed, the event is set after the given number of further calls.
-    private sealed class FreshMonitor : IDesktopMonitor, IDisposable
+    // Each call is a new healthy measurement stamped now. The loop samples on the pool, so the count stays atomic.
+    private sealed class FreshMonitor : IDesktopMonitor
     {
-        private int _calls,_target=int.MaxValue;
-        public ManualResetEventSlim Sampled {get;}=new(false);
-        public void Arm(int further)=>Volatile.Write(ref _target,Volatile.Read(ref _calls)+further);
+        private int _calls;
+        public int Calls=>Volatile.Read(ref _calls);
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();
-            if(Interlocked.Increment(ref _calls)>=Volatile.Read(ref _target)) Sampled.Set();
+            ct.ThrowIfCancellationRequested();Interlocked.Increment(ref _calls);
             return Task.FromResult(new DesktopSnapshot(new(DateTimeOffset.UtcNow,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,20),[]));
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>Task.FromResult(false);
-        public void Dispose()=>Sampled.Dispose(); // The shell disposes its monitor after the sampler has stopped.
     }
     private sealed class FixedMonitor : IConfigurableDesktopMonitor
     {
