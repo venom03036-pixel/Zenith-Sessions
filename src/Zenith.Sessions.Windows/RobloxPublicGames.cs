@@ -97,15 +97,9 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameBatchDirect
     {
         ct.ThrowIfCancellationRequested();
         const string invalid = "Request between one and six distinct positive 64-bit universe IDs.";
-        if (universeIds is null || universeIds.Count is 0 or > PublicRobloxGameBatchLimits.MaximumUniverses)
+        if (DistinctPositiveIds(universeIds, PublicRobloxGameBatchLimits.MaximumUniverses) is not { } requested)
             return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxGame>>(invalid));
-        var requested = new long[universeIds.Count]; var distinct = new HashSet<long>();
-        for (int index = 0; index < requested.Length; index++)
-        {
-            long id = universeIds[index];
-            if (id <= 0 || !distinct.Add(id)) return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxGame>>(invalid));
-            requested[index] = id;
-        }
+        var distinct = new HashSet<long>(requested);
         // The same documented anonymous route as the single lookup, with several universes.
         var uri = new Uri("https://games.roblox.com/v1/games?universeIds="
             + string.Join(",", requested.Select(id => id.ToString(CultureInfo.InvariantCulture))));

@@ -65,8 +65,18 @@ public static class PublicRobloxUsername
     public const int MaximumBatch = 50;
 
     // 3 to 20 ASCII letters, digits or underscores, exactly as typed: no trimming or culture-dependent rules.
-    public static bool IsValid(string? text) => text is { Length: >= MinimumLength and <= MaximumLength }
-        && text.All(c => char.IsAsciiLetterOrDigit(c) || c == '_');
+    public static bool IsValid(string? text) => text is { Length: >= MinimumLength and <= MaximumLength } && HasValidCharacters(text);
+
+    /// <summary>
+    /// Only ASCII letters, digits or underscores; the length is the caller's rule. Typed names and the names in
+    /// Roblox's replies share this one check.
+    /// </summary>
+    public static bool HasValidCharacters(string text)
+    {
+        ArgumentNullException.ThrowIfNull(text);
+        foreach (char c in text) if (!(char.IsAsciiLetterOrDigit(c) || c == '_')) return false;
+        return true;
+    }
 }
 
 /// <summary>

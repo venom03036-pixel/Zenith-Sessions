@@ -11,15 +11,8 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameArtDirector
     {
         ct.ThrowIfCancellationRequested();
         const string invalid = "Request between one and twelve distinct positive 64-bit universe IDs.";
-        if (universeIds is null || universeIds.Count is 0 or > PublicRobloxGameArtLimits.MaximumBatch)
+        if (DistinctPositiveIds(universeIds, PublicRobloxGameArtLimits.MaximumBatch) is not { } requested)
             return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxGameThumbnail>>(invalid));
-        var requested = new long[universeIds.Count]; var distinct = new HashSet<long>();
-        for (int index = 0; index < requested.Length; index++)
-        {
-            long id = universeIds[index];
-            if (id <= 0 || !distinct.Add(id)) return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxGameThumbnail>>(invalid));
-            requested[index] = id;
-        }
         // Anonymous batch route documented at https://thumbnails.roblox.com/docs/json/v1 (multiget/thumbnails).
         // One 16:9 picture per universe; the per-universe object shape is observed first-party data (2026-11-07).
         var uri = new Uri("https://thumbnails.roblox.com/v1/games/multiget/thumbnails?universeIds="
@@ -58,13 +51,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxGameArtDirector
         if (thumbnails.ValueKind != JsonValueKind.Array || thumbnails.GetArrayLength() > 1) throw new InvalidPublicResponseException();
         if (thumbnails.GetArrayLength() == 0) return new(universe, null, PublicRobloxThumbnailState.Unavailable, now);
         JsonElement first = thumbnails[0];
-        var state = ReadText(first, "state", 32) switch
-        {
-            "Completed" => PublicRobloxThumbnailState.Ready,
-            "Pending" or "InReview" => PublicRobloxThumbnailState.Pending,
-            "Blocked" => PublicRobloxThumbnailState.Blocked,
-            _ => PublicRobloxThumbnailState.Unavailable
-        };
+        var state = MapThumbnailState(ReadText(first, "state", 32));
         Uri? imageUri = null;
         if (state == PublicRobloxThumbnailState.Ready && !TryValidateAvatarUri(ReadText(first, "imageUrl", 2048), out imageUri))
             throw new InvalidPublicResponseException();
