@@ -660,7 +660,7 @@
                   <Button Content="Cancel priority work" Command="{Binding CancelClientPriority}" IsEnabled="{Binding IsChangingClientPriority}" MinHeight="36" Margin="0,0,8,8" />
                 </WrapPanel>
                 <TextBlock Text="{Binding ClientPriorityStatus}" TextWrapping="Wrap" Margin="0,0,0,6" />
-                <TextBlock Text="{Binding PendingPriorityRestoreCount, StringFormat='Original priorities awaiting restoration: {0}'}" Style="{StaticResource Muted}" FontSize="12" Margin="0,0,0,8" />
+                <TextBlock Text="{Binding PendingPriorityRestoreCount, StringFormat='Clients with original priority, efficiency or core settings awaiting restoration: {0}'}" Style="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,8" />
                 <ListView ItemsSource="{Binding ClientPriorityResults}" MaxHeight="160" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" AutomationProperties.Name="Client priority results">
                   <ListView.View><GridView>
                     <GridViewColumn Header="Process" Width="100" DisplayMemberBinding="{Binding Session.ProcessId, StringFormat='PID {0}'}" />

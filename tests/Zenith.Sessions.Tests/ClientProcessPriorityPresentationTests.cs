@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Reflection;
 using System.Threading.Channels;
 using System.Windows.Threading;
+using System.Xml.Linq;
 using Xunit;
 using Zenith.Sessions.App;
 using Zenith.Sessions.Core;
@@ -11,6 +12,19 @@ namespace Zenith.Sessions.Tests;
 
 public sealed partial class ClientPreviewPresentationTests
 {
+    [Fact]
+    public void PendingRestoreLabelNamesEverySettingARestoreCanCover()
+    {
+        // O-C6-5: the pending count covers the priority class, EcoQoS, memory priority and affinity, so the label
+        // names the same "priority, efficiency or core settings" as the Exit warning instead of "priorities" alone.
+        using var source=typeof(ClientPreviewPresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var document=XDocument.Load(source);
+        XNamespace presentation="http://schemas.microsoft.com/winfx/2006/xaml/presentation",xaml="http://schemas.microsoft.com/winfx/2006/xaml";
+        var tools=document.Descendants(presentation+"Expander").Single(element=>(string?)element.Attribute(xaml+"Name")=="ClientPriorityTools");
+        var label=tools.Descendants(presentation+"TextBlock").Single(element=>((string?)element.Attribute("Text"))?.StartsWith("{Binding PendingPriorityRestoreCount,",StringComparison.Ordinal)==true);
+        Assert.Equal("{Binding PendingPriorityRestoreCount, StringFormat='Clients with original priority, efficiency or core settings awaiting restoration: {0}'}",(string)label.Attribute("Text")!);
+    }
+
     [Theory]
     [InlineData(ClientProcessPriorityAction.Normal)]
     [InlineData(ClientProcessPriorityAction.BelowNormal)]
