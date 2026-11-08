@@ -49,10 +49,39 @@ public sealed class CleanupRecoveryTests : IDisposable
         using var vault=new ProtectedCredentialVault(_root);
         using var cleanup=new CredentialCleanupService(repository,vault);
         var result=await cleanup.RunAsync(default);
-        Assert.Equal(1,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType);
+        // Only a failure confined to this record's files may blame a removed profile's file.
+        Assert.Equal(1,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType); Assert.True(result.RecordDamaged);
         Assert.Equal(profile.Id,Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
         string record=Path.Combine(_root,"accounts.vault",profile.Id.ToString("N")+".dpapi");
         Assert.True(File.Exists(record)); Assert.True(File.Exists(record+".identity"));
+    }
+    [Fact]
+    public async Task DamagedVaultCoordinationFileEndsTheRunWithoutBlamingARemovedProfile()
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var a=await repository.SaveAsync(AccountProfile.Create("A"),default); var b=await repository.SaveAsync(AccountProfile.Create("B"),default);
+        await repository.DeleteManyAsync([a,b],default);
+        await DamageVaultCoordinationFileAsync(_root);
+        using var inner=new ProtectedCredentialVault(_root); var vault=new CountingCleanupVault(inner);
+        using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result=await service.RunAsync(timeout.Token);
+        // The store itself is unusable, so every record would fail the same way: one attempt, and the store's failure is reported.
+        Assert.Equal(2,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType); Assert.False(result.RecordDamaged);
+        Assert.Single(vault.Calls);
+        Assert.Equal(2,(await repository.ReadCredentialCleanupAsync(default)).Total);
+    }
+    /// <summary>Writes content into the vault's coordination file, which must be empty, so every vault operation is refused.</summary>
+    internal static Task DamageVaultCoordinationFileAsync(string root)
+    {
+        string folder=Path.Combine(root,"accounts.vault"); Directory.CreateDirectory(folder);
+        return File.WriteAllTextAsync(Path.Combine(folder,ProtectedCredentialVault.WriterLockFileName),"synthetic damage");
+    }
+    private sealed class CountingCleanupVault(IAccountCredentialVault inner) : IAccountCredentialVault
+    {
+        public readonly List<Guid> Calls=[];
+        public Task<AuthorizationRecord?> ReadAsync(Guid id,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
+        public Task SaveAsync(AuthorizationRecord record,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
+        public Task DeleteAsync(Guid id,CancellationToken ct) { Calls.Add(id); return inner.DeleteAsync(id,ct); }
     }
     /// <summary>Deletes a profile whose synthetic protected record remains, then damages its vault pointer file.</summary>
     internal static async Task<AccountProfile> DeletedProfileWithDamagedPointerAsync(AccountRepository repository,string root)

@@ -514,6 +514,18 @@ public sealed class ViewModelTests : IDisposable
         Assert.True(vm.IsReady); Assert.NotEqual("Startup needs attention",vm.SaveStatus); Assert.DoesNotContain("Library unavailable",vm.EmptyAccountsText);
         Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("is damaged",vm.CredentialCleanupStatus);
         Assert.DoesNotContain("Check storage access",vm.CredentialCleanupStatus);
+        // Retry is the only button here, so the status says it will not help and where the kept file is.
+        Assert.Contains("Retrying will not repair it",vm.CredentialCleanupStatus); Assert.Contains("More options › Open data folder",vm.CredentialCleanupStatus);
+    });
+    [Fact]
+    public Task DamagedVaultCoordinationFileIsReportedAsStorageNotAsADamagedRemovedProfileFile()=>OnDispatcherAsync(async ()=>
+    {
+        using(var repository=new AccountRepository(_root))
+        { await repository.InitializeAsync(default); var removed=await repository.SaveAsync(AccountProfile.Create("Removed"),default); await repository.DeleteAsync(removed.Id,removed.Revision,default); }
+        await CleanupRecoveryTests.DamageVaultCoordinationFileAsync(_root);
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
+        Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("Check storage access",vm.CredentialCleanupStatus);
+        Assert.DoesNotContain("is damaged",vm.CredentialCleanupStatus);
     });
     // A dedicated thread stands in for another process: mutex ownership is per thread, and this thread ends before it returns.
     private static T OnOwnThread<T>(Func<T> create)
