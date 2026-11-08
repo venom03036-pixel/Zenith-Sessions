@@ -473,9 +473,10 @@ internal static class PublicDirectoryRetryAfter
         now = now.ToUniversalTime();
         TimeSpan maximum = DateTimeOffset.MaxValue - now;
         TimeSpan? pause = ReadRetryAfter(response, now, maximum);
-        // On a 429 Roblox's x-ratelimit-reset names when the request window really reopens. Retry-After
-        // can be much shorter (5 s against a 50 s reset), and waiting only for it earns another 429.
-        if (response.StatusCode == HttpStatusCode.TooManyRequests && ReadWindowReset(response, maximum) is { } reset
+        // On a 429 whose route window is used up, Roblox's x-ratelimit-reset names when the window really
+        // reopens. Retry-After can be much shorter (5 s against a 50 s reset), and waiting only for it earns
+        // another 429. While the window still has room the 429 came from another limiter, so Retry-After stands.
+        if (response.StatusCode == HttpStatusCode.TooManyRequests && ReadUsedUpWindowReset(response, maximum) is { } reset
             && (pause is null || reset > pause)) pause = reset;
         if (pause is not null || !useDefaultPause) return pause;
         return maximum < TimeSpan.FromSeconds(30) ? maximum : TimeSpan.FromSeconds(30);
@@ -483,10 +484,14 @@ internal static class PublicDirectoryRetryAfter
 
     // A successful response whose x-ratelimit-remaining is 0 used the last request of the window, so
     // the next request would be refused until x-ratelimit-reset. Missing or unreadable values mean no pause.
-    public static TimeSpan? ReadUsedUpWindow(HttpResponseMessage response, DateTimeOffset now)
+    public static TimeSpan? ReadUsedUpWindow(HttpResponseMessage response, DateTimeOffset now) =>
+        ReadUsedUpWindowReset(response, DateTimeOffset.MaxValue - now.ToUniversalTime());
+
+    // The window reset, only when x-ratelimit-remaining is a single all-zero value (the window is used up).
+    private static TimeSpan? ReadUsedUpWindowReset(HttpResponseMessage response, TimeSpan maximum)
     {
         if (ReadSingle(response, "x-ratelimit-remaining") is not { } remaining || remaining.Any(c => c != '0')) return null;
-        return ReadWindowReset(response, DateTimeOffset.MaxValue - now.ToUniversalTime());
+        return ReadWindowReset(response, maximum);
     }
 
     private static TimeSpan? ReadRetryAfter(HttpResponseMessage response, DateTimeOffset now, TimeSpan maximum)

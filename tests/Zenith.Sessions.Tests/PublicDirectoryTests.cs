@@ -174,19 +174,24 @@ public sealed class PublicDirectoryTests
         Assert.Equal(2, handler.Calls);
     }
 
+    // The window reset counts only when the route window is used up (remaining is 0). A 429 from a
+    // different limiter while the window still has room waits for Retry-After, not the whole window,
+    // because the pause is shared by every public-directory lookup on that host.
     [Theory]
-    [InlineData("5", "50", 50)]
-    [InlineData("90", "10", 90)]
-    [InlineData(null, "50", 50)]
-    [InlineData("5", "soon", 5)]
-    public async Task RateLimitPauseUsesTheLongerOfRetryAfterAndTheWindowReset(string? retryAfter, string reset, int expectedSeconds)
+    [InlineData("5", "0", "50", 50)]
+    [InlineData("90", "0", "10", 90)]
+    [InlineData(null, "0", "50", 50)]
+    [InlineData("5", "0", "soon", 5)]
+    [InlineData("5", "5", "50", 5)]
+    [InlineData("5", null, "50", 5)]
+    public async Task RateLimitPauseUsesTheLongerOfRetryAfterAndTheWindowReset(string? retryAfter, string? remaining, string reset, int expectedSeconds)
     {
         var clock = new FakeTime();
         using var handler = new FakeHandler((_, _) =>
         {
             var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
             if (retryAfter is not null) response.Headers.TryAddWithoutValidation("Retry-After", retryAfter);
-            response.Headers.TryAddWithoutValidation("x-ratelimit-remaining", "0");
+            if (remaining is not null) response.Headers.TryAddWithoutValidation("x-ratelimit-remaining", remaining);
             response.Headers.TryAddWithoutValidation("x-ratelimit-reset", reset);
             return Task.FromResult(response);
         });
