@@ -7,6 +7,13 @@ loop, and their verification. Every row moves only on evidence: a failing test t
 **Status values:** Open · In progress · Verified (test or measurement cited) · Not reproduced (how it was checked) · Blocked (what is needed) ·
 Needs decision (owner's call) · By design (cited) · Excluded (forbidden technique, cited).
 
+## Scoped localization completion (2026-11-08, D7)
+
+| Item | Status | Evidence and boundary |
+|---|---|---|
+| R-shell-16 | Verified within owner-approved scope; integrated verification pending | English catalog, saved language choice, inherited text/accessibility bindings and RTL; scoped sidebar/title/Appearance/Guide-heading migration. 282 focused checks and 86 final settings/exit checks. [Verification](LOCALIZATION-VERIFICATION.md). Other pages and actual translations remain the explicit follow-up list. |
+| R-research-14 | Verified within migrated scope; integrated verification pending | Every shipped resource catalog's keys/placeholders and every migrated XAML reference checked; Appearance static literal gate and sidebar/Guide heading gates. English is the only shipped catalog. |
+
 ## Starting point (2026-11-07, before the loop's fix lanes)
 
 | Check | Result | Evidence |

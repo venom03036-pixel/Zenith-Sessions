@@ -16,7 +16,7 @@ public sealed class LaunchQueueGuideTests
         var document=XDocument.Load(stream);
         var guide=Assert.Single(document.Descendants().Where(e=>e.Name.LocalName=="ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide",StringComparison.Ordinal)==true));
-        return guide.Descendants().Where(e=>e.Name.LocalName=="TextBlock").Select(e=>(string?)e.Attribute("Text")??"").ToList();
+        return guide.Descendants().Where(e=>e.Name.LocalName=="TextBlock").Select(e=>ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
     }
 
     private static string Section(List<string> texts,string title)

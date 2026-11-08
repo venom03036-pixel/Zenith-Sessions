@@ -21,10 +21,10 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     ManagerPerformanceSettings? Performance = null, ClientWindowLayoutSettings? WindowLayout = null,
     ManagerWindowPlacement? ManagerWindow = null, bool CloseButtonExits = false, int IdleLockMinutes = 0, string PanicShortcut = "F12",
     bool MuteArrivingClients = false, bool PublicNetworkGuard = false, bool DiscordAlerts = false,
-    bool DiscordPresence = false, bool DiscordPresenceGame = false, string DiscordApplicationId = "")
+    bool DiscordPresence = false, bool DiscordPresenceGame = false, string DiscordApplicationId = "", string Language = "en")
 {
     // ManagerWindow, CloseButtonExits, IdleLockMinutes, PanicShortcut, MuteArrivingClients, PublicNetworkGuard, DiscordAlerts,
-    // DiscordPresence, DiscordPresenceGame and DiscordApplicationId are optional within schema 1: files without them load unchanged,
+    // DiscordPresence, DiscordPresenceGame, DiscordApplicationId and Language are optional within schema 1: files without them load unchanged,
     // and older builds ignore them. Without CloseButtonExits the window's close button keeps hiding the manager to the tray; without
     // IdleLockMinutes (or with 0) the manager never locks itself after idle time; without PanicShortcut the global panic shortcut is
     // F12; without MuteArrivingClients no client is muted when it appears; without PublicNetworkGuard launches are never held for the
@@ -33,7 +33,7 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
     // contacted, without DiscordPresenceGame the status names no game, and DiscordApplicationId is empty (nothing to show the status
     // under) or the public 17-20 digit ID of a Discord application, never a secret. A PanicShortcut that earlier builds saved but
     // that is no longer allowed (such as Ctrl+Alt+Q, which is AltGr+Q) is read as F12 with a notice by SettingsStore; any other
-    // refused value makes the settings invalid.
+    // refused value makes the settings invalid. A missing or unknown Language choice uses English.
     public SessionsSettings Validated()
     {
         if (Version != 1 || Theme is null || Theme.Length > 80 || OAuthClientId is null || OAuthClientId.Length > 100 || OAuthClientId.Any(c => !char.IsAsciiDigit(c))
@@ -44,7 +44,10 @@ public sealed record SessionsSettings(int Version = 1, string Theme = "graphite-
         (Capacity ?? new()).Validated();
         (Performance ?? new()).Validated();
         ManagerWindow?.Validated();
-        return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated() };
+        // Optional schema-1 preference. A newer/edited choice falls back to English without invalidating unrelated settings.
+        string language=Language?.Trim().ToLowerInvariant() ?? "en";
+        if(language is not ("follow-windows" or "pseudo" or "pseudo-rtl" or "en")) language="en";
+        return this with { Capacity = Capacity ?? new(), Performance = Performance ?? new(), WindowLayout = (WindowLayout ?? new()).Validated(),Language=language };
     }
 }
 

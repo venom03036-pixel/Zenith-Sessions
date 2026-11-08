@@ -28,7 +28,7 @@ public sealed class ShellShortcutsTests
         // Ctrl+N opens the Nth sidebar item through the same command (and lock and shutdown guard) its button uses.
         var pages=all.Where(s=>s.Action is ShellShortcutAction.Navigate or ShellShortcutAction.ShowWindowsOverview).ToArray();
         Assert.Equal(rail.Select(r=>(r.Command,r.Parameter)),pages.Select(XamlTarget));
-        Assert.Equal(rail.Select(r=>r.Name),pages.Select(p=>p.Label));
+        Assert.Equal(rail.Select(r=>ProductionWindowStrings.Resolve(r.Name)),pages.Select(p=>p.Label));
         Assert.Equal(Enumerable.Range(1,rail.Length).Select(n=>"Ctrl+"+n),pages.Select(p=>p.Gesture));
         Assert.Equal("Ctrl+F",Assert.Single(all,s=>s.Action==ShellShortcutAction.FindOnPage).Gesture);
         // No two shortcuts share a key, and every one has a label for the Guide.

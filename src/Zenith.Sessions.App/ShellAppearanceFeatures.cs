@@ -18,14 +18,14 @@ public sealed partial class ShellViewModel
         get
         {
             if (_systemAppearance.HighContrast is not null)
-                return "Windows High Contrast is on, so the manager uses your Windows contrast colours. Your theme choice returns when High Contrast is turned off.";
+                return Strings["Theme_HighContrast"];
             var choice = SessionsThemes.Choice(_settings.Theme);
-            if (choice.Id != SessionsThemes.FollowWindowsId) return $"Current theme: {choice.Name}.";
+            if (choice.Id != SessionsThemes.FollowWindowsId) return Strings.Format("Theme_Current",choice.Name);
             return _systemAppearance.AppsUseLightTheme switch
             {
-                true => "Following Windows: Light, because Windows apps use light mode.",
-                false => $"Following Windows: {EffectiveTheme.Name}, because Windows apps use dark mode.",
-                null => $"Following Windows: {EffectiveTheme.Name}, because Windows did not report an app mode."
+                true => Strings["Theme_FollowingLight"],
+                false => Strings.Format("Theme_FollowingDark",EffectiveTheme.Name),
+                null => Strings.Format("Theme_FollowingUnknown",EffectiveTheme.Name)
             };
         }
     }

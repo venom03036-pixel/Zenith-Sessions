@@ -46,6 +46,8 @@ public static class SettingsSearchCatalog
         E("protected-recovery", "Protected-file recovery", "Review pending protected credential cleanup and retry it. This does not restore obsolete authorization.",
             SettingsSearchTarget.Recovery, "recovery", "retry", "credential", "vault", "cleanup", "protected", "unused records"),
 
+        E("language", "Language", "Choose English, Follow Windows, or a pseudo-locale for testing translated labels and right-to-left layout. Language changes apply immediately; untranslated pages stay in English.",
+            SettingsSearchTarget.Appearance, "language", "localization", "translation", "culture", "right to left", "rtl", "pseudo"),
         E("theme-graphite-mint", "Graphite Mint", "Find the existing graphite theme with a mint accent.",
             SettingsSearchTarget.Appearance, "theme", "palette", "default"),
         E("theme-midnight", "Midnight", "Find the existing near-black theme with green accents.",

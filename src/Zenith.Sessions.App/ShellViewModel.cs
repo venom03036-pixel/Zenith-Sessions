@@ -245,7 +245,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public bool IsWindows=>Tab=="Windows";
     // The open page as the sidebar names it. The window title leads with it (taskbar, Alt-Tab) and the window announces it to
     // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
-    public string PageName=>IsJoinGame?"Join a game":Tab;
+    public string PageName=>Strings["Page_"+Tab];
     public string WindowTitle=>PageName+" · "+InstanceTitle;
     public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
@@ -385,6 +385,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
         ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        LanguageChoices=CreateLanguageChoices();
+        ApplyLanguage=new(async p=> { if(_ready && !_shuttingDown && p is string id) { _settings=_settings with { Language=ShellLanguages.Normalize(id) };ApplyEffectiveLanguage();await SaveCurrentSettingsAsync(); } },error=>Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
@@ -441,7 +443,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
             foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText), nameof(MuteArrivingClients), nameof(PublicNetworkGuard), nameof(DiscordAlerts), nameof(DiscordPresence), nameof(DiscordPresenceGame), nameof(DiscordApplicationId) }) Raise(field);
-            ApplyEffectiveTheme();
+            ApplyEffectiveLanguage();ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();
@@ -985,7 +987,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && double.TryParse(PhysicalPerClient, out double physical) && physical == limits.NewClientPhysicalGiB
             && double.TryParse(CommitPerClient, out double commit) && commit == limits.NewClientCommitGiB
             && MaximumClients.Trim() == (limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? "")
-            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
+            && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme && _settings.Language == _savedSettings.Language
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && MuteArrivingClients == _savedSettings.MuteArrivingClients && PublicNetworkGuard == _savedSettings.PublicNetworkGuard
             && DiscordAlerts == _savedSettings.DiscordAlerts
@@ -997,7 +999,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
     {
-        string theme=_settings.Theme;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
+        string theme=_settings.Theme,language=_settings.Language;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
         try
         {
@@ -1006,11 +1008,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             {
                 // Appearance and window-position autosaves merge with the latest successful explicit save,
                 // even when they waited behind it. Never persist uncommitted field drafts.
-                var snapshot=(requested??_savedSettings) with { Theme=theme,DenseAccounts=dense,ManagerWindow=window };
+                var snapshot=(requested??_savedSettings) with { Theme=theme,Language=language,DenseAccounts=dense,ManagerWindow=window };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot, _lifetime.Token));
                 ApplyPerformance(snapshot.Performance!);
                 _savedSettings = snapshot; _saveFailed = false; _settingsNeedRepair=false;
-                _settings=snapshot with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
+                _settings=snapshot with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=_settings.ManagerWindow };
                 Raise(nameof(CloseButtonLabel)); Raise(nameof(CanResumeClientArrivalLayout));
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
@@ -1046,7 +1048,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             await _preferencesWriter.WaitAsync(budget.Token);
             try
             {
-                var snapshot=_savedSettings with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
+                var snapshot=_savedSettings with { Theme=_settings.Theme,Language=_settings.Language,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
                 await Task.Run(() => _settingsStore.SaveAsync(snapshot,budget.Token));
                 _savedSettings=snapshot;
             }
@@ -1235,7 +1237,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // StopDirectoryFeaturesAsync releases below (Rule 13). Both were cancelled above; each is awaited here first.
         await Task.WhenAll(RefreshInstallations.Execution, VerifyInstallationPublisher.Execution, StartNativeTrial.Execution);
         await StopOwnerAsync(()=>_executableTrust.DisposeAsync());
-        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,
+        try { await Task.WhenAll(_queryTask, _monitorTask, SaveSettings.Execution, ApplyTheme.Execution,ApplyLanguage.Execution,
             NextPage.Execution, PreviousPage.Execution, Refresh.Execution, FocusSession.Execution,FocusOverviewClient.Execution,MinimizeSession.Execution,RestoreSession.Execution,ToggleFavorite.Execution,QueueSelected.Execution,ToggleQueuePause.Execution,CancelLaunch.Execution,SetAsideInterruptedQueueWrite.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,DisconnectAccount.Execution,CleanupCredentials.Execution,ExportDiagnostics.Execution); } catch (OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
         try { await Task.WhenAll(_profileOperations.ToArray()); } catch(OperationCanceledException) { } catch(Exception ex) { Fail(ex,ManagerSubsystem.Library); }
         await StopOwnerAsync(DisposeRecipientBundlesAsync);

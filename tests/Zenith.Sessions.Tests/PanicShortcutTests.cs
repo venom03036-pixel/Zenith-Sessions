@@ -338,7 +338,7 @@ public sealed class PanicShortcutTests : IDisposable
         // Settings shows whether Windows accepted the saved choice.
         Assert.Contains(all.Skip(appearance).Take(performance - appearance), e => (string?)e.Attribute("Text") == "{Binding PanicShortcutStatus}");
         // The help names the combinations that are refused because they type or edit in other programs.
-        string? help = all.Skip(appearance).Take(performance - appearance).Select(e => (string?)e.Attribute("Text"))
+        string? help = all.Skip(appearance).Take(performance - appearance).Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text")))
             .FirstOrDefault(text => text?.StartsWith("F12 by default.", StringComparison.Ordinal) == true);
         Assert.True(help is not null, "Settings has no help text for the panic shortcut.");
         Assert.Contains("AltGr", help, StringComparison.Ordinal);
@@ -346,7 +346,7 @@ public sealed class PanicShortcutTests : IDisposable
         Assert.Contains("every program", help, StringComparison.Ordinal);
 
         // The header key cap shows the registered shortcut; the focused F12 binding stays as a fallback.
-        var keyCap = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "Border" && (string?)e.Attribute("ToolTip") == "Panic stop shortcut"));
+        var keyCap = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "Border" && ProductionWindowStrings.Resolve((string?)e.Attribute("ToolTip")) == "Panic stop shortcut"));
         Assert.Equal("{Binding PanicKeyCap}", (string?)keyCap.Descendants().Single(e => e.Name.LocalName == "TextBlock").Attribute("Text"));
         // MainWindow builds its bindings from ShellShortcuts (R-shell-4); F12 Panic is the table's first row.
         var focused = ShellShortcuts.All[0];
