@@ -259,6 +259,22 @@ public sealed class ClientWindowArrangementTests
         var row = Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results);
         Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Single(adapter.Moves);
         Assert.Contains("different scale", row.Explanation);
+        // The client is still on its old monitor, so the copy must not describe a move to the target that never happened.
+        Assert.Contains("did not reach the selected monitor", row.Explanation); Assert.Contains("Arrange again", row.Explanation);
+        Assert.DoesNotContain("resized itself", row.Explanation);
+    }
+
+    [Fact]
+    public async Task CrossScaleClientWhoseMonitorIsUnknownAfterTheMoveIsNotDescribedAsMovedOrNotMoved()
+    {
+        var adapter = CrossScaleAdapter((_, bounds) => Rescaled(bounds, true)); var source = adapter.Monitors[1];
+        // Geometry is readable before the move but not after it, so where the client ended up is unknown.
+        adapter.GeometryQuery = _ => adapter.Moves.Count == 0 ? new(new(100, 100, 800, 600), new(108, 131, 784, 561), source) : null;
+        using var lane = new SemaphoreSlim(1, 1); var operations = new ClientWindowOperations(lane, adapter);
+        var row = Assert.Single((await operations.ArrangeAsync([Session(1)], Display().Id, new(), default)).Results);
+        Assert.Equal(ClientWindowPlacementStatus.NotConfirmed, row.Status); Assert.Single(adapter.Moves);
+        Assert.Contains("did not confirm these bounds", row.Explanation);
+        Assert.DoesNotContain("resized itself", row.Explanation); Assert.DoesNotContain("did not reach", row.Explanation);
     }
 
     [Fact]
