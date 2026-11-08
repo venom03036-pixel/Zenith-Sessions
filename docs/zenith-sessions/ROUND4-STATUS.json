@@ -1349,7 +1349,7 @@
       "lane": "D3",
       "title": "The 1 s limit starts before InitializeAsync",
       "state": "Verified",
-      "summary": "The one-second saved-data export deadline starts after the separately bounded initialization.",
+      "summary": "The test helper's check deadline starts after separately bounded shell initialization; this does not change a production export timeout.",
       "evidence": [
         "ROUND4-INTEGRATION-VERIFICATION.md"
       ],
