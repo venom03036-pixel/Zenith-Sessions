@@ -339,7 +339,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _vault=new(root);
         _sessionClient=sessionClient??new RobloxSessionClient();
         _identityProjection=new(root,_accounts,_vault);
-        _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher);
+        _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher,()=>_savedSettings.KeepSignInBrowserData);
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
         _diagnostics=new(root);
         // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
@@ -370,6 +370,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
         InitializeClientSoundFeatures(clientSound);
+        InitializeSignInBrowserData();
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
         Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
@@ -429,6 +430,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             CommitPerClient = limits.NewClientCommitGiB.ToString(CultureInfo.CurrentCulture); MaximumClients = limits.UserMaximum?.ToString(CultureInfo.CurrentCulture) ?? ""; OAuthClientId = _settings.OAuthClientId;
             CallbackPort=_settings.OAuthCallbackPort.ToString(CultureInfo.InvariantCulture);
             _closeButtonExits=_settings.CloseButtonExits;_muteArrivingClients=_settings.MuteArrivingClients;
+            _keepSignInBrowserData=_settings.KeepSignInBrowserData; Raise(nameof(KeepSignInBrowserData));
             _idleLockMinutes=_settings.IdleLockMinutes; ApplySavedIdleLock();
             _panicShortcutText=SavedPanicShortcut.ToString(); ApplySavedPanicShortcut();
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
@@ -681,8 +683,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
         // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
-        // A share-link check or a launch's native preparation it stopped has its own owner, which sees that stop itself: the
-        // sign-in lane may meanwhile be running a command for other rows, so it is neither cancelled nor waited for then.
+        // A share-link check it stopped belongs to the Private server panel, whose check then ends cancelled and says the account
+        // was removed (ShareLinkViewModel.RunCheckAsync); a launch's native preparation it stopped belongs to the launch queue,
+        // whose authorizations for these rows were invalidated above. The sign-in lane may meanwhile be running a command for
+        // other rows, so it is neither cancelled nor waited for then.
         using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
         if(IsSignInLaneOperation(removal.StoppedOperationKind) || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
@@ -949,7 +953,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(!PanicShortcut.TryParse(PanicShortcutText,out var panicShortcut,out string panicProblem)) throw new ArgumentException(panicProblem);
         // Pin this explicit request before the asynchronous profile check. Failed requests
         // must never become the source for an unrelated appearance-only save.
-        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients }).Validated();
+        var requested=(_savedSettings with { Capacity=limits,Performance=performance,WindowLayout=ReadClientLayoutDraft(),CloseButtonExits=CloseButtonExits,IdleLockMinutes=IdleLockMinutes,PanicShortcut=panicShortcut.ToString(),MuteArrivingClients=MuteArrivingClients,KeepSignInBrowserData=KeepSignInBrowserData }).Validated();
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;
@@ -968,6 +972,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             && _settings.DenseAccounts == _savedSettings.DenseAccounts && _settings.Theme == _savedSettings.Theme
             && CloseButtonExits == _savedSettings.CloseButtonExits && IdleLockMinutes == _savedSettings.IdleLockMinutes && PanicShortcutDraftIsSaved
             && MuteArrivingClients == _savedSettings.MuteArrivingClients
+            && KeepSignInBrowserData == _savedSettings.KeepSignInBrowserData
             && TryReadPerformanceDraft(out var performance) && performance==_savedSettings.Performance
             && TryReadClientLayoutDraft(out var windows) && windows==_savedSettings.WindowLayout;
         Raise(nameof(CallbackUrl));
@@ -1066,7 +1071,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>FenceNativeTrial("Trial stopped by Panic or Lock. Review possible clients before retrying."));Step(CancelDiagnosticExport);Step(CancelOverviewFocus);
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
-        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);
+        Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopGroupChanges);Step(StopSignInBrowserData);
         Step(CancelPerformanceTransfers);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
@@ -1156,6 +1161,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopClientPriorityOperations();
         StopClientTrimOperations();
         StopClientSoundOperations();
+        StopSignInBrowserData();
         DestinationSearch?.CancelWork(clearInput:true);
         MacroAssignments.CancelWork();
         MacroHostCatalog.CancelWork();
@@ -1196,6 +1202,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(()=>MacroHostCatalog.DisposeAsync());
         try{await DisposeHandoffProbeAsync();}catch(Exception ex){Fail(ex,ManagerSubsystem.Launch);}
         await AddRobloxAccount.Execution;
+        await ForgetSignInBrowserData.Execution;
         await Task.WhenAll(ImportPerformanceSettings.Execution, ExportPerformanceSettings.Execution);
         // A refresh and a native start both read Roblox's release over the shared anonymous public client, which
         // StopDirectoryFeaturesAsync releases below (Rule 13). Both were cancelled above; each is awaited here first.
@@ -1269,6 +1276,14 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             AddEvent(refresh?"Saved sign-in check ended before it finished.":"Roblox sign-in ended before a session was saved.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn,ended.GetType());
         }
+        catch(AccountLinkException refused) when(refused.ProfileRemoved)
+        {
+            // The row is being removed from the library, or already was: the service refused before anything was read or sent
+            // (N-B1a-1). A routine refusal, not a failure: it is shown as a notice and records nothing (O-C1-3).
+            if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
+            if(stop.IsCancellationRequested || _preserveStopNotice || IsLocked || _shuttingDown) return;
+            Notice=refused.Message;
+        }
         catch(Exception)
         {
             if(!_lifetime.IsCancellationRequested) await LoadAccountsAsync(_lifetime.Token);
@@ -1318,17 +1333,36 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         {
             var swept=await Task.Run(()=>SignInProfileDirectory.SweepOwned(DataRoot,_lifetime.Token));
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
-            // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
-            if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
-            // Held by another owner, or a file in them was still open: nothing marks them for review, and the next sign-in or
-            // start tries them again, so this is routine. Only data SweepOwned counts as kept for review waits for someone to look at it.
+            // Held by another owner, or a file in them was still open: nothing marks them for review by itself.
             int retried=swept.Kept-swept.KeptForReview;
-            if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
-            _signInFolderNote=(swept.KeptForReview>0?$" {swept.KeptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.":"")
-                +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
-            if(swept.KeptForReview==0) return;
+            if(swept.MoreRemainThanAdmissionMayOpen)
+            {
+                // Kept for any reason or not opened, together they outnumber what the next admission may open, so the next
+                // sign-in and every saved-session check refuse them all as needing review (SweepOwned remembers exactly this for
+                // the handoff checks). The routine lines would promise a removal or a retry that refusal denies, so one line
+                // says what holds instead.
+                int remaining=swept.Kept+swept.Deferred;
+                AddEvent($"{remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in waits until they are reviewed.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +$" {remaining} leftover private sign-in folder(s) remain in signin-browser-data, more than one sign-in may check, so sign-in and saved-session checks are refused until they are reviewed. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            }
+            else
+            {
+                // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
+                if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
+                // The next sign-in or start tries held or busy folders again, so this is routine. Only data SweepOwned counts as
+                // kept for review waits for someone to look at it.
+                if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
+                _signInFolderNote=(swept.KeptForReview>0?ReviewNote(swept.KeptForReview):"")
+                    +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
+            }
+            // The same rule SweepOwned remembered for the handoff checks: the review note and the sign-in failure record appear
+            // exactly when the next sign-in or saved-session check would be refused as a cleanup failure.
+            if(!swept.NeedsReview) return;
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
+            static string ReviewNote(int keptForReview)
+                =>$" {keptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
         }
         catch(Exception ex) when(ex is IOException or UnauthorizedAccessException)
         {

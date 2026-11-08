@@ -20,7 +20,9 @@ public sealed record RobloxHandoffProbeContext(Guid ProfileId,long ExpectedUserI
 public enum RobloxHandoffProbeOutcome
 {
     CapturedAndPrevented,ContextRejected,OriginRejected,ExternalSchemeBlocked,MalformedHandoff,TimedOut,Cancelled,
-    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed,StorageUnavailable
+    BrowserUnavailable,Failed,SignInRequired,IdentityMismatch,AuthorizationChanged,Busy,CleanupFailed,StorageUnavailable,
+    // The account is being removed from the library: refused before any grant was reserved or page opened, like Busy.
+    ProfileRemoved
 }
 
 [Flags]

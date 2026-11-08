@@ -214,6 +214,96 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
+    // O-C1-2: removing the row a share-link check uses stops that check inside the saved-session service, not through the
+    // panel's own stop. On Join a game the list then reloads with nothing selected, which restarts nothing, so the panel
+    // itself must say the check stopped and why instead of leaving "Checking…" over a check that has ended.
+    [Fact]
+    public Task RemovingTheRowAShareLinkCheckUsesSaysTheCheckStoppedBecauseTheAccountWasRemoved() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var shareLinks = new HoldingShareLinks();
+        await using var shell = await HealthShell(signIn, client, linked: 2, shareLinks: shareLinks, publicDirectory: new SearchDirectory(new SearchClock()));
+        var keptRow = HealthRow(shell, 1); var sharedRow = HealthRow(shell, 2);
+        shell.Navigate.Execute("JoinGame"); shell.SelectedAccount = sharedRow; Assert.True(shell.IsJoinGame);
+        shell.ShareLink.LinkInput = "https://www.roblox.com/share?code=4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e&type=Server";
+        Task sharing = shell.ShareLink.CheckAsync(); Task? removing = null;
+        try
+        {
+            await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.Contains("Checking the share link", shell.ShareLink.Status);
+            removing = shell.DeleteAccountsAsync([sharedRow]); await removing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            shareLinks.Release(); await sharing.WaitAsync(TimeSpan.FromSeconds(10));
+            if (removing is not null) await removing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Null(shell.SelectedAccount); Assert.Equal(keptRow.Profile.Id, Assert.Single(shell.Accounts).Profile.Id);
+        Assert.False(shell.ShareLink.IsBusy); Assert.False(shell.ShareLink.HasResult);
+        Assert.Equal("Share link check stopped because the account, or its saved sign-in, was removed. Paste the link again to check it with a signed-in account.", shell.ShareLink.Status);
+        Assert.StartsWith("Removed 1 profile(s).", shell.Notice); Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Null(await vault.ReadAsync(sharedRow.Profile.Id, default)); Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(keptRow.Profile.Id, default))!.Health);
+    });
+
+    // O-C1-2: removing the saved sign-in of the account a share-link check uses stops the check the same way, inside the
+    // service; the row stays selected (the same profile is re-selected after the reload), so only the panel can say why it ended.
+    [Fact]
+    public Task RemovingTheSavedSignInAShareLinkCheckUsesSaysTheCheckStoppedBecauseItWasRemoved() => OnUi(async () =>
+    {
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var shareLinks = new HoldingShareLinks();
+        await using var shell = await HealthShell(signIn, client, linked: 2, shareLinks: shareLinks, publicDirectory: new SearchDirectory(new SearchClock()));
+        var sharedRow = HealthRow(shell, 2);
+        shell.Navigate.Execute("JoinGame"); shell.SelectedAccount = sharedRow;
+        shell.ShareLink.LinkInput = "https://www.roblox.com/share?code=4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e&type=Server";
+        Task sharing = shell.ShareLink.CheckAsync();
+        try
+        {
+            await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.Contains("Checking the share link", shell.ShareLink.Status);
+            shell.DisconnectAccount.Execute(null); await shell.DisconnectAccount.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally { shareLinks.Release(); await sharing.WaitAsync(TimeSpan.FromSeconds(10)); }
+
+        Assert.Equal(sharedRow.Profile.Id, shell.SelectedAccount?.Profile.Id); Assert.Equal("Not linked", HealthRow(shell, 2).Identity);
+        Assert.False(shell.ShareLink.IsBusy); Assert.False(shell.ShareLink.HasResult);
+        Assert.Equal("Share link check stopped because the account, or its saved sign-in, was removed. Paste the link again to check it with a signed-in account.", shell.ShareLink.Status);
+        Assert.StartsWith("Saved sign-in removed from Zenith.", shell.Notice); Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Null(await vault.ReadAsync(sharedRow.Profile.Id, default)); Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(HealthRow(shell, 1).Profile.Id, default))!.Health);
+    });
+
+    // O-C1-3: Sign in or Refresh clicked on a row whose removal is still running is refused by the saved-session service before
+    // anything is read or sent (N-B1a-1). That is a routine refusal: the shell shows it as a notice, not as an error, and
+    // records no SignIn failure.
+    [Fact]
+    public Task SignInOrRefreshOnARowBeingRemovedIsANoticeNotAnError() => OnUi(async () =>
+    {
+        using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var gate = new HealthRemovalGate(repository) { Hold = true };
+        await using var shell = await HealthShell(signIn, client, linked: 2, accounts: gate);
+        var keptRow = HealthRow(shell, 1); var removedRow = HealthRow(shell, 2);
+        int SignInFailures() { shell.RefreshDiagnostics.Execute(null); return shell.DiagnosticRows.Count(row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn); }
+        int failuresBefore = SignInFailures(); const string refused = "This account is being removed from your library. Its saved sign-in was not used or changed.";
+        shell.SelectedAccount = removedRow;
+        Task removing = shell.DeleteAccountsAsync([removedRow]);
+        try
+        {
+            await gate.DeleteEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); // The removal holds its row while the library deletes it.
+            shell.RefreshAuthorization.Execute(null); await shell.RefreshAuthorization.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("", shell.ErrorNotice); Assert.Equal(refused, shell.Notice);
+            shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal("", shell.ErrorNotice); Assert.Equal(refused, shell.Notice);
+            Assert.False(shell.IsAuthorizing); Assert.Empty(client.Snapshot()); Assert.Empty(signIn.Snapshot());
+        }
+        finally { gate.Release(); await removing.WaitAsync(TimeSpan.FromSeconds(10)); }
+
+        Assert.Equal(failuresBefore, SignInFailures());
+        Assert.DoesNotContain(shell.Events, item => item.Contains("Operation failed (AccountLinkException)", StringComparison.Ordinal));
+        Assert.StartsWith("Removed 1 profile(s).", shell.Notice); Assert.Equal(keptRow.Profile.Id, Assert.Single(shell.Accounts).Profile.Id);
+        Assert.Equal("", shell.ErrorNotice); HealthNoSecrets(shell);
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Null(await vault.ReadAsync(removedRow.Profile.Id, default)); Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(keptRow.Profile.Id, default))!.Health);
+    });
+
     // M-L1a-5: Roblox never processed a check, and another operation replaced its fence before the restore. The restore is
     // refused (the newer sign-in is kept), but Roblox was still unreachable or busy, so the batch must stop there.
     [Fact]
@@ -324,9 +414,10 @@ public sealed partial class ClientWindowIntegrationTests
     private static string CookieOf(AccountRow row) => HealthCookie((int)(row.KnownUserId!.Value - 1000));
     private static AccountRow HealthRow(ShellViewModel shell, int index) => shell.Accounts.Single(row => row.Alias == $"Health {index:00}");
     private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0, IRobloxShareLinkClient? shareLinks = null,
-        IAccountRepository? accounts = null)
+        IAccountRepository? accounts = null, IPublicRobloxDirectory? publicDirectory = null)
     {
-        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), accounts: accounts, signIn: signIn, sessionClient: client, shareLinkClient: shareLinks);
+        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), accounts: accounts, signIn: signIn, sessionClient: client, shareLinkClient: shareLinks,
+            publicDirectory: publicDirectory);
         try
         {
             await shell.InitializeAsync();

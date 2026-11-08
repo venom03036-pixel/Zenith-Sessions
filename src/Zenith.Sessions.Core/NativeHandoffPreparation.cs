@@ -36,8 +36,9 @@ public interface IRobloxNativeHandoffCapture : IAsyncDisposable
     RobloxHandoffProbeOutcome? Refusal => null;
 }
 
+// ProfileRemoved: the account is being removed from the library, so the preparation was refused before its grant was reserved, like Busy.
 public enum NativeHandoffPreparationStatus
-{ Ready, Busy, RequestChanged, SignInRequired, IdentityMismatch, AuthorizationChanged, CaptureRejected, CleanupFailed, Expired, Cancelled, Failed, StorageUnavailable }
+{ Ready, Busy, RequestChanged, SignInRequired, IdentityMismatch, AuthorizationChanged, CaptureRejected, CleanupFailed, Expired, Cancelled, Failed, StorageUnavailable, ProfileRemoved }
 
 /// <summary>Short-lived owned preparation, never queue data or verified native identity.</summary>
 public sealed class NativeHandoffPreparation : IDisposable

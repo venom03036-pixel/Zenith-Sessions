@@ -80,10 +80,42 @@ internal sealed class ManualDeadline : TimeProvider
         callback(state);
     }
 
-    private sealed class Unused : ITimer
+    internal sealed class Unused : ITimer
     {
         public bool Change(TimeSpan dueTime, TimeSpan period) => true;
         public void Dispose() { }
         public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+}
+
+/// <summary>Records every deadline an owner arms, by its due time, for owners that arm more than one (an inspection's
+/// deadline and Exit's join limit), and fires the chosen one on demand. Deadlines with the same due time are not told apart.</summary>
+internal sealed class ManualDeadlines : TimeProvider
+{
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<TimeSpan, (TimerCallback Callback, object? State)> _armed = new();
+    private readonly SemaphoreSlim _changed = new(0);
+
+    public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+    {
+        _armed[dueTime] = (callback, state); _changed.Release();
+        return new ManualDeadline.Unused();
+    }
+
+    /// <summary>Completes once a deadline of <paramref name="dueTime"/> is armed; fails after ten seconds without one.</summary>
+    public async Task ArmedAsync(TimeSpan dueTime)
+    {
+        var limit = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!_armed.ContainsKey(dueTime))
+        {
+            var remaining = limit - DateTime.UtcNow;
+            if (remaining <= TimeSpan.Zero || !await _changed.WaitAsync(remaining)) throw new TimeoutException($"No {dueTime} deadline was armed.");
+        }
+    }
+
+    public async Task FireAsync(TimeSpan dueTime)
+    {
+        await ArmedAsync(dueTime);
+        var (callback, state) = _armed[dueTime];
+        callback(state);
     }
 }

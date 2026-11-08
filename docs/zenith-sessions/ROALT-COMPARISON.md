@@ -123,7 +123,7 @@ IDs refer to `artifacts/quality-loop/roalt-compare.json`.
 | Idle kick | R-instances-17 | Anti-AFK by focusing clients and sending a key. Not recommended: it is idle-policy evasion and bypasses Zenith's single input path |
 | App distribution | R-shell-14, R-shell-15, R-research-12 | Signed self-update, an installer, and an automatic build-and-test host |
 | Other | R-api-18, R-shell-23, R-api-19, R-shell-16, R-research-14, R-shell-17, R-shell-20, R-shell-21, R-research-6 | Public-network guard, a news tab, localization, log tails in the support report, cleaning old Roblox logs, scheduled shutdown, a same-pass retry for pending headshots |
-| Not RoALT, found by this loop | Z1559, M-L1a-6, R-research-10, R-shell-13 | Bound the exit wait for a browser that never reports its exit; whether one 401 from the share-link endpoint should mark a session as needing sign-in; recording live Roblox responses for tests (network access); moving the data folder |
+| Not RoALT, found by this loop | M-L1a-6, R-research-10, R-shell-13 | Whether one 401 from the share-link endpoint should mark a session as needing sign-in; recording live Roblox responses for tests (network access); moving the data folder |
 
 ## Needs live accounts or clients
 

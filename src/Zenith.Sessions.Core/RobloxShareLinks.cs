@@ -83,8 +83,11 @@ public sealed class RobloxShareLink(ProtectedShareCode code, RobloxShareLinkType
 /// Unavailable means the answer could not be obtained (transport, timeout, refused or unreadable reply): a later check may succeed.
 /// NotListed means Roblox's public games listing answered without the link's universe (restricted or not publicly listed):
 /// the link names no place Zenith can open, and checking again will not change that.
+/// Busy means another saved-session operation held the service, so the check was refused before anything was read or sent.
+/// ProfileRemoved means the account is being removed from the library (or no longer exists), so the check was refused the same
+/// way; the link can be checked with another signed-in account.
 /// </summary>
-public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid, SignInRequired, Unavailable, Cancelled, Busy, ServerInstance, NotListed }
+public enum RobloxShareLinkOutcome { Experience, PrivateServer, Expired, Invalid, SignInRequired, Unavailable, Cancelled, Busy, ServerInstance, NotListed, ProfileRemoved }
 
 /// <summary>
 /// What a share link resolved to. Public place/universe IDs only, plus the owned private server code when the link was

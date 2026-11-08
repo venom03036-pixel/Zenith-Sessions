@@ -744,6 +744,6 @@ For each updated ID record: `review/build identity; code path; test/artifact; ex
 [GameLinksDesign]: GAME-LINKS-DESIGN.md
 [GameLinksPlan]: GAME-LINKS-PLAN.md
 
+## Saved sign-in completion 0.59-signin
 
-
-
+VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity confirmation after a share-route 401; valid same-player confirmation leaves Linked and reports the route Unavailable. R-accounts-7 adds exact Google/Apple sign-in navigation while Save remains Roblox-only. R-accounts-8 adds opt-in retained device data, dirty-profile crash recovery and explicit Forget, with provider navigation discarding the folder. Controlled evidence and live limits: [sign-in verification](SIGNIN-COMPLETION-VERIFICATION.md). Live and release acceptance remain false.

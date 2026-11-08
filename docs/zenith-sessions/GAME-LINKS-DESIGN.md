@@ -189,21 +189,33 @@ name, creator line, playing + rating, accent border and check when it is the cur
   }
   ```
 
+- The check uses the saved session of the account selected when it started. Selecting another account stops it, its
+  answer is never shown, and the panel says "Share link check stopped because the selected account changed…" (G8).
+  Removing that account, or its saved sign-in (Disconnect), stops it inside the link service rather than through the
+  panel: the check ends cancelled and the panel says "Share link check stopped because the account, or its saved
+  sign-in, was removed. Paste the link again to check it with a signed-in account.", because the list then reloads with
+  nothing selected and that momentary empty selection rightly restarts or stops nothing (O-C1-2). Leaving the page, Lock
+  and Panic clear the panel instead. Every stop disposes the answer's codes.
+- A check started for an account whose removal is still running is refused inside the link service before its saved
+  sign-in is read (`RobloxShareLinkOutcome.ProfileRemoved`), and the panel says "The selected account is being removed
+  from your library, so the share link was not checked. Paste the link again to check it with another signed-in
+  account." Only another saved-session operation holding the service is reported as busy ("Another account operation is
+  running. Try again when it finishes.") (O-C1-3).
 - Runs only on the user's **Check link** click, for the account selected in Accounts. The credential is read from
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF
-  retry (403 with `x-csrf-token` → repeat once with the token), then stop. 401 → SignInRequired.
+  retry (403 with `x-csrf-token` → repeat once with the token), then stop. A 401 triggers an authenticated-user confirmation in the same owned operation.
 - The CSRF token Roblox last accepted is kept in memory for that profile and its verified Roblox user ID (never another
   profile or account; never saved or logged) and sent first, so a repeat check is normally one request instead of two.
   A refused token still gets only the one retry. Any failure drops it; disconnecting the saved sign-in drops that
   profile's token; Lock, Panic and shutdown drop all of them; at most 256 are kept, and one more drops them all.
-- A 401 also marks that exact saved session as needing sign-in (a conditional write that never replaces a newer
-  sign-in), and the shell reloads the account page, so the row, its launch button and this panel agree.
+- A 401 first fences that exact saved session before identity confirmation (a conditional write that never replaces a newer
+  sign-in). A same-player confirmation saves the valid or rotated session and returns Unavailable for the share route. Refusal, mismatch, network failure or timeout keeps SignInRequired; the shell reloads the account page. A confirmation that was not processed also leaves the fence: the earlier resolve refusal has not been disproved.
 - If either handshake response sets a new `.ROBLOSECURITY` (read with the identity check's own parser; the newest
   wins), the resolver hands it back unverified and the link service keeps it like a sign-in: only when the fixed
   authenticated-user check names the same player, only if the sent record is still the saved one, and at the next
   generation through the snapshot write. A mismatch, refusal, network failure or newer record leaves the vault as it
-  was and the answer stands; a kept replacement also means a 401 no longer marks the row as needing sign-in.
+  was and the answer stands on non-401 responses. For a 401, the replacement is checked only after the durable fence; success returns Unavailable instead of SignInRequired.
   (R-accounts-3; whether Roblox invalidates the old cookie after rotating it is not established.) Every other outcome
   leaves the vault unchanged.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
@@ -288,7 +300,7 @@ Update the Screens page (file `WLGgnKxi4wYzWlfzpZAnKr`), using existing Foundati
 | Cancellation | Every request takes the owner's token; new search, account change, leave page, Lock, Panic and disposal cancel and join. |
 | Errors | Explicit states per row/chip ("Picture unavailable", "Favorites unavailable", "Sign in required", "Link expired"); cooldown is shown, never retried automatically. |
 | Testability | Fake `HttpMessageHandler`/`TimeProvider`, sanitized fixtures, view models tested without WPF windows. |
-| Security | Public calls are anonymous. Only §4 uses a credential: one explicit click, one host, no logging. Share and link codes are protected types, never logged/serialized in plain text; the private store is DPAPI-protected. |
+| Security | Public calls are anonymous. Only §4 uses a credential: one explicit click, one resolve host, plus one identity confirmation after a 401 (and one additional identity check if that confirmation rotates the session), no logging. Share and link codes are protected types, never logged/serialized in plain text; the private store is DPAPI-protected. |
 | Compatibility | Optional interfaces, trailing optional record members, new store file. One format change: `private-servers.dat` version 1 to 2 (adds `GameName`); version 1 still reads, and builds before G10 refuse version 2 without overwriting it (§4.5). |
 
 ## 7. Rule 20 migration
@@ -315,7 +327,7 @@ Update the Screens page (file `WLGgnKxi4wYzWlfzpZAnKr`), using existing Foundati
 - Parser: omni-search extra fields (present, missing, wrong type, negative); thumbnail batch (ready, pending,
   blocked, unknown/duplicate IDs, bad host, oversize); favorites (normal, empty, cursor ignored, malformed, 25 cap);
   batch names; share-link URL parsing (types, missing code, extra params, `ro.blox.com`).
-- Resolver: CSRF handshake once, no second retry, 401 → SignInRequired, cookie only to the exact host, redirects
+- Resolver: CSRF handshake once, no second retry, 401 → identity confirmation → Unavailable if valid or SignInRequired if unconfirmed, cookie only to the exact host, redirects
   refused, expired/invalid bodies, cancellation; code never in exception messages or `ToString()`.
 - View models: generation fencing (stale art/favorites dropped), cancel on Lock/Panic/leave/account change, click
   uses the destination without queueing, sort stability, chips dedupe/limit, Join same game/server enablement and

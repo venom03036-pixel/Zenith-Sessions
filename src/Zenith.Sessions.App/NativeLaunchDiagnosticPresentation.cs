@@ -48,6 +48,7 @@ public sealed record NativeLaunchDiagnosticPresentation
         NativeHandoffPreparationStatus.Expired=>"the prepared handoff expired.",
         NativeHandoffPreparationStatus.Cancelled=>"the preparation was cancelled.",
         NativeHandoffPreparationStatus.StorageUnavailable=>"private browser storage was unavailable, so it was refused before the saved sign-in was used; the saved sign-in was kept.",
+        NativeHandoffPreparationStatus.ProfileRemoved=>"the account was being removed from the library, so it was refused before the saved sign-in was used or changed.",
         _=>"the preparation failed."
     }):"Preparation: not reached or not recorded.";
     public string Browser=>Snapshot?.BrowserOutcome is { } outcome?"Official page: "+(outcome switch
