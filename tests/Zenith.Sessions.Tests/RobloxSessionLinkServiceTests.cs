@@ -269,6 +269,72 @@ public sealed class RobloxSessionLinkServiceTests : IDisposable
         Assert.Same(newer, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves); Assert.Equal(0, unused.Calls);
     }
 
+    [Fact]
+    public async Task ShareLinkRotationKeepDefectIsSurfacedInsteadOfSwallowed()
+    {
+        // M-L1a-4: a programming error while keeping the replacement is not an expected outcome, so it must not pass for one.
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        var saved = Saved(profile.Id); vault.Records[profile.Id] = saved;
+        var client = new Client { Reply = (_, _) => throw new InvalidOperationException("synthetic defect") };
+        RobloxSessionCredential? rotation = null; RobloxShareLinkResolution? answer = null;
+        var resolver = new ShareLinks { Reply = () => answer = new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: rotation = new("synthetic-share-rotation")) };
+        await using var service = new RobloxSessionLinkService(repository, vault, client, new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResolveShareLinkAsync(profile.Id, link, default));
+        Assert.Throws<ObjectDisposedException>(() => rotation!.CopyValue()); Assert.Null(answer!.TakeRotatedCredential());
+        Assert.Same(saved, vault.Records[profile.Id]); Assert.Equal(0, vault.Saves);
+        // The owned operation still ended, so the next resolve is not refused as busy.
+        resolver.Reply = null;
+        Assert.Equal(RobloxShareLinkOutcome.Experience, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+    }
+
+    [Fact]
+    public async Task ShareLinkRejectedSessionFenceDefectIsSurfacedInsteadOfSwallowed()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        vault.Records[profile.Id] = Saved(profile.Id);
+        vault.BeforeSave = _ => throw new InvalidOperationException("synthetic defect");
+        var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        await using var service = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: resolver);
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => service.ResolveShareLinkAsync(profile.Id, link, default));
+        Assert.Equal(0, vault.Saves);
+    }
+
+    [Fact]
+    public async Task ShareLinkExpectedKeepAndFenceFailuresKeepTheAnswerAndReportOnlyTheirType()
+    {
+        using var repository = await Repository(); var profile = await Profile(repository); var vault = new Vault();
+        var saved = Saved(profile.Id); vault.Records[profile.Id] = saved; var failures = new List<Type>();
+        using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
+        foreach (var (reply, expected) in new (Func<int, CancellationToken, Task<RobloxSessionValidation>>, Type)[]
+        {
+            ((_, _) => throw new RobloxSessionException(RobloxSessionFailure.Network, "synthetic network failure"), typeof(RobloxSessionException)),
+            ((_, _) => Task.FromResult(new RobloxSessionValidation(Identity(789))), typeof(AccountLinkException)) // Another player.
+        })
+        {
+            failures.Clear();
+            var resolver = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: new("synthetic-share-rotation")) };
+            await using var service = new RobloxSessionLinkService(repository, vault, new Client { Reply = reply }, new Browser(), shareLinks: resolver, failed: failures.Add);
+            Assert.Equal(RobloxShareLinkOutcome.Experience, (await service.ResolveShareLinkAsync(profile.Id, link, default)).Outcome); // The answer stands.
+            Assert.Equal(new[] { expected }, failures); Assert.Same(saved, vault.Records[profile.Id]);
+        }
+
+        // A storage failure while marking the refused session keeps the SignInRequired answer and reports only its type.
+        failures.Clear(); vault.FailSave = true;
+        var refused = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.SignInRequired) };
+        await using (var fencing = new RobloxSessionLinkService(repository, vault, new Client(), new Browser(), shareLinks: refused, failed: failures.Add))
+            Assert.Equal(RobloxShareLinkOutcome.SignInRequired, (await fencing.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Equal(new[] { typeof(IOException) }, failures);
+
+        // A kept replacement reports nothing.
+        failures.Clear(); var clean = new Vault(); clean.Records[profile.Id] = Saved(profile.Id);
+        var rotating = new ShareLinks { Reply = () => new(RobloxShareLinkOutcome.Experience, 5, 6, rotatedCredential: new("synthetic-share-rotation")) };
+        await using (var keeping = new RobloxSessionLinkService(repository, clean, new Client(), new Browser(), shareLinks: rotating, failed: failures.Add))
+            Assert.Equal(RobloxShareLinkOutcome.Experience, (await keeping.ResolveShareLinkAsync(profile.Id, link, default)).Outcome);
+        Assert.Empty(failures); Assert.Equal("synthetic-share-rotation", clean.Records[profile.Id].SessionCookie);
+    }
+
     private sealed class ShareLinks : IRobloxShareLinkClient
     {
         public int Calls; public string? SeenCookie; public RobloxShareLink? SeenLink; public RobloxShareLinkTokenScope? SeenScope; private RobloxSessionCredential? _credential;

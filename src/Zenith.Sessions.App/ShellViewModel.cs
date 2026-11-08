@@ -329,9 +329,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _identityProjection=new(root,_accounts,_vault);
         _signIn=signIn??new OwnedRobloxSignIn(root,dispatcher);
         _shareLinkClient=shareLinkClient??new RobloxShareLinkClient();_privateServerStore=privateServerStore??new PrivateServerStore(root);
-        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient);
-        _credentialCleanup=new(_accounts,_vault);
         _diagnostics=new(root);
+        // Saved-session upkeep after a share-link answer reports only the type of a failure it absorbs, never its text.
+        _linkService=new(_accounts,_vault,_sessionClient,_signIn,_identityProjection,_shareLinkClient,failed:type=>_diagnostics.RecordFailure(ManagerSubsystem.SignIn,type));
+        _credentialCleanup=new(_accounts,_vault);
         InitializeTelemetry();
         InitializeClientPreviews(previewProvider);
         // Crash records only mean something for real processes, so an injected (test or synthetic) monitor gets no default probe.

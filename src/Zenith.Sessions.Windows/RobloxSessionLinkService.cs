@@ -3,9 +3,13 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Windows;
 
-/// <summary>One owned saved-session operation and one bounded waiting disconnect. Never launches a client.</summary>
+/// <summary>
+/// One owned saved-session operation and one bounded waiting disconnect. Never launches a client. <paramref name="failed"/>
+/// receives only the type of an expected failure that the service absorbs without changing its answer (never its message).
+/// </summary>
 public sealed partial class RobloxSessionLinkService(IAccountRepository profiles, IAccountCredentialVault vault,
-    IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null)
+    IRobloxSessionClient client, IRobloxSessionSignIn signIn, AccountIdentityProjection? projection = null, IRobloxShareLinkClient? shareLinks = null,
+    Action<Type>? failed = null)
     : IRobloxSessionLinkService, IRobloxNativeHandoffPreparer
 {
     private readonly object _state = new();
