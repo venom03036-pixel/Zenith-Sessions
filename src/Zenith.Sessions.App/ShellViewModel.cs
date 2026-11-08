@@ -165,7 +165,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// already running cannot reopen in this run, so that question promises only a restart.</summary>
     public string SetAsideInterruptedQueueWriteConfirmation=>(_launchQueue.Opened
         ?"An interrupted save (launch-queue.json.tmp) stopped the launch queue. Rename it to a kept launch-queue.json.interrupted file? Nothing is deleted. The queue stays stopped until you restart Zenith Sessions; it then reopens paused from its last completed save and no client is started."
-        :"An interrupted save (launch-queue.json.tmp) is blocking the launch queue. Rename it to a kept launch-queue.json.interrupted file and reopen the queue from its last completed save? Nothing is deleted. Requests reopen paused for review and no client is started.")
+        :"An interrupted save (launch-queue.json.tmp) is blocking the launch queue. Rename it to a kept launch-queue.json.interrupted file and reopen the queue from its last completed save? Nothing is deleted. The queue reopens paused; nothing starts on its own.")
         +" A client started while that save was being written will appear as needing review.";
     public string QueuePauseLabel=>EffectiveQueuePaused?"Resume queue":"Pause queue";
     private readonly ResourcePressureTracker _pressure=new();

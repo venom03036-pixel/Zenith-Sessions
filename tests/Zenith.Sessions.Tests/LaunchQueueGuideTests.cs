@@ -43,6 +43,22 @@ public sealed class LaunchQueueGuideTests
     }
 
     [Fact]
+    public void TheSetAsideGuideAndTooltipSayAQueueThatWasRunningNeedsARestart()
+    {
+        // N-B2-2: setting the save aside reopens the queue only when it never opened; a queue that was
+        // already running stays stopped until a restart (M-L2-3), so neither text may promise otherwise.
+        string recovery=Section(GuideTexts(),"8. Interrupted saves and recovery");
+        Assert.Contains("keeps it, and reopens the last completed queue paused.",recovery,StringComparison.Ordinal);
+        Assert.Contains("If the queue was already running, setting the save aside keeps it stopped until you restart Zenith Sessions.",recovery,StringComparison.Ordinal);
+        using var stream=typeof(LaunchQueueGuideTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var button=Assert.Single(XDocument.Load(stream).Descendants(),e=>e.Name.LocalName=="Button"
+            && (string?)e.Attribute("Content")=="Set aside interrupted save");
+        string tooltip=(string?)button.Attribute("ToolTip")??"";
+        Assert.Contains("Nothing is deleted.",tooltip,StringComparison.Ordinal);
+        Assert.Contains("The queue reopens paused; if it was already running, it reopens after you restart Zenith Sessions.",tooltip,StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheGuideNamesTheRefusalBackoffAndThePauseAfterTwoInARow()
     {
         var texts=GuideTexts();
