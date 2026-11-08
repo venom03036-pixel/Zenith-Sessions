@@ -83,6 +83,9 @@ public sealed class SettingsSearchTests
     [InlineData("audio", "client-sound", "ClientSound", "Sessions")]
     [InlineData("volume", "client-sound", "ClientSound", "Sessions")]
     [InlineData("mute when they appear", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("upload limit", "upload-limit", "UploadLimit", "Sessions")]
+    [InlineData("bandwidth", "upload-limit", "UploadLimit", "Sessions")]
+    [InlineData("qos", "upload-limit", "UploadLimit", "Sessions")]
     [InlineData("diagnostics filter", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     [InlineData("warnings", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     public void PreferencesOnOtherPagesRankFirstForTheirOwnWords(string query, string id, string target, string page)

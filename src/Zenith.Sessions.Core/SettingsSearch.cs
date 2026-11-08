@@ -8,7 +8,7 @@ namespace Zenith.Sessions.Core;
 public enum SettingsSearchTarget
 {
     Appearance, Performance, CustomTiming, Memory, Installations, SignIn, Save, Recovery,
-    SessionsLayout, ContentSize, ClientPriority, Previews, ClientSound, DiagnosticsFilters
+    SessionsLayout, ContentSize, ClientPriority, Previews, ClientSound, DiagnosticsFilters, UploadLimit
 }
 
 /// <summary>Fixed navigation metadata. A result never changes a preference or starts an operation.</summary>
@@ -110,6 +110,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Previews, "preview", "thumbnails", "live view", "capture", "watch clients", "stop previews"),
         E("client-sound", "Client sound", "On Sessions, under Client sound: Mute or Unmute checked clients, the same switch as Volume mixer, or turn on Mute clients when they appear and save all settings for clients that start later. Nothing changes until you choose Mute or Unmute, or save.",
             SettingsSearchTarget.ClientSound, "mute", "unmute", "sound", "audio", "volume", "volume mixer", "silence", "quiet", "mute when they appear", "mute new clients"),
+        E("upload-limit", "Upload limit", "On Sessions, under Upload limit: enter kilobits per second and choose Apply upload limit, or choose Remove. Each runs Windows PowerShell as administrator after Windows' own prompt; nothing changes until you approve it.",
+            SettingsSearchTarget.UploadLimit, "upload", "upload limit", "bandwidth", "qos", "network", "kbps", "kbit", "outbound", "send rate", "traffic", "administrator"),
         E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
             SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
         E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, rendering and automatic affinity policies are not configurable here. Client process priority, efficiency mode, core spreading and a per-client CPU cap are set in Sessions, under Client CPU priority.",
@@ -121,7 +123,7 @@ public static class SettingsSearchCatalog
     public static string PageOf(SettingsSearchTarget target) => target switch
     {
         SettingsSearchTarget.SessionsLayout or SettingsSearchTarget.ContentSize or SettingsSearchTarget.ClientPriority
-            or SettingsSearchTarget.Previews or SettingsSearchTarget.ClientSound => "Sessions",
+            or SettingsSearchTarget.Previews or SettingsSearchTarget.ClientSound or SettingsSearchTarget.UploadLimit => "Sessions",
         SettingsSearchTarget.DiagnosticsFilters => "Diagnostics",
         _ => "Settings"
     };
