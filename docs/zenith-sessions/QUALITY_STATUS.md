@@ -1,5 +1,7 @@
 # Zenith Sessions — quality status (authoritative completion checklist)
 
+**D9 0.60 distribution follow-up:** R-research-12 local/Actions gate implemented and contract-tested; final integrated gate still pending. R-shell-14 is **In progress**: signed feed/staging/tool verified offline and intentionally disabled with empty embedded trust; in-app check cadence/startup handoff, owner release infrastructure and acceptance remain. R-shell-15 is **In progress**: explicit per-user scripts/promotion/data retention tested offline; real prerequisite/registration/install/uninstall guest trials remain. [Detailed evidence and remaining work](DISTRIBUTION-FOUNDATIONS.md). No paid cloud test, installation or release publication ran. Lifecycle O-C11-1..4 remains covered by [lifecycle verification](LIFECYCLE-REPAIR-VERIFICATION.md).
+
 This is the one checklist for the completion, verification and optimization loop started on 2026-11-07. Requirement IDs and their
 evidence stay in [REQUIREMENTS-LEDGER.md](REQUIREMENTS-LEDGER.md); this file tracks the defects, gaps and improvements found by the
 loop, and their verification. Every row moves only on evidence: a failing test that now passes, a measurement, or a recorded reason.
