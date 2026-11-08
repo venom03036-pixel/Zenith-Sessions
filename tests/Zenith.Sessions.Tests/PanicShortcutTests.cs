@@ -276,6 +276,53 @@ public sealed class PanicShortcutTests : IDisposable
     });
 
     [Fact]
+    public Task WhenWindowsRefusesTheSavedShortcutAtStartupF12StandsInAndTheSavedChoiceIsKept() => OnDispatcherAsync(async () =>
+    {
+        Directory.CreateDirectory(_root);
+        await File.WriteAllTextAsync(Primary, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"PanicShortcut\":\"Ctrl+Alt+Shift+Q\"}");
+        var registrar = new FakeRegistrar();
+        registrar.Refused.Add("Ctrl+Alt+Shift+Q");
+        await using (var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor()))
+        {
+            // Nothing holds a global key yet, so F12 is tried after the refused saved choice and Panic keeps a global key.
+            vm.AttachGlobalPanicShortcut(registrar.Register);
+            await vm.InitializeAsync();
+            Assert.Equal(["Ctrl+Alt+Shift+Q", "F12"], registrar.Attempts);
+            Assert.Equal("Panic stop · F12", vm.PanicLabel);
+            Assert.Equal("F12", vm.PanicKeyCap);
+            Assert.Equal("Ctrl+Alt+Shift+Q is unavailable as a global shortcut, usually because another program or Zenith already uses it, so F12 is registered globally in its place. Choose another shortcut, or close that program and save settings again.", vm.PanicShortcutStatus);
+            // The stand-in does not replace the saved choice.
+            Assert.Equal("Ctrl+Alt+Shift+Q", vm.PanicShortcutText);
+            Assert.Equal("Settings saved", vm.SaveStatus);
+            Assert.Equal("Ctrl+Alt+Shift+Q", SavedShortcut());
+
+            // Once the other program lets go, Save settings takes the saved choice instead of F12.
+            registrar.Refused.Clear();
+            vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+            Assert.Equal(["Ctrl+Alt+Shift+Q", "F12", "Ctrl+Alt+Shift+Q"], registrar.Attempts);
+            Assert.Equal("Panic stop · Ctrl+Alt+Shift+Q", vm.PanicLabel);
+            Assert.Equal("Ctrl+Alt+Shift+Q is registered globally for this manager. F12 also works while this window is focused.", vm.PanicShortcutStatus);
+
+            // A later refusal keeps the working shortcut and does not try F12.
+            registrar.Refused.Add("Ctrl+Alt+Shift+R");
+            vm.PanicShortcutText = "Ctrl+Alt+Shift+R";
+            vm.SaveSettings.Execute(null); await vm.SaveSettings.Execution;
+            Assert.Equal(["Ctrl+Alt+Shift+Q", "F12", "Ctrl+Alt+Shift+Q", "Ctrl+Alt+Shift+R"], registrar.Attempts);
+            Assert.Contains("Ctrl+Alt+Shift+Q stays registered globally", vm.PanicShortcutStatus, StringComparison.Ordinal);
+        }
+
+        // When Windows refuses F12 too, nothing global is registered and the status says what still works.
+        var none = new FakeRegistrar();
+        none.Refused.Add("Ctrl+Alt+Shift+R"); none.Refused.Add("F12");
+        await using var reopened = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new SyntheticMonitor());
+        reopened.AttachGlobalPanicShortcut(none.Register);
+        await reopened.InitializeAsync();
+        Assert.Equal(["Ctrl+Alt+Shift+R", "F12"], none.Attempts);
+        Assert.Equal("Panic stop", reopened.PanicLabel);
+        Assert.Contains("The Panic button and focused F12 remain available", reopened.PanicShortcutStatus, StringComparison.Ordinal);
+    });
+
+    [Fact]
     public void SettingsOffersTheShortcutAndTheHeaderShowsTheRegisteredOne()
     {
         var document = ProductionWindow();
