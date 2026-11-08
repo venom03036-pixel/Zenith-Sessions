@@ -36,7 +36,7 @@ public sealed class SavedMacroPlanPreparerTests
     {
         var reference = Reference();
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference))));
-        await using (var preparer = new SavedMacroPlanPreparer(source))
+        await using (var preparer = new SavedMacroPlanPreparer(source, static _ => { }))
         {
             var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
             Assert.Equal(SavedMacroPreparationStatus.Ready, result.Status);
@@ -62,7 +62,7 @@ public sealed class SavedMacroPlanPreparerTests
     public async Task NonreadyReadPreservesItsTypedOutcomeWithoutAPlan(SavedMacroDocumentReadStatus read, SavedMacroPreparationStatus expected)
     {
         var source = new Source((_, _) => Task.FromResult(new SavedMacroDocumentReadResult(read)));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(Reference(), TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(expected, result.Status);
         Assert.Null(result.Prepared);
@@ -84,7 +84,7 @@ public sealed class SavedMacroPlanPreparerTests
             _ => reference with { SavedRevision = Guid.Empty }
         };
         var source = new Source((_, _) => throw new InvalidOperationException("Must not read."));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(SavedMacroPreparationStatus.InvalidReference, result.Status);
         Assert.Null(result.Prepared);
@@ -98,7 +98,7 @@ public sealed class SavedMacroPlanPreparerTests
     public async Task UnsupportedScopeIsRefusedBeforeSourceWork(int scope)
     {
         var source = new Source((_, _) => throw new InvalidOperationException("Must not read."));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(Reference(), (TargetedMacroScope)scope);
         Assert.Equal(SavedMacroPreparationStatus.UnsupportedDocument, result.Status);
         Assert.Equal(TargetedMacroPlanProblem.InvalidDocument, result.DocumentProblem);
@@ -112,7 +112,7 @@ public sealed class SavedMacroPlanPreparerTests
         using var stop = new CancellationTokenSource();
         stop.Cancel();
         var source = new Source((_, _) => throw new InvalidOperationException("Must not read."));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(Reference(), TargetedMacroScope.OwnedWindowDiagnostic, stop.Token);
         Assert.Equal(SavedMacroPreparationStatus.Cancelled, result.Status);
         Assert.Null(result.Prepared);
@@ -129,7 +129,7 @@ public sealed class SavedMacroPlanPreparerTests
             : reference with { SavedRevision = Guid.NewGuid() };
         int guards = 0;
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(foreign, guard: () => { guards++; return true; }))));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(SavedMacroPreparationStatus.Changed, result.Status);
         Assert.Null(result.Prepared);
@@ -168,7 +168,7 @@ public sealed class SavedMacroPlanPreparerTests
         var invalid = Model(reference.MacroId, new ClickStep { IsClientRelative = false });
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference, invalid,
             () => throws ? throw new IOException(PrivatePath + Digest) : false))));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(SavedMacroPreparationStatus.Changed, result.Status);
         Assert.Null(result.Prepared);
@@ -182,7 +182,7 @@ public sealed class SavedMacroPlanPreparerTests
         var reference = Reference();
         int guards = 0;
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference, guard: () => ++guards == 1))));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(2, guards);
         Assert.Equal(SavedMacroPreparationStatus.Changed, result.Status);
@@ -202,7 +202,7 @@ public sealed class SavedMacroPlanPreparerTests
         if (invalid == "indefinite") model.Settings.RepeatUntilStopped = true;
         if (invalid == "disabled") model.Settings.IsActive = false;
         var source = new Source((_, _) => Task.FromResult(Ready(Pin(reference, model))));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(SavedMacroPreparationStatus.UnsupportedDocument, result.Status);
         Assert.Equal(problem, result.DocumentProblem);
@@ -217,7 +217,7 @@ public sealed class SavedMacroPlanPreparerTests
     {
         var source = new Source((_, _) => throws ? throw new IOException(PrivateName + PrivatePath + Digest)
             : Task.FromResult<SavedMacroDocumentReadResult>(null!));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(Reference(), TargetedMacroScope.OwnedWindowDiagnostic);
         Assert.Equal(SavedMacroPreparationStatus.Unavailable, result.Status);
         Assert.Null(result.Prepared);
@@ -350,6 +350,19 @@ public sealed class SavedMacroPlanPreparerTests
         Assert.Equal(0, source.Calls);
     }
 
+    // A host that builds a preparer must route the hidden error types to its fixed-payload
+    // diagnostics (as ManagerDiagnostics.Record(kind, errorType) does). A constructor without the
+    // callback would let that wiring silently drop every unexpected source, guard and compiler error.
+    [Fact]
+    public void EveryPublicConstructorRequiresTheFaultCallback()
+    {
+        var constructors = typeof(SavedMacroPlanPreparer).GetConstructors();
+        Assert.NotEmpty(constructors);
+        Assert.All(constructors, constructor => Assert.True(
+            constructor.GetParameters().Any(parameter => parameter.ParameterType == typeof(Action<Type>) && !parameter.IsOptional),
+            $"SavedMacroPlanPreparer({string.Join(", ", constructor.GetParameters().Select(parameter => parameter.ParameterType.Name))}) lets a host omit the fault callback."));
+    }
+
     [Fact]
     public async Task PreparedPlanIgnoresLaterSourceMutationAndExposesNoBodyPathOrDigest()
     {
@@ -359,7 +372,7 @@ public sealed class SavedMacroPlanPreparerTests
         var model = Model(reference.MacroId, steps);
         var pin = Pin(reference, model);
         var source = new Source((_, _) => Task.FromResult(Ready(pin)));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var result = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         var prepared = Assert.IsType<PreparedSavedMacroPlan>(result.Prepared);
         steps[0] = new KeyPressStep { KeyCode = 67 };
@@ -405,7 +418,7 @@ public sealed class SavedMacroPlanPreparerTests
                 return true;
             })));
         });
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var finished = new TaskCompletionSource<(int Caller, SavedMacroPreparationResult Result)>(TaskCreationOptions.RunContinuationsAsynchronously);
         var thread = new Thread(() =>
         {
@@ -445,7 +458,7 @@ public sealed class SavedMacroPlanPreparerTests
             await release.Task.ConfigureAwait(false); // Deliberately ignores cancellation.
             return Ready(Pin(reference));
         });
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var pending = preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic, stop.Token);
         try
         {
@@ -477,7 +490,7 @@ public sealed class SavedMacroPlanPreparerTests
             await release.Task.ConfigureAwait(false);
             return Ready(Pin(reference));
         });
-        var preparer = new SavedMacroPlanPreparer(source);
+        var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var pending = preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         Task? disposing = null;
         try
@@ -507,7 +520,7 @@ public sealed class SavedMacroPlanPreparerTests
     public async Task DisposedUnusedPreparerNeverContactsTheSource()
     {
         var source = new Source((_, _) => throw new InvalidOperationException("Must not read."));
-        var preparer = new SavedMacroPlanPreparer(source);
+        var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         await preparer.DisposeAsync();
         Assert.Equal(SavedMacroPreparationStatus.Closed, (await preparer.PrepareAsync(Reference(), TargetedMacroScope.OwnedWindowDiagnostic)).Status);
         Assert.Equal(0, source.Calls);

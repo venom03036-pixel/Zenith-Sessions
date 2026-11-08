@@ -23,7 +23,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         Assert.True(host.TryAcquire(kind, out var active, out _));
@@ -44,7 +44,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         long generation = host.StopGeneration;
@@ -64,7 +64,7 @@ public sealed partial class TargetedMacroExecutionTests
         await using var f = new Fixture();
         var entered = Gate(); var unblock = Gate();
         var source = new HostDocument(Model(Key())) { BeforeRead = async () => { entered.TrySetResult(); await unblock.Task; } };
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         var run = operation.RunAsync(source.Reference, [f.A], host.StopGeneration);
@@ -104,7 +104,7 @@ public sealed partial class TargetedMacroExecutionTests
         var third = Target(3);
         f.Transport.Register(third);
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         var result = await operation.RunAsync(source.Reference, [f.A, f.B, third], host.StopGeneration).WaitAsync(HostDeadline);
@@ -122,7 +122,7 @@ public sealed partial class TargetedMacroExecutionTests
         await using var f = new Fixture();
         var entered = Gate(); var unblock = Gate();
         var source = new HostDocument(Model(Key())) { BeforeRead = async () => { entered.TrySetResult(); await unblock.Task; } };
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         var run = operation.RunAsync(source.Reference, [f.A], host.StopGeneration);
@@ -147,7 +147,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key(), Key(66)));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         TargetedInputTarget[] targets = [f.A, f.B];
@@ -175,7 +175,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         using var cancel = new CancellationTokenSource();
@@ -213,7 +213,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key(65, "Down")));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         f.Transport.RejectCleanup = true;
@@ -247,7 +247,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key(65, "Down"), new DelayStep(TimeSpan.FromMilliseconds(20)), Key(65, "Up")));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operation = new CompanionMacroOperations(host, preparer, f.Runner);
         // The target window is moved or resized after the press; the release still reaches it.
@@ -297,7 +297,7 @@ public sealed partial class TargetedMacroExecutionTests
                 return Task.CompletedTask;
             }
         };
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operations = new CompanionMacroOperations(host, preparer, f.Runner);
         TargetedInputTarget[] recipients = [f.A, f.B];
@@ -361,7 +361,7 @@ public sealed partial class TargetedMacroExecutionTests
             }
         };
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operations = new CompanionMacroOperations(host, preparer, f.Runner);
         var handle = Assert.IsType<CompanionMacroOperation>(operations.Start(source.Reference, [f.A, f.B], host.StopGeneration).Operation);
@@ -396,7 +396,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key(65, "Down", 8_000), Key(65, "Up")));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operations = new CompanionMacroOperations(host, preparer, f.Runner);
         var handle = Assert.IsType<CompanionMacroOperation>(operations.Start(source.Reference, [f.A, f.B], host.StopGeneration).Operation);
@@ -436,7 +436,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key()));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operations = new CompanionMacroOperations(host, preparer, f.Runner);
         var old = Assert.IsType<CompanionMacroOperation>(operations.Start(source.Reference, [f.A], host.StopGeneration).Operation);
@@ -468,7 +468,7 @@ public sealed partial class TargetedMacroExecutionTests
     {
         await using var f = new Fixture();
         var source = new HostDocument(Model(Key(65, "Down", 8_000), Key(65, "Up")));
-        await using var preparer = new SavedMacroPlanPreparer(source);
+        await using var preparer = new SavedMacroPlanPreparer(source, static _ => { });
         var host = new HostInputOperationArbiter();
         var operations = new CompanionMacroOperations(host, preparer, f.Runner);
         var handle = Assert.IsType<CompanionMacroOperation>(operations.Start(source.Reference, [f.A], host.StopGeneration).Operation);

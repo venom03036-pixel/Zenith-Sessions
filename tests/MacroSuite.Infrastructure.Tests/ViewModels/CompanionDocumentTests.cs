@@ -57,7 +57,7 @@ public partial class MacroEditorViewModelTests
         vm.Steps.ReplaceAt(0, draft);
         vm.Steps[0].Step.Should().BeOfType<KeyPressStep>().Which.KeyCode.Should().Be(0x86);
         documents.Saves.Should().Be(writesBeforeDraft);
-        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments);
+        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments, static _ => { });
         var target = new TargetedInputTarget(Guid.NewGuid(), 71, new DateTime(2026, 1, 1).Ticks,
             (nint)171, new PixelRectangle(0, 0, 100, 100), 1);
         var transport = new ReceiptMemoryTransport(target);
@@ -93,7 +93,7 @@ public partial class MacroEditorViewModelTests
         var read = await vm.CompanionDocuments.ReadAsync(reference);
         read.Status.Should().Be(SavedMacroDocumentReadStatus.Ready);
         read.Pin!.Reference.Should().Be(reference); read.Pin.IsCurrent().Should().BeTrue();
-        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments);
+        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments, static _ => { });
         var prepared = await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic);
         prepared.Status.Should().Be(SavedMacroPreparationStatus.Ready);
         prepared.Prepared!.Plan.StepCount.Should().Be(1);

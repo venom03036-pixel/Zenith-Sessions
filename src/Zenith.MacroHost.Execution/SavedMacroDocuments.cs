@@ -144,23 +144,25 @@ public sealed class SavedMacroPlanPreparer : IAsyncDisposable
     private readonly object _sync = new();
     private readonly ISavedMacroDocumentSource _source;
     private readonly CancellationTokenSource _lifetime = new();
-    private readonly Action<Type>? _fault;
+    private readonly Action<Type> _fault;
     private Task<SavedMacroPreparationResult>? _worker;
     private Task? _dispose;
     private bool _closed;
 
-    public SavedMacroPlanPreparer(ISavedMacroDocumentSource source)
-        => _source = source ?? throw new ArgumentNullException(nameof(source));
-
     /// <summary>
-    /// Also reports the type of each unexpected error that a fixed result hides: a throwing
-    /// source or owner guard, an error the source caught itself, or a compiler error turned into
-    /// InvalidDocument. Only the type is passed, never a message, path or stack. The callback runs
-    /// on the preparation worker, must return quickly, and an error it throws is ignored. No call
-    /// happens after DisposeAsync completes.
+    /// <paramref name="fault"/> receives the type of each unexpected error that a fixed result
+    /// hides: a throwing source or owner guard, an error the source caught itself, or a compiler
+    /// error turned into InvalidDocument. It is required so that a host wiring this preparer must
+    /// pass those types to its fixed-payload diagnostics (as ManagerDiagnostics.Record(kind,
+    /// errorType) does) instead of losing them. Only the type is passed, never a message, path or
+    /// stack. The callback runs on the preparation worker, must return quickly, and an error it
+    /// throws is ignored. No call happens after DisposeAsync completes.
     /// </summary>
-    public SavedMacroPlanPreparer(ISavedMacroDocumentSource source, Action<Type> fault) : this(source)
-        => _fault = fault ?? throw new ArgumentNullException(nameof(fault));
+    public SavedMacroPlanPreparer(ISavedMacroDocumentSource source, Action<Type> fault)
+    {
+        _source = source ?? throw new ArgumentNullException(nameof(source));
+        _fault = fault ?? throw new ArgumentNullException(nameof(fault));
+    }
 
     public Task<SavedMacroPreparationResult> PrepareAsync(SavedMacroReference reference, TargetedMacroScope scope,
         CancellationToken ct = default)
@@ -216,9 +218,9 @@ public sealed class SavedMacroPlanPreparer : IAsyncDisposable
     private SavedMacroPreparationResult Result(SavedMacroPreparationStatus status, Type? fault,
         TargetedMacroPlanProblem? problem = null)
     {
-        if (fault is not null && _fault is { } report)
+        if (fault is not null)
         {
-            try { report(fault); }
+            try { _fault(fault); }
             // A failing diagnostic sink has nowhere further to report, and it must never change the fixed outcome.
             catch (Exception) { }
         }
