@@ -66,6 +66,51 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Contains("fresh scan",shell.ClientPriorityStatus,StringComparison.OrdinalIgnoreCase);
     });
 
+    [Fact]
+    public Task PrioritySkipsAnotherProcessWhoseIdentityWindowsCouldNotRead()=>OnUi(async ()=>
+    {
+        // Another Windows user's client: the monitor reports it as an identity-unavailable row and an incomplete scan.
+        var control=new PriorityControlProbe();var monitor=new PriorityDesktopMonitor(2){Unreadable="other"};
+        await using var shell=await ReadyPriority(monitor,control);
+        Assert.Contains(shell.Sessions,row=>row.Observation.ProcessId==PriorityDesktopMonitor.UnreadablePid);
+        shell.SelectedSession=shell.Sessions.First(row=>row.Observation.ProcessId==2);var expected=shell.SelectedSession.Observation;
+        shell.SetClientsBelowNormalPriority.Execute(null);await shell.SetClientsBelowNormalPriority.Execution;
+        Assert.Equal(1,control.ChangeCalls);
+        Assert.Equal(expected,Assert.Single((await control.NextAsync()).Targets));
+        Assert.Equal(expected.InstanceKey,Assert.Single(shell.ClientPriorityResults).Session.InstanceKey);
+    });
+
+    [Theory]
+    [InlineData("same-pid",2)]
+    [InlineData("stale",2)]
+    [InlineData("no-problem",2)]
+    [InlineData("other",127)]
+    public Task PriorityStillRefusesAnUnreadableRowThatIsAmbiguousStaleMalformedOrAtTheScanBudget(string unreadable,int count)=>OnUi(async ()=>
+    {
+        var control=new PriorityControlProbe();var monitor=new PriorityDesktopMonitor(count);
+        await using var shell=await ReadyPriority(monitor,control);
+        monitor.Unreadable=unreadable;await Refresh(shell);
+        shell.SelectedSession=shell.Sessions.First(row=>row.Observation.ProcessId==2);
+        shell.SetClientsBelowNormalPriority.Execute(null);await shell.SetClientsBelowNormalPriority.Execution;
+        Assert.Equal(0,control.ChangeCalls);Assert.Empty(shell.ClientPriorityResults);
+        Assert.Contains("fresh scan",shell.ClientPriorityStatus,StringComparison.OrdinalIgnoreCase);
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task PriorityRefusesASelectedClientWhoseIdentityWindowsCouldNotReadAndSaysWhy(bool checkedRow)=>OnUi(async ()=>
+    {
+        var control=new PriorityControlProbe();var monitor=new PriorityDesktopMonitor(2){Unreadable="other"};
+        await using var shell=await ReadyPriority(monitor,control);
+        var unreadable=shell.Sessions.First(row=>row.Observation.ProcessId==PriorityDesktopMonitor.UnreadablePid);
+        if(checkedRow){shell.Sessions[0].IsChecked=true;unreadable.IsChecked=true;}else shell.SelectedSession=unreadable;
+        shell.SetClientsNormalPriority.Execute(null);await shell.SetClientsNormalPriority.Execution;
+        Assert.Equal(0,control.ChangeCalls);Assert.Empty(shell.ClientPriorityResults);
+        Assert.Equal("Windows could not read the identity of a selected client, for example one run by another Windows user, so nothing was changed. Uncheck or deselect that row, then try again.",
+            shell.ClientPriorityStatus);
+    });
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -386,6 +431,10 @@ public sealed partial class ClientPreviewPresentationTests
     private sealed class PriorityDesktopMonitor(int count):IDesktopMonitor,IDisposable
     {
         internal string? Invalid;
+        // Appends the row the real monitor emits for a process it cannot open (for example another Windows user's
+        // client): PID only, start time 0, a Problem, and an inventory it reports as incomplete.
+        internal string? Unreadable;
+        internal const int UnreadablePid=900;
         internal bool Windowless,Disposed;
         public void Dispose()=>Disposed=true;
         private long _revision;
@@ -395,10 +444,13 @@ public sealed partial class ClientPreviewPresentationTests
             var at=Invalid=="stale-inventory"?now.AddSeconds(-10):Invalid=="future-inventory"?now.AddSeconds(10):now;
             var rows=Enumerable.Range(1,count).Select(pid=>new SessionObservation(Invalid=="duplicate-pid"?1:pid,
                 new DateTimeOffset(2026,1,1,0,0,0,TimeSpan.Zero).UtcTicks,"Synthetic",Windowless?0:pid+100,"Synthetic",Windowless,!Windowless,
-                1,1,0,Invalid=="stale-row"?now.AddSeconds(-10):at)).ToArray();
+                1,1,0,Invalid=="stale-row"?now.AddSeconds(-10):at)).ToList();
+            if(Unreadable is not null)rows.Add(new SessionObservation(Unreadable=="same-pid"?1:UnreadablePid,0,"Unavailable",0,"Roblox",
+                false,false,0,0,null,Unreadable=="stale"?now.AddSeconds(-10):at,
+                Unreadable=="no-problem"?null:"Process identity or access was unavailable during observation."));
             return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,
-                64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows,Invalid=="problem"?"Synthetic incomplete scan":null,
-                at,Invalid=="unversioned"?0:Interlocked.Increment(ref _revision),Invalid!="partial"));
+                64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),rows.ToArray(),Invalid=="problem"?"Synthetic incomplete scan":null,
+                at,Invalid=="unversioned"?0:Interlocked.Increment(ref _revision),Invalid!="partial" && Unreadable is null));
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No window mutation expected.");
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No process action expected.");

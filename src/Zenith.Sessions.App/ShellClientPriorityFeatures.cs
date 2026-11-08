@@ -16,7 +16,7 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _clientPriorityStop;
     private Task _clientPriorityWork = Task.CompletedTask;
     private long _clientPriorityGeneration;
-    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes);
+    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes, string Refusal);
     private string _clientPriorityStatus = "Choose clients to change their Windows CPU scheduling priority.";
 
     public ObservableCollection<ClientProcessPriorityResult> ClientPriorityResults { get; } = [];
@@ -47,21 +47,35 @@ public sealed partial class ShellViewModel
             Raise(nameof(CanChangeClientPriority));
     }
 
-    private SessionObservation[] PinClientPrioritySelection()
+    private const string ClientSelectionChangedText = "The client list is incomplete or changed. Wait for a fresh scan, then select the clients again.";
+    private const string ClientSelectionUnreadableText = "Windows could not read the identity of a selected client, for example one run by another Windows user, so nothing was changed. Uncheck or deselect that row, then try again.";
+
+    /// <summary>Pins the checked (or selected) exact instances from the latest fresh scan; empty with <paramref name="refusal"/> otherwise.</summary>
+    private SessionObservation[] PinClientPrioritySelection(out string refusal)
     {
+        refusal = ClientSelectionChangedText;
         var requested = Sessions.Where(row => row.IsChecked).Select(row => row.Observation).ToArray();
         if (requested.Length == 0 && SelectedSession is { } selected && Sessions.Contains(selected))
             requested = [selected.Observation];
         var desktop = Volatile.Read(ref _latestDesktop);
         var now = DateTimeOffset.UtcNow;
-        if (requested.Length is < 1 or > 128 || desktop is not { Problem: null, ProcessInventoryComplete: true, ProcessRevision: > 0 }
+        if (requested.Length is < 1 or > 128 || desktop is not { Problem: null, ProcessRevision: > 0 }
             || desktop.ProcessObservedUtc is not { } observed || observed == default || observed > now
             || now - observed > TimeSpan.FromSeconds(3) || desktop.Sessions is null || desktop.Sessions.Count > 128)
             return [];
         var current = desktop.Sessions;
-        if (current.Any(row => row is null || row.Problem is not null || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0
+        // The monitor reports a process it could not open (for example another Windows user's client) as a row with a
+        // Problem and no start time, and that row alone makes it call the scan incomplete. The row names no instance to
+        // act on, so it is skipped, as TelemetryHistory skips it; its PID still takes part in the duplicate check. Any
+        // other incompleteness, and a scan that reached its budget, still refuses.
+        bool unreadablePresent = current.Any(row => row is not null && IdentityUnavailable(row, observed, now));
+        if (!desktop.ProcessInventoryComplete
+            && (!unreadablePresent || current.Count >= DesktopSamplingCadence.MaximumProcessSamples))
+            return [];
+        if (current.Any(row => row is null || (!IdentityUnavailable(row, observed, now) && (row.Problem is not null
+                || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0
                 || row.ObservedUtc > observed || row.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks
-                || row.ObservedUtc == default || now - row.ObservedUtc > TimeSpan.FromSeconds(3))
+                || row.ObservedUtc == default || now - row.ObservedUtc > TimeSpan.FromSeconds(3))))
             || current.Select(row => row.ProcessId).Distinct().Count() != current.Count
             || requested.Select(row => row.InstanceKey).Distinct().Count() != requested.Length)
             return [];
@@ -70,13 +84,20 @@ public sealed partial class ShellViewModel
         {
             var match = current.SingleOrDefault(row => row.InstanceKey == requested[index].InstanceKey);
             if (match is null) return [];
+            // Only identity-unavailable rows pass the checks above with a Problem.
+            if (match.Problem is not null) { refusal = ClientSelectionUnreadableText; return []; }
             pinned[index] = match;
         }
         return pinned;
     }
 
+    private static bool IdentityUnavailable(SessionObservation row, DateTimeOffset observed, DateTimeOffset now)
+        => row.Problem is not null && row.ProcessStartUtcTicks == 0 && row.ProcessId > 0 && row.ObservedUtc != default
+            && row.ObservedUtc <= observed && now - row.ObservedUtc <= TimeSpan.FromSeconds(3);
+
     private object? CaptureClientPriorityRequest(object? parameter)
-        => CanChangeClientPriority ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection()) : null;
+        => CanChangeClientPriority
+            ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection(out var refusal), refusal) : null;
 
     private Task ChangeClientPriorityAsync(ClientProcessPriorityAction action, object? parameter)
     {
@@ -85,7 +106,7 @@ public sealed partial class ShellViewModel
         var pinned = request.Processes;
         if (pinned.Length == 0)
         {
-            ClientPriorityStatus = "The client list is incomplete or changed. Wait for a fresh scan, then select the clients again.";
+            ClientPriorityStatus = request.Refusal;
             return Task.CompletedTask;
         }
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);

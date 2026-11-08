@@ -38,6 +38,31 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Contains("fresh scan",shell.ClientTrimStatus,StringComparison.OrdinalIgnoreCase);
     });
 
+    [Fact]
+    public Task TrimNowSkipsAnotherProcessWhoseIdentityWindowsCouldNotRead()=>OnUi(async ()=>
+    {
+        // Another Windows user's client: the monitor reports it as an identity-unavailable row and an incomplete scan.
+        var control=new TrimControlProbe();var monitor=new PriorityDesktopMonitor(2){Unreadable="other"};
+        await using var shell=await ReadyTrim(monitor,control);
+        shell.SelectedSession=shell.Sessions.First(row=>row.Observation.ProcessId==1);var expected=shell.SelectedSession.Observation;
+        shell.TrimClientsNow.Execute(null);await shell.TrimClientsNow.Execution;
+        Assert.Equal(1,control.TrimCalls);
+        Assert.Equal(expected,Assert.Single((await control.NextAsync()).Targets));
+        Assert.Equal(expected.InstanceKey,Assert.Single(shell.ClientTrimResults).Session.InstanceKey);
+    });
+
+    [Fact]
+    public Task TrimRefusesASelectedClientWhoseIdentityWindowsCouldNotReadAndSaysWhy()=>OnUi(async ()=>
+    {
+        var control=new TrimControlProbe();var monitor=new PriorityDesktopMonitor(1){Unreadable="other"};
+        await using var shell=await ReadyTrim(monitor,control);
+        shell.SelectedSession=shell.Sessions.First(row=>row.Observation.ProcessId==PriorityDesktopMonitor.UnreadablePid);
+        shell.TrimClientsNow.Execute(null);await shell.TrimClientsNow.Execution;
+        Assert.Equal(0,control.TrimCalls);Assert.Empty(shell.ClientTrimResults);
+        Assert.Equal("Windows could not read the identity of a selected client, for example one run by another Windows user, so nothing was changed. Uncheck or deselect that row, then try again.",
+            shell.ClientTrimStatus);
+    });
+
     [Theory]
     [InlineData("panic")]
     [InlineData("lock")]
