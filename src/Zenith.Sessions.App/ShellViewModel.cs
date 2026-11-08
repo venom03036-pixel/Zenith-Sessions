@@ -1111,13 +1111,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     internal bool IsShuttingDown=>_shuttingDown;
     /// <summary>
     /// UI thread only. Shows a fixed error for a fault that escaped every handler, as <see cref="Fail(Exception,ManagerSubsystem)"/> does,
-    /// also after Panic or Lock: the error has its own line, so the stop notice stays. While locked the lock screen covers the footer,
-    /// so the fault goes to Events and Diagnostics only and no error is left behind it.
+    /// also after Panic or Lock: the error has its own line, so the stop notice stays. While locked (the idle lock, for example) the
+    /// error is set behind the lock screen exactly like a Fail error, and Unlock keeps it, so the user is told to restart.
     /// </summary>
     internal void ContainUnhandled(Type errorType)
     {
-        if(!IsLocked)
-            ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
+        ShowError("Zenith Sessions caught an unexpected error and kept running. Only the error type was saved to Diagnostics. If anything looks wrong, restart the app.");
         AddEvent($"Unexpected error caught ({errorType.Name}).");
         _diagnostics.Record(ManagerEventKind.OperationFailed,errorType);
     }

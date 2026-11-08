@@ -1,5 +1,4 @@
 using System.Windows;
-using MacroSuite.App.Themes;
 
 namespace Zenith.Sessions.App;
 
@@ -79,7 +78,7 @@ public partial class App : Application
     /// </summary>
     internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>ApplyStartupTheme(resources,root,SystemAppearance.Read());
     internal static void ApplyStartupTheme(ResourceDictionary resources,string root,SystemAppearance system)=>
-        ThemeManager.Apply(resources,SessionsThemes.Effective(Zenith.Sessions.Windows.SettingsStore.ReadTheme(root),system));
+        SessionsThemes.Apply(resources,SessionsThemes.Effective(Zenith.Sessions.Windows.SettingsStore.ReadTheme(root),system));
     internal static string StartupFailureMessage(Type error)=>
         $"Zenith Sessions could not open its local workspace ({error.Name}). Existing files were preserved. Check the app files and data-folder access, then retry.";
 }

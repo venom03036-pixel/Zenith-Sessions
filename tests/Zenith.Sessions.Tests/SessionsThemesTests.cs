@@ -2,6 +2,7 @@ using System.IO;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using MacroSuite.App.Themes;
 using Xunit;
@@ -111,6 +112,43 @@ public sealed class SessionsThemesTests : IDisposable
         // A highlight too pale to read on the window colour is not used as text: the window text colour is.
         var pale = HighContrastSets["pale highlight"];
         Assert.Equal(pale.WindowText, SessionsThemes.HighContrast(pale).Colors["AccentPrimary"]);
+        // Hovering or pressing a primary or danger button changes its fill (its label stays readable: see the palette test above).
+        // Black is Windows' High Contrast Black: the button turns from the highlight colour to the window text colour.
+        Assert.Equal(black.WindowText, SessionsThemes.HighContrast(black).Colors["PrimaryHoverBackground"]);
+        foreach (string set in new[] { "black", "white", "dark grey", "cream" })
+        {
+            var colors = SessionsThemes.HighContrast(HighContrastSets[set]).Colors;
+            foreach (var (rest, state) in new[] { ("AccentPrimary", "PrimaryHoverBackground"), ("AccentPrimary", "PrimaryPressedBackground"),
+                         ("DangerGradient", "DangerHoverBackground"), ("DangerGradient", "DangerPressedBackground") })
+                Assert.True(colors[state] != colors[rest], $"High contrast {set}: {state} is the resting {rest} colour, so hovering or pressing shows nothing.");
+        }
+    }
+
+    [Fact]
+    public Task HighContrastMarksHoveredAndPressedRowsAndButtonsWithAWindowTextEdge() => OnSta(() =>
+    {
+        // No Windows colour but the window colour keeps the window text readable as a fill, so the window colour stays behind the
+        // text and a bar of the window text colour along the leading edge shows the state: 3 pixels on hover, 6 while pressed.
+        var black = HighContrastSets["black"]; var resources = new ResourceDictionary();
+        SessionsApp.ApplyStartupTheme(resources, _root, new(null, black));
+        string text = AppearancePalette.Hex(black.WindowText), window = AppearancePalette.Hex(black.Window);
+        Assert.Equal(new[] { text, text, window, window, window }, Columns(resources["HoverBackground"], 0, 2, 4, 7, 39));
+        Assert.Equal(new[] { text, text, text, window, window }, Columns(resources["ActiveBackground"], 0, 2, 5, 7, 39));
+        // Leaving High Contrast restores the theme's own solid hover and press colours.
+        SessionsApp.ApplyStartupTheme(resources, _root, new(false, null));
+        var standard = ThemeCatalog.Resolve(ThemeCatalog.DefaultId).Colors;
+        Assert.Equal(standard["HoverBackground"], Assert.IsType<SolidColorBrush>(resources["HoverBackground"]).Color);
+        Assert.Equal(standard["ActiveBackground"], Assert.IsType<SolidColorBrush>(resources["ActiveBackground"]).Color);
+        return Task.CompletedTask;
+    });
+
+    // The colour drawn in each listed pixel column of a 40x10 surface filled with brush.
+    private static string[] Columns(object brush, params int[] columns)
+    {
+        var surface = new Border { Width = 40, Height = 10, Background = Assert.IsAssignableFrom<Brush>(brush) };
+        surface.Measure(new Size(40, 10)); surface.Arrange(new Rect(0, 0, 40, 10));
+        var image = new RenderTargetBitmap(40, 10, 96, 96, PixelFormats.Pbgra32); image.Render(surface);
+        return columns.Select(x => { var pixel = new byte[4]; image.CopyPixels(new Int32Rect(x, 5, 1, 1), pixel, 4, 0); return AppearancePalette.Hex(Color.FromRgb(pixel[2], pixel[1], pixel[0])); }).ToArray();
     }
 
     [Theory]
@@ -228,7 +266,8 @@ public sealed class SessionsThemesTests : IDisposable
         return Task.CompletedTask;
     });
 
-    private static ThemePreset Palette(string name) => name switch
+    // Also used by the rendered selection tests (SidebarTemplateTests, AccountsWorkspaceTests), so they read the same colour sets.
+    internal static ThemePreset Palette(string name) => name switch
     {
         "follow-windows with Windows apps light" => SessionsThemes.Effective("follow-windows", new(true, null)),
         "follow-windows with Windows apps dark" => SessionsThemes.Effective("follow-windows", new(false, null)),

@@ -80,7 +80,7 @@ public partial class MainWindow : Window
         bool compact=e.NewSize.Width<1132;
         if(_vm.CompactLayout!=compact) _vm.CompactLayout=compact;
     }
-    private void SetTheme(ThemePreset theme) => ThemeManager.Apply(Application.Current.Resources, theme);
+    private void SetTheme(ThemePreset theme) => SessionsThemes.Apply(Application.Current.Resources, theme);
     // SystemEvents raises on its own thread and WPF raises StaticPropertyChanged on this one; both re-read here on the UI thread.
     // Switching the app mode arrives as General, a contrast theme as Accessibility or Color.
     private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)

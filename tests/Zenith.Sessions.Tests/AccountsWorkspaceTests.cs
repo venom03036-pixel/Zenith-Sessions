@@ -59,6 +59,52 @@ public sealed class AccountsWorkspaceTests
         return Task.CompletedTask;
     });
 
+    public static IEnumerable<object[]> SelectedRowCases()
+    {
+        foreach(string palette in new[]{"high contrast black","high contrast white","graphite-mint","light"})
+            foreach(bool dense in new[]{false,true})
+                foreach(bool compact in new[]{true,false}) yield return new object[]{palette,dense,compact};
+    }
+    // Under Windows High Contrast the selection colour is the Highlight colour and the primary, secondary and muted text colours are
+    // all the window text colour, about 1.4:1 on it. Every label drawn straight on the selected row (name, @username and group,
+    // sign-in and launch state, dense group) and the account-actions glyph must use the selection text colour instead.
+    [Theory]
+    [MemberData(nameof(SelectedRowCases))]
+    public Task TheSelectedAccountRowDrawsEveryLabelAndItsActionsGlyphReadablyOnTheSelectionColour(string palette,bool dense,bool compact)=>OnSta(()=>
+    {
+        var model=new WorkspaceModel {Dense=dense,CompactLayout=compact};
+        using var fixture=new ProductionWorkspace(model,palette);var view=fixture.View;Layout(view,1088,480);
+        Color selection=Assert.IsType<SolidColorBrush>(fixture.Resources["SelectionBackground"]).Color;
+        var list=Named<ListBox>(view,"AccountList");var selected=Assert.IsType<ListBoxItem>(list.ItemContainerGenerator.ContainerFromIndex(0));
+        Assert.True(selected.IsSelected);var image=RenderedInk.Render(view);
+        Assert.Equal(selection,RenderedInk.At(image,view,Assert.IsType<Border>(selected.Template.FindName("Row",selected)),new Point(4,4)));
+        // The sign-in chip, the buttons and the check box draw their own fill, so only text with nothing but the row behind it is read here.
+        var labels=Visual(selected).OfType<TextBlock>().Where(text=>Words(text).Length>0 && text.ActualWidth>0 && Shown(text,selected) && !OnItsOwnFill(text,selected)).ToArray();
+        Assert.Equal(dense && compact?2:3,labels.Length);
+        foreach(var label in labels)
+        {
+            RenderedInk.AssertReadable(image,view,label,selection,4.5,$"{palette}: '{Words(label)}' on the selected row");
+            // In the app, the implicit TextBlock style in Application resources gives TextPrimary to any TextBlock whose colour would only
+            // be inherited from the row. This fixture has no Application, so inheritance would pass here and fail there: the selected
+            // colour must be set on each label by its own template or style.
+            var source=DependencyPropertyHelper.GetValueSource(label,TextBlock.ForegroundProperty).BaseValueSource;
+            Assert.True(source is not (BaseValueSource.Inherited or BaseValueSource.Default or BaseValueSource.ImplicitStyleReference),$"'{Words(label)}' only inherits its colour ({source}).");
+        }
+        if(!dense)
+        {
+            var actions=Visual(selected).OfType<Button>().Single(button=>AutomationProperties.GetName(button)=="Account actions");
+            RenderedInk.AssertReadable(image,view,Visual(actions).OfType<System.Windows.Shapes.Path>().Single(),selection,3,$"{palette}: the account actions glyph on the selected row");
+        }
+        return Task.CompletedTask;
+    });
+    private static IEnumerable<DependencyObject> Between(DependencyObject element,DependencyObject ancestor)
+    {for(var parent=VisualTreeHelper.GetParent(element);parent is not null && !ReferenceEquals(parent,ancestor);parent=VisualTreeHelper.GetParent(parent)) yield return parent;}
+    private static bool Shown(UIElement element,DependencyObject row)=>element.Visibility==Visibility.Visible && Between(element,row).OfType<UIElement>().All(parent=>parent.Visibility==Visibility.Visible);
+    // A TextBlock built from Runs (the @username line, the compact status line) keeps its words in the Runs, not in Text.
+    private static string Words(TextBlock text)=>text.Text.Length>0?text.Text:string.Concat(text.Inlines.OfType<System.Windows.Documents.Run>().Select(run=>run.Text));
+    // Buttons, the check box and the chips are all content controls inside the row's own ListBoxItem.
+    private static bool OnItsOwnFill(DependencyObject element,DependencyObject row)=>Between(element,row).Any(parent=>parent is ContentControl);
+
     [Fact]
     public Task OverflowUsesPlacementTargetContextAndPreservesAllExistingFileProfileHandlers()=>OnSta(()=>
     {
@@ -154,6 +200,7 @@ public sealed class AccountsWorkspaceTests
     private sealed class ProductionWorkspace:IDisposable
     {
         public Grid View {get;}
+        public ResourceDictionary Resources=>_ancestor.Resources;
         private readonly Window _ancestor;
         public ProductionWorkspace(WorkspaceModel model,string theme)
         {
@@ -171,7 +218,9 @@ public sealed class AccountsWorkspaceTests
             var window=new XElement(Ui+"Window",new XAttribute(XNamespace.Xmlns+"x",X.NamespaceName),
                 new XElement(Ui+"Window.Resources",dict),region);
             _ancestor=(Window)XamlReader.Parse(window.ToString());var resources=_ancestor.Resources;
-            ThemeManager.Apply(resources,theme=="custom-light"?"graphite-mint":theme);
+            // Light and High Contrast are the Sessions palettes, applied as the app applies them.
+            if(theme=="light" || theme.StartsWith("high contrast ",StringComparison.Ordinal)) SessionsThemes.Apply(resources,SessionsThemesTests.Palette(theme));
+            else ThemeManager.Apply(resources,theme=="custom-light"?"graphite-mint":theme);
             if(theme=="custom-light") foreach(var pair in new Dictionary<string,string>{["AppBackground"]="#FFFFFF",["CardBackground"]="#FAFAFA",["SurfaceBackground"]="#EEEEEE",["TextPrimary"]="#151515",["TextSecondary"]="#454545",["TextMuted"]="#555555",["SelectionBackground"]="#DDE8EE",["SelectionForeground"]="#151515"}) resources[pair.Key]=new SolidColorBrush((Color)ColorConverter.ConvertFromString(pair.Value));
             View=(Grid)_ancestor.Content;_ancestor.DataContext=model;
             View.SetResourceReference(Panel.BackgroundProperty,"AppBackground"); // Window is never shown.
@@ -198,7 +247,7 @@ public sealed class AccountsWorkspaceTests
         public AccountRow? SelectedAccount {get=>_selected;set {Set(ref _selected,value);Raise(nameof(HasSelection));}}
         public bool HasSelection=>SelectedAccount is not null;
         public bool IsAccounts=>true;
-        public bool CompactLayout=>true;
+        public bool CompactLayout {get;init;}=true;
         public bool Dense {get=>_dense;set=>Set(ref _dense,value);}
         public bool Narrow {get=>_narrow;set {Set(ref _narrow,value);Raise(nameof(IsAccountInspectorNarrow));Raise(nameof(IsAccountInspectorVisible));}}
         public bool IsAccountInspectorNarrow=>Narrow;
