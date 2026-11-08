@@ -12,7 +12,9 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // and log evidence. When a client first reports Connected and the saved choice is Arrange or Minimize, one request goes to
 // the existing window lane: Arrange tiles every connected client that is not minimized or hidden, in launch order on the
 // saved monitor; Minimize minimizes the new client without activating anything. Connected is an unverified log diagnostic; it only gates this window change.
-// Clients already running at the first complete scan after Zenith starts never arrive, though their Connected line can be minutes old.
+// Clients already running at the first baseline scan after Zenith starts never arrive, though their Connected line can be minutes old.
+// Until such a scan, a client that reports Connected is left alone and the window report says why, once, so the saved choice
+// is never silently inert.
 // Clients that connect while a request runs wait for one follow-up request, never one each. Clients that connect while a
 // manual window operation is queued or running are left alone and count as seen: a request queued behind it on the lane
 // would re-tile every connected client right after the user's arrangement and replace its report. Panic and Lock cancel the
@@ -26,7 +28,7 @@ public sealed partial class ShellViewModel
     private List<SessionObservation>? _arrivedClients;
     private CancellationTokenSource? _arrivalStop;
     private Task _arrivalWork = Task.CompletedTask;
-    private bool _arrivalLayoutStopped, _arrivalsLeftAloneForManualOperation;
+    private bool _arrivalLayoutStopped, _arrivalsLeftAloneForManualOperation, _arrivalBaselineReported;
     private Command? _resumeClientArrivalLayout;
     public IReadOnlyList<ClientArrivalChoice> ClientArrivalChoices { get; } =
     [
@@ -54,6 +56,7 @@ public sealed partial class ShellViewModel
     {
         // The tracker always observes, so a client that connected while this was off or locked never arrives again later.
         var arrived = _clientArrivals.Observe(snapshot, evidence);
+        if (_clientArrivals.AwaitingBaseline) ReportClientArrivalBaselineMissing();
         if (arrived.Count == 0 || SavedArrivalAction == ClientArrivalWindowAction.None || IsSample || _shuttingDown || !_ready) return;
         if (_arrivalLayoutStopped || IsLocked)
         {
@@ -63,6 +66,14 @@ public sealed partial class ShellViewModel
         }
         (_arrivedClients ??= []).AddRange(arrived);
         if (_arrivalWork.IsCompleted) _arrivalWork = RunClientArrivalWorkAsync();
+    }
+    // A manual window operation owns the report while it runs, and a stopped feature reports that it is stopped instead.
+    private void ReportClientArrivalBaselineMissing()
+    {
+        if (_arrivalBaselineReported || SavedArrivalAction == ClientArrivalWindowAction.None || IsSample || _shuttingDown || !_ready
+            || _arrivalLayoutStopped || IsLocked || _arranging) return;
+        _arrivalBaselineReported = true;
+        ClientWindowStatus = "A client reports it connected, but no client scan has shown yet which clients were already running, so automatic layout left the windows alone. It acts on clients that connect after the first scan that does.";
     }
     private ClientArrivalWindowAction SavedArrivalAction => _savedSettings.WindowLayout?.ArrivalAction ?? ClientArrivalWindowAction.None;
     // A StopOperations step for Panic and Lock. Only ResumeClientArrivalLayout clears it; Unlock and Save all settings do not.

@@ -348,6 +348,35 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
 
+    // C5 review: a PC where Windows cannot read another Windows user's client never has a complete scan. Before any scan shows
+    // which clients were already running, a client that reports Connected is left alone and the window report says why, so
+    // the saved choice is not silently inert. A scan whose only gap is that unreadable row is a baseline: a client that
+    // connects after it is minimized, while one that was already running is left alone.
+    [Fact]
+    public Task AutomaticLayoutSaysWhyItWaitsAndActsOnceAScanWithOnlyAnUnreadableClientShowsWhoWasRunning() => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor) { Complete = false };
+        var joinedEarlier = log.Client(490, minutesAgo: 4); var startedLater = log.Client(491, minutesAgo: 1);
+        var otherUser = new SessionObservation(492, 0, "Unavailable", 0, "Roblox", false, false, 0, 0, null, DateTimeOffset.UtcNow,
+            "Synthetic process identity or access was unavailable during observation.");
+        // Incomplete for another reason, for example a client that ended during the scan: no baseline yet.
+        await log.PresentAsync([joinedEarlier], (joinedEarlier, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(0, monitor.StateChanges);
+        Assert.Contains("no client scan has shown yet which clients were already running", shell.ClientWindowStatus);
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+        await log.PresentAsync([otherUser, joinedEarlier]);
+        await log.PresentAsync([otherUser, joinedEarlier, startedLater], (startedLater, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(1, monitor.StateChanges);
+        Assert.Equal(new[] { 491 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
+        Assert.DoesNotContain("no client scan", shell.ClientWindowStatus);
+    });
+
     /// <summary>
     /// Publishes one synthetic process scan and log snapshot, then runs the real forced sample and presentation. A stopped
     /// correlator ignores offers, so the 1 Hz loop presents the same snapshot; a presentation queued from an older scan is
@@ -359,6 +388,8 @@ public sealed partial class ClientWindowIntegrationTests
         private readonly WindowsSessionLogCorrelator _correlator = new(new ReportedProbe());
         private long _revision;
         private bool _attached;
+        /// <summary>Whether the scan is marked complete; false for one that finished without a problem but with a gap.</summary>
+        public bool Complete { get; init; } = true;
         /// <summary>Zenith started with no client running: its first complete scan lists none, so every later client can arrive.</summary>
         public Task StartedWithNoClientsAsync() => PresentAsync([]);
         public SessionObservation Client(int pid, int minutesAgo) => new(pid, DateTimeOffset.UtcNow.AddMinutes(-minutesAgo).UtcTicks,
@@ -372,9 +403,10 @@ public sealed partial class ClientWindowIntegrationTests
                 var now = DateTimeOffset.UtcNow;
                 var observed = clients.Select(client => client with { ObservedUtc = now }).ToArray();
                 monitor.Inventory = new DesktopSnapshot(new(now, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB,
-                    10 * CapacityPolicy.GiB, 10), observed, ProcessObservedUtc: now, ProcessRevision: ++_revision, ProcessInventoryComplete: true);
+                    10 * CapacityPolicy.GiB, 10), observed, ProcessObservedUtc: now, ProcessRevision: ++_revision, ProcessInventoryComplete: Complete);
                 var diagnostics = new List<ProcessLogDiagnostic>();
-                foreach (var client in observed)
+                // A row Windows could not read names no process instance, so it has no log.
+                foreach (var client in observed.Where(client => client.Problem is null))
                 {
                     bool initial = !_streams.TryGetValue(client.ProcessId, out var known);
                     var stream = initial ? new ClientLogStreamId(Guid.NewGuid(), 1) : known.Stream;

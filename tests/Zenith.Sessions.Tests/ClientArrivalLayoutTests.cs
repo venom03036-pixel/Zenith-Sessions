@@ -15,6 +15,12 @@ public sealed class ClientArrivalLayoutTests
     private static DesktopSnapshot Scan(bool complete, params SessionObservation[] clients) => new(
         new(Now, 32 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 64 * CapacityPolicy.GiB, 20 * CapacityPolicy.GiB, 10), clients,
         complete ? null : "Synthetic scan failed", Now, 1, complete);
+    // A scan that finished without a problem but that the monitor marked incomplete, as WindowsDesktopMonitor does for a row it
+    // could not read, a client that ended during the scan, missing memory counters, or reaching its scan budget.
+    private static DesktopSnapshot Partial(params SessionObservation[] clients) => Scan(true, clients) with { ProcessInventoryComplete = false };
+    // The row WindowsDesktopMonitor reports for a process it could not open, for example another Windows user's client.
+    private static SessionObservation Unreadable(int pid) => new(pid, 0, "Unavailable", 0, "Roblox", false, false, 0, 0, null, Now,
+        "Synthetic process identity or access was unavailable during observation.");
     private static SessionEvidenceSnapshot Log(SessionObservation client, ObservedSessionLifecycle lifecycle, bool ambiguous = false) => new(Guid.NewGuid(),
         new(null, client.ProcessId, client.ProcessStartUtcTicks), client.Window, lifecycle, null, null, null, null,
         SessionEvidenceConfidence.UnverifiedDiagnostic, Now, ambiguous);
@@ -131,6 +137,77 @@ public sealed class ClientArrivalLayoutTests
         Assert.Equal(new[] { 42 }, Pids(tracker.Observe(Scan(true, joinedEarlier, loaded, startedLater),
             [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(loaded, ObservedSessionLifecycle.Connected), Log(startedLater, ObservedSessionLifecycle.Connected)])));
         Assert.Equal(new[] { 40, 41, 42 }, Pids(tracker.Slots(null)));
+    }
+
+    // C5 review: Windows cannot open another Windows user's client, so on that PC every scan has an unreadable row and is
+    // marked incomplete. Such a scan still lists every running client, as FreshClientInventory accepts for arrival mute, so it
+    // shows which clients were already running; automatic layout must not stay silently inert for the whole session.
+    [Fact]
+    public void AScanWhoseOnlyGapIsAPersistentUnreadableRowStillShowsWhichClientsWereAlreadyRunning()
+    {
+        var tracker = new ClientArrivalTracker();
+        var otherUser = Unreadable(50); var joinedEarlier = Client(51, 4); var startedLater = Client(52, 0.5);
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        Assert.False(tracker.AwaitingBaseline);
+        Assert.Equal(new[] { 51 }, Pids(tracker.Slots(null)));
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier, startedLater),
+            [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(startedLater, ObservedSessionLifecycle.Joining)]));
+        Assert.Equal(new[] { 52 }, Pids(tracker.Observe(Partial(otherUser, joinedEarlier, startedLater),
+            [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(startedLater, ObservedSessionLifecycle.Connected)])));
+        // Once only: the unreadable row never makes the later client arrive again.
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier, startedLater),
+            [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(startedLater, ObservedSessionLifecycle.Connected)]));
+        Assert.Equal(new[] { 51, 52 }, Pids(tracker.Slots(null)));
+    }
+
+    // A scan with any other gap may have missed a running client, so it is no baseline. While none exists, a client that
+    // reports Connected cannot be told from one that was already running: the tracker says it is waiting instead.
+    [Fact]
+    public void ScansWithOtherGapsAreNoBaselineAndTheTrackerSaysItIsWaitingWhenAClientConnects()
+    {
+        var tracker = new ClientArrivalTracker();
+        var joinedEarlier = Client(53, 4); var otherUser = Unreadable(54);
+        var connected = new[] { Log(joinedEarlier, ObservedSessionLifecycle.Connected) };
+        Assert.Empty(tracker.Observe(Scan(false, otherUser, joinedEarlier), []));
+        Assert.False(tracker.AwaitingBaseline);
+        Assert.Empty(tracker.Observe(Scan(false, otherUser, joinedEarlier), connected));
+        Assert.True(tracker.AwaitingBaseline);
+        // No unreadable row: the gap is something else, for example a client that ended during the scan.
+        Assert.Empty(tracker.Observe(Partial(joinedEarlier), connected));
+        Assert.True(tracker.AwaitingBaseline);
+        // A readable row with a problem, a missing row, or a PID listed twice is not only an unreadable identity.
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier, Client(55, 1) with { Problem = "Synthetic memory unavailable" }), connected));
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier, null!), connected));
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier, Client(53, 2)), connected));
+        // A scan that reached its budget may have left clients out.
+        var crowd = Enumerable.Range(2000, ClientArrivalTracker.MaximumClients - 2).Select(pid => Client(pid, 1) with { Window = 0 });
+        Assert.Empty(tracker.Observe(Partial([.. crowd, otherUser, joinedEarlier]), connected));
+        Assert.True(tracker.AwaitingBaseline);
+        Assert.Empty(tracker.Slots(null));
+        // The first baseline marks every client it lists as already running, so the waiting client never arrives.
+        Assert.Empty(tracker.Observe(Partial(otherUser, joinedEarlier), connected));
+        Assert.False(tracker.AwaitingBaseline);
+        Assert.Equal(new[] { 53 }, Pids(tracker.Slots(null)));
+        Assert.Empty(tracker.Observe(Scan(false, joinedEarlier), connected));
+        Assert.False(tracker.AwaitingBaseline);
+    }
+
+    // A client Windows could not read at the baseline was still running then. When it becomes readable it never arrives,
+    // although its key changes from the unreadable row's; a later process that reuses the PID is a new client and arrives.
+    [Fact]
+    public void AClientUnreadableAtTheBaselineNeverArrivesWhenItBecomesReadableButALaterReusedPidDoes()
+    {
+        var tracker = new ClientArrivalTracker();
+        var joinedEarlier = Client(56, 4); var otherUser = Unreadable(57);
+        Assert.Empty(tracker.Observe(Partial(Unreadable(56), otherUser), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Observe(Partial(joinedEarlier with { Window = 0 }, otherUser), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        Assert.Empty(tracker.Observe(Partial(joinedEarlier, otherUser), [Log(joinedEarlier, ObservedSessionLifecycle.Connected)]));
+        Assert.Equal(new[] { 56 }, Pids(tracker.Slots(null)));
+        // The other user's client ends; a client started after the baseline scan gets its PID.
+        var reused = Client(57, -1);
+        Assert.Equal(new[] { 57 }, Pids(tracker.Observe(Scan(true, joinedEarlier, reused),
+            [Log(joinedEarlier, ObservedSessionLifecycle.Connected), Log(reused, ObservedSessionLifecycle.Connected)])));
+        Assert.Equal(new[] { 56, 57 }, Pids(tracker.Slots(null)));
     }
 
     [Fact]
