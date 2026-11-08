@@ -2,13 +2,13 @@
 
 This is the current completion record for the Windows Personal companion. The older quality narrative is preserved in [round4/history/QUALITY_STATUS.md](round4/history/QUALITY_STATUS.md) as historical evidence only.
 
-**Round 4 is still undergoing final integration and review.** It has not yet met the twice-on-one-commit gate, main promotion or final fresh-review requirement. No live Roblox, attended installer or production-release acceptance is claimed.
+The item dispositions below describe the code. Final offline acceptance is established separately by two successful `artifacts/completion-integration/final-pass-*/checks.json` records for this exact clean commit, the final completion audit, lane ancestry on main and the immutable review report. Inspect those records before calling the candidate accepted. No live Roblox, attended installer or production-release acceptance is claimed.
 
 ## Item accounting
 
 [ROUND4-STATUS.json](ROUND4-STATUS.json) is the machine-readable item ledger; [ROUND4-STATUS.md](ROUND4-STATUS.md) is its readable index. The union is exactly **93 IDs**: 78 work items, nine explicit aliases and six extra IDs from the supplied handoff. Source inputs remain unchanged under [round4](round4/README.md).
 
-Current classification: **40 Verified, 40 Built, needs live trial, 3 Excluded, 10 Needs decision**. The draft label means the final merged evidence audit is pending; it does not turn historical “fixed” or “implemented” into proof. Each Verified entry names a regression and failing-before evidence; its test must appear as Passed in the final merged suites. Documentation-only changes and coverage that already passed the original implementation remain owner decisions.
+Final item classification: **40 Verified, 40 Built, needs live trial, 3 Excluded, 10 Needs decision**. Each Verified entry names a regression and failing-before evidence; the completion audit must find its test Passed in both final merged suites. Historical “fixed” or “implemented” labels alone are not proof. Documentation-only changes and coverage that already passed the original implementation remain owner decisions.
 
 Exact attended steps and one question per decision are in [ROUND4-LIVE-TRIALS.md](ROUND4-LIVE-TRIALS.md). An alias shares its primary item's disposition. Unsupported production input is explicitly a decision under R-instances-17/Z1702; a fake executor does not qualify live background input.
 
@@ -37,8 +37,10 @@ Material repairs and retained failing-before evidence:
 | Signed stage integrity and updater stop precedence | [DISTRIBUTION-FOUNDATIONS.md](DISTRIBUTION-FOUNDATIONS.md) |
 | Actual historical self-check lifecycle failures | [LIFECYCLE-REPAIR-VERIFICATION.md](LIFECYCLE-REPAIR-VERIFICATION.md) |
 | Initial public-network lock before update scheduling; Settings commands | [ROUND4-INTEGRATION-VERIFICATION.md](ROUND4-INTEGRATION-VERIFICATION.md) |
+| Pending settings and startup work cannot undo Panic; Lock retains alert monitoring | [SETTINGS-STOP-REVIEW-REPAIRS.md](SETTINGS-STOP-REVIEW-REPAIRS.md), [STARTUP-STOP-REVIEW-REPAIRS.md](STARTUP-STOP-REVIEW-REPAIRS.md) |
+| Elevated upload-limit helpers retain ownership through actual exit | [UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md) |
 
-Fresh review is still open for delayed settings-save restart of Roblox update checks and an unresolved elevated bandwidth helper overlapping a later mutation. These are not accepted as minor or complete. Each requires a failing regression, repair and merged rerun.
+The final review coverage and remaining findings are recorded in [ROUND4-FINAL-REVIEW.md](ROUND4-FINAL-REVIEW.md). A changed commit requires review of that delta and two new complete gate runs; focused green runs cannot substitute for them.
 
 One recorded minor: a dashboard initialized before another instance enables a vault password may use cached mode at Unlock and omit the password prompt. Credential reads still refresh on-disk control and fail closed. This is a control/presentation mismatch, not demonstrated credential access.
 

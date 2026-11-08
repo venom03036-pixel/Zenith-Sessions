@@ -1,4 +1,4 @@
-# Round-4 attended trials and decisions — DRAFT
+# Round-4 attended trials and decisions
 
 No live acceptance is claimed. Execute trials only after the final offline gate and explicit attendance. Existing production gates remain in force.
 
@@ -114,7 +114,7 @@ The live trial must confirm, with an owned account and a real client: (1) that a
 
 Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed.
 
-The live trial (an attended session on this PC, accepting the UAC prompt) must confirm: (1) Apply upload limit at, say, 1000 kbit/s ends with "Windows confirmed the upload limit..." and an administrator `Get-NetQosPolicy -PolicyStore ActiveStore` lists ZenithSessionsUploadLimit-RobloxPlayerBeta.exe, -RobloxPlayer.exe and -Roblox.exe with ThrottleRateAction 1000000 and the matching AppPathNameMatchCondition; (2) Remove ends with "Windows confirmed that Zenith's upload limit policies are gone" and the listing no longer shows them; (3) declining the prompt yields the Declined status line and no policy; (4) a second Zenith start in the same Windows session shows the recorded limit and a start after a Windows restart shows none; (5) optionally, with a running client, that its outbound traffic is actually held near the rate (needs the QoS Packet Scheduler bound to the adapter, the default). None of this could be run unattended: no test may answer a UAC prompt or change this PC's QoS policies.
+The live trial (an attended session on this PC, accepting the UAC prompt) must confirm: (1) Apply upload limit at, say, 1000 kbit/s ends with "Windows confirmed the upload limit..." and an administrator `Get-NetQosPolicy -PolicyStore ActiveStore` lists ZenithSessionsUploadLimit-RobloxPlayerBeta.exe, -RobloxPlayer.exe and -Roblox.exe with ThrottleRateAction 1000000 and the matching AppPathNameMatchCondition; (2) Remove ends with "Windows confirmed that Zenith's upload limit policies are gone" and the listing no longer shows them; (3) declining the prompt yields the Declined status line and no policy; (4) a second Zenith start in the same Windows session shows the recorded limit and a start after a Windows restart shows none; (5) optionally, with a running client, that its outbound traffic is actually held near the rate (needs the QoS Packet Scheduler bound to the adapter, the default). None of this could be run unattended: no test may answer a UAC prompt or change this PC's QoS policies. In a disposable Windows guest, cancel or time out an approved Apply, then try Remove while the old helper is still pending: new mutation must remain blocked until actual exit or definite no-start. Repeat after closing and reopening Zenith, including a wall-clock correction. Unknown restart evidence must retain the hold. Verify recovery after an observed lower Windows uptime; inspect legacy/unreadable record handling without blindly deleting a pending-owner marker.
 
 ## R-instances-15 — Built, needs live trial
 

@@ -1,6 +1,6 @@
-# Round-4 item status — DRAFT
+# Round-4 item status
 
-Pending remaining merges, evidence repair, fresh whole-change review and two complete clean-commit validation runs.
+Final item dispositions. Offline acceptance additionally requires two complete clean-commit gate records, matching main/lane ancestry and an accepted immutable whole-change review. See QUALITY_STATUS.md; no live acceptance is claimed.
 
 | ID | State | Scope and evidence |
 |---|---|---|
@@ -26,7 +26,7 @@ Pending remaining merges, evidence repair, fresh whole-change review and two com
 | R-research-10 | Verified | Seven sanitized public captures have provenance and content hashes and drive production parser tests. No real 429 was observed or invented. [PUBLIC-CAPTURE-VERIFICATION.md](PUBLIC-CAPTURE-VERIFICATION.md) |
 | R-instances-7 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-7), [LIVE-EXERCISES.md](LIVE-EXERCISES.md) |
 | R-instances-12 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-12), [LIVE-EXERCISES.md](LIVE-EXERCISES.md) |
-| R-instances-18 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-18), [LIVE-EXERCISES.md](LIVE-EXERCISES.md) |
+| R-instances-18 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-18), [LIVE-EXERCISES.md](LIVE-EXERCISES.md), [UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md) |
 | R-instances-15 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-15), [LIVE-EXERCISES.md](LIVE-EXERCISES.md) |
 | R-instances-2 | Built, needs live trial | Merged implementation and synthetic/native-helper tests; real-client or service acceptance is not claimed. [round4/historical-outcomes.json](round4/historical-outcomes.json#R-instances-2), [LIVE-EXERCISES.md](LIVE-EXERCISES.md) |
 | R-instances-17 | Needs decision | The bounded keep-awake policy, runner and single-input-owner integration are built and tested with fakes, but the production target-directed transport is absent (Z1702); a live trial alone cannot enable the shipped implementation. [KEEP-AWAKE-DESIGN.md](KEEP-AWAKE-DESIGN.md), [HANDOFF.md](HANDOFF.md) |

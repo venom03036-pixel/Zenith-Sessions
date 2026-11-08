@@ -1,6 +1,6 @@
 # Zenith Sessions — round-4 engineering handoff
 
-The goal is active: finish all offline-verifiable round-4 work, reconcile every item, merge all lanes into main, obtain two complete checks on one final commit and finish with no critical/important review findings. **Final acceptance and main promotion are still pending. Do not start a real-account/client trial yet.** ReleaseReady remains false.
+This is the engineering handoff for the round-4 candidate. All 93 item dispositions and exact remaining trials/decisions are indexed below. Offline acceptance requires the two final gate records, clean source identity, every lane merged into main and the independent review evidence described in [QUALITY_STATUS.md](QUALITY_STATUS.md). **Do not start a real-account/client trial until those records are accepted.** ReleaseReady remains false.
 
 ## Repository and current work
 
@@ -37,14 +37,13 @@ The shipped input transport remains unavailable. Policy/arbiter/keep-awake fake 
 
 Release tooling has empty production trust and no default feed. The collapsed Settings update section binds existing commands; daily checks are opt-in and cancel on stop. Installation is separately approved and asks again on the next start. Package creation and offline tests do not establish ReleaseReady. See [DISTRIBUTION-FOUNDATIONS.md](DISTRIBUTION-FOUNDATIONS.md).
 
-## Remaining integration work
+## Final acceptance procedure
 
-1. Finish the currently identified important review repairs: delayed Save settings resuming Roblox update checks after Panic, and unresolved elevated upload-limit work overlapping a later policy mutation. Each needs genuine failing-before evidence and a merged passing rerun.
-2. Finish the final merged evidence audit. M-L1a-6 now has genuine historical replay proof and 71 passing affected tests; all 99 Verified regression references have retained passing evidence. Verify each again in the final merged suites; preserve failures and historical sources without counting compile errors as red proof.
-3. Reconcile current documents and the ledger, remove draft acceptance wording only when the required evidence exists, and record remaining minors explicitly.
-4. Commit the entire candidate, audit all lane heads as ancestors, and run the full gate twice without changing any source between or during runs.
-5. Complete a fresh whole-change review and immutable patch-risk assessment. Fix every critical/important finding and repeat the loop. A full review with only minors may stop with those minors listed.
-6. Preserve the existing untracked main `HANDOFF-REMAINING.md` before promoting tracked replacement content; its original copy is also retained under round4. Fast-forward main only after confirming no unrelated main edits. Final checks must identify that same final commit.
+1. Inspect the important repair evidence linked from QUALITY_STATUS and the final review coverage. M-L1a-6 has genuine historical replay proof; all 99 Verified regression references have retained passing evidence. The final audit must verify each again in both merged suites. Preserve failures and historical sources without counting compile errors as red proof.
+2. Audit all lane heads as ancestors of the final commit. Run the full gate twice without changing source or documents between or during runs; use distinct result folders. Both records must identify the same clean commit and content digest.
+3. Bind the fresh whole-change review and patch-risk assessment to that immutable final commit. Fix every critical/important finding and repeat the loop. Record remaining minors explicitly in ROUND4-FINAL-REVIEW.
+4. Preserve any existing untracked main `HANDOFF-REMAINING.md` before promoting tracked replacement content; its original copy is also retained under round4. Fast-forward main only after confirming no unrelated main edits. Main and both checks must identify that same final commit.
+5. Run the completion audit with both result folders and main verification. An audit report alone cannot replace the required independent review or package-stage results. Only then hand the owner the exact staged build/hash and attended trial sequence.
 
 ## Validation commands and evidence
 
