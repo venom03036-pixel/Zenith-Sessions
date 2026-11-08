@@ -148,6 +148,52 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(ClientWindowAction.Minimize, monitor.StateAction);
     });
 
+    // N-B5a-2: a stop ends only the request it interrupts. A client that connects after the stop (after Resume, for Panic)
+    // while that request is still returning is minimized on its own, and is never left waiting for a later, unrelated arrival.
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task AClientThatConnectsWhileAStoppedRequestReturnsIsNeverLeftWaitingForTheNextArrival(bool panic) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Minimize; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        var first = log.Client(950, minutesAgo: 3); var second = log.Client(951, minutesAgo: 2); var third = log.Client(952, minutesAgo: 1);
+        monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        try
+        {
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            if (panic)
+            {
+                shell.Panic.Execute(null);
+                shell.ResumeClientArrivalLayout.Execute(null);
+                Assert.Contains("Automatic layout resumed", shell.ClientWindowStatus);
+            }
+            else shell.CancelClientWindowWork.Execute(null);
+            Assert.True(monitor.OperationToken.IsCancellationRequested);
+            // The stopped request has not returned yet when the next client connects.
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            Assert.Equal(1, monitor.StateChanges);
+        }
+        finally
+        {
+            monitor.Pending.TrySetResult(new([new(monitor.Requested[0], null, ClientWindowPlacementStatus.Cancelled, "Synthetic not dispatched")], true, "Synthetic stopped"));
+        }
+        monitor.Pending = null;
+        await shell.ClientArrivalWork;
+        Assert.Equal(2, monitor.StateChanges);
+        Assert.Equal(new[] { 951 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Contains("A client connected, so Zenith minimized it", shell.ClientWindowStatus);
+        // The next arrival acts on itself only, never on a client that connected earlier.
+        await log.PresentAsync([first, second, third], (third, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        await shell.ClientArrivalWork;
+        Assert.Equal(3, monitor.StateChanges);
+        Assert.Equal(new[] { 952 }, monitor.Requested.Select(client => client.ProcessId));
+        Assert.Equal(ClientWindowAction.Minimize, monitor.StateAction);
+    });
+
     /// <summary>
     /// Publishes one synthetic process scan and log snapshot, then runs the real forced sample and presentation. A stopped
     /// correlator ignores offers, so the 1 Hz loop presents the same snapshot; a presentation queued from an older scan is

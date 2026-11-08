@@ -15,7 +15,7 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // Clients that connect while a request runs wait for one follow-up request, never one each. Panic and Lock cancel the
 // request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
 // the user chooses Resume automatic layout. Clients that connect meanwhile count as seen, so they never arrive later. One
-// tracked task, awaited on dispose (Rule 12).
+// tracked task, awaited on dispose (Rule 12); each request in it has its own stop, so no client waits after the task ends.
 public sealed partial class ShellViewModel
 {
     private readonly ClientArrivalTracker _clientArrivals = new();
@@ -69,20 +69,24 @@ public sealed partial class ShellViewModel
         Raise(nameof(CanResumeClientArrivalLayout));
     }
 
+    // A stop ends only the request it interrupts, and it empties the waiting list. So a client still waiting when that request
+    // returns connected after the stop (after Resume, for Panic) and gets its own request now, not with a later arrival.
     private async Task RunClientArrivalWorkAsync()
     {
-        using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _arrivalStop = stop; long generation = _windowOperationsGeneration;
         try
         {
-            while (_arrivedClients is { Count: > 0 } arrived && !Stopped())
+            while (_arrivedClients is { Count: > 0 } arrived && !_lifetime.IsCancellationRequested && !_arrivalLayoutStopped && !IsLocked && !_shuttingDown)
             {
                 _arrivedClients = null;
-                await ApplyClientArrivalAsync(arrived, stop.Token, Stopped);
+                using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+                _arrivalStop = stop; long generation = _windowOperationsGeneration;
+                bool Stopped() => stop.IsCancellationRequested || generation != _windowOperationsGeneration || _arrivalLayoutStopped || IsLocked || _shuttingDown;
+                try { await ApplyClientArrivalAsync(arrived, stop.Token, Stopped); }
+                finally { if (ReferenceEquals(_arrivalStop, stop)) _arrivalStop = null; }
             }
         }
-        finally { if (ReferenceEquals(_arrivalStop, stop)) _arrivalStop = null; }
-        bool Stopped() => stop.IsCancellationRequested || generation != _windowOperationsGeneration || _arrivalLayoutStopped || IsLocked || _shuttingDown;
+        // No client stays waiting once this loop ends, so a later arrival never acts on a client that connected earlier.
+        finally { _arrivedClients = null; }
     }
 
     private async Task ApplyClientArrivalAsync(List<SessionObservation> arrived, CancellationToken ct, Func<bool> stopped)
