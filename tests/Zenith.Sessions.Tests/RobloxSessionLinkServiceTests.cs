@@ -215,8 +215,8 @@ public sealed partial class RobloxSessionLinkServiceTests : IDisposable
         await using var service = new RobloxSessionLinkService(repository, vault, client, browser, shareLinks: resolver);
         using var link = new RobloxShareLink(new ProtectedShareCode("abc123"), RobloxShareLinkType.Server);
         using var answer = await service.ResolveShareLinkAsync(profile.Id, link, default);
-        Assert.Equal(RobloxShareLinkOutcome.Unavailable, answer.Outcome);
         Assert.Equal(AuthorizationHealth.Linked, vault.Records[profile.Id].Health);
+        Assert.Equal(RobloxShareLinkOutcome.Unavailable, answer.Outcome);
         Assert.Equal(3, vault.Records[profile.Id].Generation); Assert.Equal(Secret, vault.Records[profile.Id].SessionCookie);
         Assert.Equal(1, client.Calls); Assert.Equal(1, resolver.Calls); Assert.Equal(0, browser.Calls);
     }
