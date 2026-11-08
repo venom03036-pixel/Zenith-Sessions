@@ -9,6 +9,28 @@ public sealed partial class NativeHandoffPreparationTests
     private const string PrivateCode = "12345678909876543210";
     [Theory]
     [InlineData(false)] [InlineData(true)]
+    public async Task MasterPasswordLockRefusesPrivatePreparationAndReleasesTheProtectedTarget(bool lockDuringCapture)
+    {
+        byte[] password="Synthetic private vault password 19!"u8.ToArray();
+        using var store=new PrivateServerStore(_root);using var code=new ProtectedPrivateServerCode(PrivateCode);
+        var saved=await store.AddAsync("Private trial",1818,42,null,null,code,default);
+        await using var f=await Fixture.Open(_root,privateServers:store);using var browser=new Browser();
+        await f.Vault.EnableMasterPasswordAsync(password,default);
+        if(!lockDuringCapture)f.Vault.LockMasterPassword();
+        browser.Run=(context,_,_)=>
+        {
+            var result=PrivateCapture(context);f.Vault.LockMasterPassword();return Task.FromResult(result);
+        };
+        var answer=await f.Service.PrepareNativeHandoffAsync(f.Intent with {RequestedServerKind=RobloxServerKind.Private,PrivateServer=new(saved.Id,saved.Revision)},browser,default);
+        Assert.NotEqual(NativeHandoffPreparationStatus.Ready,answer.Status);Assert.Null(answer.Preparation);
+        Assert.Equal(lockDuringCapture?1:0,browser.Calls);Assert.Empty(f.Client.Seen);
+        await store.DeleteAsync(saved.Id,saved.Revision,default).WaitAsync(TimeSpan.FromSeconds(5));
+        await f.Vault.UnlockMasterPasswordAsync(password,default);
+        var retained=await f.Vault.ReadAsync(f.Profile.Id,default);
+        Assert.Equal(lockDuringCapture?AuthorizationHealth.SignInRequired:AuthorizationHealth.Linked,retained!.Health);
+    }
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
     public async Task PrivateTrialUsesExactProtectedReferenceAndFinalAccountGrant(bool changeReferenceAtDispatch)
     {
         using var store = new PrivateServerStore(_root); using var code = new ProtectedPrivateServerCode(PrivateCode);
