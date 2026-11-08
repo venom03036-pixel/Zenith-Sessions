@@ -468,8 +468,10 @@
             <Button Content="Manage groups…" Click="ManageGroups" IsEnabled="{Binding IsReady}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,2,8" ToolTip="Create groups, choose colors and order, or review a rename or removal" />
             <Button Content="Check checked sign-ins" Command="{Binding CheckCheckedSignIns}" IsEnabled="{Binding IsReady}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,2,8" ToolTip="Ask Roblox whether each checked account's saved sign-in still works, one at a time. Stops if Roblox cannot be reached." />
             <Button Content="Remove checked" Click="RemoveSelected" Style="{StaticResource DangerQuietButton}" MinHeight="36" Margin="0,0,8,8" ToolTip="Review removal of checked profiles on this page" />
+            <Button Content="Refresh presence" Command="{Binding RefreshPresence}" IsEnabled="{Binding IsReady}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,2,8" ToolTip="Ask Roblox for each checked account's own presence, or the selected account. Only runs when clicked." />
+            <Button Content="Review friendship pairs…" Click="ReviewFriendshipPairs" IsEnabled="{Binding IsReady}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,2,8" />
             <Button Content="{Binding AccountInspectorToggleLabel}" Command="{Binding ToggleAccountInspector}" MinHeight="36" Margin="0,0,8,8" Visibility="{Binding IsAccountInspectorNarrow, Converter={StaticResource VisibleIf}}" AutomationProperties.Name="Toggle account details" />
-            <Button Content="Cancel account setup" Command="{Binding CancelAuthorization}" MinHeight="36" Margin="0,0,8,8" Visibility="{Binding IsAuthorizing, Converter={StaticResource VisibleIf}}" />
+            <Button Content="{Binding CancelAccountActionLabel, FallbackValue=Cancel account setup}" Command="{Binding CancelAuthorization}" MinHeight="36" Margin="0,0,8,8" Visibility="{Binding IsAuthorizing, Converter={StaticResource VisibleIf}}" />
             <TextBlock Text="{Binding GroupChoicesNotice}" MaxWidth="640" FontSize="11" Margin="0,0,8,6" VerticalAlignment="Center">
               <TextBlock.Style><Style TargetType="TextBlock" BasedOn="{StaticResource Caption}"><Style.Triggers><DataTrigger Binding="{Binding GroupChoicesNotice}" Value=""><Setter Property="Visibility" Value="Collapsed" /></DataTrigger></Style.Triggers></Style></TextBlock.Style>
             </TextBlock>
@@ -501,7 +503,7 @@
                     <Button DockPanel.Dock="Right" Command="{Binding ToggleAccountInspector}" Style="{StaticResource IconButton}" Width="28" Height="28" MinHeight="28" Visibility="{Binding IsAccountInspectorNarrow, Converter={StaticResource VisibleIf}}" ToolTip="Close details" AutomationProperties.Name="Close account details"><Path Style="{StaticResource Glyph}" Width="11" Height="11" Data="M2,2 L14,14 M14,2 L2,14" /></Button>
                     <TextBlock Text="Account details" Style="{StaticResource FieldLabel}" Foreground="{DynamicResource TextMuted}" VerticalAlignment="Center" />
                   </DockPanel>
-                  <Button Content="Cancel account setup" Command="{Binding CancelAuthorization}" Margin="0,12,0,0" MinHeight="36" Visibility="{Binding IsAuthorizing, Converter={StaticResource VisibleIf}}" />
+                  <Button Content="{Binding CancelAccountActionLabel, FallbackValue=Cancel account setup}" Command="{Binding CancelAuthorization}" Margin="0,12,0,0" MinHeight="36" Visibility="{Binding IsAuthorizing, Converter={StaticResource VisibleIf}}" />
                   <StackPanel Visibility="{Binding HasSelection, Converter={StaticResource HiddenIf}}" Margin="0,24,0,0">
                     <TextBlock Text="Select an account" Style="{StaticResource SectionHeading}" TextWrapping="Wrap" />
                     <TextBlock Text="Choose a row to see its sign-in, session and preferred game." Style="{StaticResource Muted}" Margin="0,6,0,16" />
@@ -573,6 +575,13 @@
                       <StackPanel Margin="0,10,0,0">
                         <Button Content="Use as main account" Command="{Binding SetSelectedAsMain}" IsEnabled="{Binding HasSelection}" MinHeight="36" ToolTip="Choose this profile for Main Account Priority, then save settings. Active launches keep their original timings." />
                         <Button Content="Refresh public avatar" Command="{Binding RefreshPublicAccount}" IsEnabled="{Binding HasSelection}" MinHeight="36" Margin="0,8,0,0" />
+                        <TextBlock Text="Roblox account observations" Style="{StaticResource FieldLabel}" Margin="0,16,0,8" />
+                        <TextBlock Text="{Binding SelectedAccount.ServerPresenceText}" Style="{StaticResource Muted}" />
+                        <TextBlock Text="Server-reported presence is separate from this client's launch status." Style="{StaticResource Caption}" Margin="0,4,0,8" />
+                        <Button Content="Refresh private details" Command="{Binding RefreshPrivateDetails}" IsEnabled="{Binding HasSelection}" MinHeight="36" />
+                        <TextBlock Text="{Binding PrivateAccountDetails}" Style="{StaticResource Muted}" Margin="0,8,0,0" />
+                        <TextBlock Text="Private details stay in memory. Lock, Panic and changing accounts clear them." Style="{StaticResource Caption}" Margin="0,8,0,0" />
+                        <TextBlock Text="{Binding FriendshipResults}" Style="{StaticResource Muted}" Margin="0,8,0,0" />
                         <Button Content="Edit selected profile" IsEnabled="{Binding HasSelection}" Click="EditProfile" MinHeight="36" Margin="0,8,0,0" />
                         <Button Content="Remove profile" IsEnabled="{Binding HasSelection}" Click="RemoveProfile" Style="{StaticResource DangerQuietButton}" MinHeight="36" Margin="0,8,0,0" />
                       </StackPanel>

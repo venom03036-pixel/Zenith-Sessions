@@ -625,6 +625,11 @@ Round 3's reviews graded 3 findings important (lanes C4, C5 and C10); each was f
 | O-C10-5 | Test-harness hygiene (Rule 12). | tests/MacroSuite.Infrastructure.Tests/WpfTestApplication.cs:47,53 and tests/MacroSuite.Infrastructure.Tests/ViewModels/RecordingPipelineTest | Open |
 | O-C10-6 | Subscribe_StartsLoopAndDeliversFrames failed once in my full Core run with 'Expected fakeService.LastReturnedFrame!.IsDisposed to be true, but found False.' It passed in 3 reruns of the class and in a full rerun (761/761). | tests/MacroSuite.Core.Tests/Capture/CaptureSchedulerTests.cs:129 (pre-existing; not touched by this lane) | Open |
 
+## Completion pass 0.60 — pending headshots (2026-11-08)
+
+R-research-6 / CHAT-22: automatic headshot batches now re-ask only Pending users once, after two seconds, inside the existing tracked request and its 20-second deadline. Ready and blocked users are not repeated; a deferred second request keeps ready descriptors and pending placeholders. Page replacement and stop cancel the delay and fence late publication. No UI layout, saved formats or credentials changed.
+
+The new pending-to-ready regression failed before implementation (`artifacts/completion-d2/headshots-before.trx`). After implementation, **128 focused tests passed, 0 failed, 0 skipped**, covering the page owner, presentation cache, batch parser and Shell integration (`artifacts/completion-d2/headshots-after.trx`). Cases include Pending twice, only-Pending IDs, cooldown on the second request, page replacement and cancellation during the delay. Synthetic responses only; live Roblox generation timing remains unverified.
 ## Completion pass 0.60 — timeout regression scope (2026-11-08)
 
 O-C7-3: completed the preserved D3 test change. Shell initialization has its own 15-second deadline; the measured check starts afterwards. The export-overrun regression now asserts that an export was accepted before shutdown, and a separate immediate check with a 1 ms budget proves that startup cannot consume its deadline. The existing shutdown-and-join behavior remains intact.

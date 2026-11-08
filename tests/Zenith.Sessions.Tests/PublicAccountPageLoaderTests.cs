@@ -155,13 +155,80 @@ public sealed class PublicAccountPageLoaderTests
         await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
         await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; });
         loader.ReplacePage(1, new[] { Binding(0, 1), Binding(1, 2), Binding(2, 3), Binding(3, 4) }); await loader.ActiveOperation.WaitAsync(Deadline);
-        Assert.Equal(new long[] { 1, 2, 3, 4 }, Assert.Single(directory.Batches)); Assert.Equal(0, directory.SingleDescriptorCalls);
+        Assert.Equal(2, directory.Batches.Count);
+        Assert.Equal(new long[] { 1, 2, 3, 4 }, directory.Batches[0]);
+        Assert.Equal(new long[] { 2 }, directory.Batches[1]); Assert.Equal(0, directory.SingleDescriptorCalls);
         // A picture Roblox is still preparing keeps its placeholder but does not stop the rest of the page.
         Assert.Equal(new long[] { 1, 2, 3, 4 }, updates.Select(update => update.UserId).ToArray());
         Assert.NotNull(updates[0].Result.Value!.Avatar);
         Assert.Equal(PublicDirectoryState.Deferred, updates[1].Result.Value!.AvatarState); Assert.Null(updates[1].Result.Value!.Avatar);
         Assert.Equal(PublicDirectoryState.Unknown, updates[2].Result.Value!.AvatarState); Assert.Null(updates[2].Result.Value!.Avatar);
         Assert.NotNull(updates[3].Result.Value!.Avatar); Assert.Equal(2, directory.Downloads);
+    }
+
+    [Fact]
+    public async Task PendingHeadshotsAreAskedOnceMoreWithoutRepeatingReadyOrBlockedUsers()
+    {
+        var clock = new RetryClock(); var directory = new BatchDirectory();
+        directory.States[2] = PublicRobloxThumbnailState.Pending;
+        directory.States[3] = PublicRobloxThumbnailState.Blocked;
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; }, clock: clock);
+        loader.ReplacePage(1, [Binding(0, 1), Binding(1, 2), Binding(2, 3)]);
+        var timer = await clock.Retry.Task.WaitAsync(Deadline);
+        Assert.Single(directory.Batches); Assert.False(loader.ActiveOperation.IsCompleted);
+        directory.States[2] = PublicRobloxThumbnailState.Ready; timer.Fire();
+        await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Equal(2, directory.Batches.Count); Assert.Equal(new long[] { 2 }, directory.Batches[1]);
+        Assert.Equal(0, directory.SingleDescriptorCalls); Assert.Equal(1, directory.MaximumActive);
+        Assert.NotNull(updates.Single(x => x.UserId == 2).Result.Value!.Avatar);
+        Assert.Null(updates.Single(x => x.UserId == 3).Result.Value!.Avatar);
+    }
+
+    [Theory]
+    [InlineData(false)] [InlineData(true)]
+    public async Task StopOrPageReplacementCancelsThePendingDelayWithoutRequestOrPublication(bool replace)
+    {
+        var clock = new RetryClock(); var directory = new BatchDirectory(); directory.States[1] = PublicRobloxThumbnailState.Pending;
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; }, clock: clock);
+        loader.ReplacePage(1, [Binding(0, 1)]); var timer = await clock.Retry.Task.WaitAsync(Deadline);
+        if (replace) loader.ReplacePage(2, [Binding(1, 2)]); else loader.CancelWork();
+        timer.Fire(); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.DoesNotContain(updates, x => x.PageGeneration == 1);
+        Assert.Equal(replace ? 2 : 1, directory.Batches.Count);
+        if (replace) { Assert.Equal(new long[] { 2 }, directory.Batches[1]); Assert.Single(updates); }
+    }
+
+    [Fact]
+    public async Task DeferredReaskKeepsInitialReadyImagesAndDoesNotFallBackToSingleRequests()
+    {
+        var clock = new RetryClock(); var directory = new BatchDirectory(); directory.States[2] = PublicRobloxThumbnailState.Pending;
+        await using var presenter = new PublicAccountPresentation(directory); var updates = new List<PublicAccountPageUpdate>();
+        await using var loader = new PublicAccountPageLoader(presenter, () => true, (update, _) => { updates.Add(update); return Task.CompletedTask; }, clock: clock);
+        loader.ReplacePage(1, [Binding(0, 1), Binding(1, 2)]); var timer = await clock.Retry.Task.WaitAsync(Deadline);
+        directory.BatchState = PublicDirectoryState.Deferred; timer.Fire(); await loader.ActiveOperation.WaitAsync(Deadline);
+        Assert.Equal(2, directory.Batches.Count); Assert.Equal(0, directory.SingleDescriptorCalls);
+        Assert.NotNull(updates[0].Result.Value!.Avatar); Assert.Null(updates[1].Result.Value!.Avatar);
+        Assert.Equal(PublicDirectoryState.Deferred, updates[1].Result.Value!.AvatarState);
+    }
+
+    private sealed class RetryClock : TimeProvider
+    {
+        public TaskCompletionSource<RetryTimer> Retry { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            if (dueTime != TimeSpan.FromSeconds(2)) return base.CreateTimer(callback, state, dueTime, period);
+            var timer = new RetryTimer(callback, state); Assert.True(Retry.TrySetResult(timer)); return timer;
+        }
+    }
+    private sealed class RetryTimer(TimerCallback callback, object? state) : ITimer
+    {
+        private int _disposed;
+        public void Fire() { if (Volatile.Read(ref _disposed) == 0) callback(state); }
+        public bool Change(TimeSpan dueTime, TimeSpan period) => throw new NotSupportedException();
+        public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
+        public ValueTask DisposeAsync() { Dispose(); return ValueTask.CompletedTask; }
     }
 
     [Fact]
