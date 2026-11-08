@@ -67,6 +67,19 @@ public sealed partial class SessionLogCorrelatorTests
     }
 
     [Fact]
+    public async Task ReplacementWaitRejectsANewerPublicationThatHasNotReadTheAppendedBytes()
+    {
+        var stamp=new ClientLogStreamId(Guid.NewGuid(),1);var now=SyntheticClientLogFixtures.Time;
+        var unread=new SessionLogDiscoverySnapshot(2,now,[new(Key(),SessionLogCorrelationStatus.ResourceHolderObserved,stamp,
+            new(stamp,ClientLogReadStatus.Ready,ClientLogDiscontinuity.None,50,50,false,0,[]),now)],1,false);
+        var complete=unread with {Revision=3,Sessions=[unread.Sessions[0] with {Batch=unread.Sessions[0].Batch! with {ReadOffset=100,CompleteLineOffset=100}}]};
+        int reads=0;
+        var result=await After(()=>++reads==1?unread:complete,1,snapshot=>snapshot.Sessions.Count==1
+            && snapshot.Sessions[0].Batch is {HasMore:false} tail && tail.CompleteLineOffset>=100);
+        Assert.Same(complete,result);Assert.Equal(2,reads);
+    }
+
+    [Fact]
     public async Task DroppingADisconnectFromBoundedReplayCannotRetainTheOldServerAfterACoalescedUpdate()
     {
         var clock = new Clock();

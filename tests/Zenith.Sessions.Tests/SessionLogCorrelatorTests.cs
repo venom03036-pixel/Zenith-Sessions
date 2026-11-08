@@ -59,14 +59,16 @@ public sealed partial class SessionLogCorrelatorTests : IDisposable
     private static SessionProcessKey Key(int pid = 42) => new("synthetic-local", pid, SyntheticClientLogFixtures.Time.AddMinutes(-1).UtcTicks);
     private static DesktopSnapshot Desktop(params SessionProcessKey[] keys) => new(new(SyntheticClientLogFixtures.Time, 100, 50, 200, 50, 1),
         keys.Select(key => new SessionObservation(key.ProcessId, key.ProcessStartUtcTicks, "Synthetic", 0, "Synthetic", false, false, 0, 0, null, SyntheticClientLogFixtures.Time)).ToArray());
-    private static async Task<SessionLogDiscoverySnapshot> After(WindowsSessionLogCorrelator worker, long revision = 0,
+    private static Task<SessionLogDiscoverySnapshot> After(WindowsSessionLogCorrelator worker, long revision = 0,
+        Func<SessionLogDiscoverySnapshot,bool>? ready = null) => After(()=>worker.Snapshot,revision,ready);
+    private static async Task<SessionLogDiscoverySnapshot> After(Func<SessionLogDiscoverySnapshot> snapshot, long revision,
         Func<SessionLogDiscoverySnapshot,bool>? ready = null)
     {
         long began = Stopwatch.GetTimestamp();
         SessionLogDiscoverySnapshot observed;
         do
         {
-            observed=worker.Snapshot;
+            observed=snapshot();
             if(observed.Revision>revision && (ready is null || ready(observed))) return observed;
             await Task.Delay(10);
         } while(Stopwatch.GetElapsedTime(began)<TimeSpan.FromSeconds(5));

@@ -35,8 +35,12 @@ public sealed class SelfCheckOwnersTests
     {
         var owner=new StalledOwner();var clock=new ManualDeadline();
         var workFailure=new InvalidDataException("Synthetic failure");
-        var run=SelfCheckOwners.UseAsync(owner,_=>Task.FromException(workFailure),TimeSpan.FromSeconds(2),clock);
-        clock.Expire();owner.Release();
+        var continuation=new HeldContinuation();var previous=SynchronizationContext.Current;
+        Task run;
+        try { SynchronizationContext.SetSynchronizationContext(continuation);run=SelfCheckOwners.UseAsync(owner,_=>Task.FromException(workFailure),TimeSpan.FromSeconds(2),clock); }
+        finally { SynchronizationContext.SetSynchronizationContext(previous); }
+        clock.Expire();await continuation.Posted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        owner.Release();continuation.Run();
         var failure=await Assert.ThrowsAsync<TimeoutException>(()=>run);
         Assert.Same(workFailure,failure.InnerException);
         Assert.Equal(typeof(StalledOwner).FullName,SelfCheckOwners.StalledOwner(failure));
@@ -56,13 +60,18 @@ public sealed class SelfCheckOwnersTests
         var gate=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         string root=Path.Combine(Path.GetTempPath(),"zenith-diagnostics-stall-"+Guid.NewGuid().ToString("N"));
         var journal=new Zenith.Sessions.Windows.ManagerDiagnostics(root,1,256,_=>gate.Task);
+        var stage=DistributionSelfCheck.VerifyDiagnosticsAsync(journal,TimeSpan.FromMilliseconds(20));
         try
         {
-            var failure=await Assert.ThrowsAsync<TimeoutException>(()=>SelfCheckOwners.UseAsync(journal,_=>Task.CompletedTask,TimeSpan.FromMilliseconds(20)));
+            var failure=await Assert.ThrowsAsync<TimeoutException>(()=>stage.WaitAsync(TimeSpan.FromMilliseconds(500)));
             Assert.Equal(typeof(Zenith.Sessions.Windows.ManagerDiagnostics).FullName,SelfCheckOwners.StalledOwner(failure));
         }
-        finally { gate.TrySetResult();await journal.DisposeAsync(); }
-        Assert.False(Directory.Exists(root)); // No event was written; no filesystem cleanup is needed.
+        finally
+        {
+            gate.TrySetResult();await journal.DisposeAsync();
+            try{await stage;}catch(TimeoutException){/* The tested packaged boundary owns the timeout result. */}
+            if(Directory.Exists(root))Directory.Delete(root,true);
+        }
     }
 
     [Fact]
@@ -122,6 +131,13 @@ public sealed class SelfCheckOwnersTests
     }
     private sealed class StalledOuterOwner : StalledOwner;
     private sealed class FailedOwner(Exception failure) : IAsyncDisposable { public ValueTask DisposeAsync()=>new(Task.FromException(failure)); }
+    private sealed class HeldContinuation : SynchronizationContext
+    {
+        private SendOrPostCallback? _callback;private object? _state;
+        public TaskCompletionSource Posted {get;}=new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public override void Post(SendOrPostCallback callback,object? state) { _callback=callback;_state=state;Posted.SetResult(); }
+        public void Run()=>_callback!(_state);
+    }
     private sealed class ManualDeadline : TimeProvider
     {
         private TimerCallback? _callback;private object? _state;

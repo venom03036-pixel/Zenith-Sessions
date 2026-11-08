@@ -358,7 +358,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         _launchQueue=new(_queueStore,_nativeLaunch,ValidateLaunchAsync,ReadLaunchAdmission,observedReservations:ReadObservedReservations,
             budgetResolver:ReadNewLaunchBudget,candidateAdmission:ReadCandidateLaunchAdmission);
         _launchQueue.Changed+=QueueChanged;_launchQueue.Faulted+=QueueFaulted;
-        ReleaseUpdates=new(root,dispatcher,()=>!_shuttingDown&&!IsLocked&&QueueReady&&_latestQueue.Operations.All(operation=>LaunchDescriptions.Terminal(operation.State)&&!LaunchDescriptions.HasUnresolvedReservation(operation)),canOperate:()=>_ready&&!_shuttingDown&&!IsLocked);
+        ReleaseUpdates=new(root,dispatcher,()=>!_shuttingDown&&!IsLocked&&QueueReady&&_latestQueue.Operations.All(operation=>LaunchDescriptions.Terminal(operation.State)&&!LaunchDescriptions.HasUnresolvedReservation(operation)),canOperate:()=>_ready&&!IsSample&&!_shuttingDown&&!IsLocked);
         InitializeDirectoryFeatures(publicDirectory,serverDirectory,gameDirectory);
         InitializeDestinationCapacity();
         _favoriteStore=favoriteStore??new FavoriteDestinationsStore(root);
