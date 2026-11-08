@@ -138,9 +138,10 @@ public partial class MacroEditorViewModelTests
     /// 110 MB, most of it for the route-target lists; since those lists are built once per change
     /// and selected by item it uses 0.2-0.5 s and about 20 MB (QUALITY_STATUS F-4). In a loaded
     /// full run passes stayed under 0.52 s of CPU while their waits grew to 32 s, so the budget
-    /// counts CPU: a busy machine does not fail it, a pass that computes for 114 s does. Some full
-    /// runs still put the editor in F-4's slow state (3.4-18.9 s per pass after the route-list
-    /// fix); these tests then fail on purpose, naming the pass and its CPU, until that is fixed.
+    /// counts CPU: a busy machine does not fail it, a pass that computes for 114 s does. Before the
+    /// shared ComboBox drop-down was virtualized, some full runs put the editor in F-4's slow state
+    /// (2.7-35 s per pass), where a UI Automation walk of the window created a ComboBoxItem for every
+    /// jump destination; these tests failed there on purpose, naming the pass and its CPU.
     /// </summary>
     private static readonly TimeSpan LayoutPassCpuBudget = TimeSpan.FromSeconds(3);
 
