@@ -14,7 +14,10 @@ public sealed class WindowsClientFaultProbeTests : IDisposable
     private static RecentClientHistoryEntry Ended(SessionProcessKey key, DateTimeOffset lastSeen, DateTimeOffset gone)
         => new(Guid.NewGuid(), key, lastSeen, lastSeen, gone);
 
-    [Fact]
+    // Opt-in (ZENITH_RUN_NATIVE_CRASH_TESTS=1): it crashes a real process, so Windows writes an error report on the PC.
+    // The default run keeps the record matching and crash-dump counting covered by the two synthetic tests below.
+    [NativeCrashFact]
+    [Trait(TestCategory.Name, TestCategory.NativeCrash)]
     public async Task FindsWindowsFaultRecordForTheExactCrashedProcessOnly()
     {
         // Test-owned helper: an inbox Windows PowerShell process that ends through Environment.FailFast.

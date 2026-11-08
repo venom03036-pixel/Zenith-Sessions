@@ -11,10 +11,27 @@ namespace Zenith.Sessions.Tests;
 /// account cannot start child processes).
 /// A checkpoint records two runs: the main run with --filter "Category!=CrossProcess", and a separate run with
 /// --filter "Category=CrossProcess" labelled as the environment run. The main run alone is never the full-suite count.
+/// NativeCrash: the test makes a real process crash (Environment.FailFast), so Windows writes an error report and an
+/// Application Error event on the machine, and the result depends on Windows Error Reporting settings. These tests use
+/// [NativeCrashFact] and are skipped unless ZENITH_RUN_NATIVE_CRASH_TESTS=1; run them on purpose with that variable set
+/// and --filter "Category=NativeCrash". A checkpoint reports them as skipped, never as passed.
 /// </summary>
 internal static class TestCategory
 {
-    public const string Name = "Category", CrossProcess = "CrossProcess";
+    public const string Name = "Category", CrossProcess = "CrossProcess", NativeCrash = "NativeCrash";
+}
+
+/// <summary>A test that crashes a real process. It runs only when ZENITH_RUN_NATIVE_CRASH_TESTS=1.</summary>
+public sealed class NativeCrashFactAttribute : FactAttribute
+{
+    public const string OptInVariable = "ZENITH_RUN_NATIVE_CRASH_TESTS";
+
+    public NativeCrashFactAttribute() => Skip = SkipReasonFor(Environment.GetEnvironmentVariable(OptInVariable));
+
+    internal static string? SkipReasonFor(string? optIn) => optIn == "1" ? null
+        : "Opt-in: this test crashes an inbox Windows PowerShell on purpose, which writes a real Windows error report and an "
+        + "Application Error event on this PC. Set " + OptInVariable + "=1 to run it; it needs Application Error logging on and "
+        + "no Windows crash dialog.";
 }
 
 /// <summary>
@@ -53,13 +70,50 @@ public sealed class TestEnvironmentCategoryTests
             + "--filter \"Category!=CrossProcess\" would leave them out of the main run: " + string.Join(", ", extra));
     }
 
+    // Each of these ends a real process through Environment.FailFast and reads the record Windows writes about it.
+    private static readonly MethodInfo[] NativeCrashTests =
+    {
+        Method(typeof(WindowsClientFaultProbeTests), "FindsWindowsFaultRecordForTheExactCrashedProcessOnly"),
+    };
+
+    [Fact]
+    public void NativeCrashTestsAreOptInAndCarryTheNativeCrashCategory()
+    {
+        string[] runByDefault = NativeCrashTests.Where(method => !HasCategory(method, TestCategory.NativeCrash)
+            || method.GetCustomAttributesData().Count(attribute => typeof(FactAttribute).IsAssignableFrom(attribute.AttributeType)) != 1
+            || !method.GetCustomAttributesData().Any(attribute => attribute.AttributeType == typeof(NativeCrashFactAttribute))).Select(Describe).ToArray();
+        Assert.True(runByDefault.Length == 0, "These tests crash a real process, which writes a Windows error report on the machine, but "
+            + "they are not [NativeCrashFact] with [Trait(\"Category\", \"NativeCrash\")], so every suite run crashes a process: " + string.Join(", ", runByDefault));
+        Assert.NotNull(NativeCrashFactAttribute.SkipReasonFor(null));
+        Assert.NotNull(NativeCrashFactAttribute.SkipReasonFor(""));
+        Assert.NotNull(NativeCrashFactAttribute.SkipReasonFor("0"));
+        Assert.NotNull(NativeCrashFactAttribute.SkipReasonFor("true"));
+        Assert.Null(NativeCrashFactAttribute.SkipReasonFor("1"));
+    }
+
+    [Fact]
+    public void NativeCrashCategoryCoversOnlyTheKnownCrashTests()
+    {
+        var known = NativeCrashTests.Cast<MemberInfo>().ToHashSet();
+        string[] extra = typeof(TestEnvironmentCategoryTests).Assembly.GetTypes()
+            .SelectMany(type => type.GetMethods(BindingFlags.Instance | BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly)
+                .Cast<MemberInfo>().Prepend(type))
+            .Where(member => (HasCategory(member, TestCategory.NativeCrash)
+                || member.GetCustomAttributesData().Any(attribute => attribute.AttributeType == typeof(NativeCrashFactAttribute))) && !known.Contains(member))
+            .Select(Describe).ToArray();
+        Assert.True(extra.Length == 0, "These members are opt-in native crash tests but are not known crash tests, so the default run "
+            + "skips them: " + string.Join(", ", extra));
+    }
+
     private static MethodInfo Method(Type type, string name) =>
         type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public) ?? throw new InvalidOperationException(type.Name + "." + name + " no longer exists.");
 
-    private static bool HasCrossProcessCategory(MemberInfo member) => member.GetCustomAttributesData().Any(attribute =>
+    private static bool HasCrossProcessCategory(MemberInfo member) => HasCategory(member, TestCategory.CrossProcess);
+
+    private static bool HasCategory(MemberInfo member, string category) => member.GetCustomAttributesData().Any(attribute =>
         attribute.AttributeType == typeof(TraitAttribute) && attribute.ConstructorArguments.Count == 2
         && attribute.ConstructorArguments[0].Value as string == TestCategory.Name
-        && attribute.ConstructorArguments[1].Value as string == TestCategory.CrossProcess);
+        && attribute.ConstructorArguments[1].Value as string == category);
 
     private static string Describe(MemberInfo member) => member is Type type ? type.Name : member.DeclaringType!.Name + "." + member.Name;
 }
