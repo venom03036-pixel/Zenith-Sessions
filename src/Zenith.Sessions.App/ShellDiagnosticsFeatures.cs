@@ -209,6 +209,7 @@ public sealed partial class ShellViewModel
         // Applied policy and committed limits only; unsaved drafts, the main account, sign-in and window-layout settings stay out.
         var performance=Volatile.Read(ref _activePerformance);var limits=Volatile.Read(ref _savedSettings).Capacity!;
         // Format 2 added Os, Performance, Theme, Capacity and the per-event Subsystem; advance it again whenever an allowlisted field is added.
+        // This counter is the Diagnostics report's own; the launch-evidence report is also format 2 (see BuildNativeTrialEvidenceReport before changing either).
         var report=new
         {
             FormatVersion=2,Product="Zenith Sessions Personal",Version=typeof(ShellViewModel).Assembly.GetName().Version?.ToString(),

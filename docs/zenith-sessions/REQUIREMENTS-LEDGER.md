@@ -70,7 +70,7 @@ Personal **0.43** passed **3,969/3,969 source and exact-staged-assembly tests**,
 
 ## Historical 0.42 checkpoint
 
-Personal **0.42** passed **3,919/3,919 source and exact-staged-assembly tests**, **727 affected checks twice**, and **42/42 packaged checks twice**, with warning-free final builds and28 matching staged files. [Verification](NATIVE-STAGE-DIAGNOSTICS-VERIFICATION.md) records bounded fixed native-stage diagnostics, exact operation/attempt ownership, original timestamps, selected-only presentation and allowlisted report format2.64 new cases and8 exact-production-BAML renders have controlled evidence. Native/browser/account/arrival/reconnect/background, full desktop/load/competitive and release acceptance remain unfinished. Nothing was installed and no real session changed; **LiveTestReady=false; no owner preparation requested yet.**
+Personal **0.42** passed **3,919/3,919 source and exact-staged-assembly tests**, **727 affected checks twice**, and **42/42 packaged checks twice**, with warning-free final builds and28 matching staged files. [Verification](NATIVE-STAGE-DIAGNOSTICS-VERIFICATION.md) records bounded fixed native-stage diagnostics, exact operation/attempt ownership, original timestamps, selected-only presentation and allowlisted launch-evidence report format2.64 new cases and8 exact-production-BAML renders have controlled evidence. Native/browser/account/arrival/reconnect/background, full desktop/load/competitive and release acceptance remain unfinished. Nothing was installed and no real session changed; **LiveTestReady=false; no owner preparation requested yet.**
 
 ## Historical 0.41 checkpoint
 
