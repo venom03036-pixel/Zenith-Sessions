@@ -40,6 +40,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientMemory=>"Client memory",
         ManagerSubsystem.RepeatLaunch=>"Repeat launch",
         ManagerSubsystem.ClientSound=>"Client sound",
+        ManagerSubsystem.KeepAwake=>"Keep clients awake",
         _=>"Unrecognized subsystem"
     };
 }

@@ -22,6 +22,7 @@ For every case record provider/client version, process start identity, target/wi
 | input-isolation | Other clients and the user's foreground application receive no test input |
 | target-lifecycle | Move/resize changes geometry; closed/restarted clients and reused identities cannot receive stale work |
 | emergency-cancellation | Stop/Panic fence pending work and release only owned holds |
+| keep-awake-press | With Keep clients awake on and the trial's verified transport, each tick's F13 reaches only the client it was sent to, that client is not disconnected after 20 idle minutes, the earlier foreground window is back after the tick, a tick while the user types defers, and Panic during a tick leaves every client in a consistent key state (R-instances-17; gated by `CapabilityGate` until this passes) |
 | independent-runs | One macro revision drives separate run/condition/image state per client; A's image does not advance B |
 | live-broadcast | Leader receives physical input once; only explicit followers receive copies; synthetic feedback and competing macros are rejected |
 | confirmed-disconnect | Real in-game disconnect is distinguished from authentication challenges and a deliberate close |

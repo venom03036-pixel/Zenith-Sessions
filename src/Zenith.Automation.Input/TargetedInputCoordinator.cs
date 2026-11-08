@@ -206,6 +206,7 @@ public sealed class TargetedInputRun
         TargetedInputStopReason.CompanionStopped => "Its companion operation stopped; input lease released.",
         TargetedInputStopReason.RunnerClosed => "Macro runner closed; input lease released.",
         TargetedInputStopReason.NotStarted => "Run could not start; input lease released.",
+        TargetedInputStopReason.KeepAwakeSent => "Keep-awake press sent; input lease released.",
         _ => throw new ArgumentOutOfRangeException(nameof(reason))
     };
 

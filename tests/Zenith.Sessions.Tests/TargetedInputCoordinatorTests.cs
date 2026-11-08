@@ -528,6 +528,7 @@ public sealed class TargetedInputCoordinatorTests
     [InlineData(TargetedInputStopReason.CompanionStopped, "Its companion operation stopped; input lease released.")]
     [InlineData(TargetedInputStopReason.RunnerClosed, "Macro runner closed; input lease released.")]
     [InlineData(TargetedInputStopReason.NotStarted, "Run could not start; input lease released.")]
+    [InlineData(TargetedInputStopReason.KeepAwakeSent, "Keep-awake press sent; input lease released.")]
     public async Task StopWithAReasonReleasesTheHoldsAndSaysWhyTheLeaseWasReleased(TargetedInputStopReason reason, string expected)
     {
         await using var fixture = new Fixture(); var run = Open(fixture);
@@ -551,8 +552,8 @@ public sealed class TargetedInputCoordinatorTests
         Assert.Equal(TargetedInputRunState.Running, snapshot.State);
         Assert.Equal(1, snapshot.SubmittedHolds);
         Assert.Empty(fixture.Transport.Attempts.Where(command => command.Cleanup));
-        // Every member of the set has a text of its own (the theory above lists them all).
-        Assert.Equal(8, Enum.GetValues<TargetedInputStopReason>().Length);
+        // Every member of the set has a text of its own (the theory above lists them all; KeepAwakeSent was appended for R-instances-17).
+        Assert.Equal(9, Enum.GetValues<TargetedInputStopReason>().Length);
         Assert.Equal("Stopped by user.", (await run.StopAsync().WaitAsync(Deadline)).Explanation);
     }
 
