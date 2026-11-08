@@ -73,6 +73,18 @@ public sealed class SignedUpdateTests : IDisposable
         Assert.False(File.Exists(Path.Combine(_root, "outside.exe")));
     }
     [Fact]
+    public async Task ApplyBoundaryRevalidatesTheSignedArchiveInsteadOfTrustingRewrittenLocalInventory()
+    {
+        var setup=await Fixture();var stager=new SignedUpdateStager(new LocalUpdateFeed(),new([Trust]),new Publisher());
+        var stage=await stager.StageAsync(setup.Feed,new(1,0),Path.Combine(_root,"staging"),default);
+        var proof=await stager.VerifyStageAsync(stage.Directory,new(1,0),default);
+        string inventory=Path.Combine(stage.Directory,"content","release-manifest.json");
+        Assert.Equal(Convert.ToHexString(SHA256.HashData(await File.ReadAllBytesAsync(inventory))),proof.ManifestSha256);
+        await File.WriteAllTextAsync(Path.Combine(stage.Directory,"content","Zenith.Sessions.App.exe"),"replacement executable");
+        await File.WriteAllTextAsync(inventory,"{\"ReleaseReady\":true,\"Version\":\"2.0.0.0\",\"Files\":[]}");
+        await Assert.ThrowsAsync<CryptographicException>(()=>stager.VerifyStageAsync(stage.Directory,new(1,0),default));
+    }
+    [Fact]
     public async Task HashMismatchOrPublisherFailureLeavesNoInstallableStage()
     {
         var setup = await Fixture(); string stage = Path.Combine(_root, "staging");

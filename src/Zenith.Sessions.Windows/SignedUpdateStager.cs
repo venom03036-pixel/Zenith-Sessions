@@ -5,6 +5,7 @@ using System.Text.Json;
 namespace Zenith.Sessions.Windows;
 
 public sealed record StagedUpdate(string Directory, string Version);
+public sealed record VerifiedUpdateInventory(string Version, string ManifestSha256);
 public interface IUpdatePublisherVerifier
 {
     void Verify(FileStream lockedExecutable, string certificateSha256, CancellationToken cancellationToken);
@@ -22,6 +23,41 @@ public sealed class WindowsUpdatePublisherVerifier : IUpdatePublisherVerifier
 /// <summary>Stages only. Never closes the app, executes a package, changes installed files, or touches account data.</summary>
 public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier verifier, IUpdatePublisherVerifier publisher)
 {
+    public async Task<VerifiedUpdateInventory> VerifyStageAsync(string stage, Version currentVersion, CancellationToken cancellationToken)
+    {
+        using var stop = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken); stop.CancelAfter(TimeSpan.FromMinutes(3));
+        var ct = stop.Token; stage = Path.GetFullPath(stage); AssertNoRedirects(stage);
+        byte[] envelope;
+        using (var input = new FileStream(Path.Combine(stage, "signed-update.json"), FileMode.Open, FileAccess.Read, FileShare.Read))
+        using (var buffer = new MemoryStream()) { await CopyBoundedAsync(input, buffer, SignedUpdateVerifier.MaximumEnvelopeBytes, ct).ConfigureAwait(false); envelope = buffer.ToArray(); }
+        var release = verifier.Verify(envelope, currentVersion);
+        using var archiveFile = new FileStream(Path.Combine(stage, "package.zip"), FileMode.Open, FileAccess.Read, FileShare.Read);
+        if (archiveFile.Length != release.Manifest.PackageBytes || !StringComparer.OrdinalIgnoreCase.Equals(Convert.ToHexString(await SHA256.HashDataAsync(archiveFile, ct).ConfigureAwait(false)), release.Manifest.PackageSha256))
+            throw new CryptographicException("Staged ZIP differs from its signed manifest.");
+        archiveFile.Position = 0; using var archive = new ZipArchive(archiveFile, ZipArchiveMode.Read);
+        if (archive.Entries.Count is 0 or > 2048) throw new InvalidDataException("Invalid update file count.");
+        var names = new HashSet<string>(StringComparer.OrdinalIgnoreCase); long total = 0; string? inventoryHash = null;
+        string content = Path.Combine(stage, "content");
+        foreach (var entry in archive.Entries)
+        {
+            ct.ThrowIfCancellationRequested(); string name = ValidateEntryName(entry, names);
+            total = checked(total + entry.Length);
+            if (entry.Length is < 0 or > 256L * 1024 * 1024 || total > SignedUpdateVerifier.MaximumPackageBytes) throw new InvalidDataException("Expanded update exceeds its bound.");
+            string path = Path.GetFullPath(Path.Combine(content, name));
+            if (!path.StartsWith(content + Path.DirectorySeparatorChar, StringComparison.OrdinalIgnoreCase)) throw new InvalidDataException("Update escaped staging.");
+            using var actual = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read);
+            if (actual.Length != entry.Length) throw new CryptographicException("Staged file length differs from the signed ZIP.");
+            using var expected = entry.Open();
+            string expectedHash = await HashBoundedAsync(expected, entry.Length, ct).ConfigureAwait(false);
+            if (Convert.ToHexString(await SHA256.HashDataAsync(actual, ct).ConfigureAwait(false)) != expectedHash) throw new CryptographicException("Staged content differs from the signed ZIP.");
+            if (name == "release-manifest.json") inventoryHash = expectedHash;
+        }
+        foreach (string path in Directory.EnumerateFiles(content, "*", SearchOption.AllDirectories))
+            if (!names.Contains(Path.GetRelativePath(content, path).Replace('\\', '/'))) throw new CryptographicException("Staged content contains an unsigned extra file.");
+        using (var executable = new FileStream(Path.Combine(content, "Zenith.Sessions.App.exe"), FileMode.Open, FileAccess.Read, FileShare.Read))
+            publisher.Verify(executable, release.Key.PublisherCertificateSha256, ct);
+        return new(release.Manifest.Version, inventoryHash ?? throw new InvalidDataException("Signed package has no release inventory."));
+    }
     public async Task<StagedUpdate> StageAsync(Uri feedUri, Version currentVersion, string stagingRoot, CancellationToken cancellationToken)
     {
         using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -97,12 +133,7 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
         foreach (var entry in zip.Entries)
         {
             ct.ThrowIfCancellationRequested();
-            string name = entry.FullName.Replace('\\', '/');
-            var pieces = name.Split('/');
-            if (pieces.Any(part => part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ')
-                || part.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || IsDeviceName(part)) || Path.IsPathRooted(name)
-                || !names.Add(name) || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000)
-                throw new InvalidDataException("Unsafe or duplicate update file path.");
+            string name = ValidateEntryName(entry, names);
             total = checked(total + entry.Length);
             if (entry.Length is < 0 or > 256L * 1024 * 1024 || total > SignedUpdateVerifier.MaximumPackageBytes)
                 throw new InvalidDataException("Expanded update exceeds its bound.");
@@ -133,5 +164,20 @@ public sealed class SignedUpdateStager(IUpdateFeed feed, SignedUpdateVerifier ve
     {
         string stem = part.Split('.')[0].ToUpperInvariant();
         return stem is "CON" or "PRN" or "AUX" or "NUL" || (stem.Length == 4 && (stem.StartsWith("COM", StringComparison.Ordinal) || stem.StartsWith("LPT", StringComparison.Ordinal)) && stem[3] is >= '0' and <= '9');
+    }
+    private static string ValidateEntryName(ZipArchiveEntry entry, HashSet<string> names)
+    {
+        string name = entry.FullName.Replace('\\', '/');
+        if (name.Split('/').Any(part => part.Length == 0 || part is "." or ".." || part.EndsWith('.') || part.EndsWith(' ')
+            || part.IndexOfAny(Path.GetInvalidFileNameChars()) >= 0 || IsDeviceName(part)) || Path.IsPathRooted(name)
+            || !names.Add(name) || ((entry.ExternalAttributes >> 16) & 0xF000) == 0xA000) throw new InvalidDataException("Unsafe or duplicate update file path.");
+        return name;
+    }
+    private static async Task<string> HashBoundedAsync(Stream input, long bound, CancellationToken ct)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256); byte[] buffer = new byte[65536]; long total = 0;
+        while (true) { int read = await input.ReadAsync(buffer, ct).ConfigureAwait(false); if (read == 0) break; total += read; if (total > bound) throw new InvalidDataException("ZIP entry exceeds its bound."); hash.AppendData(buffer, 0, read); }
+        if (total != bound) throw new InvalidDataException("Incomplete ZIP entry.");
+        return Convert.ToHexString(hash.GetHashAndReset());
     }
 }

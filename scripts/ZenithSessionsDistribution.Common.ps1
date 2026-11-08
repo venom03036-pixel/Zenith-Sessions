@@ -71,11 +71,12 @@ function Test-ZenithWebView2 {
 function Assert-ZenithClosed {
     if(Get-Process -Name 'Zenith.Sessions.App' -ErrorAction SilentlyContinue){throw 'Close Zenith Sessions first so its queue and stores have stopped. No process will be terminated by this installer.'}
 }
-function Promote-ZenithRelease([string]$Source,[string]$Install,[string]$Pending,[string]$Previous) {
+function Promote-ZenithRelease([string]$Source,[string]$Install,[string]$Pending,[string]$Previous,[string]$VerifiedInventorySha256) {
     # Callers supply the three fixed sibling paths. Test fixtures use one fresh isolated parent.
     $parent=[IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Install))
     foreach($path in @($Install,$Pending,$Previous)){if([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($path)) -ne $parent){throw 'Promotion paths must be fixed siblings.'};[void](Assert-ZenithDistributionPath $path)}
     if([IO.Path]::GetFileName($Install) -ne 'Zenith Sessions' -or [IO.Path]::GetFileName($Pending) -ne 'Zenith Sessions.pending' -or [IO.Path]::GetFileName($Previous) -ne 'Zenith Sessions.previous'){throw 'Unexpected promotion destination.'}
+    if($VerifiedInventorySha256 -notmatch '^[A-Fa-f0-9]{64}$' -or (Get-FileHash -LiteralPath (Join-Path $Source 'release-manifest.json')).Hash -ne $VerifiedInventorySha256){throw 'The release inventory differs from its freshly verified signed ZIP provenance.'}
     $manifest=Assert-ZenithReleaseFiles $Source
     if(Test-Path -LiteralPath $Pending){throw 'A pending installation already exists. Preserve it for recovery before retrying.'}
     if(Test-Path -LiteralPath $Previous){throw 'A previous installation is retained. Review recovery before replacing it.'}
@@ -84,6 +85,7 @@ function Promote-ZenithRelease([string]$Source,[string]$Install,[string]$Pending
     $moved=$false;$promoted=$false
     try{
         Get-ChildItem -LiteralPath $Source -Force | Copy-Item -Destination $Pending -Recurse -Force
+        if((Get-FileHash -LiteralPath (Join-Path $Pending 'release-manifest.json')).Hash -ne $VerifiedInventorySha256){throw 'Release inventory changed during promotion.'}
         [void](Assert-ZenithReleaseFiles $Pending)
         [IO.File]::WriteAllText((Join-Path $Pending '.zenith-install.json'),('{"FormatVersion":1,"Product":"Zenith.Sessions.Personal","Version":"'+$manifest.Version+'"}'))
         if(Test-Path -LiteralPath $Install){Move-Item -LiteralPath $Install -Destination $Previous;$moved=$true}
