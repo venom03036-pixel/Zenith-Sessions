@@ -22,6 +22,8 @@ public sealed partial class ShellViewModel
             return checkedCount > 0 ? checkedCount : SelectedAccount is not null ? 1 : 0;
         }
     }
+    /// <summary>"Find a server with room for N" needs a usable destination and at least one checked or selected account to find room for.</summary>
+    public bool CanFindServerWithRoom => ServerBrowser.CanUseDestination && DestinationRecipientCount > 0;
     private void InitializeDestinationCapacity()
     {
         Accounts.CollectionChanged += CapacityAccountsChanged;
@@ -54,7 +56,7 @@ public sealed partial class ShellViewModel
     }
     private void RefreshDestinationCapacity()
     {
-        Raise(nameof(DestinationRecipientCount));
+        Raise(nameof(DestinationRecipientCount)); Raise(nameof(CanFindServerWithRoom));
         string? unavailable = IsLocked || _shuttingDown
             ? "Capacity advice is unavailable while controls are locked or stopping. No seats are reserved."
             : ServerBrowser.HasDestinationDraft

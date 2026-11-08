@@ -4,13 +4,14 @@ public sealed record LaunchBatchMember(Guid ProfileId, long ProfileRevision, int
 {
     public Guid? RetryOfOperationId => RetrySource?.Intent.OperationId;
     internal LaunchOperation? RetrySource { get; init; }
-    /// <summary>The destination frozen for this account when its review was captured.</summary>
+    /// <summary>The destination frozen for this account when its review was captured. In a spread review it is the place
+    /// alone: the queue hands out the review's listed servers only when it records the requests.</summary>
     public RobloxRequestedDestination? Destination { get; internal init; }
 }
 
 /// <summary>
 /// One reviewed recipient snapshot with each account's frozen destination, valid for one submission to its original queue.
-/// <see cref="Destination"/> is the shared destination, or the place alone when <see cref="Spread"/> gave accounts their own servers.
+/// <see cref="Destination"/> is the shared destination, or the place alone when <see cref="Spread"/> holds listed servers to hand out.
 /// </summary>
 public sealed class LaunchBatchReview
 {
@@ -19,7 +20,11 @@ public sealed class LaunchBatchReview
     internal long StopGeneration { get; }
     public RobloxRequestedDestination Destination { get; }
     public IReadOnlyList<LaunchBatchMember> Recipients { get; }
-    /// <summary>How a spread review handed out listed servers; null when every account shares <see cref="Destination"/>.</summary>
+    /// <summary>
+    /// The listed servers a spread review hands out, in the order frozen at review; null when every account shares
+    /// <see cref="Destination"/>. Its counts describe the reviewed accounts. The queue gives these servers only to the requests
+    /// it records (see <see cref="LaunchCoordinator.EnqueueBatchAsync"/>); <see cref="ServerSpread.ExplainRecorded"/> describes that.
+    /// </summary>
     public ServerSpread? Spread { get; }
 
     internal LaunchBatchReview(object owner, long generation, RobloxRequestedDestination destination, LaunchBatchMember[] recipients,
@@ -28,9 +33,10 @@ public sealed class LaunchBatchReview
         _owner = owner;
         StopGeneration = generation;
         Destination = destination;
-        // Freeze each account's destination with the snapshot: the shared one unless a spread chose one for it.
+        // Freeze each account's destination with the snapshot. A spread's servers are handed out when the requests are recorded,
+        // so an account that turns out to be pending, or cannot be recorded, uses none of them up.
         for (int i = 0; i < recipients.Length; i++)
-            recipients[i] = recipients[i] with { Destination = spread?.Destinations[i] ?? destination };
+            recipients[i] = recipients[i] with { Destination = destination };
         Recipients = Array.AsReadOnly(recipients);
         Spread = spread;
     }
@@ -55,10 +61,11 @@ public sealed partial class LaunchCoordinator
     }
 
     /// <summary>
-    /// Freeze the selected accounts and give each one a different listed public server of <paramref name="placeId"/> with room
-    /// for it and a spare seat, in an order drawn from <paramref name="random"/>; accounts beyond those servers get the place
-    /// with no chosen server (see <see cref="RequestedServerSelection.SpreadServers"/>). Repeated accounts count once. The list
-    /// is read only here, so later changes to it never reach the review.
+    /// Freeze the selected accounts and the listed public servers of <paramref name="placeId"/> with room for one more player
+    /// and a spare seat, in an order drawn from <paramref name="random"/> (see <see cref="RequestedServerSelection.SpreadServers"/>).
+    /// Submitting the review gives each recorded request a different one of those servers while they last, and the rest the
+    /// place with no chosen server. Repeated accounts count once. The list is read only here, so later changes to it never
+    /// reach the review.
     /// </summary>
     public LaunchBatchReview CaptureSpreadBatchReview(long placeId, IReadOnlyList<RobloxPublicServer> servers,
         IReadOnlyList<(AccountProfile Profile, LaunchAccountBinding? Binding)> recipients, Random random)
@@ -185,6 +192,11 @@ public sealed partial class LaunchCoordinator
             }
             var operations = new List<LaunchOperation>(Math.Min(review.Recipients.Count, Math.Max(remaining, 0)));
             var rows = new LaunchBatchRow[review.Recipients.Count];
+            // A spread's listed servers go only to the requests recorded here, in recipient order: first to requests that can be
+            // queued now, then any left over to requests recorded Blocked, which never start unless they are queued again.
+            var spread = review.Spread;
+            int nextServer = 0;
+            List<(int Row, int Operation)>? blockedWithoutServer = null;
             for (int i = 0; i < rows.Length; i++)
             {
                 RequireCurrent();
@@ -208,16 +220,32 @@ public sealed partial class LaunchCoordinator
                 var intent = new LaunchIntent(Guid.NewGuid(), member.ProfileId, member.ProfileRevision,
                     member.Binding?.UserId ?? 0, destination.PlaceId, member.Priority, _time.GetUtcNow(),
                     member.Binding?.AuthorizationGeneration ?? 0, destination.JobId, destination.ServerKind, true);
+                bool withServer = spread is not null && nextServer < spread.SpreadCount
+                    && NewRequestProblem(intent, trial: false) == LaunchProblem.None;
+                if (withServer) intent = WithServer(intent, spread!.Destinations[nextServer]);
                 LaunchOperation operation;
                 try { operation = CreateQueuedOperation(intent, trial: false, ct); }
                 catch (LaunchQueueException)
                 {
+                    // Not recorded, so its server stays for the next request.
                     rows[i] = new(member.ProfileId, LaunchBatchDisposition.ResourceBudgetUnavailable);
                     continue;
                 }
+                if (withServer) nextServer++;
+                else if (spread is not null && operation.State == LaunchState.Blocked) (blockedWithoutServer ??= []).Add((i, operations.Count));
                 operations.Add(operation);
                 rows[i] = new(member.ProfileId, LaunchBatchDisposition.Recorded, operation);
             }
+            // Blocked requests take the servers left over, before anything is saved or published. Their forecasts were resolved
+            // before the server was attached; a Blocked request never starts unless it is queued again.
+            if (blockedWithoutServer is not null)
+                foreach (var (row, index) in blockedWithoutServer)
+                {
+                    if (nextServer >= spread!.SpreadCount) break;
+                    var given = operations[index] with { Intent = WithServer(operations[index].Intent, spread.Destinations[nextServer++]) };
+                    operations[index] = given;
+                    rows[row] = rows[row] with { Operation = given };
+                }
             RequireCurrent();
             if (operations.Count == 0) return Array.AsReadOnly(rows);
 
@@ -249,4 +277,7 @@ public sealed partial class LaunchCoordinator
         }
         finally { _serial.Release(); }
     }
+
+    private static LaunchIntent WithServer(LaunchIntent intent, RobloxRequestedDestination server)
+        => intent with { RequestedJobId = server.JobId, RequestedServerKind = server.ServerKind };
 }

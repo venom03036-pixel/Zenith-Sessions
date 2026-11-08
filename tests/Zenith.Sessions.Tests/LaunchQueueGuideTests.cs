@@ -43,6 +43,22 @@ public sealed class LaunchQueueGuideTests
     }
 
     [Fact]
+    public void TheSetAsideGuideAndTooltipSayAQueueThatWasRunningNeedsARestart()
+    {
+        // N-B2-2: setting the save aside reopens the queue only when it never opened; a queue that was
+        // already running stays stopped until a restart (M-L2-3), so neither text may promise otherwise.
+        string recovery=Section(GuideTexts(),"8. Interrupted saves and recovery");
+        Assert.Contains("keeps it, and reopens the last completed queue paused.",recovery,StringComparison.Ordinal);
+        Assert.Contains("If the queue was already running, setting the save aside keeps it stopped until you restart Zenith Sessions.",recovery,StringComparison.Ordinal);
+        using var stream=typeof(LaunchQueueGuideTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var button=Assert.Single(XDocument.Load(stream).Descendants(),e=>e.Name.LocalName=="Button"
+            && (string?)e.Attribute("Content")=="Set aside interrupted save");
+        string tooltip=(string?)button.Attribute("ToolTip")??"";
+        Assert.Contains("Nothing is deleted.",tooltip,StringComparison.Ordinal);
+        Assert.Contains("The queue reopens paused; if it was already running, it reopens after you restart Zenith Sessions.",tooltip,StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void TheGuideNamesTheRefusalBackoffAndThePauseAfterTwoInARow()
     {
         var texts=GuideTexts();
@@ -55,5 +71,19 @@ public sealed class LaunchQueueGuideTests
         Assert.Contains("until a client starts or 10 minutes pass, one more such start pauses it again",pacing,StringComparison.Ordinal);
         // Memory-only: nothing about the wait or the count is saved.
         Assert.Contains("kept only while Zenith runs",pacing,StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void TheGuideSaysOnlyARefusedStartLengthensTheWaitNotATimeoutExpiryStopOrChangedAccount()
+    {
+        // N-B2-3: only the provider's own Rejected answer before any client started backs off. A timed-out,
+        // expired or stopped start, or one whose account changed first, also ends before any client starts,
+        // yet starts no longer wait, so the Guide must not promise one for every such start. A page the user
+        // closed or cancelled is answered Rejected by the native provider, so it does count.
+        string pacing=Assert.Single(GuideTexts(),text=>text.Contains("twice the Launch spacing",StringComparison.Ordinal));
+        Assert.DoesNotContain("If a start ended before any client started",pacing,StringComparison.Ordinal);
+        Assert.Contains("If the provider refused a start before any client started, the next one waits twice the Launch spacing",pacing,StringComparison.Ordinal);
+        Assert.Contains("Closing or cancelling a request's private Roblox page counts as a refusal too.",pacing,StringComparison.Ordinal);
+        Assert.Contains("A start that timed out, expired or was stopped in Zenith Sessions, or whose account changed first, also ended before any client started but does not lengthen the wait.",pacing,StringComparison.Ordinal);
     }
 }

@@ -159,6 +159,9 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
     [InlineData(NativeHandoffPreparationStatus.CaptureRejected, LaunchPreparationFailure.Rejected)]
     [InlineData(NativeHandoffPreparationStatus.IdentityMismatch, LaunchPreparationFailure.Rejected)]
     [InlineData(NativeHandoffPreparationStatus.StorageUnavailable, LaunchPreparationFailure.Rejected)]
+    // A page the user closed or cancelled, with this caller's token untouched, is a Rejected answer
+    // (counted by the refusal backoff); a cancel of the caller's own token throws instead.
+    [InlineData(NativeHandoffPreparationStatus.Cancelled, LaunchPreparationFailure.Rejected)]
     public async Task FailedPreparationDisposesUnexpectedReturnedCandidatesAndTheHeldExecutable(NativeHandoffPreparationStatus status, LaunchPreparationFailure expected)
     {
         await using var f = new Fixture(_root); f.Preparer.Status = status;

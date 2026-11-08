@@ -66,6 +66,12 @@ public sealed class ShellQueueRecoveryTests : IDisposable
         await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); Assert.False(shell.QueueReady);
         Assert.Contains("unavailable", shell.QueueStatus, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("launch-queue.json.tmp", shell.QueueStatus); Assert.True(shell.CanSetAsideInterruptedQueueWrite);
+        // N-B2-2: the waiting request below comes back as Not started · interrupted and can only be
+        // cancelled, so the question must not promise that every request reopens for review.
+        string confirmation = shell.SetAsideInterruptedQueueWriteConfirmation;
+        Assert.Contains("reopen the queue from its last completed save?", confirmation);
+        Assert.Contains("The queue reopens paused; nothing starts on its own.", confirmation);
+        Assert.DoesNotContain("Requests reopen paused for review", confirmation);
 
         shell.SetAsideInterruptedQueueWrite.Execute(null); await shell.SetAsideInterruptedQueueWrite.Execution;
 

@@ -92,7 +92,7 @@ public static class LaunchDescriptions
         LaunchProblem.ProviderUnavailable=>"Native account launch provider unavailable; no client was started.",
         LaunchProblem.IdentityUnverified=>"Link and verify the intended account before launching.",
         LaunchProblem.InsufficientCapacity=>"Waiting for fresh measurements and sufficient resource headroom.",
-        LaunchProblem.StartupRejected=>"The provider rejected startup before a client was started.",
+        LaunchProblem.StartupRejected=>"The provider refused startup before a client started. Launch evidence on Join a game shows which check stopped it.",
         LaunchProblem.ArrivalUnverified=>"The correct account and destination were not verified. Reconcile before retrying.",
         LaunchProblem.TimedOut=>"Startup exceeded its deadline. A client may exist; reconcile before retrying.",
         LaunchProblem.CancelledDuringStartup=>"Startup was cancelled. A client may exist; reconcile before retrying.",
@@ -100,7 +100,9 @@ public static class LaunchDescriptions
         LaunchProblem.ProfileChanged=>"The saved profile or verified account changed; create a fresh launch request.",
         LaunchProblem.ProviderFailure=>"Provider failed with an uncertain outcome. Reconcile before retrying.",
         LaunchProblem.ClientStartedUnverified=>"A client process was reported started. Its account, current liveness and destination are unverified; review before retrying.",
-        LaunchProblem.PreparationRejected=>"Account or destination preparation failed before native startup. Review the saved sign-in and create a fresh request.",
+        // Cause-neutral: the provider's Rejected answer covers the saved sign-in, client trust, a busy
+        // provider, a closed page and local faults; only the request's native launch stages name which.
+        LaunchProblem.PreparationRejected=>"Preparation ended before native startup. The saved sign-in, client trust, a busy provider, a closed page or a local fault can cause this; Launch evidence on Join a game shows which. Then create a fresh request.",
         LaunchProblem.PreparationTimedOut=>"Preparation exceeded its deadline before native startup. Its actual worker must finish cleanup before another attempt.",
         LaunchProblem.PreparationExpired=>"The temporary launch request expired before native startup. Prepare a fresh request.",
         LaunchProblem.PreparationCleanupFailed=>"Launch preparation cleanup could not be confirmed. Preserve the data and close Zenith before retrying.",
@@ -116,8 +118,9 @@ public static class LaunchDescriptions
     public static string ExplainPause(LaunchQueuePauseReason reason)=>reason switch
     {
         // Cause-neutral: a provider's Rejected answer also covers local faults, a busy provider, an
-        // untrusted client and a closed trial page, so the queue cannot name one cause.
-        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's details in the launch queue (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
+        // untrusted client and a closed trial page, so the queue cannot name one cause. The queue rows do not
+        // hold those details; each request's native launch stages in Launch evidence do.
+        LaunchQueuePauseReason.RepeatedRefusals=>"Queue paused: two starts in a row ended before any client started. The remaining requests stay queued. Check each failed request's native launch stages in Launch evidence on Join a game (sign-in, client trust, resources), then resume. Until a client starts or 10 minutes pass, one more such start pauses the queue again.",
         _=>""
     };
     public static bool Terminal(LaunchState state)=>state is LaunchState.Failed or LaunchState.Cancelled;
@@ -278,11 +281,14 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
 
     private LaunchOperation CreateQueuedOperation(LaunchIntent intent,bool trial,CancellationToken ct)
     {
-        LaunchProblem issue=!trial && _provider.AccountLaunch.State!=CapabilityState.Supported?LaunchProblem.ProviderUnavailable:
-            intent.UserId<=0 || intent.AuthorizationGeneration<=0 || intent.PlaceId<=0?LaunchProblem.IdentityUnverified:LaunchProblem.None;
+        LaunchProblem issue=NewRequestProblem(intent,trial);
         return new(intent,issue==LaunchProblem.None?LaunchState.Queued:LaunchState.Blocked,issue,intent.RequestedUtc,
             ResourceBudget:ResolveResourceBudget(intent,ct));
     }
+    // Why a new request would be recorded Blocked, or None when it would be Queued. It never depends on the requested server.
+    private LaunchProblem NewRequestProblem(LaunchIntent intent,bool trial)
+        =>!trial && _provider.AccountLaunch.State!=CapabilityState.Supported?LaunchProblem.ProviderUnavailable:
+            intent.UserId<=0 || intent.AuthorizationGeneration<=0 || intent.PlaceId<=0?LaunchProblem.IdentityUnverified:LaunchProblem.None;
 
     private static bool IsPendingOrUnresolved(LaunchOperation operation)
         =>!LaunchDescriptions.Terminal(operation.State)||LaunchDescriptions.HasUnresolvedReservation(operation);

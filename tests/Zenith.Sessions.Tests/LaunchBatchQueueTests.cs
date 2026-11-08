@@ -604,7 +604,8 @@ public sealed class LaunchBatchQueueTests
         var spread = Assert.IsType<ServerSpread>(review.Spread);
         Assert.Equal(2, spread.SpreadCount); Assert.Equal(1, spread.PlaceOnlyCount);
         Assert.Equal(Place, review.Destination.PlaceId); Assert.Null(review.Destination.JobId);
-        Assert.Equal(spread.Destinations, review.Recipients.Select(member => member.Destination));
+        // The server order is frozen here; the queue hands servers out only to the requests it records.
+        Assert.All(review.Recipients, member => Assert.Same(review.Destination, member.Destination));
 
         int before = store.Writes.Count;
         var rows = await queue.EnqueueBatchAsync(review);
@@ -617,6 +618,46 @@ public sealed class LaunchBatchQueueTests
         Assert.Equal(2, pinned.Select(intent => intent.RequestedJobId).Distinct().Count());
         Assert.All(pinned, intent => { Assert.Contains(intent.RequestedJobId, new[] { jobs[0], jobs[2] }); Assert.Equal(RobloxServerKind.Public, intent.RequestedServerKind); });
         Assert.Equal(RobloxServerKind.Unknown, Assert.Single(intents, intent => intent.RequestedJobId is null).RequestedServerKind);
+        Assert.Empty(provider.Calls);
+    }
+
+    [Theory]
+    [InlineData(2)]
+    [InlineData(3)]
+    public async Task ASpreadHandsServersOnlyToRecordedRequestsAndToRequestsThatCanStartFirst(int withRoom)
+    {
+        var store = new Store();
+        var provider = new Provider();
+        var (pending, unverified, noForecast, first, second) = (Profile(), Profile(), Profile(), Profile(), Profile());
+        await using var queue = Queue(store, provider, budget: intent => intent.ProfileId == noForecast.Id
+            ? throw new InvalidOperationException("Synthetic forecast failure") : LaunchResourceBudget.FromSettings(new()));
+        await queue.InitializeAsync(default);
+        await queue.EnqueueAsync(pending, default, Binding(4));
+        var now = DateTimeOffset.UtcNow;
+        string[] jobs = ["41111111-2222-4333-8444-000000000001", "41111111-2222-4333-8444-000000000002", "41111111-2222-4333-8444-000000000003"];
+        var servers = jobs.Take(withRoom).Select(job => new RobloxPublicServer(Place, job, 0, 10, null, null, now)).ToArray();
+        // In recipient order: already pending, no verified sign-in (recorded Blocked), no resource forecast, then two that can start.
+        var review = queue.CaptureSpreadBatchReview(Place, servers,
+            [(pending, Binding(4)), (unverified, null), (noForecast, Binding(2)), (first, Binding(3)), (second, Binding(5))], new Random(7));
+        var rows = await queue.EnqueueBatchAsync(review);
+
+        Assert.Equal(new[] { LaunchBatchDisposition.AlreadyPending, LaunchBatchDisposition.Recorded, LaunchBatchDisposition.ResourceBudgetUnavailable,
+            LaunchBatchDisposition.Recorded, LaunchBatchDisposition.Recorded }, rows.Select(row => row.Disposition));
+        var blocked = Assert.IsType<LaunchOperation>(rows[1].Operation);
+        Assert.Equal(LaunchState.Blocked, blocked.State); Assert.Equal(LaunchProblem.IdentityUnverified, blocked.Problem);
+        // Skipped accounts use no server, and the requests that can start get theirs before a blocked one does.
+        var startable = new[] { rows[3], rows[4] }.Select(row => Assert.IsType<LaunchOperation>(row.Operation)).ToArray();
+        Assert.All(startable, operation => Assert.Equal(LaunchState.Queued, operation.State));
+        var own = startable.Select(operation => operation.Intent.RequestedJobId).ToArray();
+        Assert.All(own, job => Assert.Contains(job, jobs.Take(withRoom)));
+        Assert.Equal(2, own.Distinct().Count());
+        if (withRoom == 2) Assert.Null(blocked.Intent.RequestedJobId);
+        else Assert.Equal(Assert.Single(jobs.Except(own)), blocked.Intent.RequestedJobId);
+        Assert.Equal(withRoom == 2 ? RobloxServerKind.Unknown : RobloxServerKind.Public, blocked.Intent.RequestedServerKind);
+        Assert.All(startable, operation => Assert.Equal(RobloxServerKind.Public, operation.Intent.RequestedServerKind));
+        // The rows the queue saved are the rows it returned.
+        Assert.Equal(new[] { blocked }.Concat(startable), store.Last.Operations.Skip(1));
+        LaunchCoordinator.ValidateSnapshot(store.Last);
         Assert.Empty(provider.Calls);
     }
 
