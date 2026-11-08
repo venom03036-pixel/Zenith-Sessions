@@ -166,7 +166,7 @@ public sealed class TargetedMacroRunner : IAsyncDisposable
             {
                 // The pure lease can still own cleanup after a composition failure. Track
                 // its actual transition before permitting disposal or another admission.
-                var completion = inputRun.StopAsync(TargetedMacroRun.NotStarted);
+                var completion = inputRun.StopAsync(TargetedInputStopReason.NotStarted);
                 _cleanup.Add(completion);
                 unstarted = new(inputRun, completion);
                 return new(TargetedMacroStartStatus.Rejected, null);
@@ -228,7 +228,7 @@ public sealed class TargetedMacroRunner : IAsyncDisposable
                 bound?.SignalStop();
                 var runs = _runs.Values.ToArray();
                 foreach (var run in runs)
-                    run.SignalPanic(TargetedMacroRun.RunnerClosed);
+                    run.SignalPanic(TargetedInputStopReason.RunnerClosed);
                 _dispose = DisposeCoreAsync(runs, _cleanup.Concat(_workers).ToArray(), bound);
             }
 
@@ -256,13 +256,6 @@ public sealed class TargetedMacroRunner : IAsyncDisposable
 
 public sealed class TargetedMacroRun : IAsyncDisposable
 {
-    // Why the runner released the input lease. Only a user's Stop uses the input owner's "Stopped by user.".
-    internal const string CompletedNormally = "Macro completed; input lease released.",
-        ReachedRuntimeLimit = "Macro reached its runtime limit; input lease released.",
-        AfterFailure = "Macro stopped after a failure; input lease released.",
-        CompanionStopped = "Its companion operation stopped; input lease released.",
-        RunnerClosed = "Macro runner closed; input lease released.",
-        NotStarted = "Run could not start; input lease released.";
     private readonly object _sync = new();
     private readonly TargetedMacroRunner _owner;
     private readonly TargetedInputRun _input;
@@ -278,8 +271,9 @@ public sealed class TargetedMacroRun : IAsyncDisposable
     private Task<TargetedMacroRunSnapshot>? _transition, _retry;
     private readonly HashSet<Task> _transitions = new();
     private Task<TargetedInputRunSnapshot>? _stopping;
-    // The first requested stop's reason; the input owner likewise keeps the first stop's text.
-    private string? _stopReason;
+    // Why the runner released the input lease: the first requested stop's reason, which the input owner turns into
+    // its text (it likewise keeps the first stop's). Only a user's Stop says the user stopped it.
+    private TargetedInputStopReason? _stopReason;
     private Task _controllerStopping = Task.CompletedTask;
     private long _generation;
     private int _completed;
@@ -363,7 +357,7 @@ public sealed class TargetedMacroRun : IAsyncDisposable
                 if (result.State == TargetedInputRunState.Paused)
                     _state = TargetedMacroState.Paused;
                 else
-                    RequestStopLocked(false, TargetedMacroProblem.InputRejected, AfterFailure);
+                    RequestStopLocked(false, TargetedMacroProblem.InputRejected, TargetedInputStopReason.AfterFailure);
             }
 
             return GetSnapshot();
@@ -407,7 +401,7 @@ public sealed class TargetedMacroRun : IAsyncDisposable
                     _player.OpenAdmission();
                 }
                 else
-                    RequestStopLocked(false, TargetedMacroProblem.InputRejected, AfterFailure);
+                    RequestStopLocked(false, TargetedMacroProblem.InputRejected, TargetedInputStopReason.AfterFailure);
             }
         }
 
@@ -418,25 +412,25 @@ public sealed class TargetedMacroRun : IAsyncDisposable
     public Task<TargetedMacroResult> StopAsync()
     {
         lock (_sync)
-            RequestStopLocked(false, TargetedMacroProblem.Stopped, TargetedInputRun.StoppedByUser);
+            RequestStopLocked(false, TargetedMacroProblem.Stopped, TargetedInputStopReason.User);
         return _completion;
     }
 
-    public void SignalPanic() => SignalPanic(TargetedInputRun.StoppedByEmergency);
+    public void SignalPanic() => SignalPanic(TargetedInputStopReason.EmergencyStop);
 
     /// <summary>Panic semantics; <paramref name="inputReason"/> says why, for a closing runner that is not an emergency stop.</summary>
-    internal void SignalPanic(string inputReason)
+    internal void SignalPanic(TargetedInputStopReason inputReason)
     {
         lock (_sync)
             RequestStopLocked(true, TargetedMacroProblem.Stopped, inputReason);
     }
 
-    private void RequestStopLocked(bool panic, TargetedMacroProblem reason, string inputReason)
+    private void RequestStopLocked(bool panic, TargetedMacroProblem reason, TargetedInputStopReason inputReason)
     {
         if (Terminal(_state))
             return;
         _stopRequested = true;
-        _stopReason ??= inputReason;
+        var stopReason = _stopReason ??= inputReason;
         _generation++;
         _problem = reason;
         _state = TargetedMacroState.Stopping;
@@ -444,7 +438,7 @@ public sealed class TargetedMacroRun : IAsyncDisposable
         if (_finalizing)
             return;
         if (!HoldsNeedRecovery(_input.Snapshot))
-            _stopping ??= _input.StopAsync(_stopReason);
+            _stopping ??= _input.StopAsync(stopReason);
         if (panic)
             _control.SignalPanic();
         else
@@ -673,10 +667,10 @@ public sealed class TargetedMacroRun : IAsyncDisposable
     // Why finalization releases the lease when no earlier stop did: a requested stop keeps its own reason (one that
     // arrived during finalization never released it); otherwise the outcome, in the result's order: a fault, the
     // companion operation's stop, a runtime limit, completion.
-    private string ReleaseReasonLocked() => _stopReason
-        ?? (_problem is TargetedMacroProblem.InterpreterFault or TargetedMacroProblem.InputRejected ? AfterFailure
-        : _hostOperation is { CanContinue: false } ? CompanionStopped
-        : _executor.State == ExecutionState.Completed ? CompletedNormally : ReachedRuntimeLimit);
+    private TargetedInputStopReason ReleaseReasonLocked() => _stopReason
+        ?? (_problem is TargetedMacroProblem.InterpreterFault or TargetedMacroProblem.InputRejected ? TargetedInputStopReason.AfterFailure
+        : _hostOperation is { CanContinue: false } ? TargetedInputStopReason.CompanionStopped
+        : _executor.State == ExecutionState.Completed ? TargetedInputStopReason.Completed : TargetedInputStopReason.RuntimeLimit);
 
     private static bool Terminal(TargetedMacroState state) => state is TargetedMacroState.Completed or TargetedMacroState.Stopped or TargetedMacroState.Faulted;
     private static string Explanation(TargetedMacroState state, TargetedMacroProblem problem) => problem == TargetedMacroProblem.CleanupFailed ? "Cleanup failed; the recipient remains quarantined until explicit successful cleanup." : state switch

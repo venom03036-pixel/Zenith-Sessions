@@ -14,6 +14,11 @@ public enum TargetedInputRunState { Running, Pausing, Paused, Resuming, Stopping
 public enum TargetedInputValidation { Current, GeometryChanged, Gone, Unavailable }
 public enum TargetedInputSubmission { Queued, Rejected, Uncertain }
 public enum TargetedInputDispatchStatus { Submitted, Busy, Invalid, Inactive, Cancelled, Paused, Faulted }
+/// <summary>
+/// Why a run's owner stops it and releases its lease. The set is closed and the owner keeps each reason's text, so
+/// another assembly can say why without writing the explanation or reaching the owner's internals.
+/// </summary>
+public enum TargetedInputStopReason { User, EmergencyStop, Completed, RuntimeLimit, AfterFailure, CompanionStopped, RunnerClosed, NotStarted }
 
 /// <summary>Client-content physical coordinates; no screen-coordinate reinterpretation or pointer/camera conversion.</summary>
 public readonly record struct TargetedInputSignal(TargetedInputKind Kind, int Key = 0, int X = 0, int Y = 0, int WheelDelta = 0)
