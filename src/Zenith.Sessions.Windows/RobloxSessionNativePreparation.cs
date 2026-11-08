@@ -12,7 +12,7 @@ public sealed partial class RobloxSessionLinkService
             || intent.AuthorizationGeneration <= 0 || intent.ProfileRevision < 0 || !LaunchCoordinator.HasValidDestination(intent))
             return new(NativeHandoffPreparationStatus.RequestChanged);
         Operation operation;
-        try { operation = Begin(intent.ProfileId, ct); }
+        try { operation = Begin(intent.ProfileId, SavedSessionOperationKind.NativeLaunchPreparation, ct); }
         catch (AccountLinkException) { return new(NativeHandoffPreparationStatus.Busy); }
         Guid pendingOwner = Guid.NewGuid(); bool pendingIssued = false, success = false;
         CancellationTokenRegistration preparationCancellation = default;

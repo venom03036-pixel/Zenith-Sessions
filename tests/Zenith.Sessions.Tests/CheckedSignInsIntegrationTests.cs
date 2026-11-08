@@ -168,6 +168,52 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(2, shell.Accounts.Count); Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
+    // N-B1a-2: removing a row stops the share-link check working on it. That check has its own owner, outside the sign-in lane,
+    // so the removal neither cancels nor waits for a saved sign-in check of another row that is still running (Roblox has
+    // answered it and it is reloading the list): that check reports its own result, and the removal finishes without it.
+    [Fact]
+    public Task RemovingTheRowAShareLinkCheckUsesLeavesASavedSignInCheckOfAnotherRowRunning() => OnUi(async () =>
+    {
+        using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var shareLinks = new HoldingShareLinks(); var gate = new HealthRemovalGate(repository);
+        await using var shell = await HealthShell(signIn, client, linked: 2, shareLinks: shareLinks, accounts: gate);
+        var checkedRow = HealthRow(shell, 1); var sharedRow = HealthRow(shell, 2); var notices = new List<string>();
+        int Verified() => shell.Events.Count(item => item.Contains("Roblox sign-in identity verified", StringComparison.Ordinal));
+        int verifiedBefore = Verified();
+        shell.PropertyChanged += (_, args) => { if (args.PropertyName == nameof(ShellViewModel.Notice)) notices.Add(shell.Notice); };
+        shell.SelectedAccount = checkedRow; gate.HoldNextRead();
+        shell.RefreshAuthorization.Execute(null); Task refreshing = shell.RefreshAuthorization.Execution; Task? sharing = null, removing = null;
+        bool removalWaited;
+        try
+        {
+            // The check's own saved-session operation has ended; the sign-in lane still runs it while its reload waits.
+            await gate.ReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.True(shell.IsAuthorizing);
+            shell.SelectedAccount = sharedRow;
+            shell.ShareLink.LinkInput = "https://www.roblox.com/share?code=4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e&type=Server";
+            sharing = shell.ShareLink.CheckAsync(); await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            removing = shell.DeleteAccountsAsync([sharedRow]);
+            removalWaited = await Task.WhenAny(removing, Task.Delay(TimeSpan.FromSeconds(5))) != removing;
+        }
+        finally
+        {
+            gate.ReleaseRead(); shareLinks.Release(); await refreshing.WaitAsync(TimeSpan.FromSeconds(10));
+            if (sharing is not null) await sharing.WaitAsync(TimeSpan.FromSeconds(10));
+            if (removing is not null) await removing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.DoesNotContain("Account sign-in cancelled. Existing profiles were preserved.", notices);
+        Assert.Equal(verifiedBefore + 1, Verified());
+        Assert.False(removalWaited, "The removal waited for a saved sign-in check of a row it was not removing.");
+        Assert.Contains(notices, notice => notice.StartsWith("Removed 1 profile(s).", StringComparison.Ordinal));
+        Assert.StartsWith("Saved sign-in verified for @health_1.", shell.Notice);
+        Assert.Equal(new[] { HealthCookie(1) }, client.Snapshot().Select(call => call.Cookie));
+        using var vault = new ProtectedCredentialVault(_root);
+        Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(checkedRow.Profile.Id, default))!.Health);
+        Assert.Null(await repository.FindAsync(sharedRow.Profile.Id, default)); Assert.Null(await vault.ReadAsync(sharedRow.Profile.Id, default));
+        Assert.Equal(checkedRow.Profile.Id, Assert.Single(shell.Accounts).Profile.Id);
+        Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+    });
+
     // M-L1a-5: Roblox never processed a check, and another operation replaced its fence before the restore. The restore is
     // refused (the newer sign-in is kept), but Roblox was still unreachable or busy, so the batch must stop there.
     [Fact]
@@ -339,13 +385,19 @@ public sealed partial class ClientWindowIntegrationTests
             return new(new(userId, "health_" + index, RobloxSessionIdentity.Issuer, userId.ToString(CultureInfo.InvariantCulture)));
         }
     }
-    /// <summary>The library, except that when <see cref="Hold"/> is set a profile removal waits, holding its rows, until released.</summary>
+    /// <summary>The library, except that when <see cref="Hold"/> is set a profile removal waits, holding its rows, until released,
+    /// and after <see cref="HoldNextRead"/> the next account-list read (a command's reload) waits until released.</summary>
     private sealed class HealthRemovalGate(IAccountRepository inner) : IAccountRepository
     {
         public bool Hold;
         public readonly TaskCompletionSource DeleteEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
         public void Release() => _release.TrySetResult();
+        private int _holdNextRead;
+        public readonly TaskCompletionSource ReadEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _readRelease = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void HoldNextRead() => Volatile.Write(ref _holdNextRead, 1);
+        public void ReleaseRead() => _readRelease.TrySetResult();
         public async Task DeleteManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct)
         {
             if (Hold) { DeleteEntered.TrySetResult(); await _release.Task.WaitAsync(ct).ConfigureAwait(false); }
@@ -353,7 +405,11 @@ public sealed partial class ClientWindowIntegrationTests
         }
         public Task InitializeAsync(CancellationToken ct) => inner.InitializeAsync(ct);
         public Task<AccountProfile?> FindAsync(Guid id, CancellationToken ct) => inner.FindAsync(id, ct);
-        public Task<AccountPage> ReadAsync(AccountQuery query, CancellationToken ct) => inner.ReadAsync(query, ct);
+        public async Task<AccountPage> ReadAsync(AccountQuery query, CancellationToken ct)
+        {
+            if (Interlocked.Exchange(ref _holdNextRead, 0) == 1) { ReadEntered.TrySetResult(); await _readRelease.Task.WaitAsync(ct).ConfigureAwait(false); }
+            return await inner.ReadAsync(query, ct).ConfigureAwait(false);
+        }
         public Task<IReadOnlyList<string>> ReadGroupsAsync(CancellationToken ct) => inner.ReadGroupsAsync(ct);
         public Task<AccountProfile> SaveAsync(AccountProfile account, CancellationToken ct) => inner.SaveAsync(account, ct);
         public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => inner.DeleteAsync(id, revision, ct);

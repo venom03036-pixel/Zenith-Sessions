@@ -181,6 +181,28 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
         Assert.Equal(AuthorizationHealth.Linked, (await fixture.Inner.ReadAsync(existing.Id, default))!.Health);
     }
 
+    // N-B1a-2: the lease names the operation it stopped (here an Add that moved onto the row to refresh it, or a saved sign-in
+    // check of the row), so a caller cancels its own command only when it started that operation.
+    [Theory]
+    [InlineData(SavedSessionOperationKind.AddAccount)]
+    [InlineData(SavedSessionOperationKind.SavedSignInCheck)]
+    public async Task ARemovalSaysWhichSavedSessionOperationOnItsRowItStopped(SavedSessionOperationKind kind)
+    {
+        await using var fixture = await Fixture.Open(Root); var entered = Signal(); var release = Signal();
+        var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Main alt") with { Username = "verified_player", RobloxUserId = 456 }, default);
+        await fixture.Inner.SaveAsync(Record(existing.Id, cookie: Stale), default);
+        fixture.Vault.BeforeCommit = async (snapshot, _) => { if (snapshot.ProfileId == existing.Id) { entered.TrySetResult(); await release.Task; } };
+        Task running = kind == SavedSessionOperationKind.AddAccount ? fixture.Service.AddAsync(default) : fixture.Service.CheckSavedAsync(existing.Id, default);
+        Task<RobloxSessionLinkService.ProfileRemovalLease>? removing = null;
+        try { await entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); removing = fixture.Service.BeginProfileRemovalAsync([existing.Id], default); Assert.False(removing.IsCompleted); }
+        finally { release.TrySetResult(); }
+        using (var removal = await removing!.WaitAsync(TimeSpan.FromSeconds(3)))
+        { Assert.Equal(kind, removal.StoppedOperationKind); Assert.True(removal.StoppedOperation); }
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => running.WaitAsync(TimeSpan.FromSeconds(3)));
+        using (var other = await fixture.Service.BeginProfileRemovalAsync([existing.Id], default))
+        { Assert.Equal(SavedSessionOperationKind.None, other.StoppedOperationKind); Assert.False(other.StoppedOperation); }
+    }
+
     // N-B1a-1: a profile that no longer exists refuses the same way, so a batch counts it as removed, not as needing sign-in.
     [Fact]
     public async Task ASavedSessionCheckOfARemovedProfileSaysTheProfileWasRemovedAndContactsNobody()

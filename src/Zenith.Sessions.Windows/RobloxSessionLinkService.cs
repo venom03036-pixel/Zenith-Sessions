@@ -25,7 +25,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         // profile is published only after the authenticated identity is completely verified.
         // If that player already has a saved Roblox session, this same owned operation moves to
         // that row and refreshes its sign-in instead of discarding the finished sign-in.
-        var operation = Begin(Guid.NewGuid(), ct); Guid created = operation.ProfileId; bool succeeded = false;
+        var operation = Begin(Guid.NewGuid(), SavedSessionOperationKind.AddAccount, ct); Guid created = operation.ProfileId; bool succeeded = false;
         try
         {
             var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
@@ -42,7 +42,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
 
     public async Task<LinkedIdentity> LinkAsync(Guid profileId, CancellationToken ct)
     {
-        var operation = Begin(profileId, ct); bool succeeded = false;
+        var operation = Begin(profileId, SavedSessionOperationKind.SignIn, ct); bool succeeded = false;
         try
         {
             await RequireProfile(profileId, operation.Token).ConfigureAwait(false);
@@ -59,7 +59,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
 
     public async Task<LinkedIdentity> CheckSavedAsync(Guid profileId, CancellationToken ct)
     {
-        var operation = Begin(profileId, ct); bool succeeded = false;
+        var operation = Begin(profileId, SavedSessionOperationKind.SavedSignInCheck, ct); bool succeeded = false;
         try
         {
             await RequireProfile(profileId, operation.Token).ConfigureAwait(false);
@@ -128,7 +128,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         ct.ThrowIfCancellationRequested(); ArgumentNullException.ThrowIfNull(probe);
         if (profileId == Guid.Empty || placeId <= 0) return new(RobloxHandoffProbeOutcome.ContextRejected);
         Operation operation;
-        try { operation = Begin(profileId, ct); }
+        try { operation = Begin(profileId, SavedSessionOperationKind.HandoffInspection, ct); }
         catch (AccountLinkException) { return new(RobloxHandoffProbeOutcome.Busy); }
         AuthorizationRecord? pending = null;
         var inspectionMutationId = Guid.NewGuid();
@@ -455,7 +455,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         && record.VerifiedUserId == identity.UserId && record.Issuer == identity.Issuer && record.Subject == identity.Subject;
     private static AuthorizationMetadata Metadata(AuthorizationRecord record) => new(record.ProfileId, record.ProfileId.ToString("N"), record.Provider,
         record.Issuer, record.Subject, record.VerifiedUserId, record.VerifiedUsername, record.Generation, record.Health, record.ExpiresUtc, DateTimeOffset.UtcNow);
-    private Operation Begin(Guid profileId, CancellationToken ct)
+    private Operation Begin(Guid profileId, SavedSessionOperationKind kind, CancellationToken ct)
     {
         ct.ThrowIfCancellationRequested(); if (profileId == Guid.Empty) throw new ArgumentException("Choose a saved profile.");
         lock (_state)
@@ -466,7 +466,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
                 throw new AccountLinkException("This account is being removed from your library. Its saved sign-in was not used or changed.") { ProfileRemoved = true };
             if (_active is not null || _disconnect is not null)
                 throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.") { OperationInProgress = true };
-            return _active = new(profileId, CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token));
+            return _active = new(profileId, kind, CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token));
         }
     }
     private void Ensure(Operation operation)
@@ -499,11 +499,12 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         if (disconnect is not null) await disconnect.ConfigureAwait(false);
         _shutdown.Dispose();
     }
-    private sealed class Operation(Guid profileId, CancellationTokenSource stop) : IDisposable
+    private sealed class Operation(Guid profileId, SavedSessionOperationKind kind, CancellationTokenSource stop) : IDisposable
     {
         private int _finished;
         // Changed only under the service state gate, by AdoptSavedSessionAsync.
         public Guid ProfileId { get; set; } = profileId;
+        public SavedSessionOperationKind Kind { get; } = kind;
         public CancellationToken Token { get; } = stop.Token;
         public bool Invalidated;
         public Guid FinalMutationId { get; } = Guid.NewGuid();

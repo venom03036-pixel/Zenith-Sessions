@@ -21,7 +21,7 @@ public sealed partial class RobloxSessionLinkService : IRobloxShareLinkResolver
         if (shareLinks is null) return new(RobloxShareLinkOutcome.Unavailable);
         if (profileId == Guid.Empty) return new(RobloxShareLinkOutcome.Invalid);
         Operation operation;
-        try { operation = Begin(profileId, ct); }
+        try { operation = Begin(profileId, SavedSessionOperationKind.ShareLinkCheck, ct); }
         catch (AccountLinkException) { return new(RobloxShareLinkOutcome.Busy); }
         try
         {
