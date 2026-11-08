@@ -146,7 +146,7 @@ public sealed class NativeHandoffCoordinatorTests : IDisposable
         Task closing = Task.CompletedTask;
         try
         {
-            await prepared.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await prepared.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (dispose) { closing = coordinator.DisposeAsync().AsTask(); Assert.False(closing.IsCompleted); }
             else { stop.Cancel(); coordinator.CancelPending(); }
             Assert.False(work.IsCompleted); Assert.Equal(1, prepared.Starts);

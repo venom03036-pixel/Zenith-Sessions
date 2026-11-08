@@ -218,7 +218,7 @@ public sealed class AuthorizationTests : IDisposable
         var vault=new MemoryVault();var handler=new SyntheticRobloxHandler();using var http=new HttpClient(handler);
         var browser=new GatedBrowser();using var service=new AccountLinkService(repository,vault,new(http),browser);
         var link=service.LinkAsync(profile.Id,"12345",47635,default);
-        await browser.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await browser.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await Assert.ThrowsAsync<AccountLinkException>(()=>service.LinkAsync(profile.Id,"12345",47635,default));
         var disconnect=service.DisconnectAsync(profile.Id,"12345",default);
         Assert.True(browser.Token.IsCancellationRequested);

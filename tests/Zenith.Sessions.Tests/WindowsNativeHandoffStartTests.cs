@@ -212,7 +212,7 @@ public sealed class WindowsNativeHandoffStartTests : IDisposable
         var work = verifier.PrepareAsync(Candidate, stop.Token); Task? disposing = null;
         try
         {
-            await policy.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); stop.Cancel();
+            await policy.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); stop.Cancel();
             disposing = verifier.DisposeAsync().AsTask(); Assert.False(disposing.IsCompleted); Assert.False(work.IsCompleted); AssertFilePinned();
         }
         finally

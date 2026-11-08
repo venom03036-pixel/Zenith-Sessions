@@ -16,7 +16,7 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _clientTrimStop;
     private Task _clientTrimWork = Task.CompletedTask;
     private long _clientTrimGeneration;
-    private sealed record ClientTrimRequest(long Generation, SessionObservation[] Processes);
+    private sealed record ClientTrimRequest(long Generation, SessionObservation[] Processes, string Refusal);
     private string _clientTrimStatus = "Choose clients, then ask Windows to trim their working set now.";
 
     public ObservableCollection<ClientWorkingSetTrimResult> ClientTrimResults { get; } = [];
@@ -44,7 +44,8 @@ public sealed partial class ShellViewModel
 
     // The same pinned, fresh, exact-instance selection the priority controls use.
     private object? CaptureClientTrimRequest(object? parameter)
-        => CanTrimClients ? new ClientTrimRequest(_clientTrimGeneration, PinClientPrioritySelection()) : null;
+        => CanTrimClients
+            ? new ClientTrimRequest(_clientTrimGeneration, PinClientPrioritySelection(out var refusal), refusal) : null;
 
     private Task TrimClientsAsync(object? parameter)
     {
@@ -53,7 +54,7 @@ public sealed partial class ShellViewModel
         var pinned = request.Processes;
         if (pinned.Length == 0)
         {
-            ClientTrimStatus = "The client list is incomplete or changed. Wait for a fresh scan, then select the clients again.";
+            ClientTrimStatus = request.Refusal;
             return Task.CompletedTask;
         }
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);

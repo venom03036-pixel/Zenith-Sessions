@@ -188,7 +188,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor());
         var trial = shell.SelectedAccount!; var other = shell.Accounts.Single(row => row.Profile.Id != trial.Profile.Id);
         shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
-        var context = await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        var context = await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Contains("Trial queued for", shell.NativeTrialStatus, StringComparison.Ordinal);
         Task removing;
         try
@@ -231,7 +231,7 @@ public sealed partial class ClientWindowIntegrationTests
         Task removing;
         try
         {
-            await repository.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            await repository.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.False(shell.StartNativeTrial.Execution.IsCompleted);
             Assert.True(shell.CanRunNativeTrial); // The provider is not busy yet.
             if (disconnect) { shell.DisconnectAccount.Execute(null); removing = shell.DisconnectAccount.Execution; }

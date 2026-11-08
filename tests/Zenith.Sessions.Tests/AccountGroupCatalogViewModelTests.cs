@@ -118,7 +118,7 @@ public sealed class AccountGroupCatalogViewModelTests
     {
         var catalog = new Catalog(3); await using var model = Model(catalog); await Run(model.RefreshCatalog); var before = model.CatalogGroups; var selected = model.SelectedGroup;
         var gate = catalog.ReadGate = new(); model.RefreshCatalog.Execute(null);
-        try { await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); model.CatalogSearch = "new draft"; Assert.True(gate.Token.IsCancellationRequested); }
+        try { await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); model.CatalogSearch = "new draft"; Assert.True(gate.Token.IsCancellationRequested); }
         finally { gate.Release.TrySetResult(); await model.RefreshCatalog.Execution.WaitAsync(TimeSpan.FromSeconds(3)); }
         Assert.Same(before, model.CatalogGroups); Assert.Equal(selected, model.SelectedGroup); Assert.Contains("Review the current", model.Status); Assert.False(model.IsBusy);
     }
@@ -130,7 +130,7 @@ public sealed class AccountGroupCatalogViewModelTests
     {
         var catalog = new Catalog(0); await using var model = Model(catalog); await Run(model.RefreshCatalog); model.NewGroupName = "Late group";
         var gate = catalog.WriteGate = new() { Fail = fail }; model.CreateGroup.Execute(null); string? notice = null;
-        try { await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); model.Fence("Stopped by test Panic"); notice = model.Status; Assert.True(gate.Token.IsCancellationRequested); Assert.False(model.CreateGroup.Execution.IsCompleted); }
+        try { await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); model.Fence("Stopped by test Panic"); notice = model.Status; Assert.True(gate.Token.IsCancellationRequested); Assert.False(model.CreateGroup.Execution.IsCompleted); }
         finally { gate.Release.TrySetResult(); await model.CreateGroup.Execution.WaitAsync(TimeSpan.FromSeconds(3)); }
         Assert.Equal(notice, model.Status); Assert.Empty(model.CatalogGroups); Assert.Null(model.SelectedGroup); Assert.False(model.CanCreateGroup); Assert.False(model.IsBusy);
     }
@@ -141,7 +141,7 @@ public sealed class AccountGroupCatalogViewModelTests
         var catalog = new Catalog(1); var model = Model(catalog); var gate = catalog.ReadGate = new(); model.RefreshCatalog.Execute(null); Task? disposing = null;
         try
         {
-            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); disposing = model.DisposeAsync().AsTask();
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); disposing = model.DisposeAsync().AsTask();
             Assert.Same(disposing, model.DisposeAsync().AsTask()); Assert.False(disposing.IsCompleted); Assert.True(gate.Token.IsCancellationRequested);
         }
         finally { gate.Release.TrySetResult(); await (disposing ?? model.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(3)); }
@@ -155,7 +155,7 @@ public sealed class AccountGroupCatalogViewModelTests
         model.SelectedColorHex = "#AABBCC"; var gate = catalog.WriteGate = new(); model.SaveGroupColor.Execute(null); Guid selected = Guid.Empty;
         try
         {
-            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); model.SelectedGroup = model.CatalogGroups[1]; selected = model.SelectedGroup!.Id;
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); model.SelectedGroup = model.CatalogGroups[1]; selected = model.SelectedGroup!.Id;
             Assert.Equal(expected, catalog.LastExpected); Assert.True(gate.Token.IsCancellationRequested);
         }
         finally { gate.Release.TrySetResult(); await model.SaveGroupColor.Execution.WaitAsync(TimeSpan.FromSeconds(3)); }
@@ -204,7 +204,7 @@ public sealed class AccountGroupCatalogViewModelTests
         model.DestinationName = "Renamed"; model.NewGroupName = "New"; var gate = catalog.ReadGate = new(); model.RefreshCatalog.Execute(null);
         try
         {
-            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); await Run(model.Review); await Run(model.CreateGroup); await Run(model.MoveGroupDown);
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); await Run(model.Review); await Run(model.CreateGroup); await Run(model.MoveGroupDown);
             Assert.Equal(0, reviews); Assert.Equal(0, catalog.Writes); Assert.True(model.IsBusy);
         }
         finally { gate.Release.TrySetResult(); await model.RefreshCatalog.Execution.WaitAsync(TimeSpan.FromSeconds(3)); }
@@ -232,7 +232,7 @@ public sealed class AccountGroupCatalogViewModelTests
         Task? closing = null; string? notice = null;
         try
         {
-            await hold.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); model.Fence("Stopped by test Lock"); closing = model.DisposeAsync().AsTask(); notice = model.Status;
+            await hold.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); model.Fence("Stopped by test Lock"); closing = model.DisposeAsync().AsTask(); notice = model.Status;
             Assert.True(hold.Token.IsCancellationRequested); Assert.False(closing.IsCompleted); Assert.False(model.ShowAccounts.Execution.IsCompleted);
         }
         finally { hold.Release.TrySetResult(); await (closing ?? model.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(3)); }

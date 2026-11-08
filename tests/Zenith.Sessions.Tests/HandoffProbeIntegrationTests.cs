@@ -47,7 +47,7 @@ public sealed partial class ClientWindowIntegrationTests
             shell.ServerBrowser.LinkInput="6564161046";Assert.False(shell.CanInspectNativeHandoff);
             shell.InspectNativeHandoff.Execute(null);await shell.InspectNativeHandoff.Execution;Assert.False(probe.Entered.Task.IsCompleted);
             shell.ServerBrowser.ResolveInput();Assert.True(shell.CanInspectNativeHandoff);
-            shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             try
             {
                 Assert.Equal(selected.Profile.Id,pinned.ProfileId);Assert.Equal(456,pinned.ExpectedUserId);Assert.Equal(6564161046,pinned.PlaceId);
@@ -76,7 +76,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Equal(1,linked);Assert.Equal(ManagerEventKind.AuthorizationLinked,shell.DiagnosticRows[^1].Event.Kind);
 
         shell.ServerBrowser.UsePreferredPlace(6564161046);
-        shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         probe.Complete(pinned);await shell.InspectNativeHandoff.Execution;
         Assert.Contains("captured and cancelled",shell.HandoffInspectionStatus);
         shell.RefreshDiagnostics.Execute(null);
@@ -110,7 +110,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.RefreshDiagnostics.Execute(null);
         int errors=shell.DiagnosticRows.Count(row=>row.Level=="Error");long newest=shell.DiagnosticRows[^1].Sequence;
 
-        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         probe.Finish.TrySetResult(new(new(outcome)));await shell.InspectNativeHandoff.Execution;
         Assert.False(shell.IsLocked);
         Assert.Equal(ShellViewModel.DescribeHandoffResult(new(outcome),6564161046),shell.HandoffInspectionStatus);
@@ -135,7 +135,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe);
         await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
         shell.ServerBrowser.UsePreferredPlace(6564161046);shell.InspectNativeHandoff.Execute(null);
-        var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             shell.LockDashboard();Assert.False(shell.CanInspectNativeHandoff);Assert.True(shell.IsAuthorizing);
@@ -362,7 +362,7 @@ public sealed partial class ClientWindowIntegrationTests
         await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
         shell.ServerBrowser.UsePreferredPlace(6564161046);
         shell.RefreshDiagnostics.Execute(null);string before=shell.DiagnosticErrors;
-        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        shell.InspectNativeHandoff.Execute(null);await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         // The window's Cancel button or close box: the probe reports Cancelled while the shell's own stop token is untouched.
         probe.Finish.TrySetResult(new(new(RobloxHandoffProbeOutcome.Cancelled)));
         await shell.InspectNativeHandoff.Execution.WaitAsync(TimeSpan.FromSeconds(5));
@@ -470,7 +470,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell=new ShellViewModel(_root,true,Dispatcher.CurrentDispatcher,new Monitor(),signIn:new HandoffSignIn(),sessionClient:new HandoffIdentity(),handoffProbe:probe);
         await shell.InitializeAsync();shell.SelectedAccount=shell.Accounts[0];shell.LinkAccount.Execute(null);await shell.LinkAccount.Execution;
         var selected=shell.SelectedAccount!;shell.ServerBrowser.UsePreferredPlace(6564161046);
-        shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        shell.InspectNativeHandoff.Execute(null);var pinned=await probe.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var removing=shell.DeleteAccountsAsync([selected]);
         try
         {

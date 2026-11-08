@@ -64,7 +64,7 @@ public sealed class AccountIdentityProjectionOwnershipTests : IDisposable
         var discarding = first.DiscardAsync(profile.Id, 1, default); Task? preparing = null;
         try
         {
-            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             preparing = second.PrepareAsync(Summary(Session(profile.Id, 2)), default);
             // Before the fix, its uncontended local semaphore permits the repository callback
             // synchronously, even while the other instance is paused inside discard.
@@ -96,7 +96,7 @@ public sealed class AccountIdentityProjectionOwnershipTests : IDisposable
         Task? preparing = null;
         try
         {
-            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             preparing = second.PrepareAsync(Summary(Session(profile.Id, 2)), default);
             Assert.False(tracked.EnteredDuringDiscard);
         }
@@ -203,7 +203,7 @@ public sealed class AccountIdentityProjectionOwnershipTests : IDisposable
         Task[] waiting = [];
         try
         {
-            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await metadata.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             waiting = [second.PrepareAsync(expected with { Generation = 2 }, stop.Token), second.ReplayAsync(stop.Token), second.DiscardAsync(profile.Id, 1, stop.Token)];
             await Assert.ThrowsAsync<AccountIdentityProjectionException>(() => first.PrepareAsync(expected, default));
             Assert.Throws<InvalidOperationException>(() => second.Dispose());

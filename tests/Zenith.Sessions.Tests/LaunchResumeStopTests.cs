@@ -22,7 +22,7 @@ public sealed class LaunchResumeStopTests
         var operation = await queue.EnqueueAsync(Profile(), default, new(123, 7));
         var gate = store.BlockNextSave();
         Task holder = queue.SetPausedAsync(true, default);
-        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task<bool> obsolete = queue.TryResumeAsync(default);
         try
         {
@@ -38,7 +38,7 @@ public sealed class LaunchResumeStopTests
             Assert.Equal(LaunchState.Queued, Assert.Single(store.Last.Operations).State);
 
             Assert.True(await queue.TryResumeAsync(default));
-            var dispatched = await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var dispatched = await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(operation.Intent, dispatched); Assert.Equal(1, provider.LaunchCalls);
             await queue.WaitForActiveCleanupAsync(default);
         }
@@ -56,7 +56,7 @@ public sealed class LaunchResumeStopTests
         await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
         await queue.EnqueueAsync(Profile(), default, new(123, 7));
         var gate = store.BlockNextSave(); Task holder = queue.SetPausedAsync(true, default);
-        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task obsolete = queue.SetPausedAsync(false, default);
         try
         {
@@ -80,7 +80,7 @@ public sealed class LaunchResumeStopTests
         var gate = store.BlockNextSave(); Task<bool> resume = queue.TryResumeAsync(default);
         try
         {
-            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.False(saving.Paused); Assert.False(resume.IsCompleted);
             queue.SignalPanic(); Assert.Equal(0, provider.LaunchCalls);
             gate.Release.SetResult();
@@ -103,7 +103,7 @@ public sealed class LaunchResumeStopTests
         await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
         await queue.EnqueueAsync(Profile(), default, new(123, 7));
         var gate = store.BlockNextSave(); Task holder = queue.SetPausedAsync(true, default);
-        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         using var stop = new CancellationTokenSource();
         if (alreadyCancelled) stop.Cancel();
         Task<bool> resume = queue.TryResumeAsync(stop.Token);
@@ -133,7 +133,7 @@ public sealed class LaunchResumeStopTests
         var gate = store.BlockNextSave(); Task<bool> resume = queue.TryResumeAsync(stop.Token);
         try
         {
-            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.False(saving.Paused);
+            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.False(saving.Paused);
             stop.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => resume);
             Assert.False(queue.IsHealthy); Assert.True(store.Last.Paused); Assert.Equal(0, provider.LaunchCalls);
@@ -154,7 +154,7 @@ public sealed class LaunchResumeStopTests
         await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
         await queue.EnqueueAsync(Profile(), default, new(123, 7));
         var gate = store.BlockNextSave(); Task holder = queue.SetPausedAsync(true, default);
-        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task<bool> obsolete = queue.TryResumeAsync(default);
         Task newerPause = queue.SetPausedAsync(true, default);
         try

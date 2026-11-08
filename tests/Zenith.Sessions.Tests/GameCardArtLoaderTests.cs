@@ -26,7 +26,7 @@ public sealed class GameCardArtLoaderTests
     public Task NewSearchDropsPicturesFromThePreviousGeneration()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();f.Directory.HoldArtFetch=true;f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();
-        var old=f.Search.Results.ToArray();await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var old=f.Search.Results.ToArray();await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         f.Browser.LinkInput="Fisch again";Task second=f.Search.SearchOrUseAsync();
         Assert.True(f.Directory.ArtToken.IsCancellationRequested);
         f.Directory.HoldArtFetch=false;f.Directory.ReleaseArtFetch();await second;await f.Search.ArtOperation;
@@ -39,7 +39,7 @@ public sealed class GameCardArtLoaderTests
     {
         await using var f=new SearchTest();f.Directory.SearchResponse=q=>SearchTest.Ok(f.Directory.Page(q,12));
         f.Directory.HoldArtFetch=true;f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();
-        await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await f.Search.UseCardAsync(f.Search.VisibleResults[3]); // Details load completes while a picture download is held.
         Assert.Equal(2004,f.Browser.Destination!.PlaceId);Assert.Equal(1,f.Directory.GameRequests);Assert.Equal(2004,f.Details.Game!.RequestedPlaceId);
         Assert.True(f.Search.VisibleResults[3].IsCurrent);Assert.Equal(1,f.Directory.ActiveArtFetches);Assert.False(f.Directory.ArtToken.IsCancellationRequested);
@@ -54,7 +54,7 @@ public sealed class GameCardArtLoaderTests
         var first=f.Search.Results.ToArray();Assert.All(first,row=>Assert.True(row.HasArt));
         f.Search.CancelWork();Assert.All(first,row=>Assert.False(row.HasArt));Assert.Empty(f.Search.VisibleResults);
         f.Directory.HoldArtFetch=true;f.Directory.ArtFetchEntered=new(TaskCreationOptions.RunContinuationsAsynchronously);
-        f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var second=f.Search.Results.ToArray();f.Search.CancelWork();Assert.True(f.Directory.ArtToken.IsCancellationRequested);
         f.Directory.ReleaseArtFetch();await f.Search.ArtOperation;Assert.All(second,row=>Assert.False(row.HasArt));Assert.True(f.Search.ArtOperation.IsCompleted);
     });
@@ -63,7 +63,7 @@ public sealed class GameCardArtLoaderTests
     public Task DisposalJoinsAHeldPictureDownload()=>SearchTest.OnUi(async()=>
     {
         var f=new SearchTest();f.Directory.HoldArtFetch=true;f.Browser.LinkInput="Fisch";await f.Search.SearchOrUseAsync();
-        await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));var rows=f.Search.Results.ToArray();
+        await f.Directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));var rows=f.Search.Results.ToArray();
         Task disposal=f.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);Assert.True(f.Directory.ArtToken.IsCancellationRequested);
         f.Directory.ReleaseArtFetch();await disposal.WaitAsync(TimeSpan.FromSeconds(5));Assert.All(rows,row=>Assert.False(row.HasArt));
     });

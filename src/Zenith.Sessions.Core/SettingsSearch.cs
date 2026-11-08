@@ -104,13 +104,13 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.SessionsLayout, "tile", "tiling", "arrange", "columns", "gap", "minimum width", "minimum height", "layout preferences", "grid"),
         E("client-window-size", "Client window size", "On Sessions, under Client window size: enter a content width and height in physical pixels, then choose Apply size for checked clients. Nothing is resized until you choose Apply size.",
             SettingsSearchTarget.ContentSize, "resize", "content size", "window size", "width", "height", "pixels", "resolution", "tiny", "small window"),
-        E("client-priority", "Client CPU priority", "On Sessions, under Client CPU priority: set checked clients to Normal or Below normal, or restore their original priority. Nothing changes until you choose one of those buttons.",
-            SettingsSearchTarget.ClientPriority, "cpu priority", "process priority", "below normal", "restore original", "scheduling", "lower priority"),
+        E("client-priority", "Client CPU priority", "On Sessions, under Client CPU priority: set checked clients to Normal or Below normal, turn on efficiency mode, spread them over cores, or restore their original settings. Nothing changes until you choose one of those buttons.",
+            SettingsSearchTarget.ClientPriority, "cpu priority", "process priority", "below normal", "restore original", "scheduling", "lower priority", "efficiency mode", "ecoqos", "affinity", "cores"),
         E("client-previews", "Client previews", "On Sessions, choose Previews, then Preview checked clients to show live thumbnails. Previews start only when you choose them and stop when you leave the page, hide the window or lock.",
             SettingsSearchTarget.Previews, "preview", "thumbnails", "live view", "capture", "watch clients", "stop previews"),
         E("diagnostics-filters", "Diagnostics filters", "On Diagnostics: filter manager events by text, subsystem or error class, and show or hide errors, warnings and information. Filters change only this view; logging continues.",
             SettingsSearchTarget.DiagnosticsFilters, "filter", "events", "logs", "errors", "warnings", "information", "level", "error class", "subsystem"),
-        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority is set in Sessions, under Client CPU priority.",
+        E("pending-client-performance", "Client FPS and graphics: pending", "Read the capability explanation. Native FPS, graphics, render and client CPU cap/affinity policies are not configurable here. Client process priority, efficiency mode and core spreading are set in Sessions, under Client CPU priority.",
             SettingsSearchTarget.Performance, "fps", "frame rate", "graphics", "renderer", "render", "texture", "MSAA", "lowest graphics", "client cpu", "gpu", "unavailable", "unsupported")
     ];
 

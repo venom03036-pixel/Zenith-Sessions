@@ -158,7 +158,7 @@ public sealed class ClientExecutableTrustTests : IDisposable
         var work = verifier.VerifyAsync(Candidate(Executable), default);
         try
         {
-            await policy.Entered.WaitAsync(TimeSpan.FromSeconds(3));
+            await policy.Entered.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Throws<IOException>(() => File.Open(Executable, FileMode.Open, FileAccess.Write, FileShare.ReadWrite).Dispose());
             Assert.Throws<IOException>(() => File.Delete(Executable));
             var deferred = await verifier.VerifyAsync(Candidate(Executable), default);
@@ -175,9 +175,13 @@ public sealed class ClientExecutableTrustTests : IDisposable
         using var stop = new CancellationTokenSource();
         Task<ClientExecutableTrustResult> work = verifier.VerifyAsync(Candidate(Executable), stop.Token);
         Task? disposal = null;
+        // The worker reaches the policy on a pool thread after its file checks; under a full parallel suite that can take
+        // longer than a few seconds, so the waits are generous. A missed entry fails as itself instead of hiding behind the
+        // cancellation assertion below.
+        bool entered = false;
         try
         {
-            await policy.Entered.WaitAsync(TimeSpan.FromSeconds(3)); stop.Cancel();
+            await policy.Entered.WaitAsync(TimeSpan.FromSeconds(15)); entered = true; stop.Cancel();
             Assert.False(work.IsCompleted);
             disposal = verifier.DisposeAsync().AsTask();
             Assert.False(disposal.IsCompleted);
@@ -186,8 +190,9 @@ public sealed class ClientExecutableTrustTests : IDisposable
         finally
         {
             policy.Release();
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work.WaitAsync(TimeSpan.FromSeconds(3)));
-            await (disposal ?? verifier.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(3));
+            if (entered) await Assert.ThrowsAnyAsync<OperationCanceledException>(() => work.WaitAsync(TimeSpan.FromSeconds(15)));
+            else try { await work.WaitAsync(TimeSpan.FromSeconds(15)); } catch (Exception) { } // The TimeoutException above is the failure.
+            await (disposal ?? verifier.DisposeAsync().AsTask()).WaitAsync(TimeSpan.FromSeconds(15));
             await verifier.DisposeAsync();
         }
         Assert.Equal(1, policy.Calls);

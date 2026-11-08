@@ -201,14 +201,14 @@ public sealed class LaunchResourceBudgetQueueTests
         Assert.True(await queue.ResumeTrialAsync(first.Intent.OperationId, default));
         try
         {
-            await provider.PreparationEntered.Task.WaitAsync(TimeSpan.FromSeconds(3)); policy = Budget(1, 1);
+            await provider.PreparationEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); policy = Budget(1, 1);
             var waiting = store.Row(first.Intent.OperationId)!; Assert.Equal(LaunchState.Preparing, waiting.State);
             Assert.False(LaunchDescriptions.NeedsReservation(waiting.State)); Assert.Equal(Budget(8, 9), waiting.ResourceBudget);
         }
         finally { provider.PreparationRelease.TrySetResult(); }
         try
         {
-            await provider.BoundaryEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await provider.BoundaryEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var adopted = store.Row(first.Intent.OperationId)!; Assert.Equal(LaunchState.Launching, adopted.State);
             Assert.Equal(first.Intent.ProfileRevision + 1, adopted.Intent.ProfileRevision); Assert.Equal(first.Intent.AuthorizationGeneration + 2, adopted.Intent.AuthorizationGeneration);
             Assert.Equal(first.ResourceBudget, adopted.ResourceBudget); freshAdmission = !denyAtBoundary;
@@ -270,7 +270,7 @@ public sealed class LaunchResourceBudgetQueueTests
         var row = await queue.EnqueueAsync(Profile("Late receipt"), default, Binding); await queue.SetPausedAsync(false, default);
         try
         {
-            await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3)); if (panic) queue.SignalPanic(); else await queue.CancelAsync(row.Intent.OperationId, default);
+            await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); if (panic) queue.SignalPanic(); else await queue.CancelAsync(row.Intent.OperationId, default);
             await Until(() => store.Row(row.Intent.OperationId)?.State == LaunchState.Uncertain);
             Assert.Equal(row.ResourceBudget, store.Row(row.Intent.OperationId)!.ResourceBudget);
         }

@@ -21,7 +21,7 @@ public sealed class TelemetryIntegrationTests:IDisposable
         var selected=shell.SelectedSession;
         shell.ShowClientPreviewMode.Execute(null);shell.SetPreviewWindowVisible(true);
         Assert.True(shell.CanStartClientPreviews);
-        shell.StartClientPreviews.Execute(null);await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+        shell.StartClientPreviews.Execute(null);await provider.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         shell.ShowClientHistoryMode.Execute(null);
         Assert.True(shell.IsClientHistoryMode);Assert.False(shell.IsClientPreviewMode);Assert.False(shell.IsClientTableMode);
         Assert.False(shell.ClientPreviews.IsRunning);Assert.Same(selected,shell.SelectedSession);

@@ -28,7 +28,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.AddRobloxAccount.Execute(null); Task execution = shell.AddRobloxAccount.Execution;
         try
         {
-            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.True(shell.IsAuthorizing); Assert.False(shell.CanAddRobloxAccount);
+            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.True(shell.IsAuthorizing); Assert.False(shell.CanAddRobloxAccount);
             Assert.Empty(shell.Accounts); Assert.NotEqual(Guid.Empty, signIn.ProfileId);
             using var before = new AccountRepository(_root); Assert.Equal(0, (await before.ReadAsync(new(), default)).Total);
             Assert.Equal(DirectCookie, signIn.Returned!.CopyValue());
@@ -58,7 +58,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.AddRobloxAccount.Execute(null); Task execution = shell.AddRobloxAccount.Execution;
         try
         {
-            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.DoesNotContain(signIn.ProfileId, originals.Select(row => row.Id));
+            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.DoesNotContain(signIn.ProfileId, originals.Select(row => row.Id));
             shell.SelectedAccount = second; Assert.True(shell.IsAuthorizing);
         }
         finally { signIn.Release(); await execution.WaitAsync(TimeSpan.FromSeconds(5)); }
@@ -105,7 +105,7 @@ public sealed partial class ClientWindowIntegrationTests
         gate.HoldFind = row.Profile.Id; shell.AddRobloxAccount.Execute(null); Task adding = shell.AddRobloxAccount.Execution; Task? removing = null;
         try
         {
-            await gate.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.NotEqual(row.Profile.Id, signIn.ProfileId);
+            await gate.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.NotEqual(row.Profile.Id, signIn.ProfileId);
             removing = shell.DeleteAccountsAsync([row]);
             bool stopped = await Task.WhenAny(gate.FindCancelled.Task, Task.Delay(TimeSpan.FromSeconds(5))) == gate.FindCancelled.Task;
             Assert.True(stopped, "Removing the row did not stop the add that was refreshing that row's saved sign-in.");
@@ -156,7 +156,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.SelectedAccount = shell.Accounts[0]; shell.AddRobloxAccount.Execute(null); Task execution = shell.AddRobloxAccount.Execution; string? notice = null;
         try
         {
-            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (panic) shell.Panic.Execute(null); else shell.LockDashboard(); notice = shell.Notice;
             Assert.True(client.Token.IsCancellationRequested); Assert.False(execution.IsCompleted); Assert.True(shell.IsAuthorizing);
         }
@@ -181,7 +181,7 @@ public sealed partial class ClientWindowIntegrationTests
         gate.Armed = true; shell.AddRobloxAccount.Execute(null); Task execution = shell.AddRobloxAccount.Execution; string? notice = null;
         try
         {
-            var summary = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.Equal(signIn.ProfileId, summary.ProfileId);
+            var summary = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.Equal(signIn.ProfileId, summary.ProfileId);
             Assert.Equal(AuthorizationHealth.Linked, summary.Health); Assert.False(execution.IsCompleted);
             if (panic) shell.Panic.Execute(null); else shell.LockDashboard(); notice = shell.Notice;
         }
@@ -201,7 +201,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.AddRobloxAccount.Execute(null); Task execution = shell.AddRobloxAccount.Execution;
         try
         {
-            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); string notice = shell.Notice;
+            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); string notice = shell.Notice;
             shell.LinkAccount.Execute(null); await shell.LinkAccount.Execution; shell.RefreshAuthorization.Execute(null); await shell.RefreshAuthorization.Execution;
             shell.AddRobloxAccount.Execute(null); Assert.Same(execution, shell.AddRobloxAccount.Execution);
             Assert.Equal(1, signIn.Calls); Assert.Equal(0, client.Calls); Assert.True(shell.IsAuthorizing); Assert.False(shell.CanAddRobloxAccount); Assert.Equal(notice, shell.Notice);
@@ -220,7 +220,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.LinkAccount.Execute(null); Task execution = shell.LinkAccount.Execution;
         try
         {
-            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); Assert.False(shell.CanAddRobloxAccount);
+            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.False(shell.CanAddRobloxAccount);
             shell.AddRobloxAccount.Execute(null); await shell.AddRobloxAccount.Execution; Assert.Equal(1, signIn.Calls);
             shell.CancelAuthorization.Execute(null); Assert.True(signIn.Token.IsCancellationRequested); Assert.False(execution.IsCompleted);
         }
@@ -236,7 +236,7 @@ public sealed partial class ClientWindowIntegrationTests
         try
         {
             await shell.InitializeAsync(); shell.AddRobloxAccount.Execute(null); execution = shell.AddRobloxAccount.Execution;
-            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5)); disposing = shell.DisposeAsync().AsTask();
+            await signIn.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); disposing = shell.DisposeAsync().AsTask();
             Assert.True(signIn.Token.IsCancellationRequested); Assert.False(disposing.IsCompleted); Assert.False(execution.IsCompleted);
             Assert.Equal(0, signIn.Disposals); Assert.False(shell.CanAddRobloxAccount);
         }

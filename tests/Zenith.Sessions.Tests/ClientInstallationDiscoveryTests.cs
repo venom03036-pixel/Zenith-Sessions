@@ -179,7 +179,7 @@ public sealed class ClientInstallationDiscoveryTests
         using var stop=new CancellationTokenSource();var first=discovery.DiscoverAsync(stop.Token);
         try
         {
-            await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await source.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(ClientInstallationSnapshotStatus.Deferred,(await discovery.DiscoverAsync(default)).Status);Assert.Equal(1,source.RootCalls);
             stop.Cancel();Assert.False(first.IsCompleted);Assert.Equal(ClientInstallationSnapshotStatus.Deferred,(await discovery.DiscoverAsync(default)).Status);
         }

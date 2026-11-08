@@ -211,7 +211,7 @@ public sealed class ClientWindowResizeTests
         Task<WindowActionResult>? minimize = null;
         try
         {
-            await adapter.Entered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await adapter.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             minimize = operations.ChangeAsync(Session(3), ClientWindowAction.Minimize, default);
             operations.Cancel(); Assert.False(resize.IsCompleted); Assert.False(minimize.IsCompleted);
             adapter.Release.Set();

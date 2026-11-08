@@ -16,8 +16,8 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _clientPriorityStop;
     private Task _clientPriorityWork = Task.CompletedTask;
     private long _clientPriorityGeneration;
-    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes);
-    private string _clientPriorityStatus = "Choose clients to change their Windows CPU scheduling priority.";
+    private sealed record ClientPriorityRequest(long Generation, SessionObservation[] Processes, string Refusal);
+    private string _clientPriorityStatus = "Choose clients to change their Windows CPU priority, efficiency mode or cores.";
 
     public ObservableCollection<ClientProcessPriorityResult> ClientPriorityResults { get; } = [];
     public bool CanChangeClientPriority => _priorityPermitted && _ready && !IsLocked && !_shuttingDown
@@ -27,6 +27,8 @@ public sealed partial class ShellViewModel
     public string ClientPriorityStatus { get => _clientPriorityStatus; private set => Set(ref _clientPriorityStatus, value); }
     public AsyncCommand SetClientsNormalPriority { get; private set; } = null!;
     public AsyncCommand SetClientsBelowNormalPriority { get; private set; } = null!;
+    public AsyncCommand SetClientsEfficiencyMode { get; private set; } = null!;
+    public AsyncCommand SpreadClientsOverCores { get; private set; } = null!;
     public AsyncCommand RestoreClientsPriority { get; private set; } = null!;
     public Command CancelClientPriority { get; private set; } = null!;
 
@@ -36,6 +38,8 @@ public sealed partial class ShellViewModel
         _clientPriority = control ?? new WindowsClientProcessPriorityControl();
         SetClientsNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Normal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         SetClientsBelowNormalPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.BelowNormal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
+        SetClientsEfficiencyMode = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.Efficiency, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
+        SpreadClientsOverCores = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.SpreadCores, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         RestoreClientsPriority = new(p => ChangeClientPriorityAsync(ClientProcessPriorityAction.RestoreOriginal, p), ReportClientPriorityFailure, CaptureClientPriorityRequest);
         CancelClientPriority = new(_ => StopClientPriorityOperations());
         PropertyChanged += ClientPriorityOwnerChanged;
@@ -47,22 +51,50 @@ public sealed partial class ShellViewModel
             Raise(nameof(CanChangeClientPriority));
     }
 
-    private SessionObservation[] PinClientPrioritySelection()
+    private const string ClientSelectionChangedText = "The client list is incomplete or changed. Wait for a fresh scan, then select the clients again.";
+    private const string ClientSelectionUnreadableText = "Windows could not read the identity of a selected client, for example one run by another Windows user, so nothing was changed. Uncheck or deselect that row, then try again.";
+
+    /// <summary>Pins the checked (or selected) exact instances from the latest fresh scan; empty with <paramref name="refusal"/> otherwise.</summary>
+    private SessionObservation[] PinClientPrioritySelection(out string refusal)
     {
         var requested = Sessions.Where(row => row.IsChecked).Select(row => row.Observation).ToArray();
         if (requested.Length == 0 && SelectedSession is { } selected && Sessions.Contains(selected))
             requested = [selected.Observation];
-        var desktop = Volatile.Read(ref _latestDesktop);
-        var now = DateTimeOffset.UtcNow;
-        if (requested.Length is < 1 or > 128 || desktop is not { Problem: null, ProcessInventoryComplete: true, ProcessRevision: > 0 }
+        return PinFreshClientInstances(requested, out refusal);
+    }
+
+    /// <summary>
+    /// The latest scan, when it is fresh and complete enough to name every readable client instance exactly; null otherwise.
+    /// The monitor reports a process it could not open (for example another Windows user's client) as a row with a Problem and
+    /// no start time, and that row alone makes it call the scan incomplete. The row names no instance to act on, so it is
+    /// skipped, as TelemetryHistory skips it; its PID still takes part in the duplicate check. Any other incompleteness, and a
+    /// scan that reached its budget, still refuses.
+    /// </summary>
+    private static IReadOnlyList<SessionObservation>? FreshClientInventory(DesktopSnapshot? desktop, DateTimeOffset now)
+    {
+        if (desktop is not { Problem: null, ProcessRevision: > 0 }
             || desktop.ProcessObservedUtc is not { } observed || observed == default || observed > now
             || now - observed > TimeSpan.FromSeconds(3) || desktop.Sessions is null || desktop.Sessions.Count > 128)
-            return [];
+            return null;
         var current = desktop.Sessions;
-        if (current.Any(row => row is null || row.Problem is not null || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0
+        bool unreadablePresent = current.Any(row => row is not null && IdentityUnavailable(row, observed, now));
+        if (!desktop.ProcessInventoryComplete
+            && (!unreadablePresent || current.Count >= DesktopSamplingCadence.MaximumProcessSamples))
+            return null;
+        if (current.Any(row => row is null || (!IdentityUnavailable(row, observed, now) && (row.Problem is not null
+                || row.ProcessId <= 0 || row.ProcessStartUtcTicks <= 0
                 || row.ObservedUtc > observed || row.ProcessStartUtcTicks > row.ObservedUtc.UtcTicks
-                || row.ObservedUtc == default || now - row.ObservedUtc > TimeSpan.FromSeconds(3))
-            || current.Select(row => row.ProcessId).Distinct().Count() != current.Count
+                || row.ObservedUtc == default || now - row.ObservedUtc > TimeSpan.FromSeconds(3))))
+            || current.Select(row => row.ProcessId).Distinct().Count() != current.Count)
+            return null;
+        return current;
+    }
+
+    /// <summary>Pins <paramref name="requested"/> exact instances from the latest fresh scan; empty with <paramref name="refusal"/> otherwise.</summary>
+    private SessionObservation[] PinFreshClientInstances(SessionObservation[] requested, out string refusal)
+    {
+        refusal = ClientSelectionChangedText;
+        if (requested.Length is < 1 or > 128 || FreshClientInventory(Volatile.Read(ref _latestDesktop), DateTimeOffset.UtcNow) is not { } current
             || requested.Select(row => row.InstanceKey).Distinct().Count() != requested.Length)
             return [];
         var pinned = new SessionObservation[requested.Length];
@@ -70,13 +102,20 @@ public sealed partial class ShellViewModel
         {
             var match = current.SingleOrDefault(row => row.InstanceKey == requested[index].InstanceKey);
             if (match is null) return [];
+            // Only identity-unavailable rows pass the checks above with a Problem.
+            if (match.Problem is not null) { refusal = ClientSelectionUnreadableText; return []; }
             pinned[index] = match;
         }
         return pinned;
     }
 
+    private static bool IdentityUnavailable(SessionObservation row, DateTimeOffset observed, DateTimeOffset now)
+        => row.Problem is not null && row.ProcessStartUtcTicks == 0 && row.ProcessId > 0 && row.ObservedUtc != default
+            && row.ObservedUtc <= observed && now - row.ObservedUtc <= TimeSpan.FromSeconds(3);
+
     private object? CaptureClientPriorityRequest(object? parameter)
-        => CanChangeClientPriority ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection()) : null;
+        => CanChangeClientPriority
+            ? new ClientPriorityRequest(_clientPriorityGeneration, PinClientPrioritySelection(out var refusal), refusal) : null;
 
     private Task ChangeClientPriorityAsync(ClientProcessPriorityAction action, object? parameter)
     {
@@ -85,7 +124,7 @@ public sealed partial class ShellViewModel
         var pinned = request.Processes;
         if (pinned.Length == 0)
         {
-            ClientPriorityStatus = "The client list is incomplete or changed. Wait for a fresh scan, then select the clients again.";
+            ClientPriorityStatus = request.Refusal;
             return Task.CompletedTask;
         }
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);

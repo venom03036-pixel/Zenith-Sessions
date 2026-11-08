@@ -260,7 +260,7 @@ public sealed partial class DirectoryIntegrationTests : IDisposable
         var directory=new PublicDirectory {Pending=new(TaskCreationOptions.RunContinuationsAsynchronously)};
         await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new Monitor(),directory,new Servers());await vm.InitializeAsync();
         var row=Assert.Single(vm.Accounts);vm.SelectedAccount=row;Assert.Equal("linked_name",row.Label);Assert.Equal(0,directory.Calls);
-        vm.RefreshPublicAccount.Execute(row);await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));Assert.Equal(1,directory.Calls);vm.LockDashboard();
+        vm.RefreshPublicAccount.Execute(row);await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));Assert.Equal(1,directory.Calls);vm.LockDashboard();
         directory.Pending.SetResult(directory.Profile);await vm.RefreshPublicAccount.Execution;
         Assert.True(vm.IsLocked);Assert.Equal("",row.PublicDisplayName);Assert.Null(row.Avatar);Assert.Equal("linked_name",row.Label);
         directory.Pending=null;vm.Unlock.Execute(null);vm.RefreshPublicAccount.Execute(row);await vm.RefreshPublicAccount.Execution;

@@ -13,7 +13,7 @@ public sealed partial class ClientWindowIntegrationTests
         vm.SelectClientPage.Execute(null); vm.MinimizeCheckedClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             vm.Sessions[0].IsChecked = false; vm.Sessions[1].IsChecked = false;
             vm.RestoreCheckedClients.Execute(null); await vm.RestoreCheckedClients.Execution;
             Assert.Equal(1, monitor.StateChanges); Assert.Equal(2, monitor.Requested.Count);

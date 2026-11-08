@@ -33,7 +33,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.Refresh.Execute(null); var refresh = shell.Refresh.Execution;
         try
         {
-            await repository.ExplicitReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            await repository.ExplicitReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             // Correct code retires the old scheduled owner before I/O. Before the fix, that
             // same owner enters the second repository gate and invalidates explicit Refresh.
             await Task.WhenAny(scheduled, repository.ObsoleteReadEntered.Task).WaitAsync(TimeSpan.FromSeconds(4));
@@ -65,7 +65,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.Refresh.Execute(null); var refresh = shell.Refresh.Execution;
         try
         {
-            await repository.MainLookupEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            await repository.MainLookupEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             shell.SelectedAccount = shell.Accounts.Single(row => row.Profile.Id == second);
             repository.ReleaseMainLookup.TrySetResult(); await refresh.WaitAsync(TimeSpan.FromSeconds(4));
             Assert.Equal(second, shell.SelectedAccount!.Profile.Id);

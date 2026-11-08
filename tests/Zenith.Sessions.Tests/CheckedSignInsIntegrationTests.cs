@@ -113,7 +113,7 @@ public sealed partial class ClientWindowIntegrationTests
         Task sharing = shell.ShareLink.CheckAsync();
         try
         {
-            await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await shareLinks.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             shell.CheckCheckedSignIns.Execute(null); await shell.CheckCheckedSignIns.Execution.WaitAsync(TimeSpan.FromSeconds(10));
         }
         finally { shareLinks.Release(); await sharing.WaitAsync(TimeSpan.FromSeconds(5)); }
@@ -197,7 +197,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.CheckCheckedSignIns.Execute(null); Task execution = shell.CheckCheckedSignIns.Execution; string? notice = null;
         try
         {
-            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.True(shell.IsAuthorizing); Assert.False(shell.CanAddRobloxAccount);
             if (stopKind == "cancel") shell.CancelAuthorization.Execute(null); else if (stopKind == "lock") shell.LockDashboard(); else shell.Panic.Execute(null);
             notice = shell.Notice; Assert.True(client.HeldToken.IsCancellationRequested); Assert.False(execution.IsCompleted);

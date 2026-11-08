@@ -39,6 +39,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.Lifecycle=>"Startup and shutdown",
         ManagerSubsystem.ClientMemory=>"Client memory",
         ManagerSubsystem.RepeatLaunch=>"Repeat launch",
+        ManagerSubsystem.ClientSound=>"Client sound",
         _=>"Unrecognized subsystem"
     };
 }

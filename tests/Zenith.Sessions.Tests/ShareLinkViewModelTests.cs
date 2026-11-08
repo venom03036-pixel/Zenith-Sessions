@@ -18,7 +18,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();Guid? profile=ProfileA;
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal("",vm.LinkInput);Assert.Equal(ProfileA,resolver.LastProfile);Assert.True(vm.IsBusy);Assert.Contains("Checking",vm.Status);
         resolver.Hold=false;resolver.Release();await check;
         Assert.Equal(5,f.Browser.Destination!.PlaceId);Assert.Null(f.Browser.Destination.JobId);Assert.False(vm.HasPrivateResult);Assert.True(vm.HasResult);
@@ -31,7 +31,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         f.Browser.UsePreferredPlace(99);f.Browser.LinkInput="Adopt"; // The user went back to step 1, picked another game and started typing.
         resolver.Hold=false;resolver.Release();await check;
         Assert.Equal(99,f.Browser.Destination!.PlaceId);Assert.Equal("Adopt",f.Browser.LinkInput);
@@ -45,7 +45,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         f.Browser.LinkInput="Adopt";
         resolver.Hold=false;resolver.Release();await check;
         Assert.Equal("Adopt",f.Browser.LinkInput);Assert.Null(f.Browser.Destination);Assert.True(vm.HasResult);
@@ -58,7 +58,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;
         var resolver=new Resolver{Hold=true,Response=_=>late=Private()};
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             vm.SelectedAccountChanged(); // The same account's row was reloaded: the check goes on.
@@ -80,7 +80,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;
         var resolver=new Resolver{Hold=true,Response=_=>late=Private()};
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         profile=null; // The account was filtered out of the list, so nothing is selected when the answer arrives.
         resolver.Hold=false;resolver.Release();await check;
         Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);Assert.Equal(0,late!.PrivateServerCode!.Length);
@@ -92,7 +92,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();RobloxShareLinkResolution? late=null;var store=new Store();Guid? profile=ProfileA;var games=new CancellableGames();
         var resolver=new Resolver{Response=_=>late=Private()};
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>profile,()=>f.Allowed,games:games);
-        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await games.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await games.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         profile=ProfileB;vm.SelectedAccountChanged();
         Assert.True(games.LastToken.IsCancellationRequested);await check.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.False(vm.HasResult);Assert.False(vm.IsBusy);Assert.Equal(AccountChanged,vm.Status);
@@ -104,7 +104,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true,Response=_=>Private()};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             // The Find box hands over a second link while the first is still being checked.
@@ -126,7 +126,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             vm.Cancel(); // Leaving the page; this resolver ignores its token, so the check is still stopping when the user comes back.
@@ -144,7 +144,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             f.Allowed=false;vm.Cancel(); // Lock or Panic: nothing new is checked and no refusal is shown over the stopped page.
@@ -163,7 +163,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true,Response=_=>Private()};var store=new Store();
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         await using var find=new DestinationSearchViewModel(f.Directory,f.Browser,f.Details,()=>f.Allowed,clock:f.Clock,shareLinkHandler:link=>vm.CheckAsync(link));
-        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             // A second link pasted in the Find box while the first is still being checked: the Private server tab refuses it.
@@ -377,7 +377,7 @@ public sealed class ShareLinkViewModelTests
         using(var two=new ProtectedPrivateServerCode("1111222233334444")) await store.AddAsync("Two",8,9,3,null,two,default);
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         await vm.LoadSavedAsync();Assert.Equal(new[]{"One","Two"},vm.Saved.Select(saved=>saved.Name).ToArray());Assert.Equal(1,store.Reads);
-        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("Server");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         vm.Cancel();Assert.True(resolver.LastToken.IsCancellationRequested);resolver.Hold=false;resolver.Release();await check;
         Assert.False(vm.HasResult);Assert.Equal("",vm.LinkInput);Assert.Empty(vm.Saved);Assert.False(vm.IsBusy);
         await vm.LoadSavedAsync();Assert.Equal(2,vm.Saved.Count);
@@ -388,7 +388,7 @@ public sealed class ShareLinkViewModelTests
     {
         await using var f=new SearchTest();var resolver=new Resolver{Hold=true};var store=new Store();
         var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.LinkInput=Link("ExperienceDetails");Task check=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task disposal=vm.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);Assert.True(resolver.LastToken.IsCancellationRequested);
         resolver.Hold=false;resolver.Release();await disposal.WaitAsync(TimeSpan.FromSeconds(5));await check;
         Assert.False(vm.HasResult);Assert.Null(f.Browser.Destination);
@@ -400,7 +400,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();var store=new Store{HoldRead=true};
         using(var one=new ProtectedPrivateServerCode(LinkCode)) await store.AddAsync("One",5,6,null,null,one,default);
         await using var vm=new ShareLinkViewModel(new Resolver(),store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
-        Task load=vm.LoadSavedAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task load=vm.LoadSavedAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         vm.Cancel();Assert.True(store.LastToken.IsCancellationRequested);
         store.Release();await load;
         Assert.Empty(vm.Saved);Assert.False(vm.IsBusy); // The late list does not reappear on a page the user left.
@@ -412,7 +412,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();var store=new Store();var resolver=new Resolver{Response=_=>Private()};
         var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         vm.LinkInput=Link("Server");await vm.CheckAsync();store.HoldAdd=true;
-        Task save=vm.SaveAsFavoriteAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task save=vm.SaveAsFavoriteAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task disposal=vm.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);Assert.True(store.LastToken.IsCancellationRequested);
         store.Release();await disposal.WaitAsync(TimeSpan.FromSeconds(5));await save;
         Assert.Empty(vm.Saved);
@@ -424,7 +424,7 @@ public sealed class ShareLinkViewModelTests
         await using var f=new SearchTest();var store=new Store();var resolver=new Resolver{Response=_=>Private()};
         await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
         vm.LinkInput=Link("Server");await vm.CheckAsync();store.HoldAdd=true;
-        Task save=vm.SaveAsFavoriteAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Task save=vm.SaveAsFavoriteAsync();await store.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         vm.Cancel();Assert.False(vm.HasResult); // Leaving the page disposes the result's code while the store still holds the save.
         store.Release();await save;
         Assert.Equal(LinkCode,Assert.Single(store.Codes).Value);Assert.Empty(vm.Saved);

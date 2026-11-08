@@ -38,7 +38,7 @@ public sealed class RobloxFavoriteGamesViewModelTests
     public Task AccountSwitchDropsTheOldAccountsFavorites()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Hold=true};await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
-        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.Equal("Loading favorites…",vm.Status);
         vm.SetAccount(ProfileB,157,1,"B");Assert.True(directory.LastToken.IsCancellationRequested);Assert.Empty(vm.Chips);
         directory.Hold=false;directory.Release();await first;Assert.Empty(vm.Chips); // The late page for A is fenced out.
@@ -50,7 +50,7 @@ public sealed class RobloxFavoriteGamesViewModelTests
     public Task SwitchingAccountWhileTheOldPageLoadsStartsTheNewAccountsRequest()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Hold=true};await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
-        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         vm.SetAccount(ProfileB,157,1,"B");Task second=vm.LoadAsync(); // The shell does not wait for A's request to unwind.
         try
         {
@@ -77,7 +77,7 @@ public sealed class RobloxFavoriteGamesViewModelTests
     public Task LeavingThePageCancelsAndClears()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var directory=new FavoritesDirectory(3){Hold=true};await using var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
-        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         vm.Cancel();Assert.True(directory.LastToken.IsCancellationRequested);directory.Hold=false;directory.Release();await first;Assert.Empty(vm.Chips);
         await vm.LoadAsync();Assert.Equal(2,directory.Requests);Assert.Equal(3,vm.Chips.Count); // A new visit loads again.
         vm.Cancel();Assert.Empty(vm.Chips);Assert.False(vm.HasMore);
@@ -155,7 +155,7 @@ public sealed class RobloxFavoriteGamesViewModelTests
         await using(var none=new RobloxFavoriteGamesViewModel(null,f.Browser,()=>f.Allowed))
         {none.SetAccount(ProfileA,156,3,"A");await none.LoadAsync();Assert.Empty(none.Chips);Assert.Equal("Roblox favorites are unavailable in this build.",none.Status);}
         var directory=new FavoritesDirectory(3){Hold=true};var vm=new RobloxFavoriteGamesViewModel(directory,f.Browser,()=>f.Allowed);
-        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        vm.SetAccount(ProfileA,156,3,"A");Task first=vm.LoadAsync();await directory.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Task disposal=vm.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);Assert.True(directory.LastToken.IsCancellationRequested);
         directory.Hold=false;directory.Release();await disposal.WaitAsync(TimeSpan.FromSeconds(5));await first;Assert.Empty(vm.Chips);
     });

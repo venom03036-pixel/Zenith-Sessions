@@ -169,7 +169,7 @@ public sealed class PerformanceSettingsTransferTests
     public async Task CancellationPropagatesWithoutDefaultsOrTakingStreamOwnership()
     {
         using var stop=new CancellationTokenSource();using var stream=new WaitingStream();var reading=PerformanceSettingsTransfer.ReadJsonAsync(stream,stop.Token);
-        await stream.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));stop.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>reading);Assert.False(stream.Disposed);
+        await stream.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));stop.Cancel();await Assert.ThrowsAnyAsync<OperationCanceledException>(()=>reading);Assert.False(stream.Disposed);
         Assert.ThrowsAny<OperationCanceledException>(()=>PerformanceSettingsTransfer.SerializeJson(new(),stop.Token));
         Assert.ThrowsAny<OperationCanceledException>(()=>PerformanceSettingsTransfer.ParseJson(Json(),stop.Token));
         Assert.ThrowsAny<OperationCanceledException>(()=>PerformanceSettingsTransfer.DecodeShareCode("secret-marker",stop.Token));

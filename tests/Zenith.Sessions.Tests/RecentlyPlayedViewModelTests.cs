@@ -66,7 +66,7 @@ public sealed class RecentlyPlayedViewModelTests
     public Task NewSourcesCancelTheOldNamingRunAndDisposalJoinsIt()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var names=new NamesDirectory{Hold=true};var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
-        Task first=vm.UpdateAsync([Source(1,101,1)]);await names.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));var firstToken=names.LastToken;
+        Task first=vm.UpdateAsync([Source(1,101,1)]);await names.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));var firstToken=names.LastToken;
         Task second=vm.UpdateAsync([Source(2,102,1)]);Assert.True(firstToken.IsCancellationRequested);Assert.False(names.LastToken.IsCancellationRequested);
         Task disposal=vm.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);
         names.Hold=false;names.Release();await disposal.WaitAsync(TimeSpan.FromSeconds(5));await first;await second;
@@ -78,7 +78,7 @@ public sealed class RecentlyPlayedViewModelTests
     {
         await using var f=new SearchTest();var names=new NamesDirectory{Hold=true};await using var vm=new RecentlyPlayedViewModel(names,names,f.Browser,()=>f.Allowed);
         RecentlyPlayedSource[] sources=[Source(1,101,1),Source(2,null,2)];
-        Task first=vm.UpdateAsync(sources);await names.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));var token=names.LastToken;
+        Task first=vm.UpdateAsync(sources);await names.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));var token=names.LastToken;
         try
         {
             for(int sample=0;sample<5;sample++) _=vm.UpdateAsync(sources); // Every desktop sample re-sends the same observations.

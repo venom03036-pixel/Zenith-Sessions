@@ -47,7 +47,7 @@ public sealed partial class ClientWindowIntegrationTests
         Task active=shell.DestinationSearch.SearchOrUse.Execution;string? stopped=null;
         try
         {
-            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));if(panic)shell.Panic.Execute(null);else shell.LockDashboard();stopped=shell.Notice;
+            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));if(panic)shell.Panic.Execute(null);else shell.LockDashboard();stopped=shell.Notice;
             Assert.True(directory.SearchToken.IsCancellationRequested);Assert.False(active.IsCompleted);Assert.Empty(shell.DestinationSearch.Results);
             Assert.Equal("",shell.ServerBrowser.LinkInput);Assert.False(shell.DestinationSearch.CanSearch);
         }
@@ -65,7 +65,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ServerBrowser.LinkInput="Fisch";Task active=shell.DestinationSearch.SearchOrUseAsync();
         try
         {
-            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));if(tab)shell.Navigate.Execute("Accounts");else shell.SetPreviewWindowVisible(false);
+            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));if(tab)shell.Navigate.Execute("Accounts");else shell.SetPreviewWindowVisible(false);
             Assert.True(directory.SearchToken.IsCancellationRequested);Assert.False(shell.DestinationSearch.CanSearch);Assert.Equal("Fisch",shell.ServerBrowser.LinkInput);
         }
         finally{directory.ReleaseSearch();await active.WaitAsync(TimeSpan.FromSeconds(5));}
@@ -98,7 +98,7 @@ public sealed partial class ClientWindowIntegrationTests
     {
         var directory=new SearchDirectory(new()){HoldArtFetch=true};directory.SearchResponse=q=>SearchTest.Ok(directory.Page(q,3));
         await using var shell=SearchShell(directory);await shell.InitializeAsync();ShowSearch(shell);var search=shell.DestinationSearch;
-        shell.ServerBrowser.LinkInput="Fisch";await search.SearchOrUseAsync();await directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        shell.ServerBrowser.LinkInput="Fisch";await search.SearchOrUseAsync();await directory.ArtFetchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var rows=search.VisibleResults.ToArray();
         shell.SetPreviewWindowVisible(false);Assert.True(directory.ArtToken.IsCancellationRequested);
         directory.HoldArtFetch=false;directory.ReleaseArtFetch();await search.ArtOperation;
@@ -130,7 +130,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ServerBrowser.LinkInput="42";Task active=shell.DestinationSearch.SearchOrUseAsync();string? stopped=null;
         try
         {
-            await directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));shell.Panic.Execute(null);stopped=shell.Notice;
+            await directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));shell.Panic.Execute(null);stopped=shell.Notice;
             Assert.True(directory.GameToken.IsCancellationRequested);Assert.False(active.IsCompleted);Assert.Null(shell.GameDetails.Game);
         }
         finally{directory.ReleaseGame();await active.WaitAsync(TimeSpan.FromSeconds(5));}
@@ -145,7 +145,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ServerBrowser.LinkInput="Fisch";Task active=shell.DestinationSearch.SearchOrUseAsync();Task? disposal=null;
         try
         {
-            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));disposal=shell.DisposeAsync().AsTask();
+            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));disposal=shell.DisposeAsync().AsTask();
             Assert.True(directory.SearchToken.IsCancellationRequested);Assert.False(active.IsCompleted);Assert.False(disposal.IsCompleted);
         }
         finally {directory.ReleaseSearch();await active.WaitAsync(TimeSpan.FromSeconds(5));if(disposal is not null)await disposal.WaitAsync(TimeSpan.FromSeconds(10));else await shell.DisposeAsync();}

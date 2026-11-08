@@ -22,7 +22,7 @@ public sealed class LaunchArrivalPublicationTests
         Task cancel = Task.CompletedTask;
         try
         {
-            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (!panic)
             {
                 fixture.StopObserved = true;
@@ -63,7 +63,7 @@ public sealed class LaunchArrivalPublicationTests
         fixture.Provider.Confirmation.SetResult(true);
         try
         {
-            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            var saving = await gate.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(LaunchState.Arrived, Assert.Single(saving.Operations).State);
             fixture.StopObserved = true; fixture.Queue.SignalPanic(); gate.Release.SetResult();
             await fixture.Queue.WaitForActiveCleanupAsync(default).WaitAsync(TimeSpan.FromSeconds(5));
@@ -271,7 +271,7 @@ public sealed class LaunchArrivalPublicationTests
                 fixture.Operation = await fixture.Queue.EnqueueAsync(Profile(), default, new(123, 7),
                     new(42, "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee", RobloxServerKind.Public));
                 await fixture.Queue.SetPausedAsync(false, default);
-                await fixture.Provider.ConfirmationEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+                await fixture.Provider.ConfirmationEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
                 return fixture;
             }
             catch { await fixture.DisposeAsync(); throw; }

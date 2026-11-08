@@ -1,0 +1,177 @@
+using System.Diagnostics;
+using System.IO;
+using System.Text;
+using Xunit;
+using Zenith.Sessions.Core;
+using Zenith.Sessions.Windows;
+
+namespace Zenith.Sessions.Tests;
+
+/// <summary>
+/// Real Core Audio calls on a test-owned Windows PowerShell helper that loops a second of silence through System.Media.SoundPlayer
+/// (winmm over WASAPI), never a Roblox client. Only the accepted executable name is the helper's; rights, identity checks, the
+/// session match by PID, readback, Unmute and Exit restoration are the shipped path. Each step is read back separately through the
+/// adapter's own Core Audio enumeration, beneath the control and its ownership map.
+/// </summary>
+public sealed class ClientAudioMuteNativeTests
+{
+    [Fact]
+    public async Task MuteChangesOnlyTheTestOwnedHelpersOwnSoundAndRestoreAndExitUnmuteIt()
+    {
+        await using var helper = await SilentHelper.StartAsync();
+        var control = new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter("powershell.exe"));
+        try
+        {
+            Assert.All(helper.Sessions(), muted => Assert.False(muted));
+
+            // An observation of the same PID with a different start is another process instance: refused, nothing changes.
+            var reused = helper.Session with { ProcessStartUtcTicks = helper.Session.ProcessStartUtcTicks - TimeSpan.TicksPerSecond };
+            var refused = Assert.Single((await control.ChangeAsync([reused], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.Equal(ClientAudioMuteStatus.InvalidClient, refused.Status);
+            Assert.All(helper.Sessions(), muted => Assert.False(muted));
+
+            var muted = Assert.Single((await control.ChangeAsync([helper.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(muted.Status == ClientAudioMuteStatus.Applied, muted.Explanation);
+            Assert.All(helper.Sessions(), state => Assert.True(state));
+            Assert.Equal(1, control.PendingRestoreCount);
+
+            var restored = Assert.Single((await control.RestoreAllAsync(default)).Results);
+            Assert.True(restored.Status == ClientAudioMuteStatus.Restored, restored.Explanation);
+            Assert.All(helper.Sessions(), state => Assert.False(state));
+            Assert.Equal(0, control.PendingRestoreCount);
+
+            // Exit restoration: mute again, then dispose the control without an explicit restore.
+            var again = Assert.Single((await control.ChangeAsync([helper.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(again.Status == ClientAudioMuteStatus.Applied, again.Explanation);
+            Assert.All(helper.Sessions(), state => Assert.True(state));
+        }
+        finally
+        {
+            await control.DisposeAsync();
+            helper.UnmuteIfLeftMuted(); // Windows may remember a mute for powershell.exe; never leave one behind.
+        }
+        Assert.Equal(0, control.PendingRestoreCount);
+        Assert.All(helper.Sessions(), state => Assert.False(state));
+    }
+
+    /// <summary>
+    /// Two helpers of the same program, as with several Roblox clients. Observed on Windows 11 (build 26200): a helper started
+    /// while another is muted starts with its sound on, but one started after a muted helper exited starts muted, because Windows
+    /// remembered that mute. Either way, a later instance Zenith mutes or finds muted that way is unmuted on Exit.
+    /// </summary>
+    [Fact]
+    public async Task LaterHelpersOfTheSameProgramAreUnmutedOnExitEvenWhenWindowsStartsOneMuted()
+    {
+        var first = await SilentHelper.StartAsync();
+        SilentHelper? concurrent = null, later = null;
+        var control = new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter("powershell.exe"));
+        try
+        {
+            var muted = Assert.Single((await control.ChangeAsync([first.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(muted.Status == ClientAudioMuteStatus.Applied, muted.Explanation);
+
+            concurrent = await SilentHelper.StartAsync();
+            var second = Assert.Single((await control.ChangeAsync([concurrent.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(second.RestorePending, second.Status + ": " + second.Explanation);
+            Assert.All(concurrent.Sessions(), state => Assert.True(state));
+
+            await first.DisposeAsync(); // Exits while muted, so Windows may remember the mute for the program.
+            later = await SilentHelper.StartAsync();
+            var third = Assert.Single((await control.ChangeAsync([later.Session], ClientAudioMuteAction.Mute, default)).Results);
+            Assert.True(third.RestorePending, third.Status + ": " + third.Explanation);
+            Assert.All(later.Sessions(), state => Assert.True(state));
+        }
+        finally
+        {
+            await control.DisposeAsync();
+            bool[] left = [.. concurrent?.Sessions() ?? [], .. later?.Sessions() ?? []];
+            concurrent?.UnmuteIfLeftMuted(); later?.UnmuteIfLeftMuted(); // Never leave a remembered mute behind.
+            await first.DisposeAsync();
+            if (concurrent is not null) await concurrent.DisposeAsync();
+            if (later is not null) await later.DisposeAsync();
+            Assert.All(left, state => Assert.False(state));
+        }
+        Assert.Equal(0, control.PendingRestoreCount);
+    }
+
+    private sealed class SilentHelper : IAsyncDisposable
+    {
+        private readonly Process _process;
+        private bool _disposed;
+        private SilentHelper(Process process)
+        {
+            _process = process;
+            Session = new(process.Id, process.StartTime.ToUniversalTime().Ticks, "Synthetic", 0, "", false, false, 0, 0, null,
+                DateTimeOffset.UtcNow);
+        }
+        public SessionObservation Session { get; }
+
+        public static async Task<SilentHelper> StartAsync()
+        {
+            // One second of 8 kHz 16-bit mono silence (all-zero samples), looped from memory until a line arrives on input.
+            const string script = "$n=16000;$m=New-Object IO.MemoryStream;$w=New-Object IO.BinaryWriter($m);$a=[Text.Encoding]::ASCII;"
+                + "$w.Write($a.GetBytes('RIFF'));$w.Write([int](36+$n));$w.Write($a.GetBytes('WAVEfmt '));$w.Write([int]16);"
+                + "$w.Write([int16]1);$w.Write([int16]1);$w.Write([int]8000);$w.Write([int]16000);$w.Write([int16]2);$w.Write([int16]16);"
+                + "$w.Write($a.GetBytes('data'));$w.Write([int]$n);$w.Write((New-Object byte[] $n));$w.Flush();$m.Position=0;"
+                + "$p=New-Object Media.SoundPlayer($m);$p.Load();$p.PlayLooping();[Console]::Out.WriteLine('ready');"
+                + "[void][Console]::In.ReadLine();$p.Stop()";
+            var start = new ProcessStartInfo(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows),
+                "System32", "WindowsPowerShell", "v1.0", "powershell.exe"))
+            { UseShellExecute = false, CreateNoWindow = true, RedirectStandardInput = true, RedirectStandardOutput = true };
+            start.ArgumentList.Add("-NoProfile"); start.ArgumentList.Add("-NonInteractive");
+            start.ArgumentList.Add("-EncodedCommand"); start.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(script)));
+            var process = Process.Start(start) ?? throw new InvalidOperationException("The test-owned sound helper did not start.");
+            var helper = new SilentHelper(process);
+            try
+            {
+                Assert.Equal("ready", await process.StandardOutput.ReadLineAsync().WaitAsync(TimeSpan.FromSeconds(60)));
+                // The audio session opens asynchronously after playback starts; wait a bounded time for Windows to list it.
+                var watch = Stopwatch.StartNew();
+                while (helper.Sessions().Length == 0)
+                {
+                    Assert.True(watch.Elapsed < TimeSpan.FromSeconds(15),
+                        "The test-owned helper never got a Windows audio session. This test needs an active audio output device.");
+                    await Task.Delay(100);
+                }
+                return helper;
+            }
+            catch { await helper.DisposeAsync(); throw; }
+        }
+
+        /// <summary>The helper's own sessions, read straight from the adapter's Core Audio enumeration.</summary>
+        public bool[] Sessions()
+        {
+            var native = NativeApi();
+            var states = native.ReadSessions(_process.Id, out int hresult);
+            Assert.True(states is not null, $"Core Audio could not list the helper's sessions (0x{hresult:X8}).");
+            return states!;
+        }
+
+        public void UnmuteIfLeftMuted()
+        {
+            if (_disposed || _process.HasExited) return;
+            var states = NativeApi().ReadSessions(_process.Id, out _);
+            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, true, false);
+        }
+
+        // The adapter's production Core Audio calls, without its identity checks or the control's ownership map.
+        private static IClientAudioNativeApi NativeApi() => new NativeClientAudioApi();
+
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed) return;
+            _disposed = true;
+            try
+            {
+                if (!_process.HasExited)
+                {
+                    await _process.StandardInput.WriteLineAsync("stop");
+                    _process.StandardInput.Close();
+                    try { await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); }
+                    catch (TimeoutException) { _process.Kill(); await _process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); }
+                }
+            }
+            finally { _process.Dispose(); }
+        }
+    }
+}

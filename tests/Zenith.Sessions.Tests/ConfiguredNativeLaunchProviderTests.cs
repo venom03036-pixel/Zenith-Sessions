@@ -132,7 +132,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         var context = Context(); var ready = await h.Slot.PrepareAsync(context, default); var handle = ready.Prepared!; var first = h.Children[0];
         first.Handle!.DisposeGate = Gate();
         h.Slot.Configure(Candidate("B"));
-        await first.Handle.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await first.Handle.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             Assert.True(first.Token.IsCancellationRequested); Assert.True(handle.IsExpired); Assert.True(h.Slot.IsBusy); Assert.True(h.Slot.Selected);
@@ -156,7 +156,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         var work = h.Slot.PrepareAsync(Context(), default);
         try
         {
-            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (stop == "change") h.Slot.Configure(Candidate("B")); else if (stop == "clear") h.Slot.Configure(null); else h.Slot.CancelActive();
             Assert.True(child.Token.IsCancellationRequested); Assert.True(h.Slot.IsBusy); Assert.False(work.IsCompleted);
             Assert.Equal(stop != "clear", h.Slot.Selected);
@@ -185,7 +185,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         var preparation = h.Slot.PrepareAsync(Context(), default); Task? disposing = null;
         try
         {
-            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); disposing = h.Slot.DisposeAsync().AsTask();
+            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)); disposing = h.Slot.DisposeAsync().AsTask();
             Assert.True(child.Token.IsCancellationRequested); Assert.False(disposing.IsCompleted); Assert.False(preparation.IsCompleted); Assert.Equal(0, h.Trust.Disposals);
             Assert.Throws<ObjectDisposedException>(() => h.Slot.Configure(null));
         }
@@ -268,7 +268,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         using var boundary = Boundary(handle.DispatchIntent); var work = handle.DispatchAsync(boundary, default); Task? closing = null;
         try
         {
-            await child.Handle.DispatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); h.Slot.Configure(Candidate("B")); closing = handle.DisposeAsync().AsTask();
+            await child.Handle.DispatchStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)); h.Slot.Configure(Candidate("B")); closing = handle.DisposeAsync().AsTask();
             Assert.True(child.Handle.Token.IsCancellationRequested); Assert.True(handle.IsExpired); Assert.True(h.Slot.IsBusy);
             Assert.False(work.IsCompleted); Assert.False(closing.IsCompleted); Assert.Equal(0, child.Handle.Disposals); Assert.Equal(0, child.Disposals);
             Assert.Equal(LaunchPreparationFailure.Rejected, (await h.Slot.PrepareAsync(Context(), default)).Failure); Assert.Single(h.Created);
@@ -287,7 +287,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         using var boundary = Boundary(handle.DispatchIntent); var work = handle.DispatchAsync(boundary, default);
         try
         {
-            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(2)); Assert.True(h.Slot.IsBusy); Assert.False(work.IsCompleted);
+            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.True(h.Slot.IsBusy); Assert.False(work.IsCompleted);
             Assert.Equal(LaunchPreparationFailure.Rejected, (await h.Slot.PrepareAsync(Context(), default)).Failure); Assert.Single(h.Created);
         }
         finally { child.DisposeGate.TrySetResult(); await work.WaitAsync(TimeSpan.FromSeconds(2)); }
@@ -323,7 +323,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
     {
         await using var h = new Harness { ExpectPoison = true }; h.Trust.Gate = Gate(); h.Trust.Throw = true;
         var disposing = h.Slot.DisposeAsync().AsTask();
-        try { await h.Trust.Started.Task.WaitAsync(TimeSpan.FromSeconds(2)); Assert.False(disposing.IsCompleted); Assert.Equal(1, h.Trust.Disposals); }
+        try { await h.Trust.Started.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.False(disposing.IsCompleted); Assert.Equal(1, h.Trust.Disposals); }
         finally { h.Trust.Gate.TrySetResult(); }
         var error = await Assert.ThrowsAsync<InvalidOperationException>(() => disposing);
         Assert.DoesNotContain(Secret, error.ToString()); Assert.False(h.Slot.CleanupHealthy);

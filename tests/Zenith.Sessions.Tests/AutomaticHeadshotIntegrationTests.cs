@@ -60,7 +60,7 @@ public sealed partial class DirectoryIntegrationTests
         await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), directory, new Servers(), enableAutomaticPublicImages: true);
         await vm.InitializeAsync(); vm.Navigate.Execute("Accounts"); vm.SetPreviewWindowVisible(true);
         string notice;
-        try { await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(3)); if (locked) vm.LockDashboard(); else vm.Panic.Execute(null); notice = vm.Notice; }
+        try { await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(30)); if (locked) vm.LockDashboard(); else vm.Panic.Execute(null); notice = vm.Notice; }
         finally { directory.Pending.TrySetResult(directory.Profile); }
         await vm.PublicImageOperation;
         Assert.Null(vm.Accounts[0].Avatar); Assert.Equal("", vm.Accounts[0].PublicDisplayName); Assert.Equal(notice, vm.Notice);
@@ -76,7 +76,7 @@ public sealed partial class DirectoryIntegrationTests
         var row = Assert.Single(vm.Accounts);
         try
         {
-            await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await directory.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             row.SetCachedAuthorization(new(row.Profile.Id, "fixture", RobloxOAuthIdentity.Provider, RobloxOAuthIdentity.Issuer, "123", 123,
                 "trusted_name", 2, AuthorizationHealth.Linked, DateTimeOffset.UtcNow.AddMinutes(10), DateTimeOffset.UtcNow));
         }

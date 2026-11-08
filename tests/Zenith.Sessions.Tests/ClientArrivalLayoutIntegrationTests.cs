@@ -78,7 +78,7 @@ public sealed partial class ClientWindowIntegrationTests
         await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(1, monitor.Arrangements);
             shell.Panic.Execute(null);
             Assert.True(monitor.OperationToken.IsCancellationRequested); Assert.True(monitor.Cancellations > 0);

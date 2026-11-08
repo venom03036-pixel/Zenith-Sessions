@@ -79,7 +79,7 @@ public sealed class LaunchProcessReceiptTests
         var provider=new Provider((_,_)=>release.Task);
         await using var queue=Create(store,provider,clock);await queue.InitializeAsync(default);
         var first=await queue.EnqueueAsync(Profile("First"),default,new(123,7),new(42,Job,RobloxServerKind.Public));
-        await queue.SetPausedAsync(false,default);await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        await queue.SetPausedAsync(false,default);await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var second=await queue.EnqueueAsync(Profile("Second"),default,new(456,8));
         try
         {
@@ -108,7 +108,7 @@ public sealed class LaunchProcessReceiptTests
         await using(var queue=Create(store,provider,clock))
         {
             await queue.InitializeAsync(default);var first=await queue.EnqueueAsync(Profile(),default,new(123,7));
-            await queue.SetPausedAsync(false,default);await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            await queue.SetPausedAsync(false,default);await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             try
             {
                 await Until(()=>clock.ActiveTimers>0);clock.Advance(TimeSpan.FromSeconds(11));

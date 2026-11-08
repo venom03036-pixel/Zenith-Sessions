@@ -34,7 +34,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         using var boundary = Boundary(handle.DispatchIntent); var dispatch = handle.DispatchAsync(boundary, default);
         try
         {
-            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var pending = h.Slot.GetDiagnostic(context.OriginalIntent.OperationId)!;
             Assert.Equal(NativeHandoffAttemptStatus.StartedUnverified, pending.DispatchStatus);
             Assert.Equal(NativeLaunchCleanupStatus.Pending, pending.CleanupStatus); Assert.Null(pending.CleanupObservedUtc); Assert.False(dispatch.IsCompleted);
@@ -57,7 +57,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         h.Next.Enqueue(child); h.Slot.Configure(Candidate()); var work = h.Slot.PrepareAsync(context, default);
         try
         {
-            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(5)); h.Slot.Configure(Candidate("B"));
+            await child.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(30)); h.Slot.Configure(Candidate("B"));
             var stopped = h.Slot.GetDiagnostic(context.OriginalIntent.OperationId)!;
             Assert.True(stopped.Stopped); Assert.Equal(NativeLaunchDiagnosticStage.Stopped, stopped.Stage); Assert.False(work.IsCompleted);
         }
@@ -69,7 +69,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         var newer = new Child { PrepareGate = Gate() }; h.Next.Enqueue(newer); var retry = h.Slot.PrepareAsync(context, default);
         try
         {
-            await newer.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await newer.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             var fresh = h.Slot.GetDiagnostic(context.OriginalIntent.OperationId)!;
             Assert.True(fresh.Revision > old.Revision); Assert.False(fresh.Stopped); Assert.Null(fresh.TrustStatus); Assert.Null(fresh.BrowserOutcome);
             Assert.Null(fresh.DispatchStatus); Assert.Equal(NativeLaunchCleanupStatus.Pending, fresh.CleanupStatus);
@@ -98,7 +98,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
             h.Slot.CancelActive(); await ready.Prepared!.DisposeAsync(); // Would deadlock if the reader held _gate.
             h.Next.Enqueue(second); newer = h.Slot.PrepareAsync(context, default);
-            await second.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await second.PrepareStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             releaseReader.Set(); var latest = await read.WaitAsync(TimeSpan.FromSeconds(5));
             Assert.NotNull(latest); Assert.Null(latest.TrustStatus); Assert.Null(latest.PreparationStatus); Assert.False(latest.Stopped);
         }
@@ -152,7 +152,7 @@ public sealed partial class ConfiguredNativeLaunchProviderTests
         var ready = await h.Slot.PrepareAsync(context, default); var disposing = ready.Prepared!.DisposeAsync().AsTask();
         try
         {
-            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await child.DisposeStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(NativeLaunchCleanupStatus.Pending, h.Slot.GetDiagnostic(context.OriginalIntent.OperationId)!.CleanupStatus); Assert.False(disposing.IsCompleted);
         }
         finally { child.DisposeGate.TrySetResult(); }

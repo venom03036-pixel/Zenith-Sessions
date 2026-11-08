@@ -104,6 +104,9 @@ internal static class PackagedLayoutCheck
             if (window.FindName("ClientMemoryTrimTools") is not System.Windows.Controls.Expander trimTools)
                 throw new InvalidOperationException("The packaged memory trim tools are missing.");
             trimTools.IsExpanded = true;
+            if (window.FindName("ClientSoundTools") is not System.Windows.Controls.Expander soundTools)
+                throw new InvalidOperationException("The packaged client sound tools are missing.");
+            soundTools.IsExpanded = true;
             await Dispatcher.Yield(DispatcherPriority.DataBind);
             // A never-shown Window can retain its disconnected layout. Measure the
             // production content itself to exercise the expanded panel offscreen.
@@ -115,6 +118,9 @@ internal static class PackagedLayoutCheck
                 || priorityButton.Command != vm.SetClientsBelowNormalPriority || priorityButton.IsEnabled
                 || vm.IsChangingClientPriority || vm.PendingPriorityRestoreCount != 0)
                 throw new InvalidOperationException("The packaged priority controls lost their command binding or sample-mode boundary.");
+            if (window.FindName("SetClientEfficiencyMode") is not System.Windows.Controls.Button efficiencyButton
+                || efficiencyButton.Command != vm.SetClientsEfficiencyMode || efficiencyButton.IsEnabled)
+                throw new InvalidOperationException("The packaged efficiency mode control lost its command binding or sample-mode boundary.");
             if (priorityTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged priority controls could not be laid out.");
             if (window.FindName("TrimClientsNowButton") is not System.Windows.Controls.Button trimButton
@@ -124,6 +130,14 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
             RequireSearchReachesSessionsLayout(window, vm);
             RequireEveryThemeLaysOut(app.Resources, content, SessionsThemes.PackagedPalettes());
+            if (window.FindName("MuteClientsButton") is not System.Windows.Controls.Button muteButton
+                || muteButton.Command != vm.MuteClients || muteButton.IsEnabled || vm.IsChangingClientSound || vm.CanChangeClientSound
+                || window.FindName("MuteArrivingClientsOption") is not System.Windows.Controls.CheckBox { IsChecked: false }
+                || window.FindName("ResumeArrivalMuteButton") is not System.Windows.Controls.Button resumeButton
+                || resumeButton.Command != vm.ResumeArrivalMute || resumeButton.IsEnabled || vm.CanResumeArrivalMute)
+                throw new InvalidOperationException("The packaged client sound controls lost their command binding, sample-mode boundary or off default.");
+            if (soundTools.ActualHeight <= 0)
+                throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

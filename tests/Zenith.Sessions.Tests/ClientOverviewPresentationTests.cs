@@ -340,7 +340,7 @@ public sealed partial class ClientPreviewPresentationTests
             await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);
             var pinned=shell.ClientPreviews.OverviewRows[0];shell.ClientPreviews.SelectedOverviewRow=pinned;
             Assert.True(shell.CanFocusOverviewClient);shell.FocusOverviewClient.Execute(null);
-            await monitor.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await monitor.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             shell.ClientPreviews.SelectedOverviewRow=shell.ClientPreviews.OverviewRows[1];monitor.Reply.TrySetResult(true);
             await shell.FocusOverviewClient.Execution;
             Assert.Equal(pinned.ProcessId,monitor.Pinned!.ProcessId);Assert.Equal(pinned.ProcessStartUtcTicks,monitor.Pinned.ProcessStartUtcTicks);Assert.Equal(pinned.Window,monitor.Pinned.Window);
@@ -387,7 +387,7 @@ public sealed partial class ClientPreviewPresentationTests
         {
             await shell.InitializeAsync();await Refresh(shell);shell.SetPreviewWindowVisible(true);shell.ShowWindowsOverview.Execute(null);
             await Until(()=>shell.ClientPreviews.OverviewRows.Count==2);shell.ClientPreviews.SelectedOverviewRow=shell.ClientPreviews.OverviewRows[0];
-            shell.FocusOverviewClient.Execute(null);await monitor.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            shell.FocusOverviewClient.Execute(null);await monitor.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if(panic) shell.Panic.Execute(null);else shell.LockDashboard();string stopNotice=shell.Notice;
             Assert.True(monitor.Token.IsCancellationRequested);disposal=shell.DisposeAsync().AsTask();
             await Task.Delay(15);Assert.False(disposal.IsCompleted);monitor.Reply.TrySetResult(true);

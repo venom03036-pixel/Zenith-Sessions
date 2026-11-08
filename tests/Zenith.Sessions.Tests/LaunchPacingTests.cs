@@ -192,7 +192,7 @@ public sealed class LaunchPacingTests
         var first = await queue.EnqueueAsync(Profile("First") with { Priority = 90 }, default, Binding, Destination);
         var second = await queue.EnqueueAsync(Profile("Second") with { Priority = 30 }, default, Binding, Destination);
         await queue.SetPausedAsync(false, default);
-        try { await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)); queue.SignalPanic(); Assert.True(provider.LastToken.IsCancellationRequested); }
+        try { await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); queue.SignalPanic(); Assert.True(provider.LastToken.IsCancellationRequested); }
         finally { release.TrySetResult(new ProviderLaunchResult(ProviderLaunchStatus.RejectedBeforeStart)); }
         await Until(() => Row(store, first).State == LaunchState.Uncertain); await queue.WaitForActiveCleanupAsync(default);
         Assert.Equal(LaunchProblem.CancelledDuringStartup, Row(store, first).Problem);
@@ -313,7 +313,7 @@ public sealed class LaunchPacingTests
         clock.Advance(TimeSpan.FromSeconds(20)); Assert.True(queue.ReadPacing().Ready); queue.Signal();
         try
         {
-            await boundaryEntered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await boundaryEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Single(provider.Starts);
             clock.Advance(TimeSpan.FromSeconds(-21));
             var failed = queue.ReadPacing();
@@ -355,7 +355,7 @@ public sealed class LaunchPacingTests
         var first = await queue.EnqueueAsync(Profile("First"), default, Binding, Destination); await queue.SetPausedAsync(false, default);
         if (release is not null)
         {
-            try { await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(2)); queue.ConfigurePerformance(Custom(120000, 30000)); }
+            try { await provider.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30)); queue.ConfigurePerformance(Custom(120000, 30000)); }
             finally { release.TrySetResult(provider.Result(first.Intent)); }
         }
         await Until(() => store.Row(first.Intent.OperationId)?.State == LaunchState.ClientStartedUnverified); await queue.WaitForActiveCleanupAsync(default);

@@ -201,7 +201,7 @@ public sealed class DestinationSearchViewModelTests
         var search=new Button{DataContext=f.Search};search.SetBinding(UIElement.IsEnabledProperty,new Binding(nameof(f.Search.CanSearch)));
         var next=new Button{DataContext=f.Search};next.SetBinding(UIElement.IsEnabledProperty,new Binding(nameof(f.Search.CanNext)));
         Assert.True(search.IsEnabled);using var stop=new CancellationTokenSource();Task active=f.Search.SearchOrUseAsync(stop.Token);
-        try {await f.Directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));Assert.False(search.IsEnabled);stop.Cancel();}
+        try {await f.Directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));Assert.False(search.IsEnabled);stop.Cancel();}
         finally {f.Directory.ReleaseSearch();await active.WaitAsync(TimeSpan.FromSeconds(5));}
         await Dispatcher.Yield(DispatcherPriority.DataBind);Assert.False(f.Search.IsBusy);Assert.True(search.IsEnabled);Assert.False(next.IsEnabled);Assert.Contains("stopped",f.Search.Status);
         f.Directory.HoldSearch=false;f.Directory.SearchResponse=q=>SearchTest.Ok(f.Directory.Page(q,"next"));await f.Search.SearchOrUseAsync();
@@ -217,7 +217,7 @@ public sealed class DestinationSearchViewModelTests
         var f=new SearchTest();f.Directory.HoldSearch=true;f.Browser.LinkInput="Fisch";Task active=f.Search.SearchOrUseAsync();Task? disposal=null;
         try
         {
-            await f.Directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));f.Browser.LinkInput="https://www.roblox.com/games/42";
+            await f.Directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));f.Browser.LinkInput="https://www.roblox.com/games/42";
             await f.Search.SearchOrUseAsync();Assert.Single(f.Directory.Queries);Assert.True(f.Directory.SearchToken.IsCancellationRequested);Assert.True(f.Search.IsBusy);
             disposal=f.DisposeAsync().AsTask();Assert.False(disposal.IsCompleted);Assert.False(active.IsCompleted);
         }
@@ -248,7 +248,7 @@ public sealed class DestinationSearchViewModelTests
     public Task ExternalDestinationChangeDuringOwnedDetailsFencesAllLatePublication()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();f.Directory.HoldGame=true;f.Browser.LinkInput="42";Task active=f.Search.SearchOrUseAsync();
-        try {await f.Directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));f.Browser.UsePreferredPlace(77);Assert.True(f.Directory.GameToken.IsCancellationRequested);}
+        try {await f.Directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));f.Browser.UsePreferredPlace(77);Assert.True(f.Directory.GameToken.IsCancellationRequested);}
         finally {f.Directory.ReleaseGame();await active.WaitAsync(TimeSpan.FromSeconds(5));}
         Assert.Equal(77,f.Browser.Destination!.PlaceId);Assert.Null(f.Details.Game);Assert.Contains("changed",f.Search.Status);Assert.Empty(f.Search.Results);
     });
@@ -259,7 +259,7 @@ public sealed class DestinationSearchViewModelTests
         await using var f=new SearchTest();f.Directory.HoldGame=true;f.Browser.UsePreferredPlace(42);Task manual=f.Details.LoadAsync();
         try
         {
-            await f.Directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));f.Browser.LinkInput="42";Task use=f.Search.SearchOrUseAsync();
+            await f.Directory.GameEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));f.Browser.LinkInput="42";Task use=f.Search.SearchOrUseAsync();
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);Assert.True(f.Search.IsBusy);f.Search.CancelWork();
             await use.WaitAsync(TimeSpan.FromSeconds(5));Assert.False(f.Directory.GameToken.IsCancellationRequested);Assert.False(manual.IsCompleted);
             Assert.Equal(1,f.Directory.GameRequests);Assert.Equal(42,f.Browser.Destination!.PlaceId);Assert.False(f.Search.IsBusy);

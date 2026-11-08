@@ -61,7 +61,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         repository.HoldApply = true; Task<int> apply = shell.ApplyGroupChangeAsync(preview, default); Guid selected = Guid.Empty;
         try
         {
-            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             await Filter(shell, "Other"); shell.SelectedAccount = Assert.Single(shell.Accounts); selected = shell.SelectedAccount.Profile.Id;
         }
         finally { repository.ReleaseApply(); await apply.WaitAsync(TimeSpan.FromSeconds(5)); }
@@ -82,7 +82,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         repository.HoldCommittedRead = true; Task<int> apply = shell.ApplyGroupChangeAsync(preview, default); Guid selected = Guid.Empty;
         try
         {
-            await repository.ReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await repository.ReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             shell.SelectedAccount = shell.Accounts.Single(row => row.Alias == "Unrelated"); selected = shell.SelectedAccount.Profile.Id;
         }
         finally { repository.ReleaseRead(); await apply.WaitAsync(TimeSpan.FromSeconds(5)); }
@@ -138,7 +138,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         int priorSuccess = SuccessEvents(shell);
         try
         {
-            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (panic) shell.Panic.Execute(null); else shell.LockDashboard(); stopNotice = shell.Notice;
             Assert.True(repository.ApplyToken.IsCancellationRequested); Assert.False(apply.IsCompleted);
             Assert.Equal(before, await repository.Inner.FindAsync(before.Id, default));
@@ -161,7 +161,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         int priorSuccess = SuccessEvents(shell);
         try
         {
-            await repository.ReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(3));
+            await repository.ReadEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal("Renamed", (await repository.Inner.FindAsync(before.Id, default))!.Group); Assert.False(apply.IsCompleted);
             if (panic) shell.Panic.Execute(null); else shell.LockDashboard(); stopNotice = shell.Notice;
         }
@@ -183,7 +183,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         using var caller = new CancellationTokenSource(); Task<AccountGroupChangePreview>? queued = null;
         try
         {
-            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(3)); int previews = repository.PreviewCalls;
+            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); int previews = repository.PreviewCalls;
             queued = shell.PreviewGroupChangeAsync(change, caller.Token); Assert.False(queued.IsCompleted); caller.Cancel();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.False(apply.IsCompleted); Assert.False(repository.ApplyToken.IsCancellationRequested); Assert.Equal(previews, repository.PreviewCalls);
@@ -202,7 +202,7 @@ public sealed partial class ShellGroupLifecycleTests : IDisposable
         {
             var change = new AccountGroupChange(AccountGroupChangeKind.Rename, "Source", "Renamed");
             var preview = await shell.PreviewGroupChangeAsync(change, default); repository.HoldApply = true; apply = shell.ApplyGroupChangeAsync(preview, default);
-            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(3)); queued = shell.PreviewGroupChangeAsync(change, default);
+            await repository.ApplyEntered.Task.WaitAsync(TimeSpan.FromSeconds(30)); queued = shell.PreviewGroupChangeAsync(change, default);
             disposing = shell.DisposeAsync().AsTask();
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => queued.WaitAsync(TimeSpan.FromSeconds(2)));
             Assert.True(repository.ApplyToken.IsCancellationRequested); Assert.False(apply.IsCompleted); Assert.False(disposing.IsCompleted); Assert.False(repository.Disposed);

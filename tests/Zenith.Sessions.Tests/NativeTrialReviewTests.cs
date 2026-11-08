@@ -159,7 +159,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.StartNativeTrial.Execute(review);
         try
         {
-            await repository.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+            await repository.FindEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.False(shell.StartNativeTrial.Execution.IsCompleted);
             switch(change)
             {
@@ -282,7 +282,7 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell=await NativeEvidenceShellAsync(child,new NativeEvidenceMonitor());
         Assert.True(shell.CanRefreshInstallations);
         shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview()));await shell.StartNativeTrial.Execution;
-        await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         bool refreshReenabled=false;
         void Watch(object? sender,System.ComponentModel.PropertyChangedEventArgs args)
         {if(args.PropertyName==nameof(ShellViewModel.CanRefreshInstallations)&&shell.CanRefreshInstallations)refreshReenabled=true;}

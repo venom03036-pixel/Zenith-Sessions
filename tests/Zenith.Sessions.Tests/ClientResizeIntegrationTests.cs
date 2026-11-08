@@ -21,7 +21,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         vm.ResizeCheckedClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             vm.Sessions[0].IsChecked = false; vm.Sessions[1].IsChecked = true;
             vm.ClientContentWidth = "320"; vm.ClientContentHeight = "240";
             Assert.Equal(101, Assert.Single(monitor.Requested).ProcessId);
@@ -112,7 +112,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         vm.SelectClientPage.Execute(null); vm.ResizeCheckedClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (locked) vm.LockDashboard(); else vm.Panic.Execute(null);
             Assert.True(monitor.OperationToken.IsCancellationRequested); Assert.True(monitor.Cancellations > 0);
         }
@@ -139,7 +139,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         vm.SelectedSession = vm.Sessions[0]; vm.ResizeCheckedClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             vm.CancelClientWindowWork.Execute(null);
             Assert.True(monitor.OperationToken.IsCancellationRequested);
             Assert.True(vm.IsArrangingClients); Assert.False(vm.CanResizeClients);
@@ -162,7 +162,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         vm.SelectedSession = vm.Sessions[0]; vm.ResizeCheckedClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (locked) vm.LockDashboard(); else vm.Panic.Execute(null);
         }
         finally { monitor.Pending.TrySetException(new IOException("Synthetic delayed failure")); }
@@ -207,7 +207,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         var monitor = new ResizeMonitor { Pending = new(TaskCreationOptions.RunContinuationsAsynchronously) };
         await using var vm = await Ready(monitor);
         vm.SelectedSession = vm.Sessions[0]; vm.ResizeCheckedClients.Execute(null);
-        await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         monitor.Pending.TrySetResult(new([new(monitor.Requested[0], null, ClientWindowPlacementStatus.Applied, "Synthetic inconsistent result")], false, "Synthetic"));
         await vm.ResizeCheckedClients.Execution;
         Assert.Empty(vm.ClientPlacementResults); Assert.Contains("could not finish", vm.ClientWindowStatus);
@@ -221,7 +221,7 @@ public sealed class ClientResizeIntegrationTests : IDisposable
         try
         {
             vm.SelectedSession = vm.Sessions[0]; vm.ResizeCheckedClients.Execute(null);
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             disposing = vm.DisposeAsync().AsTask();
             Assert.True(monitor.OperationToken.IsCancellationRequested);
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);

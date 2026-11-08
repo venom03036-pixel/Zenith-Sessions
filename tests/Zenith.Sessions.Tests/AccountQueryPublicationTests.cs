@@ -40,7 +40,7 @@ public sealed class AccountQueryPublicationTests : IDisposable
         string?[] newestGroups = [];
         try
         {
-            await accounts.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            await accounts.Entered.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.False(olderRefresh.IsCompleted);
             // A different owned command can publish a newer query while the old Refresh awaits I/O.
             await vm.SaveAccountAsync(newest).WaitAsync(TimeSpan.FromSeconds(5));

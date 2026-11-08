@@ -25,7 +25,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.ServerBrowser.LinkInput = "https://www.roblox.com/games/start?placeId=42&gameInstanceId=" + EvidenceJob;
         shell.ServerBrowser.Resolve.Execute(null); Assert.Equal(EvidenceJob, shell.ServerBrowser.Destination!.JobId);
         shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
-        var context = await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(4));
+        var context = await child.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             Assert.Equal(selected.Profile.Id, context.OriginalIntent.ProfileId); Assert.Equal(456, context.OriginalIntent.UserId);

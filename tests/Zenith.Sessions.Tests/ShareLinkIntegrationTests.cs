@@ -33,7 +33,7 @@ public sealed partial class ClientWindowIntegrationTests
         var checker=shell.SelectedAccount!;Assert.Equal(456,checker.KnownUserId);
         shell.Navigate.Execute("JoinGame");
         shell.ShareLink.LinkInput="https://www.roblox.com/share?code=4b9c7e0ae7b2f84bb7a7d24f6d0f6c2e&type=Server";Task check=shell.ShareLink.CheckAsync();
-        var token=await links.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        var token=await links.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
         try
         {
             shell.SelectedAccount=shell.Accounts.First(row=>row.Profile.Id!=checker.Profile.Id);

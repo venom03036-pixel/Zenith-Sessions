@@ -20,7 +20,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         vm.ArrangeClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             vm.Sessions[0].IsChecked = false; vm.Sessions[1].IsChecked = true;
             vm.SelectedClientDisplay = vm.ClientDisplays[1]; vm.TileMinimumWidth = "480";
             Assert.Equal(101, Assert.Single(monitor.Requested).ProcessId);
@@ -41,7 +41,7 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         vm.SelectClientPage.Execute(null); vm.ArrangeClients.Execute(null);
         try
         {
-            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await monitor.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
             vm.Panic.Execute(null);
             Assert.True(monitor.OperationToken.IsCancellationRequested);
             Assert.True(monitor.Cancellations > 0);

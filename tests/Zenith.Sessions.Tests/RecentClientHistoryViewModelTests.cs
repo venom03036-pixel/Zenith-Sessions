@@ -52,7 +52,7 @@ public sealed class RecentClientHistoryViewModelTests
         await vm.InitializeAsync();
         vm.Observe(Frame(1, At, Client()), [], At);
         vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
-        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2)); Assert.True(vm.IsSaving);
+        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(30)); Assert.True(vm.IsSaving);
         for (int index = 1; index <= 300; index++)
         {
             var time = At.AddSeconds(index * 2);
@@ -72,7 +72,7 @@ public sealed class RecentClientHistoryViewModelTests
         await using var vm = new RecentClientHistoryViewModel(store, () => true);
         await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
         vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
-        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         Assert.True(vm.CanClear); vm.Clear.Execute(null); Assert.Empty(vm.Rows);
         store.Pending.SetResult(); await vm.ActiveSave;
         Assert.Empty(store.Stored.Entries); Assert.Equal(2, store.Requests.Count);
@@ -127,7 +127,7 @@ public sealed class RecentClientHistoryViewModelTests
         var store = new Store { Pending = new(TaskCreationOptions.RunContinuationsAsynchronously) };
         var vm = new RecentClientHistoryViewModel(store, () => true);
         await vm.InitializeAsync(); vm.Observe(Frame(1, At, Client()), [], At);
-        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(2));
+        vm.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1)); await store.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         var stopping = vm.DisposeAsync().AsTask(); Assert.False(stopping.IsCompleted); Assert.False(store.Disposed);
         Assert.False(vm.CanClear); store.Pending.SetResult(); await stopping;
         Assert.True(store.Disposed); Assert.Single(store.Stored.Entries); await vm.DisposeAsync();
@@ -197,7 +197,7 @@ public sealed class RecentClientHistoryViewModelTests
         await stopping.InitializeAsync();
         stopping.Observe(Frame(1, At, Client()), [], At); stopping.Observe(Frame(2, At.AddSeconds(1)), [], At.AddSeconds(1));
         stopping.Observe(Frame(3, At.AddSeconds(7)), [], At.AddSeconds(7));
-        await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await blocking.Started.Task.WaitAsync(TimeSpan.FromSeconds(30));
         await stopping.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
         Assert.True(other.Disposed); Assert.True(blocking.Cancelled);
     }

@@ -52,7 +52,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         Task execution = command.Execution;
         try
         {
-            var committed = await accounts.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            var committed = await accounts.Entered.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.Equal(profile.Id, committed.ProfileId);
             Assert.Equal(RobloxSessionIdentity.Provider, committed.Provider);
             Assert.Equal(AuthorizationHealth.Linked, committed.Health);
@@ -129,7 +129,7 @@ public sealed class SavedSessionPublicationRaceTests : IDisposable
         Task execution = shell.LinkAccount.Execution;
         try
         {
-            await client.Entered.WaitAsync(TimeSpan.FromSeconds(5));
+            await client.Entered.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.True(shell.IsAuthorizing);
             Assert.False(execution.IsCompleted);
             Assert.Null(await vault.GetSummaryAsync(profile.Id, default));

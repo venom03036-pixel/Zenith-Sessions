@@ -162,7 +162,7 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         recipients[0] = later;
         try
         {
-            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             foreach (var row in vm.Accounts) row.IsChecked = row.Profile.Id == later.Id;
             vm.SelectedAccount = vm.Accounts.Single(row => row.Profile.Id == later.Id);
             Assert.Equal(pinned.Id, Assert.Single(repository.RequestedProfiles).Id);
@@ -186,7 +186,7 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         var operation = vm.AddAccountsToGroupAsync([before], "Cancelled group");
         try
         {
-            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             if (locked) vm.LockDashboard(); else vm.Panic.Execute(null);
             Assert.True(repository.GroupToken.IsCancellationRequested);
             await Assert.ThrowsAnyAsync<OperationCanceledException>(() => operation.WaitAsync(TimeSpan.FromSeconds(2)));
@@ -209,7 +209,7 @@ public sealed class AccountGroupIntegrationTests : IDisposable
         var operation = vm.AddAccountsToGroupAsync([before], "Committed group");
         try
         {
-            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             Assert.True(AccountGroups.Contains((await repository.FindAsync(before.Id, default))!, "Committed group"));
             if (locked) vm.LockDashboard(); else vm.Panic.Execute(null);
             Assert.True(repository.GroupToken.IsCancellationRequested); Assert.False(operation.IsCompleted);
@@ -392,7 +392,7 @@ public sealed class AccountGroupIntegrationTests : IDisposable
             await vm.SaveAccountAsync(AccountProfile.Create("Exit recipient"));
             repository.ReleaseGroup = new(TaskCreationOptions.RunContinuationsAsynchronously);
             operation = vm.AddAccountsToGroupAsync([vm.SelectedAccount!.Profile], "Committed before exit");
-            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await repository.GroupStarted.Task.WaitAsync(TimeSpan.FromSeconds(30));
             disposing = vm.DisposeAsync().AsTask();
             Assert.True(repository.GroupToken.IsCancellationRequested);
             await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);

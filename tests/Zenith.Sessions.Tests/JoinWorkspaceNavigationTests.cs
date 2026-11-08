@@ -73,7 +73,7 @@ public sealed partial class ClientPreviewPresentationTests
         shell.Navigate.Execute("JoinGame");Assert.True(shell.DestinationSearch.CanSearch);Task search=shell.DestinationSearch.SearchOrUseAsync();
         try
         {
-            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));shell.Navigate.Execute("Sessions");
+            await directory.SearchEntered.Task.WaitAsync(TimeSpan.FromSeconds(30));shell.Navigate.Execute("Sessions");
             Assert.True(directory.SearchToken.IsCancellationRequested);Assert.Equal("Fisch",shell.ServerBrowser.LinkInput);Assert.False(shell.DestinationSearch.CanSearch);
         }
         finally{directory.ReleaseSearch();await search.WaitAsync(TimeSpan.FromSeconds(5));}
