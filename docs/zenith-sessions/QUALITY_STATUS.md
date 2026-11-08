@@ -137,6 +137,13 @@ Round 3's own minor review findings are listed as `O-…` rows and were not work
 | MacroSuite.Core / SDK / LicenseIssuer · CapabilityHarness | 761 · 33 · 11 · 40, all passing | same folder |
 | Release build · packaged self-check | 0 warnings, 0 errors · 43 / 43, release readiness false (gated on live trials) | same folder |
 
+**Release-candidate pass on the exact final revision** (`8289d8a`, in the working copy): Zenith Sessions tests 6,056 / 6,057
+(1 skipped: the opt-in crash test); MacroSuite.Infrastructure 1,225 / 0 / 3; Core 761, SDK 33, LicenseIssuer 11,
+CapabilityHarness 40, all passing; Release build 0 warnings; packaged self-check 43 / 43. Running app in sample mode
+(7 starts): first window 1,136 ms median (1,094–1,133 ms before this work), idle CPU 0.38% (0.41–0.43%), total CPU 5.5 s
+(5.7–6.3 s), working set 220 MB (214–224 MB); 25 threads at idle (21 before). Logs: `artifacts/quality-loop/final/rc-*`,
+`artifacts/quality-loop/perf/perf-final.json`.
+
 ## Checklist by lane
 
 ### L1a-accounts-vault — Accounts, vault, credential cleanup and saved-session checks (16 items)
