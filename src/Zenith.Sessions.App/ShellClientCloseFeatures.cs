@@ -159,7 +159,7 @@ public sealed partial class ShellViewModel
 
     private async Task DisposeClientCloseFeaturesAsync()
     {
-        StopClientCloseOperations();
+        StopShutdownStep(StopClientCloseOperations);
         foreach (var work in _clientCloseWork.ToArray())
         {
             try { await work; }

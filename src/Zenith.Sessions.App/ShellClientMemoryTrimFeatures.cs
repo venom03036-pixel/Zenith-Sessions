@@ -116,7 +116,7 @@ public sealed partial class ShellViewModel
 
     private async Task DisposeClientMemoryTrimFeaturesAsync()
     {
-        StopClientTrimOperations();
+        StopShutdownStep(StopClientTrimOperations);
         try { await _clientTrimWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientMemory,error.GetType()); }
         PropertyChanged -= ClientTrimOwnerChanged;

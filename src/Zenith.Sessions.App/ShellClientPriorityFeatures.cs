@@ -265,7 +265,7 @@ public sealed partial class ShellViewModel
 
     private async Task DisposeClientPriorityFeaturesAsync()
     {
-        StopClientPriorityOperations();
+        StopShutdownStep(StopClientPriorityOperations);
         try { await _clientPriorityWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType()); }
         PropertyChanged -= ClientPriorityOwnerChanged;
