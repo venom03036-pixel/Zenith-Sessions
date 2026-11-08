@@ -89,15 +89,17 @@ public sealed class VaultMasterPasswordTests : IDisposable
         try
         {
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal((true, false), vault.PasswordDispatchState);
+            Assert.Equal((true, false), ReadDispatchState(vault));
             await Task.Run(vault.LockMasterPassword).WaitAsync(TimeSpan.FromSeconds(3));
-            Assert.False(dispatch.IsCompleted); Assert.Equal((true, true), vault.PasswordDispatchState);
+            Assert.False(dispatch.IsCompleted); Assert.Equal((true, true), ReadDispatchState(vault));
         }
         finally { release.Set(); await dispatch; }
         var result = await dispatch;
-        Assert.Same(receipt, result.Dispatch!.ProcessReceipt); Assert.Equal((false, false), vault.PasswordDispatchState);
+        Assert.Same(receipt, result.Dispatch!.ProcessReceipt); Assert.Equal((false, false), ReadDispatchState(vault));
         Assert.Equal(VaultPasswordMode.Locked, (await vault.GetPasswordStatusAsync(default)).Mode);
     }
+    private static (bool, bool) ReadDispatchState(ProtectedCredentialVault vault) =>
+        typeof(ProtectedCredentialVault).GetProperty("PasswordDispatchState", BindingFlags.Instance | BindingFlags.NonPublic)?.GetValue(vault) is ValueTuple<bool, bool> state ? state : default;
 
     [Fact]
     public async Task LockBlocksSecretsButKeepsMetadataAndWrongPasswordDoesNotUnlock()
