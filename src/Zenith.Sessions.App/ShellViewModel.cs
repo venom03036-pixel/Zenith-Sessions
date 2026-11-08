@@ -246,7 +246,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public IReadOnlyList<AccountOrder> Orders { get; } = Enum.GetValues<AccountOrder>();
     public IReadOnlyList<AccountSortChoice> SortChoices { get; } = [new("Name",AccountOrder.Name),new("Priority",AccountOrder.Priority),new("Recently updated",AccountOrder.RecentlyUpdated),new("Favorites first",AccountOrder.FavoritesFirst)];
     public AccountSortChoice SortChoice { get=>SortChoices.First(c=>c.Value==Order); set { if(value is not null) Order=value.Value; } }
-    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources(opened:IsJoinGame);if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();} } }
+    public string Tab { get => _tab; private set { if (Set(ref _tab, value)) {foreach (var name in new[] { nameof(IsOverview), nameof(IsAccounts), nameof(IsSessions),nameof(IsJoinGame),nameof(IsSessionWorkspace),nameof(IsWindows), nameof(IsAutomation), nameof(IsDiagnostics),nameof(IsSettings), nameof(IsGuide), nameof(IsNews), nameof(PageName), nameof(WindowTitle) }) Raise(name);if(IsDiagnostics) RefreshDiagnosticsView(true);RefreshClientPreviewContext();RefreshTelemetryPresentation();RefreshPublicImageActivity();RefreshJoinGameSources(opened:IsJoinGame);if(IsOverview) RefreshOverview();if(IsJoinGame) ResetJoinFlow();News?.SetActive(IsNews);} } }
     public bool IsOverview => Tab == "Overview"; public bool IsAccounts => Tab == "Accounts"; public bool IsSessions => Tab == "Sessions";
     public bool IsAutomation => Tab == "Automation"; public bool IsSettings => Tab == "Settings"; public bool IsGuide => Tab == "Guide";
     public bool IsJoinGame=>Tab=="JoinGame";
@@ -257,7 +257,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     // screen readers, because a shortcut such as Ctrl+2 changes the page without moving focus. The manager name stays after it.
     public string PageName=>Strings["Page_"+Tab];
     public string WindowTitle=>PageName+" · "+InstanceTitle;
-    public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
+    public bool IsLocked { get => _locked; private set { if (Set(ref _locked, value)) { Raise(nameof(CanArrangeClients)); Raise(nameof(CanChangeClientStates)); Raise(nameof(CanRefreshInstallations)); Raise(nameof(CanVerifyInstallationPublisher)); NotifyPerformanceTransfer(); RefreshDestinationCapacity(); GameDetails?.RefreshAvailability(); RecentClients?.RefreshAvailability();RefreshClientPreviewContext(); MacroHostCatalog?.RefreshAvailability(); MacroAssignments?.RefreshAvailability(); News?.RefreshAvailability(); RefreshPublicImageActivity();RefreshOverview(); } } }
     private bool _compactLayout;
     public bool CompactLayout { get=>_compactLayout; set=>Set(ref _compactLayout,value); }
     public string Search { get => _search; set { if (Set(ref _search, value)) ScheduleQuery(); } }
@@ -341,7 +341,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         IClientProcessPriorityControl? clientPriority=null,IRobloxShareLinkClient? shareLinkClient=null,IPrivateServerStore? privateServerStore=null,
         TimeProvider? idleClock=null,IClientWorkingSetTrimControl? clientTrim=null,IClientFaultProbe? faultProbe=null,
         IPublicRobloxClientReleaseDirectory? clientReleases=null,IClientAudioMuteControl? clientSound=null,IClientLogCleanup? clientLogCleanup=null,
-        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null)
+        IClientLogTailReader? clientLogTails=null,IClientUpdateInstaller? clientUpdateInstaller=null,IRobloxLaunchTicketClient? launchTicketClient=null, IKeepAwakeInputExecutor? keepAwakeInput=null,IForegroundWindowSwitch? foregroundSwitch=null,IUserInputIdleSource? userIdle=null,CapabilityGate? capabilityGate=null,IShutdownScheduler? shutdownScheduler=null,IPublicNetworkMonitor? publicNetworkMonitor=null,IDiscordWebhookStore? discordWebhookStore=null,IDiscordWebhookTransport? discordTransport=null,IDiscordPresencePipe? discordPresencePipe=null,IDataFolderEncryption? dataEncryption=null,IPublicRobloxNewsFeed? newsFeed=null)
     {
         DataRoot = root; IsSample = sample; InstanceTitle = StartupOptions.TitleFor(root, sample); ProductLabel = StartupOptions.SidebarLabelFor(root, sample); _dispatcher = dispatcher;_enableAutomaticPublicImages=enableAutomaticPublicImages;
         _idleLock=new(idleClock);_clock=idleClock??TimeProvider.System;
@@ -384,7 +384,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeInstallationFeatures(installationDiscovery,executableTrust,clientReleases);
         InitializeClientUpdateFeatures(clientUpdateInstaller);
         InitializeDiagnosticsFeatures(clientLogTails);
-        InitializeDataEncryption(dataEncryption);
+        InitializeDataEncryption(dataEncryption);InitializeNews(newsFeed);
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
@@ -398,7 +398,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeDiscordPresenceFeatures(discordPresencePipe);
         InitializeMacroHostCatalog(macroCatalogClient);
         InitializeMacroAssignments(macroAssignmentStore);
-        Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide" }.Contains(tab)) Tab = tab; });
+        Navigate = new(p => { if (!IsLocked && p is string tab && new[] { "Overview", "Accounts", "Sessions", "JoinGame", "Windows", "Automation", "Diagnostics", "Settings", "Guide", "News" }.Contains(tab)) Tab = tab; });
         OpenFolder = new(_ => { try { Process.Start(new ProcessStartInfo { FileName = DataRoot, UseShellExecute = true }); } catch(System.ComponentModel.Win32Exception ex) { Fail(ex,ManagerSubsystem.Library); } });
         DismissError = new(_ => ClearError());
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
@@ -1141,7 +1141,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
-        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
@@ -1246,7 +1246,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         DisposeSettingsSearch();
         RefreshClientPreviewContext();
         CancelPerformanceTransfers();
-        StopDataEncryption();
+        StopDataEncryption();News.Stop();
         CancelInstallationWork();
         RecipientBundles.CancelWork();
         _launchQueue.SignalPanic();
@@ -1281,7 +1281,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         DisposePublicNetworkGuardFeatures();
         await DisposeDiscordAlertFeaturesAsync();
         await DisposeDiscordPresenceFeaturesAsync();
-        await StopOwnerAsync(DisposeDataEncryptionAsync);
+        await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.

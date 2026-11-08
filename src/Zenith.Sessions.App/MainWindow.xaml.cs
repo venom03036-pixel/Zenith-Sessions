@@ -342,6 +342,16 @@ public partial class MainWindow : Window
         try {Clipboard.SetText(link);_vm.Inform("Unverified reported destination link copied. Access and arrival remain unverified.");}
         catch(Exception ex) when(ex is System.Runtime.InteropServices.COMException or InvalidOperationException) {ClipboardUnavailable(ex,ManagerSubsystem.Directory);}
     }
+    private void OpenNewsArticleClick(object sender,RoutedEventArgs e)
+    {
+        if(sender is not FrameworkElement {DataContext:PublicNewsItem item} || _vm.ReviewNewsLink(item) is not { } link) return;
+        if(MessageBox.Show(this,"Open this official article in your default browser?\n\n"+link.AbsoluteUri,"Open news article",
+            MessageBoxButton.YesNo,MessageBoxImage.Question,MessageBoxResult.No)!=MessageBoxResult.Yes) return;
+        if(_vm.ReviewNewsLink(item)!=link) return;
+        try {System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(link.AbsoluteUri) {UseShellExecute=true});}
+        catch(Exception ex) when(ex is System.ComponentModel.Win32Exception or InvalidOperationException or System.IO.FileNotFoundException)
+        {_vm.Fail(ex,ManagerSubsystem.Directory,"The browser could not be opened.");}
+    }
     private void OpenGamePageClick(object sender,RoutedEventArgs e)
     {
         var link=_vm.BuildRequestedGamePageLink();

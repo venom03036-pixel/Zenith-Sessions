@@ -297,11 +297,34 @@
             <Button Command="{Binding Navigate}" CommandParameter="Diagnostics" Tag="{Binding IsDiagnostics}" Style="{StaticResource SessionNav}" AutomationProperties.Name="{local:Text Page_Diagnostics}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M1,9 H4.5 L6.3,4 L9.5,13 L11.3,8.5 H15" /><TextBlock Text="{local:Text Page_Diagnostics}" Margin="10,0,0,0" /></StackPanel></Button>
             <Button Command="{Binding Navigate}" CommandParameter="Settings" Tag="{Binding IsSettings}" Style="{StaticResource SessionNav}" AutomationProperties.Name="{local:Text Page_Settings}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M1,3 H15 M1,8 H15 M1,13 H15 M5,1 V5 M11,6 V10 M6,11 V15" /><TextBlock Text="{local:Text Page_Settings}" Margin="10,0,0,0" /></StackPanel></Button>
             <Button Command="{Binding Navigate}" CommandParameter="Guide" Tag="{Binding IsGuide}" Style="{StaticResource SessionNav}" AutomationProperties.Name="{local:Text Page_Guide}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M8,3 Q4,0 1,2 V14 Q4,12 8,15 Q12,12 15,14 V2 Q12,0 8,3 V15" /><TextBlock Text="{local:Text Page_Guide}" Margin="10,0,0,0" /></StackPanel></Button>
+            <Button Command="{Binding Navigate}" CommandParameter="News" Tag="{Binding IsNews}" Style="{StaticResource SessionNav}" AutomationProperties.Name="{local:Text Page_News}"><StackPanel Orientation="Horizontal"><Path Style="{StaticResource NavigationIcon}" Data="M2,1 H14 V15 H2 Z M5,4 H11 M5,8 H11 M5,12 H9" /><TextBlock Text="{local:Text Page_News}" Margin="10,0,0,0" /></StackPanel></Button>
           </StackPanel>
           </ScrollViewer>
         </DockPanel>
       </Border>
       <Grid Grid.Row="1" Grid.Column="1" x:Name="PageHost" Margin="28,22,28,16" SizeChanged="ContentSizeChanged">
+        <ScrollViewer x:Name="NewsPage" Visibility="{Binding IsNews, Converter={StaticResource VisibleIf}}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
+          <StackPanel>
+            <DockPanel Margin="0,0,0,16">
+              <Button DockPanel.Dock="Right" Content="{local:Text News_Refresh}" Command="{Binding News.Refresh}" IsEnabled="{Binding News.CanRefresh}" MinHeight="36" Margin="16,0,0,0" />
+              <TextBlock Text="{local:Text Page_News}" Style="{StaticResource PageTitle}" />
+            </DockPanel>
+            <TextBlock Text="{local:Text News_Description}" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,8" />
+            <TextBlock Text="{Binding News.Status}" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,16" AutomationProperties.LiveSetting="Polite" />
+            <ItemsControl ItemsSource="{Binding News.Items}">
+              <ItemsControl.ItemTemplate><DataTemplate>
+                <Border Style="{StaticResource SurfaceCard}" Margin="0,0,0,12">
+                  <StackPanel>
+                    <TextBlock Text="{Binding Title}" FontSize="18" FontWeight="SemiBold" TextWrapping="Wrap" />
+                    <TextBlock Text="{Binding PublishedUtc, StringFormat={}{0:yyyy-MM-dd HH:mm} UTC}" Style="{StaticResource CaptionLine}" Margin="0,6,0,8" />
+                    <TextBlock Text="{Binding Summary}" Style="{StaticResource Muted}" TextWrapping="Wrap" Margin="0,0,0,12" />
+                    <Button Content="{local:Text News_OpenArticle}" Click="OpenNewsArticleClick" HorizontalAlignment="Left" MinHeight="36" />
+                  </StackPanel>
+                </Border>
+              </DataTemplate></ItemsControl.ItemTemplate>
+            </ItemsControl>
+          </StackPanel>
+        </ScrollViewer>
         <ScrollViewer x:Name="OverviewPage" Visibility="{Binding IsOverview, Converter={StaticResource VisibleIf}}" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Disabled">
           <ScrollViewer.Resources><Style x:Key="OverviewChart" TargetType="{x:Type local:ResourceSparkline}" BasedOn="{StaticResource HistoryChart}"><Setter Property="Height" Value="40" /><Setter Property="Width" Value="140" /><Setter Property="Margin" Value="12,0,0,0" /></Style></ScrollViewer.Resources>
           <StackPanel>

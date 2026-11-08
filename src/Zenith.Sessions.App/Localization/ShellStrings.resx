@@ -117,4 +117,8 @@
   <data name="GuideHeading_NativeLaunchMode" xml:space="preserve"><value>Native launch mode</value></data>
   <data name="GuideHeading_BootstrapperLaunch" xml:space="preserve"><value>Launching through a bootstrapper</value></data>
   <data name="GuideHeading_OrdinaryLaunch" xml:space="preserve"><value>Ordinary launching after a verified trial</value></data>
+  <data name="Page_News" xml:space="preserve"><value>News</value></data>
+  <data name="News_Refresh" xml:space="preserve"><value>Refresh announcements</value></data>
+  <data name="News_OpenArticle" xml:space="preserve"><value>Open article in browser…</value></data>
+  <data name="News_Description" xml:space="preserve"><value>Public DevForum announcements, loaded only when this page opens or you press Refresh. Articles open in your browser after confirmation. Roblox Newsroom has no confirmed RSS or Atom feed configured.</value></data>
 </root>
