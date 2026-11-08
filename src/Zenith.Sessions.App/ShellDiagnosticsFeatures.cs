@@ -137,19 +137,28 @@ public sealed partial class ShellViewModel
     }
     private void RefreshDiagnosticsStatus()
     {
-        bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
-        string? stopped=live?null:_overviewMonitorStopped?"monitoring stopped":_libraryUnavailable?"startup needs attention":null;
-        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
-        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
-        string? unwritten=dropped<=0?null:dropped==1?"1 event was not written to the disk log":$"{dropped} events were not written to the disk log";
-        string status=_diagnostics.Failure??(stopped is not null
-            ? $"Diagnostics recording · {(unwritten is null?"":unwritten+" · ")}{stopped} · view updates when refreshed"
-            : !live?"Diagnostics starting"
-            : unwritten is not null?$"Diagnostics active · {unwritten}.":"Diagnostics active · bounded to three log files");
-        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
-        DiagnosticsStatus=_repeatLaunchListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
+        bool live=DiagnosticsLive;
+        DiagnosticsStatus=DiagnosticsStatusText(_diagnostics.Failure,live,_overviewMonitorStopped,_libraryUnavailable,_diagnostics.DroppedEvents,_repeatLaunchListenerStopped);
         // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
         if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
+    }
+    /// <summary>
+    /// The Diagnostics page header draws this on one trimmed 320 px line (about 60 characters at 12 px); only its tooltip
+    /// and the Guide show the rest. So a stopped state comes first and the skip count second, and both stay short enough
+    /// to be read without hovering, even with a six-digit count.
+    /// </summary>
+    internal static string DiagnosticsStatusText(string? failure,bool live,bool monitorStopped,bool startupNeedsAttention,long dropped,bool restoreListenerStopped)
+    {
+        string? stopped=live?null:monitorStopped?"Monitoring stopped":startupNeedsAttention?"Startup needs attention":null;
+        // A disk-writer failure always wins so the header agrees with the storage footer. The skip count mixes a full
+        // writer queue with entries lost to a disk error (any kind, failures and Panic included), so it names no cause.
+        string? unwritten=dropped<=0?null:dropped==1?"1 event not saved to disk":$"{dropped} events not saved to disk";
+        string status=failure??(stopped is not null
+            ? $"{stopped} · {(unwritten is null?"":unwritten+" · ")}diagnostics still recording · view updates when refreshed"
+            : !live?"Diagnostics starting"
+            : unwritten is not null?$"Diagnostics active · {unwritten}":"Diagnostics active · bounded to three log files");
+        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
+        return restoreListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
     }
     private void RefreshDiagnosticsView(bool explicitRequest=false)
     {
