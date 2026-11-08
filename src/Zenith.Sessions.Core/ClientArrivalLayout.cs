@@ -123,11 +123,20 @@ public sealed class ClientArrivalTracker
     /// no cell; restored, it takes its slot again. The scan does not report maximized or fullscreen windows, so those still
     /// get a cell that the move refuses.
     /// </summary>
-    public SessionObservation[] Slots(LaunchQueueSnapshot? queue)
+    public SessionObservation[] Slots(LaunchQueueSnapshot? queue) => Slots(queue, out _);
+
+    /// <param name="minimizedOrHidden">How many such clients were left out because their window is minimized or hidden. No slot
+    /// and zero here means no connected client still has a window: each has closed, or is listed without one.</param>
+    /// <inheritdoc cref="Slots(LaunchQueueSnapshot?)"/>
+    public SessionObservation[] Slots(LaunchQueueSnapshot? queue, out int minimizedOrHidden)
     {
+        minimizedOrHidden = 0;
         var connected = new List<SessionObservation>(_current.Count);
         foreach (var (key, session) in _current)
-            if (session is { Minimized: false, Visible: true } && _arrived.Contains(key)) connected.Add(session);
+        {
+            if (!_arrived.Contains(key)) continue;
+            if (session is { Minimized: false, Visible: true }) connected.Add(session); else minimizedOrHidden++;
+        }
         return ClientWindowSlotOrder.Order(connected, queue);
     }
 }

@@ -15,7 +15,9 @@ public sealed record ClientArrivalChoice(ClientArrivalWindowAction Action, strin
 // Clients already running at the first baseline scan after Zenith starts never arrive, though their Connected line can be minutes old.
 // Until such a scan, a client that reports Connected is left alone and the window report says why, once, so the saved choice
 // is never silently inert.
-// Clients that connect while a request runs wait for one follow-up request, never one each. Clients that connect while a
+// Clients that connect while a request runs wait for one follow-up request, never one each; that request tiles what the latest
+// scan shows, and when nothing is left to tile its report says whether every connected client is minimized or hidden or none
+// still has a window, and clears the earlier request's placement rows. Clients that connect while a
 // manual window operation is queued or running are left alone and count as seen: a request queued behind it on the lane
 // would re-tile every connected client right after the user's arrangement and replace its report. Panic and Lock cancel the
 // request, drop the waiting clients and stop the feature (Rule 11): it stays stopped after Unlock, as automation does, until
@@ -115,13 +117,18 @@ public sealed partial class ShellViewModel
             ClientWindowArrangementResult result;
             if (action == ClientArrivalWindowAction.Arrange && _monitor is IClientWindowArranger arranger)
             {
+                // A refused request moved nothing, so an earlier request's placement rows must not stay under its report.
                 if (ArrivalDisplay(layout.PreferredDisplayId) is not { } display)
-                { ClientWindowStatus = "A client connected, but there is no monitor to arrange clients on. Refresh monitors."; return; }
-                // Minimized and hidden clients are left out: the move refuses them, so their cells would stay empty.
-                selected = _clientArrivals.Slots(Volatile.Read(ref _latestQueue));
+                { ClientPlacementResults.Clear(); ClientWindowStatus = "A client connected, but there is no monitor to arrange clients on. Refresh monitors."; return; }
+                // Minimized and hidden clients are left out: the move refuses them, so their cells would stay empty. A follow-up
+                // request reads the latest scan, so by then every connected client may have closed or lost its window instead.
+                selected = _clientArrivals.Slots(Volatile.Read(ref _latestQueue), out int minimizedOrHidden);
                 if (selected.Length == 0)
                 {
-                    if (!_arranging) ClientWindowStatus = "A client connected, but every connected client is minimized or hidden, so Zenith left the windows alone. Restore them, and Zenith arranges them when the next client connects.";
+                    ClientPlacementResults.Clear();
+                    ClientWindowStatus = minimizedOrHidden > 0
+                        ? "A client connected, but every connected client is minimized or hidden, so Zenith left the windows alone. Restore them, and Zenith arranges them when the next client connects."
+                        : "A client connected, but no connected client still had a window when Zenith could arrange (each closed, or its window is gone), so Zenith left the windows alone. Zenith arranges the connected clients when the next client connects.";
                     return;
                 }
                 result = await arranger.ArrangeAsync(Array.AsReadOnly(selected), display.Id, layout.Tile!, ct);

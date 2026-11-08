@@ -230,6 +230,57 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
     });
 
+    // O-C5-4: a follow-up request (for a client that connected while an automatic request ran) tiles what the latest scan
+    // shows, so by then every connected client may have closed or lost its window. The report must say that, not that they are
+    // minimized or hidden, and the earlier request's placement rows must not stay on screen under a report that moved nothing.
+    [Theory]
+    [InlineData("closed")]
+    [InlineData("windowless")]
+    [InlineData("minimized")]
+    public Task AFollowUpRequestWithNothingToTileSaysWhyAndClearsTheEarlierRequestsRows(string state) => OnUi(async () =>
+    {
+        var monitor = new Monitor();
+        await using var shell = await Ready(monitor);
+        shell.ClientArrivalAction = ClientArrivalWindowAction.Arrange; shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
+        var log = new ArrivalLog(shell, monitor);
+        await log.StartedWithNoClientsAsync();
+        var first = log.Client(410, minutesAgo: 2); var second = log.Client(411, minutesAgo: 1);
+        var automatic = monitor.Pending = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        await log.PresentAsync([first], (first, [ClientLogFact.Joining, ClientLogFact.Connected]));
+        var automaticClients = monitor.Requested.ToArray();
+        try
+        {
+            Assert.Equal(1, monitor.Arrangements);
+            // The second client connects while the first request runs, then the scan changes before that request returns.
+            await log.PresentAsync([first, second], (second, [ClientLogFact.Joining, ClientLogFact.Connected]));
+            SessionObservation[] later = state switch
+            {
+                "closed" => [],
+                "windowless" => [first with { Window = 0 }, second with { Window = 0 }],
+                _ => [first with { Minimized = true }, second with { Minimized = true }]
+            };
+            await log.PresentAsync(later);
+            Assert.Equal(1, monitor.Arrangements);
+        }
+        finally
+        {
+            automatic.TrySetResult(new([new(automaticClients[0], new(0, 0, 320, 240), ClientWindowPlacementStatus.Applied, "Synthetic automatic result")], false, "Synthetic automatic arrangement."));
+        }
+        monitor.Pending = null;
+        await shell.ClientArrivalWork;
+        // The follow-up request found nothing to tile, so it requested no second arrangement and says why.
+        Assert.Equal(1, monitor.Arrangements);
+        Assert.StartsWith("A client connected, but ", shell.ClientWindowStatus);
+        if (state == "minimized") Assert.Contains("every connected client is minimized or hidden", shell.ClientWindowStatus);
+        else
+        {
+            Assert.DoesNotContain("minimized or hidden", shell.ClientWindowStatus);
+            Assert.Contains("no connected client still had a window", shell.ClientWindowStatus);
+        }
+        Assert.Empty(shell.ClientPlacementResults);
+        Assert.DoesNotContain(shell.Events, e => e.Contains("Operation failed"));
+    });
+
     // N-B5a-5: reopening Zenith with Minimize saved leaves alone a client the user joined a few minutes earlier, although its
     // log still reports Connected; a client that starts afterwards is minimized when it connects.
     [Fact]
