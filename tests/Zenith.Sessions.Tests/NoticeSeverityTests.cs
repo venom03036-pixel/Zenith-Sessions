@@ -87,14 +87,32 @@ public sealed class NoticeSeverityTests : IDisposable
         vm.Lock.Execute(null);
         Assert.False(vm.HasErrorNotice, "Lock left an error showing behind the locked dashboard.");
         Assert.Contains("locked", vm.Notice, StringComparison.OrdinalIgnoreCase);
-        // The lock screen covers the footer, so a fault while locked is kept in Events only, never left behind it.
-        vm.ContainUnhandled(typeof(InvalidOperationException));
-        Assert.False(vm.HasErrorNotice, "An unexpected fault left an error behind the locked dashboard.");
-        Assert.Contains(vm.Events, e => e.Contains("Unexpected error caught (InvalidOperationException)", StringComparison.Ordinal));
         // Once unlocked, a later unexpected fault is shown as an error again.
         vm.Unlock.Execute(null);
         vm.ContainUnhandled(typeof(InvalidOperationException));
         Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault after Lock and Unlock showed no error.");
+    });
+
+    [Fact]
+    public Task AFaultWhileLockedIsWaitingAsAnErrorWhenTheDashboardIsUnlocked() => OnSta(async () =>
+    {
+        await using var vm = await ReadyShell();
+        // An ordinary failure while locked (the idle lock, for example) is still the error when the user unlocks.
+        vm.Lock.Execute(null);
+        vm.Fail(new IOException(Secret), Zenith.Sessions.Windows.ManagerSubsystem.Library);
+        vm.Unlock.Execute(null);
+        Assert.True(vm.ErrorNotice.Contains("could not finish", StringComparison.Ordinal), "A failure while locked was gone after Unlock.");
+        vm.DismissError.Execute(null);
+
+        // An unexpected fault caught by the last-chance guard while locked is treated the same way, so the user is told to restart.
+        vm.Lock.Execute(null);
+        vm.ContainUnhandled(typeof(InvalidOperationException));
+        Assert.Contains(vm.Events, e => e.Contains("Unexpected error caught (InvalidOperationException)", StringComparison.Ordinal));
+        vm.Unlock.Execute(null);
+        Assert.True(vm.ErrorNotice.Contains("unexpected error", StringComparison.Ordinal), "An unexpected fault while locked showed no error after Unlock.");
+        Assert.Contains("restart the app", vm.ErrorNotice);
+        Assert.Contains("unlocked", vm.Notice);
+        Assert.DoesNotContain(vm.Events, e => e.Contains("SECRET123", StringComparison.Ordinal));
     });
 
     [Fact]
