@@ -681,8 +681,10 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
         // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
-        // A share-link check or a launch's native preparation it stopped has its own owner, which sees that stop itself: the
-        // sign-in lane may meanwhile be running a command for other rows, so it is neither cancelled nor waited for then.
+        // A share-link check it stopped belongs to the Private server panel, whose check then ends cancelled and says the account
+        // was removed (ShareLinkViewModel.RunCheckAsync); a launch's native preparation it stopped belongs to the launch queue,
+        // whose authorizations for these rows were invalidated above. The sign-in lane may meanwhile be running a command for
+        // other rows, so it is neither cancelled nor waited for then.
         using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
         if(IsSignInLaneOperation(removal.StoppedOperationKind) || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }

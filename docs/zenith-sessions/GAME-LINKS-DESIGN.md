@@ -189,6 +189,13 @@ name, creator line, playing + rating, accent border and check when it is the cur
   }
   ```
 
+- The check uses the saved session of the account selected when it started. Selecting another account stops it, its
+  answer is never shown, and the panel says "Share link check stopped because the selected account changed…" (G8).
+  Removing that account, or its saved sign-in (Disconnect), stops it inside the link service rather than through the
+  panel: the check ends cancelled and the panel says "Share link check stopped because the account, or its saved
+  sign-in, was removed. Paste the link again to check it with a signed-in account.", because the list then reloads with
+  nothing selected and that momentary empty selection rightly restarts or stops nothing (O-C1-2). Leaving the page, Lock
+  and Panic clear the panel instead. Every stop disposes the answer's codes.
 - Runs only on the user's **Check link** click, for the account selected in Accounts. The credential is read from
   the vault for that one request and disposed afterwards. Request: `POST https://apis.roblox.com/sharelinks/v1/resolve-link`
   `{ "linkId": code, "linkType": type }`, cookie sent only to that exact host, no redirects, 64 KiB cap, one CSRF

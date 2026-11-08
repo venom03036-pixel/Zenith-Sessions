@@ -14,6 +14,7 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
     public const string LauncherNote="Joining private servers needs launcher support (coming next)";
     private const string IdleStatus="Paste a private server or game share link, then choose Check link.";
     private const string AccountChangedStatus="Share link check stopped because the selected account changed. Paste the link again to check it with the selected account.";
+    private const string OwnerStoppedStatus="Share link check stopped because the account, or its saved sign-in, was removed. Paste the link again to check it with a signed-in account.";
     private const string NotCheckedStatus="A previous share link check is still running or stopping. This link was not checked; paste it again when it finishes.";
     private const string NotCheckedNote="The share link pasted while this check ran was not checked; paste it again to check it.";
     private readonly IRobloxShareLinkResolver? _resolver;
@@ -119,7 +120,10 @@ public sealed class ShareLinkViewModel:Observable,IAsyncDisposable
                 if(rejected) await ReportSessionRejectedAsync(profile);
             }
         }
-        catch(OperationCanceledException) { }
+        // The link service ends the check itself when the shell removes its account, or that account's saved sign-in: the list
+        // then reloads with nothing selected, which SelectedAccountChanged rightly ignores, so the status is set here. This view
+        // model's own stops (another account, Cancel, disposal) have already said what happened, and Current is false then.
+        catch(OperationCanceledException) {if(Current(generation,stop)) SetStatus(OwnerStoppedStatus);}
         catch(Exception error) {if(Current(generation,stop)) SetStatus("The share link could not be checked right now. Try again later.");ReportSafeFailure(error);}
         finally
         {
