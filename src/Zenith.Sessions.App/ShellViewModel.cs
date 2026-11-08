@@ -984,19 +984,43 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     /// <summary>UI thread, before the window is first shown: where it was left last time, or null. Read-only; see SettingsStore.ReadManagerWindow.</summary>
     internal ManagerWindowPlacement? ReadSavedManagerWindow()=>_settingsStore.ReadManagerWindow();
+    // An ordinary local settings write takes milliseconds. Exit gives the window placement this long, waiting behind another
+    // settings write included, so a slow or network data root delays only the window closing, never the stop before it.
+    private static readonly TimeSpan ManagerWindowSaveBudget=TimeSpan.FromSeconds(2);
     /// <summary>
-    /// UI thread, at exit before <see cref="DisposeAsync"/>: keeps where the window was left through the same merge as the theme
-    /// autosave, so unsaved setting edits are never written. Skipped when nothing changed, when startup did not finish, and while
-    /// recovered settings wait for review, because an exit must not repair them silently. A failed save is recorded by type only
-    /// (Rule 10) and never stops the exit.
+    /// UI thread. Keeps where the window was left through the same merge as the theme autosave, so unsaved setting edits are
+    /// never written. Exit calls it after the shutdown fence (see <see cref="ExitAsync"/>), so it waits on its own short budget,
+    /// never the shell's lifetime, and it is quiet: no notice, no save status and no SettingsSaved event. Skipped when nothing
+    /// changed, when startup did not finish, and while recovered settings wait for review, because an exit must not repair them
+    /// silently. A failed or timed-out save is recorded by type only (Rule 10) and never stops the exit. Windows cannot cancel
+    /// a file open or replace already under way, so only those can run past the budget.
     /// </summary>
     internal async Task SaveManagerWindowAsync(ManagerWindowPlacement? placement)
     {
-        if(placement is null || !placement.IsValid || !_ready || _shuttingDown || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
+        if(placement is null || !placement.IsValid || !_ready || _settingsNeedRepair || placement==_savedSettings.ManagerWindow) return;
         _settings=_settings with { ManagerWindow=placement };
-        try { await SaveCurrentSettingsAsync(); }
+        using var budget=new CancellationTokenSource(ManagerWindowSaveBudget);
+        try
+        {
+            await _preferencesWriter.WaitAsync(budget.Token);
+            try
+            {
+                var snapshot=_savedSettings with { Theme=_settings.Theme,DenseAccounts=_settings.DenseAccounts,ManagerWindow=placement };
+                await Task.Run(() => _settingsStore.SaveAsync(snapshot,budget.Token));
+                _savedSettings=snapshot;
+            }
+            finally { _preferencesWriter.Release(); }
+        }
+        // Running out of budget is a failed write, not a shutdown cancellation, so it is kept as a timeout.
+        catch(OperationCanceledException) when(budget.IsCancellationRequested) { _diagnostics.RecordFailure(ManagerSubsystem.Settings,typeof(TimeoutException)); }
         catch(Exception ex) { _diagnostics.RecordFailure(ManagerSubsystem.Settings,ex.GetType()); }
     }
+    /// <summary>
+    /// UI thread: tray Exit, the window's Exit and the close button when it exits. Runs <see cref="DisposeAsync"/>, which
+    /// stops work first and then, before any owner is awaited, keeps where the window was left (<paramref name="placement"/>,
+    /// or nothing when null). Automation, the launch queue and monitoring therefore never wait on a settings write.
+    /// </summary>
+    internal Task ExitAsync(ManagerWindowPlacement? placement)=>_disposeTask??=DisposeCoreAsync(placement);
     public async Task RequestCloseAsync(SessionObservation session)
     {
         var requestedAt=DateTimeOffset.UtcNow;
@@ -1091,7 +1115,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         // Bounded, and safe on the UI thread: the log's writer and its close run on the thread pool, never this dispatcher.
         return _diagnostics.DisposeAsync().AsTask().Wait(flushBudget);
     }
-    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync());
+    public ValueTask DisposeAsync()=>new(_disposeTask??=DisposeCoreAsync(null));
     // First, synchronous stage of every exit (tray Exit and Windows session end), once: nothing new may start
     // and every in-flight operation is cancelled, in this order, before any owner is awaited.
     private void BeginShutdown()
@@ -1114,9 +1138,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     }
     // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
     // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
-    private async Task DisposeCoreAsync()
+    private async Task DisposeCoreAsync(ManagerWindowPlacement? exitWindow)
     {
-        try { await DisposeOwnersAsync(); }
+        try { await DisposeOwnersAsync(exitWindow); }
         catch(Exception ex) when(RecordShutdownFault(ex)) { } // Never entered: the filter records and the fault keeps propagating.
         finally { _diagnostics.Record(ManagerEventKind.Shutdown); await _diagnostics.DisposeAsync(); }
         _lifetime.Dispose();
@@ -1126,9 +1150,11 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(ex is not OperationCanceledException) _diagnostics.RecordFailure(ManagerSubsystem.Lifecycle,ex.GetType());
         return false;
     }
-    private async Task DisposeOwnersAsync()
+    private async Task DisposeOwnersAsync(ManagerWindowPlacement? exitWindow)
     {
         BeginShutdown();
+        // Exit only. Work is already fenced and cancelled, so this write, bounded on its own, only delays waiting for owners that are stopping.
+        await SaveManagerWindowAsync(exitWindow);
         await DisposeClientPriorityFeaturesAsync();
         await DisposeClientMemoryTrimFeaturesAsync();
         await _initializeTask;

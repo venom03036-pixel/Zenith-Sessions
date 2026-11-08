@@ -116,12 +116,14 @@ public partial class MainWindow : Window
         if (_exitStarted) return; _exitStarted = true;
         try
         {
-            // Remember where the window was left while the shell can still save; this never stops the exit (type only, Rule 10).
-            try { await _vm.SaveManagerWindowAsync(CaptureManagerWindow()); }
+            // Read where the window was left before anything stops. The shell stops work first and only then saves it, within a
+            // short budget of its own, so a slow or queued settings write never keeps automation running. Neither stops the exit.
+            ManagerWindowPlacement? placement = null;
+            try { placement = CaptureManagerWindow(); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             // The shell stops each owner on its own, so a fault here is in its own teardown. Keep its type only (Rule 10)
             // and still give the priority warning and stop the instance coordinator.
-            try { await _vm.DisposeAsync(); }
+            try { await _vm.ExitAsync(placement); }
             catch (Exception ex) { ((App)Application.Current).RecordFault(ex.GetType()); }
             if (_vm.PendingPriorityRestoreCount > 0)
                 MessageBox.Show(this, "Windows could not confirm restoration of " + _vm.PendingPriorityRestoreCount
