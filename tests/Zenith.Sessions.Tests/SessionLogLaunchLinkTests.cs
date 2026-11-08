@@ -71,6 +71,54 @@ public sealed partial class SessionLogCorrelatorTests
         Assert.Equal(launches.Select(launch => new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Ambiguous)), links);
     }
 
+    [Fact]
+    public async Task ALogWhoseHeadCouldNotBeReadKeepsTheLaunchUnlinkedUntilItsHeadIsRead()
+    {
+        // A second log written since the launch began is locked by another writer, so its head read fails. It could name
+        // the tracker too, so the readable log that does is not linked until that head has been read.
+        var client = Key(77); var clock = new Clock(); Write(TrackerLine());
+        var probe = new Probe(Log, client);
+        var locked = Candidate("locked", SyntheticClientLogFixtures.Line("FLog::SyntheticStartup", "starting"));
+        probe.Files = [probe.Files[0], locked];
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        var launch = Launch();
+        await using var worker = new WindowsSessionLogCorrelator(probe, timeProvider: clock);
+        SessionLogDiscoverySnapshot first;
+        using (new FileStream(locked.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            worker.Offer(Desktop(client), client.HostId, [launch]);
+            first = await After(worker);
+        }
+        Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.NotLinked), Assert.Single(first.Launches));
+        clock.Advance(2500); worker.Offer(Desktop(client), client.HostId, [launch]);
+        Assert.Equal(new LaunchLogLink(launch.OperationId, LaunchLogLinkStatus.Linked, client), Assert.Single((await After(worker, first.Revision)).Launches));
+    }
+
+    [Theory]
+    [InlineData("second-ambiguous")]
+    [InlineData("second-pending")]
+    public async Task ALogThatAlsoNamesAnotherLaunchsTrackerLinksNeitherEvenWhenThatLaunchCannotLink(string shape)
+    {
+        // The held log names both launches' trackers. The second launch, which began earlier, cannot link: another log
+        // written since it began names its tracker too, or one could not be read. The held log is still no more the
+        // first launch's than the second's.
+        var client = Key(77); var now = DateTimeOffset.UtcNow;
+        Write(TrackerLine() + TrackerLine(Tracker + 1, "BTID is overriden to "));
+        var other = Candidate("other", shape == "second-ambiguous" ? TrackerLine(Tracker + 1) : "");
+        File.SetCreationTimeUtc(other.Path, now.AddMinutes(-100).UtcDateTime);
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now), other with { ModifiedUtc = now.AddMinutes(-90) }] };
+        probe.HolderFor = path => path == Log ? HeldBy(client) : new(SessionLogCorrelationStatus.ResourceHolderObserved, []);
+        using var hold = shape == "second-pending" ? new FileStream(other.Path, FileMode.Open, FileAccess.ReadWrite, FileShare.None) : null;
+        LaunchLogExpectation first = Launch(notBefore: now.AddHours(-1).UtcTicks), second = Launch(Tracker + 1, now.AddHours(-2).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [first, second]);
+        Assert.Equal(new[]
+        {
+            new LaunchLogLink(first.OperationId, LaunchLogLinkStatus.Ambiguous),
+            new LaunchLogLink(second.OperationId, shape == "second-pending" ? LaunchLogLinkStatus.NotLinked : LaunchLogLinkStatus.Ambiguous)
+        }, (await After(worker)).Launches);
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
