@@ -819,7 +819,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var snapshot = await _monitor.SampleAsync(ct).ConfigureAwait(false);
         // One bounded, pure reducer on the existing sample lane; no row-owned task/timer.
         await Task.Run(()=>_telemetryHistory.Observe(snapshot,DateTimeOffset.UtcNow),ct).ConfigureAwait(false);
-        _logCorrelator?.Offer(snapshot);
+        // Launches whose receipts carry a browser tracker are offered too, so their own client logs can be found by tracker.
+        _logCorrelator?.Offer(snapshot,launches:LaunchLogExpectation.From(Volatile.Read(ref _latestQueue)));
         var memory = snapshot.Resources;var now=DateTimeOffset.UtcNow;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;
         var projection=LaunchReservationProjection.Evaluate(Volatile.Read(ref _latestQueue),snapshot,limits,now);

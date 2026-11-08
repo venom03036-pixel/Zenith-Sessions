@@ -24,6 +24,18 @@ public sealed partial class NativeAccountLaunchProviderTests : IDisposable
         Assert.Equal(0, f.Policy.Calls); Assert.Equal(0, f.Preparer.Calls); Assert.Equal(0, f.Capture.Calls); Assert.Equal(0, f.Starter.Calls);
     }
 
+    [Fact]
+    public async Task AStartedClientReportsTheCapturedTrackerBesideItsReceiptButNeverTheHandoff()
+    {
+        await using var f = new Fixture(_root);
+        var result = await f.Provider.PrepareAsync(f.Context, default); await using var handle = result.Prepared!;
+        using var boundary = new LaunchDispatchBoundary(handle.DispatchIntent, (_, _) => Task.FromResult(true), () => true, () => new(true, "Synthetic fresh reservation"));
+        var launched = await handle.DispatchAsync(boundary, default);
+        Assert.Equal(ProviderLaunchStatus.ClientStartedUnverified, launched.Status); Assert.Equal(13579, launched.ProcessId);
+        Assert.Equal(long.Parse(SyntheticHandoff.Tracker, CultureInfo.InvariantCulture), launched.BrowserTrackerId);
+        Assert.DoesNotContain(SyntheticHandoff.Ticket, JsonSerializer.Serialize(launched)); Assert.DoesNotContain("gameinfo", JsonSerializer.Serialize(launched));
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

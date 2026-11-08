@@ -2,7 +2,8 @@ namespace Zenith.Sessions.Core;
 
 public enum NativeHandoffAttemptStatus
 { Busy, NotAuthorized, RequestChanged, Expired, AdmissionDenied, Cancelled, NotStarted, StartedUnverified, Uncertain }
-public sealed record NativeHandoffAttempt(NativeHandoffAttemptStatus Status, LaunchProcessReceipt? ProcessReceipt = null);
+/// <summary>BrowserTrackerId is the candidate's non-secret tracker, set only beside a process receipt.</summary>
+public sealed record NativeHandoffAttempt(NativeHandoffAttemptStatus Status, LaunchProcessReceipt? ProcessReceipt = null, long? BrowserTrackerId = null);
 
 /// <summary>
 /// Final preparation/dispatch plumbing, not an enabled or verified Roblox launch provider.
@@ -49,6 +50,7 @@ public sealed class NativeHandoffCoordinator(IAuthorizationDispatchVault vault) 
     {
         bool entered = false, callbackInvoked = false; NativeHandoffDispatchResult? observed = null;
         NativeHandoffAttemptStatus? refusal = null;
+        long tracker = candidate.BrowserTrackerId;
         CancellationToken ct = owner.Stop.Token;
         var closePreparationOnCancellation = ct.Register(candidate.Context.Dispose);
         try
@@ -84,23 +86,23 @@ public sealed class NativeHandoffCoordinator(IAuthorizationDispatchVault vault) 
                 return observed;
             }, ct).ConfigureAwait(false);
             if (result.Status == AuthorizationDispatchStatus.NotAuthorized)
-                return entered ? Uncertain(observed) : new(NativeHandoffAttemptStatus.NotAuthorized);
+                return entered ? Uncertain(observed, tracker) : new(NativeHandoffAttemptStatus.NotAuthorized);
             if (result.Status != AuthorizationDispatchStatus.CallbackInvoked || !callbackInvoked)
-                return entered ? Uncertain(observed) : new(NativeHandoffAttemptStatus.NotStarted);
+                return entered ? Uncertain(observed, tracker) : new(NativeHandoffAttemptStatus.NotStarted);
             if (refusal.HasValue) return new(refusal.Value);
             if (!entered && ct.IsCancellationRequested) return new(NativeHandoffAttemptStatus.Cancelled);
             if (!entered && observed is null) return new(NativeHandoffAttemptStatus.NotStarted);
             var local = NativeHandoffDispatchResult.Sanitize(observed);
-            if (local != NativeHandoffDispatchResult.Sanitize(result.Dispatch)) return Uncertain(local);
-            return Describe(local);
+            if (local != NativeHandoffDispatchResult.Sanitize(result.Dispatch)) return Uncertain(local, tracker);
+            return Describe(local, tracker);
         }
         catch (OperationCanceledException)
-        { return entered ? Uncertain(observed) : new(NativeHandoffAttemptStatus.Cancelled); }
+        { return entered ? Uncertain(observed, tracker) : new(NativeHandoffAttemptStatus.Cancelled); }
         catch (Exception)
         {
             // Delegate, filesystem and native exceptions can contain sensitive handoff values.
             // No raw message, inner exception or credential is returned or recorded.
-            return entered ? Uncertain(observed) : new(NativeHandoffAttemptStatus.NotStarted);
+            return entered ? Uncertain(observed, tracker) : new(NativeHandoffAttemptStatus.NotStarted);
         }
         finally
         {
@@ -111,14 +113,17 @@ public sealed class NativeHandoffCoordinator(IAuthorizationDispatchVault vault) 
         }
     }
 
-    private static NativeHandoffAttempt Describe(NativeHandoffDispatchResult result) => result.Outcome switch
+    // The original receipt is passed on unchanged; the tracker of the request it started travels beside it.
+    private static NativeHandoffAttempt Describe(NativeHandoffDispatchResult result, long tracker) => result.Outcome switch
     {
         NativeHandoffDispatchOutcome.NotStarted => new(NativeHandoffAttemptStatus.NotStarted),
-        NativeHandoffDispatchOutcome.StartedUnverified => new(NativeHandoffAttemptStatus.StartedUnverified, result.ProcessReceipt),
-        _ => Uncertain(result)
+        NativeHandoffDispatchOutcome.StartedUnverified => new(NativeHandoffAttemptStatus.StartedUnverified, result.ProcessReceipt,
+            result.ProcessReceipt is null ? null : tracker),
+        _ => Uncertain(result, tracker)
     };
-    private static NativeHandoffAttempt Uncertain(NativeHandoffDispatchResult? result)
-        => new(NativeHandoffAttemptStatus.Uncertain, result?.ProcessReceipt is { IsValid: true } receipt ? receipt : null);
+    private static NativeHandoffAttempt Uncertain(NativeHandoffDispatchResult? result, long tracker)
+        => result?.ProcessReceipt is { IsValid: true } receipt ? new(NativeHandoffAttemptStatus.Uncertain, receipt, tracker)
+            : new(NativeHandoffAttemptStatus.Uncertain);
 
     public void CancelPending()
     { lock (_gate) { if (!_disposed) _active?.Stop.Cancel(); } }

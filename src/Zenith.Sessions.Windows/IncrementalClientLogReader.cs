@@ -58,6 +58,85 @@ public sealed class IncrementalClientLogReader : IDisposable
         return Identity(stream.SafeFileHandle);
     }
 
+    /// <summary>
+    /// The browser trackers one log's bounded head names (at most four), with the file's identity, creation time and
+    /// length when read. Complete: the head can no longer change (it reached the first join line or HeadBytes).
+    /// Not a secret, and corroboration only. No path or line text is kept.
+    /// </summary>
+    internal sealed record ClientLogHead(FileIdentity Identity, long CreatedUtcTicks, long Length, long[] Trackers, bool Complete);
+    internal const int HeadBytes = 64 * 1024;
+    private const int MaximumHeadTrackers = 4;
+    private static readonly long FileTimeEpochTicks = DateTime.FromFileTimeUtc(0).Ticks;
+
+    /// <summary>
+    /// Reads at most HeadBytes from the start of one caller-selected local log, synchronously, for the browser tracker
+    /// the client writes near its top ("websiteBTId is N", or "BTID is overriden to N" when it was replaced; marker
+    /// shapes from the same public-text study as the facts above, so support stays Unverified). Only complete lines
+    /// before the first "Joining game" line count: a game's own output cannot appear before the client joins one.
+    /// A file with the same identity and length as previous is not read again. Bytes are cleared before return.
+    /// </summary>
+    internal static ClientLogHead ReadHead(string path, ClientLogHead? previous, CancellationToken ct)
+    {
+        string full = Path.GetFullPath(path);
+        using var stream = new FileStream(full, FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete, 0, FileOptions.SequentialScan);
+        ValidatePhysicalPath(stream.SafeFileHandle, full);
+        var identity = Identity(stream.SafeFileHandle);
+        long length = stream.Length;
+        if (previous is { } prior && prior.Identity == identity && prior.Length == length) return prior;
+        long fileTime = ((long)identity.CreationHigh << 32) | identity.CreationLow;
+        long created = fileTime >= 0 && fileTime <= DateTime.MaxValue.Ticks - FileTimeEpochTicks ? fileTime + FileTimeEpochTicks : long.MinValue;
+        int count = (int)Math.Min(length, HeadBytes);
+        byte[] bytes = System.Buffers.ArrayPool<byte>.Shared.Rent(Math.Max(1, count));
+        try
+        {
+            int read = 0;
+            while (read < count)
+            {
+                ct.ThrowIfCancellationRequested();
+                int next = stream.Read(bytes, read, count - read);
+                if (next == 0) break;
+                read += next;
+            }
+            var trackers = new List<long>(MaximumHeadTrackers);
+            bool joined = false;
+            for (int index = 0, start = 0; index < read && !joined; index++)
+            {
+                if (bytes[index] != (byte)'\n') continue;
+                int end = index > start && bytes[index - 1] == (byte)'\r' ? index - 1 : index;
+                // A partial last line waits for a later read; an overlong line is skipped, as the incremental reader does.
+                if (end - start <= 8192) joined = HeadLine(bytes.AsSpan(start, end - start), trackers);
+                start = index + 1;
+            }
+            return new(identity, created, length, trackers.ToArray(), joined || read >= HeadBytes);
+        }
+        finally { System.Buffers.ArrayPool<byte>.Shared.Return(bytes, clearArray: true); }
+    }
+
+    /// <summary>The same "time,... [first tag] body" shape facts use. Returns true at the first join line, which ends the head.</summary>
+    private static bool HeadLine(ReadOnlySpan<byte> bytes, List<long> trackers)
+    {
+        string line;
+        try { line = StrictUtf8.GetString(bytes); }
+        catch (DecoderFallbackException) { return false; }
+        int comma = line.IndexOf(',');
+        if (comma is < 20 or > 40 || !DateTimeOffset.TryParse(line.AsSpan(0, comma), CultureInfo.InvariantCulture,
+            DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal, out _)) return false;
+        int opening = line.IndexOf('[', comma), closing = opening < 0 ? -1 : line.IndexOf(']', opening + 1);
+        if (opening < 0 || closing < 0 || closing - opening > 80) return false;
+        var tag = line.AsSpan(opening + 1, closing - opening - 1);
+        var body = line.AsSpan(closing + 1).TrimStart();
+        if (tag.SequenceEqual("FLog::Output") && body.StartsWith("! Joining game '", StringComparison.Ordinal)) return true;
+        if ((HeadTracker(body, "websiteBTId is ") ?? HeadTracker(body, "BTID is overriden to ")) is { } tracker
+            && trackers.Count < MaximumHeadTrackers && !trackers.Contains(tracker)) trackers.Add(tracker);
+        return false;
+    }
+    private static long? HeadTracker(ReadOnlySpan<char> body, ReadOnlySpan<char> marker)
+    {
+        int at = body.IndexOf(marker, StringComparison.Ordinal);
+        if (at < 0 || at > 0 && char.IsAsciiLetterOrDigit(body[at - 1])) return null;
+        return Number(body[(at + marker.Length)..]) is { } value && value <= LaunchProcessReceipt.MaximumBrowserTrackerId ? value : null;
+    }
+
     public IncrementalClientLogReader(string path, ClientLogReaderOptions? options = null, TimeProvider? timeProvider = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(path);

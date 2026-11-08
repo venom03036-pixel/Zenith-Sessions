@@ -13,12 +13,21 @@ public sealed record LaunchIntent(Guid OperationId,Guid ProfileId,long ProfileRe
 /// A provider-reported process instance only, never account, arrival or current liveness proof.
 /// RecordedUtc is when the coordinator retained the receipt, not a fresh process observation.
 /// Providers must use an actual process handle/creation identity, never nearest-start timing.
+/// BrowserTrackerId, when present, is the validated tracker the native request carried, kept without the
+/// request URI. It is not a secret, unlike the ticket, and only corroborates which client log belongs to
+/// this launch (a client can restart under a new PID): it proves neither the account nor arrival.
+/// It is written only when present, and a queue that holds one is saved as format 8.
 /// </summary>
-public sealed record LaunchProcessReceipt(int ProcessId,long ProcessStartUtcTicks,DateTimeOffset RecordedUtc)
+public sealed record LaunchProcessReceipt(int ProcessId,long ProcessStartUtcTicks,DateTimeOffset RecordedUtc,
+    [property:System.Text.Json.Serialization.JsonIgnore(Condition=System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull)]
+    long? BrowserTrackerId=null)
 {
+    /// <summary>The largest tracker the request grammar accepts: 2^53 - 1, the largest integer JavaScript holds exactly.</summary>
+    public const long MaximumBrowserTrackerId=9_007_199_254_740_991;
     [System.Text.Json.Serialization.JsonIgnore]
     public bool IsValid=>ProcessId>0 && ProcessStartUtcTicks>=DateTime.FromFileTimeUtc(0).Ticks
-        && ProcessStartUtcTicks<=DateTime.MaxValue.Ticks && RecordedUtc!=default && ProcessStartUtcTicks<=RecordedUtc.UtcTicks;
+        && ProcessStartUtcTicks<=DateTime.MaxValue.Ticks && RecordedUtc!=default && ProcessStartUtcTicks<=RecordedUtc.UtcTicks
+        && BrowserTrackerId is null or (>0 and <=MaximumBrowserTrackerId);
 }
 public sealed record LaunchOperation(LaunchIntent Intent,LaunchState State,LaunchProblem Problem,DateTimeOffset UpdatedUtc,
     LaunchProcessReceipt? ProcessReceipt=null,LaunchResourceBudget? ResourceBudget=null);
@@ -35,8 +44,9 @@ public sealed record LaunchQueueSnapshot(bool Paused,IReadOnlyList<LaunchOperati
 public sealed record LaunchAdmission(bool Allowed,string Explanation);
 public sealed class LaunchQueueException(string message) : Exception(message);
 public enum ProviderLaunchStatus { RejectedBeforeStart,Uncertain,VerifiedArrival,ClientStartedUnverified }
+// BrowserTrackerId is the non-secret tracker the native request carried; it joins the process receipt only.
 public sealed record ProviderLaunchResult(ProviderLaunchStatus Status,long? ObservedUserId=null,long? ObservedPlaceId=null,
-    int? ProcessId=null,long? ProcessStartUtcTicks=null,string? ObservedJobId=null);
+    int? ProcessId=null,long? ProcessStartUtcTicks=null,string? ObservedJobId=null,long? BrowserTrackerId=null);
 
 public interface ILaunchProvider
 {
@@ -580,7 +590,9 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     private bool RecordReceiptOwned(LaunchIntent expected,ProviderLaunchResult? result)
     {
         if(result?.ProcessId is not { } pid || result.ProcessStartUtcTicks is not { } start) return false;
-        var receipt=new LaunchProcessReceipt(pid,start,_time.GetUtcNow());
+        // An out-of-range tracker is dropped, never allowed to cost the process receipt itself.
+        long? tracker=result.BrowserTrackerId is >0 and <=LaunchProcessReceipt.MaximumBrowserTrackerId?result.BrowserTrackerId:null;
+        var receipt=new LaunchProcessReceipt(pid,start,_time.GetUtcNow(),tracker);
         if(!receipt.IsValid) return false;
         int index=_operations.FindIndex(o=>o.Intent.OperationId==expected.OperationId);
         if(index<0 || _operations[index].Intent!=expected) return false;

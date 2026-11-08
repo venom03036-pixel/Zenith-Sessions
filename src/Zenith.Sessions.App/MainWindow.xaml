@@ -1194,6 +1194,7 @@
                     </Grid>
                     <TextBlock Text="{Binding SelectedLaunchEvidence.ProcessSummary}" TextWrapping="Wrap" Margin="0,16,0,4" />
                     <TextBlock Text="{Binding SelectedLaunchEvidence.ObservationTime}" Style="{StaticResource Caption}" />
+                    <TextBlock Text="{Binding SelectedLaunchEvidence.LaunchToLog}" TextWrapping="Wrap" Margin="0,8,0,0" ToolTip="Matches this launch to a client log by the browser tracker its request carried, even if the client restarted under a new PID. This never confirms the account or the arrival." />
                     <TextBlock Text="{Binding SelectedLaunchEvidence.Comparison}" FontWeight="SemiBold" Foreground="{DynamicResource AccentPrimary}" Margin="0,12,0,4" TextWrapping="Wrap" />
                     <TextBlock Text="{Binding SelectedLaunchEvidence.Explanation}" Style="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" />
                     <TextBlock Text="{Binding SelectedLaunchEvidence.LastKnown}" Style="{StaticResource Muted}" TextWrapping="Wrap" FontSize="12" Margin="0,10,0,0" />

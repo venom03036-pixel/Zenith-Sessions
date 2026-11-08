@@ -154,11 +154,15 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         if (result is null) return new(ProviderLaunchStatus.Uncertain);
         bool receipt = result.ProcessId is int pid && result.ProcessStartUtcTicks is long start
             && new LaunchProcessReceipt(pid, start, DateTimeOffset.UtcNow).IsValid;
+        // The child's non-secret request tracker is kept only beside a valid receipt.
+        long? tracker = receipt ? result.BrowserTrackerId : null;
         if (result.Status == ProviderLaunchStatus.ClientStartedUnverified && receipt)
-            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: result.ProcessId, ProcessStartUtcTicks: result.ProcessStartUtcTicks);
+            return new(ProviderLaunchStatus.ClientStartedUnverified, ProcessId: result.ProcessId, ProcessStartUtcTicks: result.ProcessStartUtcTicks,
+                BrowserTrackerId: tracker);
         if (result.Status == ProviderLaunchStatus.RejectedBeforeStart && result.ProcessId is null && result.ProcessStartUtcTicks is null)
             return Rejected();
-        return new(ProviderLaunchStatus.Uncertain, ProcessId: receipt ? result.ProcessId : null, ProcessStartUtcTicks: receipt ? result.ProcessStartUtcTicks : null);
+        return new(ProviderLaunchStatus.Uncertain, ProcessId: receipt ? result.ProcessId : null, ProcessStartUtcTicks: receipt ? result.ProcessStartUtcTicks : null,
+            BrowserTrackerId: tracker);
     }
     private void Stop(Owner? owner)
     {

@@ -17,7 +17,59 @@ public sealed record ProcessLogDiagnostic(SessionProcessKey Process, SessionLogC
 }
 
 public sealed record SessionLogDiscoverySnapshot(long Revision, DateTimeOffset ObservedUtc,
-    IReadOnlyList<ProcessLogDiagnostic> Sessions, int CandidateCount, bool BudgetLimited);
+    IReadOnlyList<ProcessLogDiagnostic> Sessions, int CandidateCount, bool BudgetLimited)
+{
+    /// <summary>One launch-to-log row per offered launch, in offer order; empty when none was offered.</summary>
+    public IReadOnlyList<LaunchLogLink> Launches { get; init; } = Array.Empty<LaunchLogLink>();
+}
+
+/// <summary>
+/// A launch to look for in client log heads: its operation, the validated browser tracker its native request carried
+/// and the start of the process its receipt names. A log created before that start cannot be this launch's.
+/// The tracker is not a secret, unlike the ticket, and is corroboration only (HANDOFF.md): it proves neither the account nor arrival.
+/// </summary>
+public readonly record struct LaunchLogExpectation(Guid OperationId, long BrowserTrackerId, long NotBeforeUtcTicks)
+{
+    public const int MaximumLaunches = 32;
+    internal bool IsValid => OperationId != Guid.Empty && BrowserTrackerId is > 0 and <= LaunchProcessReceipt.MaximumBrowserTrackerId
+        && NotBeforeUtcTicks >= DateTime.FromFileTimeUtc(0).Ticks && NotBeforeUtcTicks <= DateTime.MaxValue.Ticks;
+
+    /// <summary>The queue's valid receipts that carry a tracker, most recently recorded first, at most MaximumLaunches.</summary>
+    public static LaunchLogExpectation[] From(LaunchQueueSnapshot? queue)
+    {
+        if (queue?.Operations is not { Count: > 0 } operations) return [];
+        var found = new List<(DateTimeOffset Recorded, LaunchLogExpectation Launch)>();
+        foreach (var operation in operations)
+            if (operation?.ProcessReceipt is { IsValid: true, BrowserTrackerId: { } tracker } receipt && operation.Intent is { } intent)
+                found.Add((receipt.RecordedUtc, new(intent.OperationId, tracker, receipt.ProcessStartUtcTicks)));
+        found.Sort(static (left, right) => right.Recorded.CompareTo(left.Recorded));
+        var result = new LaunchLogExpectation[Math.Min(found.Count, MaximumLaunches)];
+        for (int index = 0; index < result.Length; index++) result[index] = found[index].Launch;
+        return result;
+    }
+}
+
+public enum LaunchLogLinkStatus
+{
+    /// <summary>No client log created since the launch began names its tracker in the part read so far.</summary>
+    NotLinked,
+    /// <summary>Exactly one such log names it, and no other offered launch carries the same tracker or links to that log.</summary>
+    Linked,
+    /// <summary>More than one log names it, another offered launch carries the same tracker, or the log names another launch's tracker too.</summary>
+    Ambiguous,
+    /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>
+    Unavailable
+}
+
+/// <summary>
+/// Launch-to-log, kept separate from the holder binding: Status says whether one client log's head names this launch's
+/// browser tracker; Process is the process that currently holds that log (the holder binding), or null when none is bound.
+/// A linked log is corroboration only: never writer proof, account identity, arrival or permission to act.
+/// </summary>
+public sealed record LaunchLogLink(Guid OperationId, LaunchLogLinkStatus Status, SessionProcessKey? Process = null)
+{
+    public bool CanAuthorizeAccountAction => false;
+}
 
 /// <summary>
 /// ReadsPerPass bounds the turns that may query holders or bind new logs. SharedReadBytes is the per-pass
@@ -61,13 +113,21 @@ internal interface IClientLogProbe : IDisposable
 /// Each failure the owner recovers from is passed to the optional recoveredFailure callback as its exception type only,
 /// on the worker thread, at most once per pass; the callback must not block. The failure that ends the owner is not
 /// passed to it: that one surfaces from DisposeAsync.
+/// Launch-to-log: when launches are offered, each pass also reads at most HeadReadsPerPass bounded log heads (after
+/// every other read, inside the same deadline) and links a launch to the one log created since it began whose head
+/// names its browser tracker. That link is independent of the PID, so it survives a client restarting under a new one.
 /// </summary>
 public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 {
-    private sealed record Input(SessionProcessKey[] Processes, bool BudgetLimited);
+    private sealed record Input(SessionProcessKey[] Processes, bool BudgetLimited, LaunchLogExpectation[] Launches);
     private sealed class Reader(ClientLogCandidate candidate)
     {
         public readonly ClientLogCandidate Candidate = candidate;
+        // Launch-to-log: the last head read of this file (null before the first, or after a failed read), when it was
+        // attempted, and the rotation order of head reads. A complete head is never read again for the same file.
+        public IncrementalClientLogReader.ClientLogHead? Head;
+        public long? HeadAt;
+        public long LastHead;
         public IncrementalClientLogReader? Log;
         public List<ClientLogObservation>? Facts;
         public ClientLogBatch? Batch;
@@ -93,6 +153,10 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private static readonly TimeSpan HolderLease = TimeSpan.FromSeconds(25);
     // The fifth failed pass in a row ends the worker, so a persistent fault still reaches DisposeAsync.
     private const int MaximumConsecutivePassFailures = 5;
+    // At most 4 x 64 KiB of head bytes per pass, only while some log written since a launch began is unread or still
+    // growing. A head still being written is read again no sooner than HeadRecheck, and only when its length changed.
+    private const int HeadReadsPerPass = 4;
+    private static readonly TimeSpan HeadRecheck = TimeSpan.FromSeconds(2);
     private readonly SessionLogCorrelatorOptions _options;
     private readonly TimeProvider _clock;
     private readonly IClientLogProbe _probe;
@@ -102,7 +166,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private readonly CancellationTokenSource _stop = new();
     private readonly Dictionary<string, Reader> _readers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Task _worker;
-    private Input _latest = new([], false);
+    private Input _latest = new([], false, []);
     private SessionLogDiscoverySnapshot _snapshot = new(0, DateTimeOffset.MinValue, Array.Empty<ProcessLogDiagnostic>(), 0, false);
     private ClientLogCandidates _candidates = new(Array.Empty<ClientLogCandidate>(), false);
     private long? _lastPass, _lastDiscovery;
@@ -127,7 +191,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
 
     public SessionLogDiscoverySnapshot Snapshot => Volatile.Read(ref _snapshot);
 
-    public void Offer(DesktopSnapshot snapshot, string? hostId = null)
+    public void Offer(DesktopSnapshot snapshot, string? hostId = null, IReadOnlyList<LaunchLogExpectation>? launches = null)
     {
         if (Volatile.Read(ref _disposed) != 0) return;
         var keys = new List<SessionProcessKey>(_options.MaximumProcesses);
@@ -141,8 +205,23 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         }
         keys.Sort((left, right) => left.ProcessId != right.ProcessId ? left.ProcessId.CompareTo(right.ProcessId)
             : left.ProcessStartUtcTicks.CompareTo(right.ProcessStartUtcTicks));
-        var input = new Input(keys.ToArray(), limited);
+        var input = new Input(keys.ToArray(), limited, Expected(launches));
         Volatile.Write(ref _latest, input); _inputs.Writer.TryWrite(input);
+    }
+
+    // Valid launches only, the first of each operation, at most MaximumLaunches, in offer order. Pure: no file work.
+    private static LaunchLogExpectation[] Expected(IReadOnlyList<LaunchLogExpectation>? launches)
+    {
+        if (launches is not { Count: > 0 }) return [];
+        var kept = new List<LaunchLogExpectation>(Math.Min(launches.Count, LaunchLogExpectation.MaximumLaunches));
+        for (int index = 0; index < launches.Count && kept.Count < LaunchLogExpectation.MaximumLaunches; index++)
+        {
+            var launch = launches[index];
+            bool seen = false;
+            foreach (var other in kept) seen |= other.OperationId == launch.OperationId;
+            if (launch.IsValid && !seen) kept.Add(launch);
+        }
+        return kept.ToArray();
     }
 
     private async Task RunAsync()
@@ -271,6 +350,25 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
             next.LastRead = ++_visit;
             await ObserveAsync(next, input, ct).ConfigureAwait(false);
         }
+
+        // Launch-to-log heads go last, so they never take time from the reads above. Only logs written since the earliest
+        // offered launch began are read, least recently read first. These reads start no holder query and bind nothing.
+        if (input.Launches.Length > 0)
+        {
+            long notBefore = long.MaxValue;
+            foreach (var launch in input.Launches) notBefore = Math.Min(notBefore, launch.NotBeforeUtcTicks);
+            for (int turn = 0; turn < HeadReadsPerPass; turn++)
+            {
+                Reader? next = null;
+                foreach (var reader in readers)
+                    if (HeadDue(reader, notBefore) && (next is null || reader.LastHead < next.LastHead)) next = reader;
+                if (next is null) break;
+                ct.ThrowIfCancellationRequested();
+                if (_clock.GetElapsedTime(began) >= TimeSpan.FromSeconds(2)) { limited = true; break; }
+                next.LastHead = ++_visit; next.HeadAt = _clock.GetTimestamp();
+                ReadHead(next, ct);
+            }
+        }
         limited |= _liveReaders == _options.MaximumReaders && readers.Any(static reader => reader.Process is not null && reader.Log is null);
         if (!input.Processes.SequenceEqual(Volatile.Read(ref _latest).Processes)) return discoveryFailure;
         Publish(input, readers, _candidates.Unavailable ? SessionLogCorrelationStatus.Unavailable : SessionLogCorrelationStatus.Unknown, limited);
@@ -282,6 +380,8 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         try
         {
             var before = IncrementalClientLogReader.ProbeIdentity(reader.Candidate.Path);
+            // A replaced file's head is read again before it can link anything.
+            if (reader.Head is { } head && head.Identity != before) { reader.Head = null; reader.HeadAt = null; }
             if (reader.Identity is { } identity && before != identity) Reset(reader, SessionLogCorrelationStatus.SourceChanged);
             bool refreshed = QueryDue(reader);
             if (refreshed)
@@ -366,6 +466,58 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     private bool QueryDue(Reader reader) => reader.QueryAt is not { } queried
         || _clock.GetElapsedTime(queried) >= TimeSpan.FromSeconds(5);
 
+    private bool HeadDue(Reader reader, long notBefore) => reader.Candidate.ModifiedUtc.UtcTicks >= notBefore
+        && reader.Head is not { Complete: true } && (reader.HeadAt is not { } at || _clock.GetElapsedTime(at) >= HeadRecheck);
+
+    private static void ReadHead(Reader reader, CancellationToken ct)
+    {
+        try { reader.Head = IncrementalClientLogReader.ReadHead(reader.Candidate.Path, reader.Head, ct); }
+        // A head that cannot be read names nothing and is tried again later; like a failed read above, it is not a pass failure.
+        catch (Exception error) when (error is IOException or UnauthorizedAccessException or System.ComponentModel.Win32Exception)
+        { reader.Head = null; }
+    }
+
+    /// <summary>
+    /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one has
+    /// had its head read at least once and exactly one, created since it began, names its tracker; and no other offered
+    /// launch shares that tracker or links to the same log. Process is that log's holder only while the holder binding is
+    /// current and unique, exactly as the per-process rows report it.
+    /// </summary>
+    private static LaunchLogLink[] LinkLaunches(Input input, Reader[] readers, Dictionary<SessionProcessKey, Reader?> matches, bool unavailable)
+    {
+        var launches = input.Launches;
+        if (launches.Length == 0) return [];
+        var links = new LaunchLogLink[launches.Length];
+        var linked = new Reader?[launches.Length];
+        for (int index = 0; index < launches.Length; index++)
+        {
+            var launch = launches[index];
+            bool shared = false, pending = false; int named = 0; Reader? found = null;
+            foreach (var other in launches)
+                shared |= other.OperationId != launch.OperationId && other.BrowserTrackerId == launch.BrowserTrackerId;
+            foreach (var reader in readers)
+            {
+                if (reader.Candidate.ModifiedUtc.UtcTicks < launch.NotBeforeUtcTicks) continue;
+                if (reader.HeadAt is null) pending = true;
+                else if (reader.Head is { } head && head.CreatedUtcTicks >= launch.NotBeforeUtcTicks
+                    && Array.IndexOf(head.Trackers, launch.BrowserTrackerId) >= 0) { named++; found = reader; }
+            }
+            if (shared || named > 1) links[index] = new(launch.OperationId, LaunchLogLinkStatus.Ambiguous);
+            else if (named == 1 && !pending) linked[index] = found;
+            else links[index] = new(launch.OperationId, unavailable ? LaunchLogLinkStatus.Unavailable : LaunchLogLinkStatus.NotLinked);
+        }
+        for (int index = 0; index < launches.Length; index++)
+        {
+            if (linked[index] is not { } reader) continue;
+            bool exclusive = true;
+            for (int other = 0; other < launches.Length; other++) exclusive &= other == index || !ReferenceEquals(linked[other], reader);
+            links[index] = !exclusive ? new(launches[index].OperationId, LaunchLogLinkStatus.Ambiguous)
+                : new(launches[index].OperationId, LaunchLogLinkStatus.Linked,
+                    reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null);
+        }
+        return links;
+    }
+
     private void Reset(Reader reader, SessionLogCorrelationStatus status, bool keepQuery = false)
     {
         if (reader.Process is { } previous && !reader.AffectedProcesses.Contains(previous)) reader.AffectedProcesses = [previous];
@@ -408,6 +560,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 failure = reader is null ? SessionLogCorrelationStatus.Ambiguous : SessionLogCorrelationStatus.BudgetExceeded;
             result.Add(new(process, failure, null, null, now));
         }
+        var launches = LinkLaunches(input, readers, matches, fallback == SessionLogCorrelationStatus.Unavailable);
 
         foreach (var reader in readers)
             if (reader.Process is { } process && reader.LeaseUntil > now
@@ -415,7 +568,7 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
                 Reset(reader, SessionLogCorrelationStatus.Ambiguous, keepQuery: true);
 
         Volatile.Write(ref _snapshot, new(Interlocked.Increment(ref _revision), now, result.AsReadOnly(), _candidates.Files.Count,
-            limited || input.BudgetLimited));
+            limited || input.BudgetLimited) { Launches = Array.AsReadOnly(launches) });
     }
 
     private void CloseReader(Reader reader)

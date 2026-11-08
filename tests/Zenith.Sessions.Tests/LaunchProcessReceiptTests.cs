@@ -45,6 +45,33 @@ public sealed class LaunchProcessReceiptTests
     }
 
     [Theory]
+    [InlineData(1234567890L,1234567890L)]
+    [InlineData(LaunchProcessReceipt.MaximumBrowserTrackerId,LaunchProcessReceipt.MaximumBrowserTrackerId)]
+    [InlineData(0L,null)]
+    [InlineData(-5L,null)]
+    [InlineData(LaunchProcessReceipt.MaximumBrowserTrackerId+1,null)]
+    public async Task TheReceiptKeepsOnlyAValidReportedTrackerAndStillRecordsTheProcess(long reported,long? kept)
+    {
+        var clock=new ManualClock();var store=new MemoryStore();
+        var provider=new Provider((_,_)=>Task.FromResult(Started() with {BrowserTrackerId=reported}));
+        await using var queue=Create(store,provider,clock);await queue.InitializeAsync(default);
+        await queue.EnqueueAsync(Profile(),default,new(123,7),new(42,Job,RobloxServerKind.Public));
+        await queue.SetPausedAsync(false,default);
+        await Until(()=>store.Last.Operations.Any(o=>o.State==LaunchState.ClientStartedUnverified));
+        var recorded=Assert.Single(store.Last.Operations);
+        Assert.Equal(new LaunchProcessReceipt(5454,Now.AddMinutes(-1).UtcTicks,Now,kept),recorded.ProcessReceipt);
+        Assert.True(recorded.ProcessReceipt!.IsValid);
+    }
+
+    [Fact]
+    public void AnOutOfRangeTrackerMakesAReceiptInvalid()
+    {
+        var receipt=new LaunchProcessReceipt(5454,Now.AddMinutes(-1).UtcTicks,Now);
+        Assert.True((receipt with {BrowserTrackerId=1}).IsValid);Assert.True((receipt with {BrowserTrackerId=LaunchProcessReceipt.MaximumBrowserTrackerId}).IsValid);
+        foreach(long invalid in new[]{0L,-1L,LaunchProcessReceipt.MaximumBrowserTrackerId+1})Assert.False((receipt with {BrowserTrackerId=invalid}).IsValid);
+    }
+
+    [Theory]
     [InlineData(true)] [InlineData(false)]
     public async Task LateStartAfterPanicOrCancelKeepsStopStateAndOnlyAttachesToItsOriginalIntent(bool panic)
     {

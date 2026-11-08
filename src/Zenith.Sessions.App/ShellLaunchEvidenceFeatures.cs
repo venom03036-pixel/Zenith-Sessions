@@ -22,6 +22,27 @@ public sealed class LaunchEvidenceRow(LaunchOperation operation) : Observable
         ?$"PID {receipt.ProcessId} · {Presence(facts.Presence)} · started {At(new DateTimeOffset(receipt.ProcessStartUtcTicks,TimeSpan.Zero))}"
         :"No native process-start receipt";
     public string ObservationTime=>View?.ProcessMeasurementUtc is { } at?"Process measured "+At(at):"No current process measurement";
+    private string _launchToLog=DescribeLaunchToLog(operation.ProcessReceipt,null);
+    /// <summary>Launch-to-log, shown apart from the process receipt: whether one client log names this launch's browser tracker.</summary>
+    public string LaunchToLog=>_launchToLog;
+    internal void UpdateLaunchToLog(LaunchLogLink? link)
+    {
+        string text=DescribeLaunchToLog(Operation.ProcessReceipt,link);
+        if(string.Equals(text,_launchToLog,StringComparison.Ordinal))return;
+        _launchToLog=text;Raise(nameof(LaunchToLog));
+    }
+    // The tracker number itself is never shown: it is corroboration, not something to act on.
+    internal static string DescribeLaunchToLog(LaunchProcessReceipt? receipt,LaunchLogLink? link)=>receipt is not {IsValid:true,BrowserTrackerId:not null}
+        ?"Client log: not matched · no browser tracker was recorded for this launch"
+        :link?.Status switch
+        {
+            LaunchLogLinkStatus.Linked when link.Process is { } holder=>$"Client log: names this launch's browser tracker · held by PID {holder.ProcessId} · supporting evidence only, not account or arrival proof",
+            LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · no running process holds it now · supporting evidence only, not account or arrival proof",
+            LaunchLogLinkStatus.NotLinked=>"Client log: none found yet that names this launch's browser tracker",
+            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker",
+            LaunchLogLinkStatus.Unavailable=>"Client log: unavailable · client logs could not be read right now",
+            _=>"Client log: not checked yet"
+        };
     public string ReportedPlayer=>User(View?.ReportedUser);
     public string ReportedPlace=>View?.ReportedDestination is {PlaceId:{ } place} destination
         ?$"{place} · {Status(destination.PlaceStatus)} · {At(destination.ObservedUtc)}":"Unknown · current place not established";
@@ -159,11 +180,15 @@ public sealed partial class ShellViewModel
         var rows=LaunchEvidenceRows.ToDictionary(row=>row.Id);
         // One projection per tick: the queue and process inventory are read once, not once per row.
         var views=NativeTrialEvidence.ProjectMany(queue,candidateIds,desktop,logs,now);
+        var links=_logCorrelator?.Snapshot.Launches;
         for(int index=0;index<candidates.Length;index++)
         {
             var operation=candidates[index];
             if(!rows.TryGetValue(operation.Intent.OperationId,out var row)){row=new(operation);LaunchEvidenceRows.Add(row);}
             row.Update(operation,views[index]);
+            LaunchLogLink? link=null;
+            if(links is not null)foreach(var candidate in links)if(candidate.OperationId==operation.Intent.OperationId){link=candidate;break;}
+            row.UpdateLaunchToLog(link);
         }
         var selected=_preferredEvidenceOperation is { } id?LaunchEvidenceRows.FirstOrDefault(row=>row.Id==id):null;
         if(selected is not null)SelectedLaunchEvidence=selected;

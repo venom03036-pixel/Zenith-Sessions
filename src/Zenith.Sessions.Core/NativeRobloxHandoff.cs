@@ -52,9 +52,14 @@ public sealed class NativeHandoffCandidate : IDisposable
     private string? _original;
     private readonly long _captured;
     private readonly TimeProvider _time;
-    internal NativeHandoffCandidate(string original, NativeHandoffContext context, TimeProvider time)
-    { _original = original; Context = context; _time = time; _captured = time.GetTimestamp(); }
+    internal NativeHandoffCandidate(string original, NativeHandoffContext context, TimeProvider time, long browserTrackerId)
+    { _original = original; Context = context; _time = time; _captured = time.GetTimestamp(); BrowserTrackerId = browserTrackerId; }
     public NativeHandoffContext Context { get; }
+    /// <summary>
+    /// The validated browser tracker ID the request carries, kept apart from the ticket-bearing original. Not a
+    /// secret, unlike the ticket, and corroboration only: it proves neither the account nor arrival.
+    /// </summary>
+    public long BrowserTrackerId { get; }
     [JsonIgnore] public bool IsConsumed => Volatile.Read(ref _original) is null;
     [JsonIgnore] public bool IsClosed => !Context.CanDispatch;
     [JsonIgnore] public bool IsExpired => Expired();
@@ -128,7 +133,7 @@ public static class NativeRobloxHandoff
             if (ticket.Length is < 1 or > 8192 || ticket.Contains("ROBLOSECURITY", StringComparison.OrdinalIgnoreCase)
                 || ticket.Contains("DO-NOT-SHARE", StringComparison.OrdinalIgnoreCase) || ticket.Any(character => character is < '!' or > '~')
                 || !Locale(values["robloxLocale"]) || !Locale(values["gameLocale"]) || !Positive(values["browsertrackerid"], out long tracker)
-                || tracker > 9_007_199_254_740_991)
+                || tracker > LaunchProcessReceipt.MaximumBrowserTrackerId)
                 return new(NativeHandoffCaptureStatus.InvalidShape);
             if (!Positive(values["launchtime"], out long milliseconds)) return new(NativeHandoffCaptureStatus.InvalidShape);
             DateTimeOffset issued = DateTimeOffset.FromUnixTimeMilliseconds(milliseconds);
@@ -137,7 +142,8 @@ public static class NativeRobloxHandoff
             if (destination != NativeHandoffCaptureStatus.AcceptedSourceGrammar) return new(destination);
             if (!context.TryClaimCapture()) return new(NativeHandoffCaptureStatus.OperationAlreadyCaptured);
             // Retain the original opaque request. Never rebuild or normalize its ticket-bearing URI.
-            return new(NativeHandoffCaptureStatus.AcceptedSourceGrammar, new(original, context, time));
+            // The tracker (validated above, equal in both places it appears) leaves only as its own number.
+            return new(NativeHandoffCaptureStatus.AcceptedSourceGrammar, new(original, context, time, tracker));
         }
         catch (Exception error) when (error is ArgumentException or KeyNotFoundException or FormatException or OverflowException)
         { return new(NativeHandoffCaptureStatus.InvalidShape); }
