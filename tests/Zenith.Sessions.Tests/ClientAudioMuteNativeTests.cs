@@ -68,7 +68,11 @@ public sealed class ClientAudioMuteNativeTests
     [AudioOutputFact]
     public async Task LaterHelpersOfTheSameProgramAreUnmutedOnExitEvenWhenWindowsStartsOneMuted()
     {
-        var first = await SilentHelper.StartAsync();
+        // Reproduce Windows remembering a previous helper's mute without relying on test order or global volume state.
+        // Only this newly owned helper's PID is seeded; concurrent and later instances below retain Windows' actual state.
+        // Establish the first helper's precondition before this control exists. A mute already present at its first
+        // request is correctly not owned by the control and cannot test restoration of a mute Zenith applied.
+        var first = await SilentHelper.StartAsync(unmutedBaseline: true, seedMutedBaseline: true);
         SilentHelper? concurrent = null, later = null;
         var control = new WindowsClientAudioMuteControl(new NativeClientAudioMuteAdapter("powershell.exe"));
         try
@@ -89,12 +93,14 @@ public sealed class ClientAudioMuteNativeTests
         }
         finally
         {
-            await control.DisposeAsync();
-            bool[] left = [.. concurrent?.Sessions() ?? [], .. later?.Sessions() ?? []];
-            concurrent?.UnmuteIfLeftMuted(); later?.UnmuteIfLeftMuted(); // Never leave a remembered mute behind.
-            await first.DisposeAsync();
-            if (concurrent is not null) await concurrent.DisposeAsync();
-            if (later is not null) await later.DisposeAsync();
+            bool[] left = [];
+            try
+            {
+                await control.DisposeAsync();
+                // Observe the control's restoration before fixture cleanup can change the answer.
+                left = [.. concurrent?.Sessions() ?? [], .. later?.Sessions() ?? []];
+            }
+            finally { await SilentHelper.CleanupAsync(first, concurrent, later); }
             Assert.All(left, state => Assert.False(state));
         }
         Assert.Equal(0, control.PendingRestoreCount);
@@ -112,7 +118,7 @@ public sealed class ClientAudioMuteNativeTests
         }
         public SessionObservation Session { get; }
 
-        public static async Task<SilentHelper> StartAsync(bool unmutedBaseline = false)
+        public static async Task<SilentHelper> StartAsync(bool unmutedBaseline = false, bool seedMutedBaseline = false)
         {
             // One second of 8 kHz 16-bit mono silence (all-zero samples), looped from memory until a line arrives on input.
             const string script = "$n=16000;$m=New-Object IO.MemoryStream;$w=New-Object IO.BinaryWriter($m);$a=[Text.Encoding]::ASCII;"
@@ -139,10 +145,36 @@ public sealed class ClientAudioMuteNativeTests
                         "The test-owned helper never got a Windows audio session. This test needs an active audio output device.");
                     await Task.Delay(100);
                 }
-                if (unmutedBaseline) helper.UnmuteIfLeftMuted();
+                if (seedMutedBaseline)
+                {
+                    var write = NativeApi().SetSessions(process.Id, null, true);
+                    Assert.Equal(0, write.HResult);
+                    Assert.True(write.Accepted > 0);
+                    Assert.All(helper.Sessions(), state => Assert.True(state));
+                }
+                if (unmutedBaseline)
+                {
+                    helper.UnmuteIfLeftMuted();
+                    Assert.All(helper.Sessions(), state => Assert.False(state));
+                }
                 return helper;
             }
-            catch { await helper.DisposeAsync(); throw; }
+            catch { await CleanupAsync(helper); throw; }
+        }
+
+        public static async Task CleanupAsync(params SilentHelper?[] helpers)
+        {
+            List<Exception>? failures = null;
+            foreach (var helper in helpers)
+            {
+                if (helper is null) continue;
+                // Even an assertion on the first mute must not leave this helper or its remembered mute behind.
+                try { helper.UnmuteIfLeftMuted(); }
+                catch (Exception error) { (failures ??= []).Add(error); }
+                try { await helper.DisposeAsync(); }
+                catch (Exception error) { (failures ??= []).Add(error); }
+            }
+            if (failures is not null) throw new AggregateException("Test-owned sound helper cleanup failed.", failures);
         }
 
         /// <summary>The helper's own sessions, read straight from the adapter's Core Audio enumeration.</summary>
@@ -157,8 +189,14 @@ public sealed class ClientAudioMuteNativeTests
         public void UnmuteIfLeftMuted()
         {
             if (_disposed || _process.HasExited) return;
-            var states = NativeApi().ReadSessions(_process.Id, out _);
-            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, null, false);
+            var states = Sessions();
+            if (states.Length > 0 && states.Any(muted => muted))
+            {
+                var write = NativeApi().SetSessions(_process.Id, null, false);
+                Assert.Equal(0, write.HResult);
+                Assert.True(write.Accepted > 0);
+                Assert.All(Sessions(), muted => Assert.False(muted));
+            }
         }
 
         // The adapter's production Core Audio calls, without its identity checks or the control's ownership map.
