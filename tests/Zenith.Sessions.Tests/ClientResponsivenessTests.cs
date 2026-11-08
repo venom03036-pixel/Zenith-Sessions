@@ -105,8 +105,8 @@ public sealed class ClientResponsivenessTests
         var (window, dispatcher) = await created.Task.WaitAsync(TimeSpan.FromSeconds(10));
         try
         {
-            Assert.False(WindowsDesktopMonitor.IsHung(0));
-            Assert.False(WindowsDesktopMonitor.IsHung(window));
+            Assert.False(NativeTopLevelWindows.Instance.IsHung(0));
+            Assert.False(NativeTopLevelWindows.Instance.IsHung(window));
             var blocked = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             _ = dispatcher.BeginInvoke(() =>
             {
@@ -116,11 +116,11 @@ public sealed class ClientResponsivenessTests
                 while (Volatile.Read(ref release) == 0 && limit.Elapsed < TimeSpan.FromSeconds(30)) Thread.Sleep(50);
             });
             await blocked.Task.WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.False(WindowsDesktopMonitor.IsHung(window)); // Windows waits about five seconds first.
-            Assert.True(await Eventually(() => WindowsDesktopMonitor.IsHung(window), TimeSpan.FromSeconds(15)),
+            Assert.False(NativeTopLevelWindows.Instance.IsHung(window)); // Windows waits about five seconds first.
+            Assert.True(await Eventually(() => NativeTopLevelWindows.Instance.IsHung(window), TimeSpan.FromSeconds(15)),
                 "The blocked test window was never reported as not responding.");
             Volatile.Write(ref release, 1);
-            Assert.True(await Eventually(() => !WindowsDesktopMonitor.IsHung(window), TimeSpan.FromSeconds(10)),
+            Assert.True(await Eventually(() => !NativeTopLevelWindows.Instance.IsHung(window), TimeSpan.FromSeconds(10)),
                 "The test window stayed not responding after its thread resumed processing messages.");
         }
         finally

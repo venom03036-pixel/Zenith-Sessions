@@ -14,7 +14,8 @@ public sealed class ClientMainWindowIndexTests
     {
         public int Enumerations, Visited;
         public Action? AfterVisit;
-        public readonly List<nint> AttributeReads = [];
+        public readonly List<nint> AttributeReads = [], HungReads = [];
+        public readonly HashSet<nint> Hidden = [], Hung = [];
         public void Enumerate(ITopLevelWindowVisitor visitor)
         {
             Enumerations++;
@@ -28,8 +29,18 @@ public sealed class ClientMainWindowIndexTests
         public bool IsUnownedAndVisible(nint window)
         {
             AttributeReads.Add(window);
-            foreach (var entry in zOrder) if (entry.Window == window) return !entry.Owned && entry.Visible;
+            foreach (var entry in zOrder) if (entry.Window == window) return !entry.Owned && entry.Visible && !Hidden.Contains(window);
             return false;
+        }
+        public bool IsVisible(nint window)
+        {
+            foreach (var entry in zOrder) if (entry.Window == window) return entry.Visible && !Hidden.Contains(window);
+            return false;
+        }
+        public bool IsHung(nint window)
+        {
+            HungReads.Add(window);
+            return Hung.Contains(window);
         }
     }
 
@@ -123,6 +134,41 @@ public sealed class ClientMainWindowIndexTests
             Assert.Equal(2, windows.Enumerations);
         }
         finally { child.Kill(entireProcessTree: true); await child.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(10)); }
+    }
+
+    [Fact]
+    public void SampleProcessesChecksOnlyVisibleMainWindowsForHungAndLeavesTheRestUnchecked()
+    {
+        // Synthetic clients and windows only: no process handle, no real window and no Roblox client.
+        var windows = new FakeWindows(
+            (0x10, 1, false, true),                          // client 1: visible main window that responds
+            (0x20, 2, false, true),                          // client 2: visible main window that does not respond
+            (0x31, 3, true, true), (0x30, 3, false, false),  // client 3: an owned dialog and a hidden window, so no main window
+            (0x40, 4, false, true));                         // client 4: main window hidden before its row is read
+        // Client 5 has no window at all. Every window but 0x10 would read as hung if it were checked.
+        foreach (nint window in new nint[] { 0x20, 0x30, 0x31, 0x40 }) windows.Hung.Add(window);
+        var source = new FakeClientProcessSource
+        {
+            Reader = (processId, _) =>
+            {
+                if (processId == 4) windows.Hidden.Add(0x40); // hidden or closed after the window pass
+                return new(ClientProcessReadOutcome.Read, FakeClientProcessSource.Start, TimeSpan.FromSeconds(processId));
+            },
+        };
+        for (int client = 1; client <= 5; client++) source.Clients.Add(new(client, 0, 1, 1, 1));
+        using var monitor = new WindowsDesktopMonitor(TimeProvider.System, null, source, windows);
+
+        var rows = monitor.SampleProcesses(default).Sessions.ToDictionary(row => row.ProcessId);
+
+        Assert.Equal(5, rows.Count);
+        Assert.All(rows.Values, row => Assert.Null(row.Problem));
+        Assert.False(rows[1].WindowHung); Assert.True(rows[1].Visible);
+        Assert.True(rows[2].WindowHung); Assert.True(rows[2].Visible);
+        // Not checked is null, never false: a hidden, closed or missing window is not a responding sample.
+        Assert.Null(rows[3].WindowHung); Assert.Equal((nint)0, rows[3].Window);
+        Assert.Null(rows[4].WindowHung); Assert.Equal((nint)0x40, rows[4].Window); Assert.False(rows[4].Visible);
+        Assert.Null(rows[5].WindowHung); Assert.Equal((nint)0, rows[5].Window);
+        Assert.Equal(new nint[] { 0x10, 0x20 }, windows.HungReads);
     }
 
     [Fact]

@@ -39,6 +39,8 @@ public sealed class ClientProcessInventoryTests
         public int Enumerations;
         public void Enumerate(ITopLevelWindowVisitor visitor) => Enumerations++;
         public bool IsUnownedAndVisible(nint window) => false;
+        public bool IsVisible(nint window) => false;
+        public bool IsHung(nint window) => false;
     }
 
     [Theory]
