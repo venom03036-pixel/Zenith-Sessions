@@ -164,9 +164,39 @@ public sealed partial class SessionLogCorrelatorTests
         worker.Offer(Desktop(client), client.HostId, [second, first]);
         Assert.Equal(new[]
         {
-            new LaunchLogLink(second.OperationId, LaunchLogLinkStatus.Linked, client),
+            // With the first launch's own log gone, the log credited to the second may still be the first client's, created
+            // late (O-C8-2), so the second's row says so until the first has a log of its own.
+            new LaunchLogLink(second.OperationId, LaunchLogLinkStatus.Linked, client, EarlierLaunchMayOwnLog: !previousLogKept),
             new LaunchLogLink(first.OperationId, previousLogKept ? LaunchLogLinkStatus.Linked : LaunchLogLinkStatus.NotLinked)
         }, (await After(worker)).Launches);
+    }
+
+    [Theory]
+    [InlineData("earlier-has-no-log")]
+    [InlineData("earlier-has-other-tracker")]
+    [InlineData("later-has-no-log")]
+    public async Task ALinkedLaunchSaysAnEarlierLaunchWithTheSameTrackerMayOwnItsLogOnlyWhileThatLaunchHasNone(string shape)
+    {
+        // Two launches began two hours and one hour ago, and one held log names the tracker. A log created since the later
+        // launch began is credited to it (OwnerOf), but while an earlier launch with the same tracker has no log of its
+        // own, that earlier client may simply have created this one late, so the later launch's link says so. An earlier
+        // launch with another tracker says nothing about this log; nor does a later launch that has no log yet, since a
+        // log created before it began cannot be its own.
+        var client = Key(77); var now = DateTimeOffset.UtcNow;
+        Write(TrackerLine());
+        if (shape == "later-has-no-log") File.SetCreationTimeUtc(Log, now.AddMinutes(-90).UtcDateTime);
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now)] };
+        LaunchLogExpectation earlier = Launch(shape == "earlier-has-other-tracker" ? Tracker + 1 : Tracker, now.AddHours(-2).UtcTicks),
+            later = Launch(notBefore: now.AddHours(-1).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [later, earlier]);
+        var links = (await After(worker)).Launches;
+        LaunchLogLink[] expected = shape == "later-has-no-log"
+            ? [new(later.OperationId, LaunchLogLinkStatus.NotLinked), new(earlier.OperationId, LaunchLogLinkStatus.Linked, client)]
+            : [new(later.OperationId, LaunchLogLinkStatus.Linked, client, EarlierLaunchMayOwnLog: shape == "earlier-has-no-log"),
+                new(earlier.OperationId, LaunchLogLinkStatus.NotLinked)];
+        Assert.Equal(expected, links);
+        Assert.All(links, link => Assert.False(link.CanAuthorizeAccountAction));
     }
 
     [Theory]
