@@ -386,10 +386,16 @@ public sealed class RobloxSignInPresentationTests : IDisposable
                 Assert.True(File.Exists(Path.Combine(unmarked, "EBWebView", "Default", "synthetic")), "Startup removed an unrecognized folder.");
                 Assert.True(Directory.Exists(redirected), "Startup removed a redirected folder.");
                 Assert.True(File.Exists(Path.Combine(outside, "keep.txt")), "Startup followed a redirected folder.");
-                Assert.Contains("4 leftover private sign-in folder(s) in signin-browser-data were kept", shell.CredentialCleanupStatus);
+                // Only the unrecognized and the redirected folder need review; the held and the busy one are retried.
+                Assert.Contains("2 leftover private sign-in folder(s) in signin-browser-data were kept for review", shell.CredentialCleanupStatus);
+                Assert.Contains("2 leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use", shell.CredentialCleanupStatus);
                 Assert.DoesNotContain(_root, shell.CredentialCleanupStatus);
                 Assert.Contains(shell.Events, line => line.Contains("Removed 1 leftover private sign-in folder", StringComparison.Ordinal));
                 Assert.Contains(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
+                Assert.Contains(shell.Events, line => line.Contains("2 leftover private sign-in folder(s) were in use or could not be removed yet", StringComparison.Ordinal));
+                Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+                shell.RefreshDiagnostics.Execute(null);
+                Assert.Contains(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
             }
         }
         finally { if (Directory.Exists(redirected)) Directory.Delete(redirected, false); }
@@ -494,7 +500,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
             Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
         string unmarked = Leftover(browserRoot, false);
-        Assert.Equal(new SignInSweepResult(1, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.Equal(new SignInSweepResult(1, 1, KeptForReview: 1), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
         Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root + "-other"));
         // Admission reaches the same folder and keeps the reminder.
@@ -565,6 +571,29 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         Assert.DoesNotContain(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
         shell.RefreshDiagnostics.Execute(null);
         Assert.DoesNotContain(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
+    });
+    // A folder kept only because another owner held it or a file in it was still open is not data to review: nothing marks it
+    // for review, and the next sign-in or start retries it. Startup still said every kept folder was kept for review and
+    // recorded a sign-in failure for it.
+    [Fact]
+    public Task StartupKeepsHeldOrBusyLeftoversForARetryWithoutReportingThemForReview() => OnUi(async () =>
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        string held = Leftover(browserRoot, true), busy = Leftover(browserRoot, true);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        // Stands in for another owner's live lease, and for a browser file another program still had open at startup.
+        using (new FileStream(Path.Combine(held, "owner.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+        { await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); }
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        Assert.DoesNotContain(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
+        Assert.Contains(shell.Events, line => line.Contains("2 leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.", StringComparison.Ordinal));
+        Assert.Contains("2 leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.", shell.CredentialCleanupStatus);
+        Assert.DoesNotContain("review", shell.CredentialCleanupStatus, StringComparison.OrdinalIgnoreCase);
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.DoesNotContain(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
+        // Once nothing holds them, the next start removes both.
+        Assert.Equal(new SignInSweepResult(2, 0), SignInProfileDirectory.SweepOwned(_root, default));
     });
     // The startup note about kept folders was added to every later credential-cleanup status, so it stayed after a sign-in's
     // admission had removed those folders, and each Retry credential cleanup showed it again.

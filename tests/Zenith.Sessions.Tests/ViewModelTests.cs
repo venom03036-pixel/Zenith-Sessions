@@ -598,8 +598,12 @@ public sealed class ViewModelTests : IDisposable
         { await repository.InitializeAsync(default); var removed=await repository.SaveAsync(AccountProfile.Create("Removed"),default); await repository.DeleteAsync(removed.Id,removed.Revision,default); }
         await CleanupRecoveryTests.DamageVaultCoordinationFileAsync(_root);
         await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
-        Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus); Assert.Contains("Check storage access",vm.CredentialCleanupStatus);
-        Assert.DoesNotContain("is damaged",vm.CredentialCleanupStatus);
+        Assert.Contains("1 unused protected record",vm.CredentialCleanupStatus);
+        Assert.DoesNotContain("is damaged",vm.CredentialCleanupStatus); Assert.DoesNotContain("removed profile",vm.CredentialCleanupStatus);
+        // Retry is the only button here and it cannot repair the store's shared file, so the status says so and names the file.
+        Assert.DoesNotContain("Check storage access",vm.CredentialCleanupStatus); Assert.Contains("Retrying will not repair it",vm.CredentialCleanupStatus);
+        Assert.Contains(ProtectedCredentialVault.WriterLockFileName,vm.CredentialCleanupStatus); Assert.Contains("More options › Open data folder",vm.CredentialCleanupStatus);
+        Assert.DoesNotContain(_root,vm.CredentialCleanupStatus);
     });
     // A dedicated thread stands in for another process: mutex ownership is per thread, and this thread ends before it returns.
     private static T OnOwnThread<T>(Func<T> create)

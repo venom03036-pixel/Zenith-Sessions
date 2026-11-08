@@ -51,6 +51,7 @@ public sealed class CleanupRecoveryTests : IDisposable
         var result=await cleanup.RunAsync(default);
         // Only a failure confined to this record's files may blame a removed profile's file.
         Assert.Equal(1,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType); Assert.True(result.RecordDamaged);
+        Assert.False(result.StoreDamaged);
         Assert.Equal(profile.Id,Assert.Single((await repository.ReadCredentialCleanupAsync(default)).ProfileIds));
         string record=Path.Combine(_root,"accounts.vault",profile.Id.ToString("N")+".dpapi");
         Assert.True(File.Exists(record)); Assert.True(File.Exists(record+".identity"));
@@ -67,8 +68,39 @@ public sealed class CleanupRecoveryTests : IDisposable
         var result=await service.RunAsync(timeout.Token);
         // The store itself is unusable, so every record would fail the same way: one attempt, and the store's failure is reported.
         Assert.Equal(2,result.Remaining); Assert.Equal(nameof(InvalidDataException),result.ErrorType); Assert.False(result.RecordDamaged);
+        Assert.True(result.StoreDamaged);
         Assert.Single(vault.Calls);
         Assert.Equal(2,(await repository.ReadCredentialCleanupAsync(default)).Total);
+    }
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public async Task StoreWideDamageLaterInTheRunStillReportsTheFirstFailure(bool firstIsRecordDamage)
+    {
+        using var repository=new AccountRepository(_root); await repository.InitializeAsync(default);
+        var a=await repository.SaveAsync(AccountProfile.Create("A"),default); var b=await repository.SaveAsync(AccountProfile.Create("B"),default);
+        var c=await repository.SaveAsync(AccountProfile.Create("C"),default);
+        await repository.DeleteManyAsync([a,b,c],default);
+        Exception first=firstIsRecordDamage?AuthorizationRecordDamage.Mark(new InvalidDataException("Synthetic record damage")):new IOException("Synthetic storage failure");
+        var vault=new ScriptedCleanupVault(first,new InvalidDataException("Synthetic store damage"));
+        using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
+        var result=await service.RunAsync(timeout.Token);
+        // The store-wide failure still ends the run, but the first failure is the one reported, as on the busy path.
+        Assert.Equal(3,result.Remaining); Assert.Equal(first.GetType().Name,result.ErrorType);
+        Assert.Equal(firstIsRecordDamage,result.RecordDamaged); Assert.True(result.StoreDamaged);
+        Assert.Equal(2,vault.Calls.Count);
+    }
+    /// <summary>The n-th delete throws the n-th scripted failure; a null entry, or a call past the script, succeeds.</summary>
+    private sealed class ScriptedCleanupVault(params Exception?[] failures) : IAccountCredentialVault
+    {
+        public readonly List<Guid> Calls=[];
+        public Task<AuthorizationRecord?> ReadAsync(Guid id,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
+        public Task SaveAsync(AuthorizationRecord record,CancellationToken ct)=>throw new NotSupportedException("Synthetic cleanup-only test");
+        public Task DeleteAsync(Guid id,CancellationToken ct)
+        {
+            ct.ThrowIfCancellationRequested(); Calls.Add(id);
+            return Calls.Count<=failures.Length && failures[Calls.Count-1] is { } failure ? Task.FromException(failure) : Task.CompletedTask;
+        }
     }
     /// <summary>Writes content into the vault's coordination file, which must be empty, so every vault operation is refused.</summary>
     internal static Task DamageVaultCoordinationFileAsync(string root)
@@ -155,7 +187,7 @@ public sealed class CleanupRecoveryTests : IDisposable
         var vault=new FailingCleanupVault { Busy=true };
         using var service=new CredentialCleanupService(repository,vault); using var timeout=new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var result=await service.RunAsync(timeout.Token);
-        Assert.Equal(2,result.Remaining); Assert.Equal(nameof(AuthorizationVaultBusyException),result.ErrorType);
+        Assert.Equal(2,result.Remaining); Assert.Equal(nameof(AuthorizationVaultBusyException),result.ErrorType); Assert.False(result.StoreDamaged);
         Assert.Single(vault.Calls);
         vault.Busy=false; Assert.Equal(0,(await service.RunAsync(timeout.Token)).Remaining);
     }

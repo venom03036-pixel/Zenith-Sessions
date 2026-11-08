@@ -681,14 +681,19 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await _launchQueue.WaitForActiveCleanupAsync(_lifetime.Token);
         // Only the link service knows which row an Add moved onto to refresh its saved sign-in. It stops that Add too, and keeps
         // an Add off these rows until they and their saved sign-ins are gone. The command is then joined so its notice comes first.
+        // A share-link check or a launch's native preparation it stopped has its own owner, which sees that stop itself: the
+        // sign-in lane may meanwhile be running a command for other rows, so it is neither cancelled nor waited for then.
         using var removal=await _linkService.BeginProfileRemovalAsync(rows.Select(r=>r.Profile.Id).ToArray(),_lifetime.Token);
-        if(removal.StoppedOperation || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
+        if(IsSignInLaneOperation(removal.StoppedOperationKind) || _linkingProfile is { } linking && rows.Any(r=>r.Profile.Id==linking))
         { _authorizationStop?.Cancel(); await Task.WhenAll(AddRobloxAccount.Execution,LinkAccount.Execution,RefreshAuthorization.Execution,CheckCheckedSignIns.Execution,InspectNativeHandoff.Execution); }
         await Task.Run(() => _accounts.DeleteManyAsync(rows.Select(r => r.Profile).ToArray(), _lifetime.Token));
         await LoadAccountsAsync(_lifetime.Token); await CleanupCredentialsAsync();
         Notice = $"Removed {rows.Count} profile(s). Roblox clients were left open. {CredentialCleanupStatus}{queueStopped}"; AddEvent("Selected profiles removed.");
         _diagnostics.Record(ManagerEventKind.ProfilesRemoved);
     }
+    /// <summary>The saved-session operations this shell starts in its sign-in lane (<see cref="_authorizationStop"/>).</summary>
+    private static bool IsSignInLaneOperation(SavedSessionOperationKind kind)=>kind is SavedSessionOperationKind.AddAccount
+        or SavedSessionOperationKind.SignIn or SavedSessionOperationKind.SavedSignInCheck or SavedSessionOperationKind.HandoffInspection;
     public Task ExportAsync(string path)=>OwnProfileOperation(()=>ExportCoreAsync(path));
     private async Task ExportCoreAsync(string path)
     {
@@ -1292,7 +1297,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task CleanupCredentialsAsync()
     {
         var result=await Task.Run(()=>_credentialCleanup.RunAsync(_lifetime.Token));
+        // Store-wide damage first: it fails every record, and the Retry button below cannot repair it either.
         CredentialCleanupStatus=(result.Remaining==0?"No pending credential cleanup."
+            :result.StoreDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A shared file that every saved sign-in relies on ({ProtectedCredentialVault.WriterLockFileName} in the accounts.vault folder) is invalid, so Zenith stopped cleanup instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
             :result.RecordDamaged?$"{result.Remaining} unused protected record(s) await cleanup. A saved sign-in file from a removed profile is damaged, so Zenith left it in place instead of guessing what to delete. Retrying will not repair it. Keep the accounts.vault folder for review; it is in the data folder (More options › Open data folder)."
             :$"{result.Remaining} unused protected record(s) await cleanup. Check storage access and choose Retry credential cleanup.")+CurrentSignInFolderNote();
         if(result.ErrorType is not null) { AddEvent("Unused protected-file cleanup needs attention; the durable cleanup journal was retained."); _diagnostics.RecordFailure(ManagerSubsystem.Vault); }
@@ -1314,8 +1321,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             if(swept.Removed>0) AddEvent($"Removed {swept.Removed} leftover private sign-in folder(s) from an earlier session.");
             // Not opened because one run's budget ran out: nothing is wrong with them, and the next sign-in or start removes them.
             if(swept.Deferred>0) AddEvent($"{swept.Deferred} more leftover private sign-in folder(s) were left for the next sign-in or start to remove.");
-            if(swept.Kept==0) return;
-            _signInFolderNote=$" {swept.Kept} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use, not recognized or could not be removed. If sign-in reports a problem with this folder, close Zenith Sessions and review signin-browser-data in the Zenith data folder.";
+            // Held by another owner, or a file in them was still open: nothing marks them for review, and the next sign-in or
+            // start tries them again, so this is routine. Only data SweepOwned counts as kept for review waits for someone to look at it.
+            int retried=swept.Kept-swept.KeptForReview;
+            if(retried>0) AddEvent($"{retried} leftover private sign-in folder(s) were in use or could not be removed yet. The next sign-in or start retries them.");
+            _signInFolderNote=(swept.KeptForReview>0?$" {swept.KeptForReview} leftover private sign-in folder(s) in signin-browser-data were kept for review because they were not recognized, were redirected or held more files than cleanup may check. Close Zenith Sessions and review signin-browser-data in the Zenith data folder.":"")
+                +(retried>0?$" {retried} leftover private sign-in folder(s) in signin-browser-data were kept at startup because they were in use or could not be removed yet. The next sign-in or start retries them.":"");
+            if(swept.KeptForReview==0) return;
             AddEvent("Leftover private sign-in folders were kept for review. See Settings, Protected-file recovery.");
             _diagnostics.RecordFailure(ManagerSubsystem.SignIn);
         }

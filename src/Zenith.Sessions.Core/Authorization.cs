@@ -113,4 +113,9 @@ public sealed class AccountLinkException(string message) : Exception(message)
     /// A caller that works through many accounts stops on it instead of reporting each one as needing sign-in.
     /// </summary>
     public bool OperationInProgress { get; init; }
+    /// <summary>
+    /// The profile is being removed from the library, or no longer exists, so this operation was refused. A caller that
+    /// works through many accounts skips that account and counts it as not checked, not as needing sign-in.
+    /// </summary>
+    public bool ProfileRemoved { get; init; }
 }

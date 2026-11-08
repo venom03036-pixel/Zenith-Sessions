@@ -308,7 +308,7 @@ public sealed partial class ClientWindowIntegrationTests
         string leftover=Path.Combine(_root,"signin-browser-data",Guid.NewGuid().ToString("N")+"-"+Guid.NewGuid().ToString("N"));
         string data=Path.Combine(Directory.CreateDirectory(Path.Combine(leftover,"EBWebView")).FullName,"synthetic");File.WriteAllText(data,"test only");
         // Every start sweeps before the library is ready; it keeps this folder.
-        Assert.Equal(new SignInSweepResult(0,1),SignInProfileDirectory.SweepOwned(_root,default));
+        Assert.Equal(new SignInSweepResult(0,1,KeptForReview:1),SignInProfileDirectory.SweepOwned(_root,default));
         using var repository=new AccountRepository(_root);await repository.InitializeAsync(default);
         using var vault=new ProtectedCredentialVault(_root);
         var inspected=await repository.SaveAsync(AccountProfile.Create("Inspected alias"),default);

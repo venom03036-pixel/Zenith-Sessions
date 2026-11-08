@@ -18,6 +18,9 @@ namespace Zenith.Sessions.App;
 public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatcher) : IRobloxHandoffProbe
 {
     private static readonly TimeSpan InspectionDeadline=TimeSpan.FromMinutes(3);
+    // How long a cleanup waits for its browser's exit, well past the five-second observation. Until then other owners hear
+    // that the browser is still closing; past it the folder is kept and marked, and they ask for a restart. Disposal joins it.
+    internal static readonly TimeSpan BrowserExitLimit=TimeSpan.FromSeconds(30);
     private readonly TimeProvider _time=TimeProvider.System;
     private readonly object _state=new();
     private readonly CancellationTokenSource _lifetime=new();
@@ -234,12 +237,10 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             if(!controllerReady&&initializationStarted&&environment is not null)
                 try{awaitBrowserExit=environment.GetProcessInfos().Count!=0;}
                 catch(Exception){awaitBrowserExit=true;cleanupProblem=true;}
-            // The task stays owned after a five-second observation timeout. No second browser may
-            // start, and DisposeAsync joins the real exit before relinquishing its directory.
-            Task cleanup=FinishCleanupAsync(environment,exited,browserExited.Task,awaitBrowserExit,directory,cleanupProblem,DetachClosedGuards);
-            lock(_state)_cleanup=cleanup;
-            try{await cleanup.WaitAsync(TimeSpan.FromSeconds(5));}
-            catch(Exception){lock(_state){_blocked=true;_retainedDirectory=directory;}accepted?.Dispose();accepted=Capture(RobloxHandoffProbeOutcome.CleanupFailed);}
+            // The task stays owned after a five-second observation timeout. No second browser may start, and DisposeAsync
+            // joins it, which waits for the real exit for at most BrowserExitLimit, before relinquishing its directory.
+            Task cleanup=FinishCleanupAsync(environment,exited,browserExited.Task,awaitBrowserExit,directory,cleanupProblem,DetachClosedGuards,_time);
+            if(!await TrackCleanupAsync(cleanup,directory,TimeSpan.FromSeconds(5))){accepted?.Dispose();accepted=Capture(RobloxHandoffProbeOutcome.CleanupFailed);}
             if(completion.Task.IsCompletedSuccessfully&&!ReferenceEquals(accepted,completion.Task.Result))completion.Task.Result.Dispose();
         }
         return accepted??Capture(RobloxHandoffProbeOutcome.Failed);
@@ -339,19 +340,33 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
         }
     }
 
-    private async Task FinishCleanupAsync(CoreWebView2Environment? environment,EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited,
-        Task browserExited,bool awaitBrowserExit,SignInProfileDirectory directory,bool priorProblem,Action detachGuards)
+    /// <summary>Tracks one browser's folder cleanup for disposal to join and watches it for <paramref name="observation"/>.
+    /// A cleanup that failed or is still pending by then latches this probe and keeps the folder's lease until disposal.</summary>
+    internal async Task<bool> TrackCleanupAsync(Task cleanup,SignInProfileDirectory directory,TimeSpan observation)
+    {
+        lock(_state)_cleanup=cleanup;
+        try{await cleanup.WaitAsync(observation);return true;}
+        catch(Exception){lock(_state){_blocked=true;_retainedDirectory=directory;}return false;}
+    }
+    /// <summary>Removes the private folder after the browser's confirmed exit. An exit not reported within
+    /// <see cref="BrowserExitLimit"/> is a failed cleanup: the folder is kept and marked, every guard stays installed on
+    /// the browser that may still be live, and disposal's join of this task is bounded, so Exit finishes and the startup
+    /// sweep or the next admission recovers the folder once its lease is released. <paramref name="time"/> lets tests fire that limit.</summary>
+    internal static async Task FinishCleanupAsync(CoreWebView2Environment? environment,EventHandler<CoreWebView2BrowserProcessExitedEventArgs> exited,
+        Task browserExited,bool awaitBrowserExit,SignInProfileDirectory directory,bool priorProblem,Action detachGuards,TimeProvider time)
     {
         try
         {
-            if(awaitBrowserExit)await browserExited;
+            // Bounded: a browser that never reports its exit would otherwise hold this task, the folder and Exit open for good.
+            // On a timeout the guards are not detached: that browser's exit was never confirmed.
+            if(awaitBrowserExit)await browserExited.WaitAsync(BrowserExitLimit,time);
             detachGuards();
             if(priorProblem&&!awaitBrowserExit)throw new IOException("Private browser cleanup needs review.");
             using var deadline=new CancellationTokenSource(TimeSpan.FromSeconds(5));
             await Task.Run(()=>directory.Remove(deadline.Token));
         }
-        // A failure, even one after the five-second observation, keeps the folder and its lease until disposal.
-        // A cleanup still waiting for the browser's exit is not marked: other owners see it as still closing.
+        // A failure, even one after the five-second observation, keeps the folder and its lease until disposal. A cleanup
+        // still waiting for the browser's exit is not marked: other owners see it as still closing until BrowserExitLimit.
         catch(Exception){directory.KeepAfterFailedCleanup();throw;}
         finally{if(environment is not null)environment.BrowserProcessExited-=exited;}
     }
