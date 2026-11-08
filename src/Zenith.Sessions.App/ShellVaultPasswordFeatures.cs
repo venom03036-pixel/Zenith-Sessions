@@ -23,10 +23,10 @@ public sealed partial class ShellViewModel
     public bool VaultPasswordBusy => _vaultPasswordBusy;
     public string VaultPasswordPrimaryLabel => _vaultPasswordMode == VaultPasswordMode.MigrationRequired ? "Resume password encryption…"
         : _vaultPasswordMode == VaultPasswordMode.Locked ? "Unlock saved sign-ins…" : "Enable master password…";
-    public bool CanUseVaultPasswordPrimary => !_vaultPasswordUnavailable && !_vaultPasswordBusy && _ready && !_shuttingDown && !IsSample
+    public bool CanUseVaultPasswordPrimary => !_vaultPasswordUnavailable && !_vaultPasswordBusy && !_portableBusy && _ready && !_shuttingDown && !IsSample
         && _vaultPasswordMode is VaultPasswordMode.Disabled or VaultPasswordMode.Locked or VaultPasswordMode.MigrationRequired;
-    public bool CanDisableVaultPassword => !_vaultPasswordUnavailable && !_vaultPasswordBusy && _ready && !_shuttingDown && !IsSample && !IsLocked && _vaultPasswordMode == VaultPasswordMode.Unlocked;
-    public bool CanForgetProtectedSignIns => !_vaultPasswordBusy && _ready && !_shuttingDown && !IsSample
+    public bool CanDisableVaultPassword => !_vaultPasswordUnavailable && !_vaultPasswordBusy && !_portableBusy && _ready && !_shuttingDown && !IsSample && !IsLocked && _vaultPasswordMode == VaultPasswordMode.Unlocked;
+    public bool CanForgetProtectedSignIns => !_vaultPasswordBusy && !_portableBusy && _ready && !_shuttingDown && !IsSample
         && (_vaultPasswordUnavailable || _vaultPasswordMode is VaultPasswordMode.Locked or VaultPasswordMode.Unlocked or VaultPasswordMode.MigrationRequired);
     public event Action<VaultPasswordAction>? VaultPasswordPromptRequested;
     private void InitializeVaultPasswordFeatures() => PropertyChanged += VaultPasswordOwnerChanged;

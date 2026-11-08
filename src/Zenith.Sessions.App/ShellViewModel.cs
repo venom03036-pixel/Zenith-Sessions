@@ -394,7 +394,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         InitializeClientUpdateFeatures(clientUpdateInstaller);
         InitializeDiagnosticsFeatures(clientLogTails);
         InitializeDataEncryption(dataEncryption);InitializeNews(newsFeed);
-        InitializeVaultPasswordFeatures();
+        InitializeVaultPasswordFeatures();InitializePortableBackupFeatures();
         InitializeClientWindowFeatures();
         InitializeClientPriorityFeatures(clientPriority);
         InitializeClientMemoryTrimFeatures(clientTrim);
@@ -1160,7 +1160,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Step(()=>ClientPreviews.Fence("Previews stopped by Panic or Lock. Start explicitly to resume."));Step(()=>_authorizationStop?.Cancel());
         Step(()=>HandoffInspectionStatus="Inspection stopped by Panic or Lock. No native dispatch was permitted; review sign-in before retrying.");
         Step(_launchQueue.SignalPanic);Step(StopClientArrivalLayout);Step(StopClientWindowOperations);Step(StopClientCloseOperations);Step(StopClientPriorityOperations);Step(StopClientTrimOperations);Step(StopClientSoundOperations);Step(()=>StopUploadLimitOperations(panic:true));Step(StopClientLogCleanup);Step(()=>StopClientUpdateWork(locking));Step(StopKeepAwake);Step(()=>StopScheduledShutdownOperations(locking));Step(()=>StopDiscordAlertOperations(locking));Step(()=>StopDiscordPresenceOperations(locking));Step(StopGroupChanges);Step(StopSignInBrowserData);
-        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(StopVaultPasswordWork);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
+        Step(CancelPerformanceTransfers);Step(StopDataEncryption);Step(StopVaultPasswordWork);Step(StopPortableBackup);Step(News.Stop);Step(()=>CancelDirectoryFeatures(locking));
         _queuePaused=true;Step(()=>Raise(nameof(QueuePauseLabel)));
         Step(()=>QueueStatus="Queue paused. Pending or uncertain requests require review before retrying.");Step(RefreshOverview);
         // Every listener hears Panic, even after an earlier one throws.
@@ -1269,7 +1269,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         StopShutdownStep(DisposeSettingsSearch);
         StopShutdownStep(RefreshClientPreviewContext);
         StopShutdownStep(CancelPerformanceTransfers);
-        StopShutdownStep(StopDataEncryption);StopShutdownStep(StopVaultPasswordWork);StopShutdownStep(News.Stop);
+        StopShutdownStep(StopDataEncryption);StopShutdownStep(StopVaultPasswordWork);StopShutdownStep(StopPortableBackup);StopShutdownStep(News.Stop);
         StopShutdownStep(CancelInstallationWork);
         StopShutdownStep(()=>RecipientBundles.CancelWork());
         StopShutdownStep(_launchQueue.SignalPanic);
@@ -1314,6 +1314,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
         await StopOwnerAsync(DisposeUploadLimitFeaturesAsync);
         await StopOwnerAsync(DisposeClientCloseFeaturesAsync);
+        await StopOwnerAsync(DisposePortableBackupAsync);
         await StopOwnerAsync(DisposeVaultPasswordAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
