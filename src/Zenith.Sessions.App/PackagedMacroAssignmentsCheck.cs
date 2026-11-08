@@ -9,7 +9,11 @@ internal static class PackagedMacroAssignmentsCheck
     {
         var target = new MacroAssignmentTarget(MacroAssignmentTargetKind.Account, new("f021bb35-f9ad-402e-bbbc-089ae5a6a557"));
         var fixture = new MacroAssignment(target, "Owned packaged account fixture", new("7dc18234-4d56-4686-933a-2d1d0d67ae59"), "Owned packaged macro fixture");
-        await using var store = new MacroAssignmentStore(Path.Combine(root, "macro-assignment-fixture"));
+        await SelfCheckOwners.UseAsync(new MacroAssignmentStore(Path.Combine(root, "macro-assignment-fixture")), store => ExerciseAsync(store, target, fixture, ct));
+    }
+
+    private static async Task ExerciseAsync(MacroAssignmentStore store, MacroAssignmentTarget target, MacroAssignment fixture, CancellationToken ct)
+    {
         var initial = await store.ReadAsync(new(), ct);
         if (initial.Items.Any(item => item != fixture)) throw new InvalidDataException("The assignment fixture contains unexpected references; they were preserved.");
         var saved = await store.SaveAsync(fixture, initial.Stamp, ct);

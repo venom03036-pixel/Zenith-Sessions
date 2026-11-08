@@ -20,6 +20,16 @@ public sealed class DistributionSelfCheckSummaryTests
     }
 
     [Fact]
+    public void SummaryNamesAnUnidentifiedBuildSoTheSuccessLineMeansAPassingRun()
+    {
+        // N-B10-1: every stage passed but the run fails, so the line must not read as the success line.
+        Assert.Equal("Distribution self-check: 43/43 (build not identified: InvalidDataException); release readiness remains false.",
+            DistributionSelfCheck.Summary(43,DistributionSelfCheck.PlannedStageCount,null,"InvalidDataException"));
+        Assert.Equal("Distribution self-check: 3/43 (failed at Packaged brand image; build not identified: InvalidDataException); release readiness remains false.",
+            DistributionSelfCheck.Summary(3,DistributionSelfCheck.PlannedStageCount,"Packaged brand image","InvalidDataException"));
+    }
+
+    [Fact]
     public void PlannedStageCountMatchesTheManagerScriptExpectedCases()
     {
         // The manager script requires exactly these named, unique, passing cases; a stage added to one must be added to both.

@@ -9,10 +9,15 @@ internal static class PackagedPublicMediaCheck
     public static async Task VerifyAsync(CancellationToken ct)
     {
         var directory = new FixtureGallery();
-        await using var gallery = new GameGalleryViewModel(directory, () => true);
+        var game = new PublicRobloxGame(123, 456, 123, "Owned media fixture", 789, "Fixture", PublicRobloxCreatorKind.User, 0, 10, DateTimeOffset.UtcNow);
+        await SelfCheckOwners.UseAsync(new GameGalleryViewModel(directory, () => true), gallery => ExerciseGalleryAsync(gallery, directory, game, ct));
+        await SelfCheckOwners.UseAsync(new GameGalleryViewModel(new EmptyGallery(), () => true), empty => ExerciseEmptyAsync(empty, game, ct));
+    }
+
+    private static async Task ExerciseGalleryAsync(GameGalleryViewModel gallery, FixtureGallery directory, PublicRobloxGame game, CancellationToken ct)
+    {
         if (gallery.PresentationState != GameGalleryPresentationState.NotLoaded || !gallery.ShowPlaceholder)
             throw new InvalidDataException("A new packaged gallery did not report its unloaded state.");
-        var game = new PublicRobloxGame(123, 456, 123, "Owned media fixture", 789, "Fixture", PublicRobloxCreatorKind.User, 0, 10, DateTimeOffset.UtcNow);
         await gallery.LoadAsync(game, ct);
         if (gallery.Image is not { IsFrozen: true, PixelWidth: 576, PixelHeight: 324 } || gallery.Position != "1 / 3"
             || gallery.PresentationState != GameGalleryPresentationState.Displayed || gallery.ShowPlaceholder)
@@ -29,7 +34,10 @@ internal static class PackagedPublicMediaCheck
         gallery.SetVisible(false);
         if (gallery.Image is not null || gallery.RetainedPixelBytes != 0 || gallery.CanBrowse)
             throw new InvalidDataException("Hidden public media was not cleared.");
-        await using var empty = new GameGalleryViewModel(new EmptyGallery(), () => true);
+    }
+
+    private static async Task ExerciseEmptyAsync(GameGalleryViewModel empty, PublicRobloxGame game, CancellationToken ct)
+    {
         await empty.LoadAsync(game, ct);
         if (empty.PresentationState != GameGalleryPresentationState.Empty || !empty.ShowPlaceholder
             || empty.HasGallery || empty.CanBrowse || empty.EmptyTitle.Contains("load", StringComparison.OrdinalIgnoreCase))

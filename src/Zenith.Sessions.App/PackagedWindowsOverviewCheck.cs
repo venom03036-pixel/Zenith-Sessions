@@ -5,10 +5,17 @@ namespace Zenith.Sessions.App;
 
 internal static class PackagedWindowsOverviewCheck
 {
-    public static async Task VerifyAsync(CancellationToken ct)
+    public static Task VerifyAsync(CancellationToken ct) => VerifyAsync(static provider => provider, SelfCheckOwners.ShutdownBound, ct);
+
+    // decorate sits between the owner and the fixture provider, so a test can stand in a stalled capture cleanup.
+    internal static async Task VerifyAsync(Func<IClientPreviewBatchProvider, IClientPreviewBatchProvider> decorate, TimeSpan shutdownBound, CancellationToken ct)
     {
         var provider = new FixtureProvider();
-        await using var owner = new ClientPreviewCoordinator(provider);
+        await SelfCheckOwners.UseAsync(new ClientPreviewCoordinator(decorate(provider)), owner => ExerciseAsync(owner, provider, ct), shutdownBound);
+    }
+
+    private static async Task ExerciseAsync(ClientPreviewCoordinator owner, FixtureProvider provider, CancellationToken ct)
+    {
         long start = DateTimeOffset.UtcNow.AddMinutes(-1).UtcTicks;
         var targets = Enumerable.Range(0, 16).Select(index => new ClientPreviewTarget(new(null, 700000 + index, start + index), (nint)(800000 + index))).ToArray();
         owner.StartOverview(targets, DateTimeOffset.UtcNow.AddSeconds(30));

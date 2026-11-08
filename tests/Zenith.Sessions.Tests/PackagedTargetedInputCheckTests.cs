@@ -14,6 +14,25 @@ public sealed class PackagedTargetedInputCheckTests
     [Fact]
     public async Task StageFailsWithATimeoutWhenTheOwnerCannotShutDownAfterTheDeadline()
     {
+        var timeout = await StalledShutdownAfterTheDeadlineAsync();
+        Assert.IsAssignableFrom<OperationCanceledException>(timeout.InnerException); // the deadline failure is kept, not dropped
+    }
+
+    [Fact]
+    public async Task StageReportPointsAtTheStalledShutdownAndNamesTheDeadlineAsItsCause()
+    {
+        // N-B10-2: the code and method must describe the timeout the case names, not the deadline cancellation it keeps.
+        var timeout = await StalledShutdownAfterTheDeadlineAsync();
+        var failed = DistributionSelfCheck.FailedCase("Controlled targeted input ownership", timeout, null);
+        Assert.Equal(nameof(TimeoutException), failed.ErrorType);
+        // N-B10-3: the shared bounded-shutdown helper throws the timeout, so the method names the owner whose shutdown stalled.
+        Assert.Equal(typeof(TargetedInputCoordinator).FullName + ".DisposeAsync", failed.FailingMethod);
+        Assert.Equal($"0x{timeout.HResult:X8}", failed.ErrorCode);
+        Assert.Equal(timeout.InnerException!.GetType().Name, failed.CauseType);
+    }
+
+    private static async Task<TimeoutException> StalledShutdownAfterTheDeadlineAsync()
+    {
         var stalled = new TaskCompletionSource<TargetedInputValidation>(TaskCreationOptions.RunContinuationsAsynchronously);
         using var deadline = new CancellationTokenSource(TimeSpan.FromMilliseconds(200));
         var run = PackagedTargetedInputCheck.VerifyAsync(inner => new StalledCleanupTransport(inner, stalled.Task),
@@ -21,8 +40,7 @@ public sealed class PackagedTargetedInputCheckTests
         try
         {
             Assert.Same(run, await Task.WhenAny(run, Task.Delay(TimeSpan.FromSeconds(5))));
-            var timeout = await Assert.ThrowsAsync<TimeoutException>(() => run);
-            Assert.IsAssignableFrom<OperationCanceledException>(timeout.InnerException); // the deadline failure is kept, not dropped
+            return await Assert.ThrowsAsync<TimeoutException>(() => run);
         }
         finally { stalled.TrySetResult(TargetedInputValidation.Current); } // let the abandoned owner's workers retire
     }
