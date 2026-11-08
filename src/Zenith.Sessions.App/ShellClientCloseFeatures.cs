@@ -113,6 +113,11 @@ public sealed partial class ShellViewModel
             case ClientCloseStatus.NotSent:
                 Notice = $"Close was not sent because Windows rejected the request for the window of Roblox process {pid}.";
                 break;
+            case ClientCloseStatus.Denied:
+            case ClientCloseStatus.NotConfirmed:
+                if (row is not null) row.ForceCloseOffered = false;
+                Notice = result.Explanation;
+                break;
             default:
                 AddEvent($"Close stopped for PID {pid}. A close request already sent cannot be recalled.");
                 if (!_preserveStopNotice && !IsLocked && !_shuttingDown) Notice = result.Explanation;

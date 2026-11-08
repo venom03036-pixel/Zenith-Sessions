@@ -245,6 +245,95 @@ public sealed class UploadLimitControlTests : IDisposable
         Assert.Equal(new UploadLimitRecord(UploadLimitAction.Apply, 1000, Now, true), control.Current);
     }
 
+    [Theory]
+    [InlineData(false, false, 1)]
+    [InlineData(false, true, 1)]
+    [InlineData(true, false, 1)]
+    [InlineData(true, true, 1)]
+    [InlineData(false, false, 2)]
+    [InlineData(false, true, 2)]
+    [InlineData(true, false, 2)]
+    [InlineData(true, true, 2)]
+    public async Task ALateDeclineOrFailedStartRestoresTheExactPreOperationRecord(bool existing, bool remove, int lateKind)
+    {
+        var runner = new FakeRunner();
+        await using var control = Control(runner);
+        if (existing) await control.ApplyAsync(1500, default);
+        var before = control.Current;
+        runner.Hold = true;
+        var pending = remove ? control.RemoveAsync(default) : control.ApplyAsync(2500, default);
+        var abandoned = runner.Runs[^1];
+        control.CancelOperations();
+        Assert.Equal(UploadLimitStatus.Cancelled, (await pending).Status);
+        Assert.False(control.Current?.Confirmed);
+        abandoned.AbandonedStartCompleted?.Invoke(new((ElevatedRunKind)lateKind));
+        Assert.Equal(before, control.Current);
+        await using var reloaded = Control(new FakeRunner());
+        Assert.Equal(before, await reloaded.LoadRecordAsync(default));
+    }
+
+    [Fact]
+    public async Task ALateDeclineCannotOverwriteANewerConfirmedOperation()
+    {
+        var runner = new FakeRunner { Hold = true };
+        await using var control = Control(runner);
+        var pending = control.ApplyAsync(1000, default);
+        var abandoned = runner.Runs[^1];
+        control.CancelOperations(); await pending;
+        runner.Hold = false;
+        await control.ApplyAsync(4000, default);
+        var latest = control.Current;
+        abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
+        Assert.Equal(latest, control.Current);
+        await using var reloaded = Control(new FakeRunner());
+        Assert.Equal(latest, await reloaded.LoadRecordAsync(default));
+    }
+
+    [Fact]
+    public async Task ADeclineReportedAtTheCancellationBoundaryDoesNotLeaveUncertainty()
+    {
+        var runner = new FakeRunner { Hold = true, DeclineDuringCancel = true };
+        await using var control = Control(runner);
+        var pending = control.ApplyAsync(1000, default);
+        control.CancelOperations();
+        Assert.Equal(UploadLimitStatus.Declined, (await pending).Status);
+        Assert.Null(control.Current); Assert.False(File.Exists(RecordPath));
+    }
+
+    [Fact]
+    public async Task ADeclineAfterDisposeRestoresPersistenceWithoutPublishingIntoTheClosedShell()
+    {
+        var runner = new FakeRunner();
+        var control = Control(runner);
+        await control.ApplyAsync(1700, default); var before = control.Current;
+        int published = 0; control.Reconciled += _ => published++;
+        runner.Hold = true;
+        var pending = control.RemoveAsync(default); var abandoned = runner.Runs[^1];
+        await control.DisposeAsync(); await pending;
+        abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
+        Assert.Equal(0, published); Assert.Equal(before, control.Current);
+        await using var reloaded = Control(new FakeRunner());
+        Assert.Equal(before, await reloaded.LoadRecordAsync(default));
+    }
+
+    [Fact]
+    public async Task ReconciliationKeepsPriorUncertaintyAndNeverClaimsAbsenceAfterAnUnreadableRecord()
+    {
+        Directory.CreateDirectory(_root); await File.WriteAllTextAsync(RecordPath, "broken");
+        var runner = new FakeRunner { Hold = true };
+        await using var control = Control(runner);
+        await control.LoadRecordAsync(default); Assert.True(control.RecordUnreadable);
+        UploadLimitReconciliation? reconciliation = null;
+        control.Reconciled += value => reconciliation = value;
+        var pending = control.ApplyAsync(1000, default); var abandoned = runner.Runs[^1];
+        control.CancelOperations(); await pending;
+        abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
+        Assert.True(control.RecordUnreadable); Assert.False(control.Current?.Confirmed);
+        Assert.NotNull(reconciliation); Assert.False(reconciliation.Result.RecordSaved);
+        await using var reloaded = Control(new FakeRunner());
+        Assert.False((await reloaded.LoadRecordAsync(default))?.Confirmed);
+    }
+
     public void Dispose()
     {
         string full = Path.GetFullPath(_root);
@@ -253,7 +342,7 @@ public sealed class UploadLimitControlTests : IDisposable
         if (Directory.Exists(full)) Directory.Delete(full, true);
     }
 
-    internal sealed record FakeRun(string Script, TimeSpan Timeout, CancellationToken Token);
+    internal sealed record FakeRun(string Script, TimeSpan Timeout, CancellationToken Token, Action<ElevatedRunOutcome>? AbandonedStartCompleted);
 
     internal sealed class FakeRunner : IElevatedPowerShellRunner
     {
@@ -261,12 +350,21 @@ public sealed class UploadLimitControlTests : IDisposable
         public List<FakeRun> Runs { get; } = [];
         public ElevatedRunOutcome Outcome { get; set; } = new(ElevatedRunKind.Exited, 0);
         public bool Hold { get; set; }
-        public async Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct)
+        public bool DeclineDuringCancel { get; set; }
+        public async Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct, Action<ElevatedRunOutcome>? abandonedStartCompleted = null)
         {
-            var run = new FakeRun(script, timeout, ct);
+            var run = new FakeRun(script, timeout, ct, abandonedStartCompleted);
             lock (Runs) Runs.Add(run);
             _started.Writer.TryWrite(run);
-            if (Hold) await Task.Delay(Timeout.InfiniteTimeSpan, ct);
+            if (Hold)
+            {
+                try { await Task.Delay(Timeout.InfiniteTimeSpan, ct); }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    if (DeclineDuringCancel) abandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
+                    throw;
+                }
+            }
             return Outcome;
         }
         public Task ReleaseAsync(CancellationToken ct) => Task.CompletedTask;

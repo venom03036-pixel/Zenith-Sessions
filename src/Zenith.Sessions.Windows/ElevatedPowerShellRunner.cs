@@ -24,9 +24,10 @@ internal interface IElevatedPowerShellRunner
     /// <summary>
     /// Shows Windows' administrator prompt, runs the script hidden once it is approved, and waits at most <paramref name="timeout"/>
     /// for its exit. Throws <see cref="OperationCanceledException"/> when <paramref name="ct"/> is cancelled first; a run the user
-    /// already approved then finishes on its own.
+    /// already approved then finishes on its own. If an abandoned prompt later establishes that nothing started, invokes
+    /// <paramref name="abandonedStartCompleted"/> for that exact run; <see cref="ReleaseAsync"/> owns that completion.
     /// </summary>
-    Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct);
+    Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct, Action<ElevatedRunOutcome>? abandonedStartCompleted = null);
     /// <summary>Waits for the handle of a run abandoned at its prompt to be released; bounded by <paramref name="ct"/>.</summary>
     Task ReleaseAsync(CancellationToken ct);
 }
@@ -38,7 +39,8 @@ internal interface IElevatedPowerShellRunner
 /// off the caller's thread, and a cancelled wait leaves that start to release its handle when it comes (tracked, awaited by
 /// <see cref="ReleaseAsync"/>). The process's exit code is read through the handle ShellExecute hands back.
 /// </summary>
-internal sealed class ElevatedPowerShellRunner(bool elevate = true) : IElevatedPowerShellRunner
+internal sealed class ElevatedPowerShellRunner(bool elevate = true,
+    Func<ProcessStartInfo, Task<(Process? Process, ElevatedRunKind Kind)>>? startProcess = null) : IElevatedPowerShellRunner
 {
     private const int ErrorCancelled = 1223; // ERROR_CANCELLED: the administrator prompt was declined.
     private readonly object _gate = new();
@@ -50,7 +52,7 @@ internal sealed class ElevatedPowerShellRunner(bool elevate = true) : IElevatedP
     internal static string Arguments(string script)
         => "-NoProfile -NonInteractive -WindowStyle Hidden -EncodedCommand " + Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
 
-    public async Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct)
+    public async Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct, Action<ElevatedRunOutcome>? abandonedStartCompleted = null)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(script);
         ct.ThrowIfCancellationRequested();
@@ -59,15 +61,14 @@ internal sealed class ElevatedPowerShellRunner(bool elevate = true) : IElevatedP
         {
             Arguments = Arguments(script), UseShellExecute = true, WindowStyle = ProcessWindowStyle.Hidden, Verb = elevate ? "runas" : ""
         };
-        var starting = Task.Run(() => Start(start), CancellationToken.None);
+        var starting = startProcess is null ? Task.Run(() => Start(start), CancellationToken.None) : startProcess(start);
         var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
         using (ct.Register(static state => ((TaskCompletionSource)state!).TrySetResult(), cancelled))
         {
             if (await Task.WhenAny(starting, cancelled.Task).ConfigureAwait(false) != starting)
             {
                 // Abandoned at the prompt: whatever the answer starts is released once ShellExecute returns.
-                var release = starting.ContinueWith(static done => { if (done.Status == TaskStatus.RanToCompletion) done.Result.Process?.Dispose(); },
-                    CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+                var release = CompleteAbandonedStartAsync(starting, abandonedStartCompleted);
                 lock (_gate) _releasing = Task.WhenAll(_releasing, release);
                 ct.ThrowIfCancellationRequested();
             }
@@ -89,6 +90,18 @@ internal sealed class ElevatedPowerShellRunner(bool elevate = true) : IElevatedP
         Task releasing;
         lock (_gate) releasing = _releasing;
         return releasing.WaitAsync(ct);
+    }
+
+    private static async Task CompleteAbandonedStartAsync(Task<(Process? Process, ElevatedRunKind Kind)> starting,
+        Action<ElevatedRunOutcome>? completed)
+    {
+        var (process, kind) = await starting.ConfigureAwait(false);
+        using (process)
+        {
+            // An approved helper may still change policy. Only a definite no-start can undo the uncertainty.
+            if (process is null && kind is ElevatedRunKind.Declined or ElevatedRunKind.NotStarted)
+                completed?.Invoke(new(kind));
+        }
     }
 
     private static (Process? Process, ElevatedRunKind Kind) Start(ProcessStartInfo start)

@@ -7,6 +7,10 @@ loop, and their verification. Every row moves only on evidence: a failing test t
 **Status values:** Open · In progress · Verified (test or measurement cited) · Not reproduced (how it was checked) · Blocked (what is needed) ·
 Needs decision (owner's call) · By design (cited) · Excluded (forbidden technique, cited).
 
+## D6a review follow-up (2026-11-08)
+
+The five round-4 process-control findings are **Verified offline**: leftover cap identity/boot cleanup, foreign-job independent restoration, conditional FPS wording, truthful denied/unknown close results and late-prompt exact-operation reconciliation. `artifacts/sessions-tests-0.60-d6process/d6-final.trx`: **185 passed, 0 failed, 0 skipped**. Failing-before evidence and remaining attended trials: [process control repair review](PROCESS-CONTROL-REVIEW-REPAIRS.md). No live client/UAC/performance acceptance is implied.
+
 ## Starting point (2026-11-07, before the loop's fix lanes)
 
 | Check | Result | Evidence |

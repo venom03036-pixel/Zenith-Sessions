@@ -52,6 +52,20 @@ public sealed class ClientClosePresentationTests : IDisposable
         Assert.False(shell.Sessions[0].ForceCloseOffered);
     });
 
+    [Theory]
+    [InlineData(ClientCloseStatus.Denied)]
+    [InlineData(ClientCloseStatus.NotConfirmed)]
+    public Task AHandleAccessFailureShowsItsExplanationWithoutClaimingExitOrCancellation(ClientCloseStatus status) => OnUi(async () =>
+    {
+        const string explanation="Windows denied or could not confirm access. Close was not sent; its exit has not been confirmed.";
+        var monitor = new CloseMonitor(1) { CloseResult = _ => new(status, 0, explanation) };
+        await using var shell = await Ready(monitor);
+        await shell.RequestCloseAsync(shell.Sessions[0].Observation);
+        Assert.Equal(explanation, shell.Notice); Assert.False(shell.Sessions[0].ForceCloseOffered);
+        Assert.DoesNotContain(shell.Events, row => row.Contains("Close stopped for PID", StringComparison.Ordinal));
+        Assert.Empty(monitor.Forced);
+    });
+
     [Fact]
     public Task ForceCloseIsRefusedUntilACloseLeftThatClientOpen() => OnUi(async () =>
     {

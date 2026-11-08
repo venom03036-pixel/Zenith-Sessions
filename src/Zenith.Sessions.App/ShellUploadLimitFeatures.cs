@@ -17,6 +17,7 @@ public sealed partial class ShellViewModel
     private CancellationTokenSource? _uploadLimitStop;
     private Task _uploadLimitWork = Task.CompletedTask;
     private long _uploadLimitGeneration;
+    private UploadLimitReconciliation? _uploadLimitReconciliation;
     private string _uploadLimitRate = "1000";
     private string _uploadLimitStatus = "Choose a rate and Apply upload limit, or Remove. Windows asks for administrator approval first.";
     private sealed record UploadLimitRequest(long Generation, int? KilobitsPerSecond);
@@ -62,10 +63,23 @@ public sealed partial class ShellViewModel
     {
         _uploadLimitPermitted = !IsSample || control is not null;
         _uploadLimit = control ?? new WindowsUploadLimitControl(Path.Combine(DataRoot, WindowsUploadLimitControl.RecordFileName));
+        _uploadLimit.Reconciled += UploadLimitReconciled;
         ApplyUploadLimit = new(p => ChangeUploadLimitAsync(UploadLimitAction.Apply, p), ReportUploadLimitFailure, CaptureUploadLimitRequest);
         RemoveUploadLimit = new(p => ChangeUploadLimitAsync(UploadLimitAction.Remove, p), ReportUploadLimitFailure, CaptureUploadLimitRequest);
         CancelUploadLimit = new(_ => StopUploadLimitOperations(panic: false));
         PropertyChanged += UploadLimitOwnerChanged;
+    }
+
+    private void UploadLimitReconciled(UploadLimitReconciliation reconciliation)
+    {
+        if (_dispatcher.HasShutdownStarted) return;
+        _dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_shuttingDown || reconciliation.OperationRevision != _uploadLimit.OperationRevision) return;
+            _uploadLimitReconciliation = reconciliation;
+            Raise(nameof(CurrentUploadLimitText));
+            if (!_changingUploadLimit) ReportUploadLimit(reconciliation.Result);
+        }));
     }
 
     private void UploadLimitOwnerChanged(object? sender, PropertyChangedEventArgs args)
@@ -88,6 +102,7 @@ public sealed partial class ShellViewModel
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
         _uploadLimitStop = stop;
         _uploadLimitStoppedByPanic = false;
+        _uploadLimitReconciliation = null;
         _changingUploadLimit = true;
         UploadLimitStatus = "Waiting for the administrator prompt and Windows PowerShell…";
         Raise(nameof(IsChangingUploadLimit)); Raise(nameof(CanChangeUploadLimit));
@@ -113,6 +128,8 @@ public sealed partial class ShellViewModel
             if (ReferenceEquals(_uploadLimitStop, stop)) _uploadLimitStop = null;
             _changingUploadLimit = false;
             stop.Dispose();
+            if (_uploadLimitReconciliation is { } late && late.OperationRevision == _uploadLimit.OperationRevision)
+                ReportUploadLimit(late.Result);
             Raise(nameof(IsChangingUploadLimit)); Raise(nameof(CanChangeUploadLimit)); Raise(nameof(CurrentUploadLimitText));
         }
     }
@@ -123,13 +140,13 @@ public sealed partial class ShellViewModel
         string text = result.Status == Status.Cancelled && _uploadLimitStoppedByPanic
             ? "Upload limit work stopped by Panic or Lock. If the administrator prompt was already approved, that PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure."
             : result.Explanation;
+        if (!result.RecordSaved) _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit, typeof(IOException));
         switch (result.Status)
         {
             case Status.Confirmed:
                 AddEvent(result.Action == UploadLimitAction.Apply
                     ? "Upload limit of " + UploadLimitPolicy.FormatRate(result.KilobitsPerSecond) + " applied for all Roblox clients together."
                     : "Upload limit removed; Windows confirmed Zenith's policies are gone.");
-                if (!result.RecordSaved) _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit, typeof(IOException));
                 break;
             case Status.Refused or Status.NotConfirmed or Status.Unavailable or Status.TimedOut:
                 ShowError(text);
@@ -174,6 +191,7 @@ public sealed partial class ShellViewModel
 
     private async Task DisposeUploadLimitFeaturesAsync()
     {
+        _uploadLimit.Reconciled -= UploadLimitReconciled;
         StopUploadLimitOperations(panic: false);
         try { await _uploadLimitWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit, error.GetType()); }

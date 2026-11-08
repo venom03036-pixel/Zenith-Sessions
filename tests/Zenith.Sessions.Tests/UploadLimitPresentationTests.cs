@@ -168,6 +168,45 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Equal("Sessions",SettingsSearchCatalog.PageOf(SettingsSearchTarget.UploadLimit));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task ALateNoStartReconciliationRefreshesTheCurrentRecordAndFinalStatus(bool beforeCancelResult)=>OnUi(async ()=>
+    {
+        var control=new UploadLimitControlProbe{Defer=true};
+        await using var shell=await ReadyUploadLimit(new PriorityDesktopMonitor(1),control);
+        shell.ApplyUploadLimit.Execute(null);var call=await control.NextAsync();
+        shell.CancelUploadLimit.Execute(null);
+        int recordChanges=0;shell.PropertyChanged+=(_,args)=>{if(args.PropertyName==nameof(shell.CurrentUploadLimitText))recordChanges++;};
+        var declined=new UploadLimitResult(UploadLimitAction.Apply,UploadLimitStatus.Declined,1000,0,null);
+        if(!beforeCancelResult)
+        {
+            call.Reply.SetResult(new(UploadLimitAction.Apply,UploadLimitStatus.Cancelled,1000,0,null));
+            await shell.ApplyUploadLimit.Execution;
+        }
+        control.Reconcile(new(control.OperationRevision,declined));
+        await Dispatcher.CurrentDispatcher.InvokeAsync(()=>{},DispatcherPriority.Background);
+        if(beforeCancelResult)
+        {
+            call.Reply.SetResult(new(UploadLimitAction.Apply,UploadLimitStatus.Cancelled,1000,0,null));
+            await shell.ApplyUploadLimit.Execution;
+        }
+        Assert.Equal(declined.Explanation,shell.UploadLimitStatus);Assert.True(recordChanges>0);
+        Assert.StartsWith("No upload limit applied by Zenith",shell.CurrentUploadLimitText);
+    });
+
+    [Fact]
+    public Task AQueuedReconciliationCannotReplaceANewerOperationStatus()=>OnUi(async ()=>
+    {
+        var control=new UploadLimitControlProbe();
+        await using var shell=await ReadyUploadLimit(new PriorityDesktopMonitor(1),control);
+        control.Reconcile(new(control.OperationRevision,new(UploadLimitAction.Apply,UploadLimitStatus.Declined,1000,0,null)));
+        shell.UploadLimitRate="4500";shell.ApplyUploadLimit.Execute(null);await shell.ApplyUploadLimit.Execution;
+        await Dispatcher.CurrentDispatcher.InvokeAsync(()=>{},DispatcherPriority.Background);
+        Assert.Contains("Windows confirmed the upload limit",shell.UploadLimitStatus);
+        Assert.Contains("4,500 kbit/s",shell.CurrentUploadLimitText);
+    });
+
     private async Task<ShellViewModel> ReadyUploadLimit(PriorityDesktopMonitor monitor,UploadLimitControlProbe? control,bool sample=false)
     {
         var capture=new PreviewProvider();
@@ -186,6 +225,9 @@ public sealed partial class ClientPreviewPresentationTests
 
     private sealed class UploadLimitControlProbe:IUploadLimitControl
     {
+        public event Action<UploadLimitReconciliation>? Reconciled;
+        public long OperationRevision { get; private set; }
+        internal void Reconcile(UploadLimitReconciliation result) => Reconciled?.Invoke(result);
         private readonly Channel<UploadLimitCall> _calls=Channel.CreateBounded<UploadLimitCall>(4);
         internal bool Defer,Unreadable;
         internal UploadLimitStatus Outcome=UploadLimitStatus.Confirmed;
@@ -198,6 +240,7 @@ public sealed partial class ClientPreviewPresentationTests
         public Task<UploadLimitResult> RemoveAsync(CancellationToken ct){RemoveCalls++;return RunAsync(new(UploadLimitAction.Remove,0,ct));}
         private async Task<UploadLimitResult> RunAsync(UploadLimitCall call)
         {
+            OperationRevision++;
             Assert.True(_calls.Writer.TryWrite(call));
             if(Defer) return await call.Reply.Task;
             switch(Outcome)

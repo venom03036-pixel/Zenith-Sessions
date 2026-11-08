@@ -24,8 +24,23 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
     private readonly CancellationTokenSource _closing = new();
     private CancellationTokenSource? _stop;
     private Task<UploadLimitResult>? _operation;
+    private OperationState? _latest;
+    private long _revision;
     private UploadLimitRecord? _current;
     private bool _unreadable, _closed;
+    private sealed class OperationState(UploadLimitAction action, int rate, UploadLimitRecord? previous, bool unreadable, long revision)
+    {
+        public readonly UploadLimitAction Action = action;
+        public readonly int Rate = rate;
+        public readonly UploadLimitRecord? Previous = previous;
+        public readonly bool PreviousUnreadable = unreadable;
+        public readonly long Revision = revision;
+        public ElevatedRunKind? NoStart;
+        public bool Cancelled;
+    }
+
+    public event Action<UploadLimitReconciliation>? Reconciled;
+    public long OperationRevision { get { lock (_gate) return _revision; } }
 
     public WindowsUploadLimitControl(string recordPath) : this(recordPath, new ElevatedPowerShellRunner(), TimeProvider.System, null) { }
 
@@ -64,17 +79,19 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
             if (_operation is { IsCompleted: false }) return Task.FromResult(new UploadLimitResult(action, UploadLimitStatus.Busy, kilobitsPerSecond, 0, _current));
             var stop = CancellationTokenSource.CreateLinkedTokenSource(ct, _closing.Token);
             _stop = stop;
+            var operation = _latest = new OperationState(action, kilobitsPerSecond, _current, _unreadable, ++_revision);
             // ExecuteAsync reaches no shared state before its first await, so starting it under the gate is safe.
-            return _operation = ExecuteAsync(action, kilobitsPerSecond, stop);
+            return _operation = ExecuteAsync(operation, stop);
         }
     }
 
-    private async Task<UploadLimitResult> ExecuteAsync(UploadLimitAction action, int kilobitsPerSecond, CancellationTokenSource stop)
+    private async Task<UploadLimitResult> ExecuteAsync(OperationState operation, CancellationTokenSource stop)
     {
+        var action = operation.Action; int kilobitsPerSecond = operation.Rate;
         string script = action == UploadLimitAction.Apply ? UploadLimitPolicy.ApplyScript(kilobitsPerSecond) : UploadLimitPolicy.RemoveScript();
         ElevatedRunOutcome outcome;
-        try { outcome = await _runner.RunAsync(script, HelperTimeout, stop.Token).ConfigureAwait(false); }
-        catch (OperationCanceledException) { return Finish(action, kilobitsPerSecond, UploadLimitStatus.Cancelled, 0); }
+        try { outcome = await _runner.RunAsync(script, HelperTimeout, stop.Token, outcome => ReconcileNoStart(operation, outcome)).ConfigureAwait(false); }
+        catch (OperationCanceledException) { return Finish(operation, UploadLimitStatus.Cancelled, 0); }
         finally
         {
             lock (_gate) if (ReferenceEquals(_stop, stop)) _stop = null;
@@ -82,10 +99,10 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
         }
         return outcome.Kind switch
         {
-            ElevatedRunKind.Declined => Finish(action, kilobitsPerSecond, UploadLimitStatus.Declined, 0),
-            ElevatedRunKind.NotStarted => Finish(action, kilobitsPerSecond, UploadLimitStatus.Unavailable, 0),
-            ElevatedRunKind.TimedOut => Finish(action, kilobitsPerSecond, UploadLimitStatus.TimedOut, 0),
-            _ => Finish(action, kilobitsPerSecond, UploadLimitPolicy.StatusForExit(outcome.ExitCode), outcome.ExitCode)
+            ElevatedRunKind.Declined => Finish(operation, UploadLimitStatus.Declined, 0),
+            ElevatedRunKind.NotStarted => Finish(operation, UploadLimitStatus.Unavailable, 0),
+            ElevatedRunKind.TimedOut => Finish(operation, UploadLimitStatus.TimedOut, 0),
+            _ => Finish(operation, UploadLimitPolicy.StatusForExit(outcome.ExitCode), outcome.ExitCode)
         };
     }
 
@@ -94,12 +111,19 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
     /// or was stopped may have changed the store partly or may still finish, so the record becomes uncertain and keeps the rate
     /// asked for (a Remove keeps the last known rate). A declined prompt or a missing PowerShell ran nothing and changes nothing.
     /// </summary>
-    private UploadLimitResult Finish(UploadLimitAction action, int kilobitsPerSecond, UploadLimitStatus status, int exitCode)
+    private UploadLimitResult Finish(OperationState operation, UploadLimitStatus status, int exitCode)
     {
+        var action = operation.Action; int kilobitsPerSecond = operation.Rate;
         bool saved = true;
         UploadLimitRecord? record;
         lock (_gate)
         {
+            if (status == UploadLimitStatus.Cancelled)
+            {
+                if (operation.NoStart is { } known)
+                    status = known == ElevatedRunKind.Declined ? UploadLimitStatus.Declined : UploadLimitStatus.Unavailable;
+                else operation.Cancelled = true;
+            }
             switch (status)
             {
                 case UploadLimitStatus.Confirmed:
@@ -116,6 +140,29 @@ public sealed class WindowsUploadLimitControl : IUploadLimitControl
             }
         }
         return new(action, status, kilobitsPerSecond, exitCode, record, saved);
+    }
+
+    private void ReconcileNoStart(OperationState operation, ElevatedRunOutcome outcome)
+    {
+        if (outcome.Kind is not (ElevatedRunKind.Declined or ElevatedRunKind.NotStarted)) return;
+        UploadLimitResult? result = null;
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_latest, operation) || operation.NoStart is not null) return;
+            operation.NoStart = outcome.Kind;
+            if (!operation.Cancelled) return; // Finish will see the answer if cancellation has not yet published.
+            bool saved;
+            if (operation.PreviousUnreadable)
+            {
+                // There was no trustworthy prior record to restore. Keep the persisted uncertainty, never claim absence.
+                _unreadable = true; saved = false;
+            }
+            else saved = Save(operation.Previous);
+            if (!_closed) result = new(operation.Action,
+                outcome.Kind == ElevatedRunKind.Declined ? UploadLimitStatus.Declined : UploadLimitStatus.Unavailable,
+                operation.Rate, 0, _current, saved);
+        }
+        if (result is not null) Reconciled?.Invoke(new(operation.Revision, result));
     }
 
     // Under the gate. This run keeps what it knows even when the file cannot be written; the result says the record is missing.

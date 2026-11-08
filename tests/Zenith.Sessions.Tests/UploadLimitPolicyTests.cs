@@ -118,7 +118,7 @@ public sealed class UploadLimitPolicyTests
         Assert.Equal("Windows did not answer within 60 seconds. The administrator PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure.", timedOut.Explanation);
         var cancelled = new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.Cancelled, 1000, 0, null);
         Assert.Equal("The upload limit operation was stopped. If the administrator prompt was already approved, that PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure.", cancelled.Explanation);
-        Assert.Equal("Windows PowerShell was not found, so nothing was changed.", new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.Unavailable, 1000, 0, null).Explanation);
+        Assert.Equal("Windows PowerShell could not be started, so nothing was changed.", new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.Unavailable, 1000, 0, null).Explanation);
         Assert.Equal("Another upload limit operation is still running. Wait for it or choose Cancel.", new UploadLimitResult(UploadLimitAction.Remove, UploadLimitStatus.Busy, 0, 0, null).Explanation);
         Assert.Equal("Upload limit controls are closed.", new UploadLimitResult(UploadLimitAction.Remove, UploadLimitStatus.Closed, 0, 0, null).Explanation);
         Assert.Equal(UploadLimitPolicy.RateRequirement, new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.InvalidRate, 7, 0, null).Explanation);

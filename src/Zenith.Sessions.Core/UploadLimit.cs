@@ -32,6 +32,7 @@ public enum UploadLimitStatus
 /// rights, so this is what the user sees between clicks. It lives in one Windows session; the policy ends when Windows restarts.
 /// </summary>
 public sealed record UploadLimitRecord(UploadLimitAction LastAction, int KilobitsPerSecond, DateTimeOffset AtUtc, bool Confirmed);
+public sealed record UploadLimitReconciliation(long OperationRevision, UploadLimitResult Result);
 
 public sealed record UploadLimitResult(UploadLimitAction Action, UploadLimitStatus Status, int KilobitsPerSecond, int ExitCode,
     UploadLimitRecord? Current, bool RecordSaved = true)
@@ -42,10 +43,10 @@ public sealed record UploadLimitResult(UploadLimitAction Action, UploadLimitStat
             + UploadLimitPolicy.FormatRate(KilobitsPerSecond) + " until Windows restarts or you choose Remove." + UnsavedNote,
         UploadLimitStatus.Confirmed => "Windows confirmed that Zenith's upload limit policies are gone. Zenith no longer limits what Roblox clients send." + UnsavedNote,
         UploadLimitStatus.InvalidRate => UploadLimitPolicy.RateRequirement,
-        UploadLimitStatus.Declined => "The administrator prompt was declined, so nothing was changed. Applying or removing an upload limit needs administrator approval.",
+        UploadLimitStatus.Declined => "The administrator prompt was declined, so nothing was changed. Applying or removing an upload limit needs administrator approval." + UnsavedNote,
         UploadLimitStatus.Refused => "Windows PowerShell could not change the upload limit (exit code " + ExitCode.ToString(CultureInfo.InvariantCulture) + "). " + Uncertain,
         UploadLimitStatus.NotConfirmed => "Windows did not confirm the change: a policy Zenith read back afterwards did not match. " + Uncertain,
-        UploadLimitStatus.Unavailable => "Windows PowerShell was not found, so nothing was changed.",
+        UploadLimitStatus.Unavailable => "Windows PowerShell could not be started, so nothing was changed." + UnsavedNote,
         UploadLimitStatus.TimedOut => "Windows did not answer within " + UploadLimitPolicy.HelperTimeout.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)
             + " seconds. The administrator PowerShell may still finish on its own; " + AgainToBeSure,
         UploadLimitStatus.Cancelled => "The upload limit operation was stopped. If the administrator prompt was already approved, that PowerShell may still finish on its own; " + AgainToBeSure,
@@ -149,6 +150,10 @@ public static class UploadLimitPolicy
 /// </summary>
 public interface IUploadLimitControl : IAsyncDisposable
 {
+    /// <summary>A cancelled prompt later proved that nothing started. Reports reconciliation of the latest operation only.</summary>
+    event Action<UploadLimitReconciliation>? Reconciled;
+    /// <summary>Changes when a new operation starts; consumers discard an older queued reconciliation.</summary>
+    long OperationRevision { get; }
     /// <summary>Zenith's record for this Windows session after <see cref="LoadRecordAsync"/> or the last operation; null when none.</summary>
     UploadLimitRecord? Current { get; }
     /// <summary>True when the saved record could not be read, so whether a limit is in force cannot be said; the next change replaces it.</summary>
