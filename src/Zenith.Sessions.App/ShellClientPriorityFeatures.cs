@@ -226,8 +226,8 @@ public sealed partial class ShellViewModel
     /// <summary>
     /// Startup only, before the library is ready: a CPU cap lives in a Windows job that only the handle of the run that
     /// created it can reach, so a cap outlives a Zenith that did not exit normally and no later run can lift it. The control
-    /// checks its own record (and nothing else) and the shell names the clients that still carry one, so the user knows why
-    /// they are slow and that closing them is the way out. Sample mode without an injected control has no permission to
+    /// checks its own record (and nothing else). Job membership does not prove a cap remains, so the shell explains that
+    /// uncertainty and how to clear a possible cap. Sample mode without an injected control has no permission to
     /// touch clients, so it never looks.
     /// </summary>
     private async Task CheckLeftoverClientCpuCapsAsync()
@@ -252,10 +252,10 @@ public sealed partial class ShellViewModel
                     1 => "Zenith could not check whether 1 client an earlier run capped still runs. A cap it left lasts until that client exits.",
                     var count => $"Zenith could not check whether {count} clients an earlier run capped still run. A cap it left lasts until each of those clients exits."
                 },
-                1 => "1 client still carries the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
-                    + "Windows keeps a process in its job for life, so the cap lasts until that client exits; close and reopen it to lift the cap.",
-                var count => $"{count} clients still carry the CPU cap an earlier run of Zenith set and could not clear, because that run did not exit normally. "
-                    + "Windows keeps a process in its job for life, so each cap lasts until that client exits; close and reopen them to lift the caps."
+                1 => "1 client may still carry a CPU cap from an earlier run of Zenith. Zenith confirmed that it is still in a Windows job, but could not read the cap. "
+                    + "If a cap remains, close and reopen that client to clear it.",
+                var count => $"{count} clients may still carry CPU caps from an earlier run of Zenith. Zenith confirmed that they are still in Windows jobs, but could not read the caps. "
+                    + "If caps remain, close and reopen those clients to clear them."
             };
         if (problem is null) return;
         ShowError(problem);

@@ -183,6 +183,14 @@ public sealed class BootstrapperLaunchPolicyTests : IDisposable
         Assert.Contains("Accept publisher", notAccepted.Summary, StringComparison.Ordinal); Assert.Contains("Bloxstrap", notAccepted.Summary, StringComparison.Ordinal);
         var changed = verified with { Status = ClientExecutableTrustStatus.Unknown, Reason = ClientExecutableTrustReason.AcceptedPublisherChanged };
         Assert.Contains("not the one you accepted", changed.Summary, StringComparison.Ordinal); Assert.Contains("Bloxstrap", changed.Summary, StringComparison.Ordinal);
+        // Publisher review is still available, but no trust outcome bypasses the standard-player-first launch gate.
+        foreach (var result in new[] { verified, notAccepted, changed })
+        {
+            Assert.Contains("Bootstrapper launches and trials are deferred", result.Summary, StringComparison.Ordinal);
+            Assert.Contains("standard Roblox player", result.Summary, StringComparison.Ordinal);
+            Assert.DoesNotContain("to allow launching", result.Summary, StringComparison.Ordinal);
+            Assert.False(result.NativeLaunchAuthorized);
+        }
         // The Roblox player's own verified summary is unchanged.
         Assert.Contains("Roblox publisher", (verified with { Product = ClientInstallationProduct.Roblox, Status = ClientExecutableTrustStatus.VerifiedRobloxPublisher }).Summary, StringComparison.Ordinal);
 
