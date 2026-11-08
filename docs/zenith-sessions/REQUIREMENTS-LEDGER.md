@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## 0.60 D9 lifecycle repair — controlled evidence
+
+For PROD-QA-03, PROD-QA-04, CAP-14-01 and PROD-QA-08, the packaged self-check now preserves a stalled owner's failure and retains shared stores until process exit, routes diagnostics/layout shutdown through the bounded helper, and makes one timeout decision. The retained partial shared-store test is completed. Focused checks: 22/22 lifecycle and package-contract cases, 50/50 synthetic session-log cases; the isolated staged package passed 43/43. The log test now waits for the replacement's complete byte boundary. Full integrated suites and actual native shutdown remain pending; release readiness is false. [Exact evidence and limitations](LIFECYCLE-REPAIR-VERIFICATION.md).
+
 Review date: November 7, 2026. Scope: the independently implemented Personal companion, currently `0.50.0-preview`. **Full product acceptance is not met.** Ordinary/group native-account launching remains disabled; explicitly confirmed per-operation trials use an Unverified provider; no live-client, reconnect, background-input, broadcast or sixteen-client benchmark success is recorded. Only development code, isolated fixtures and staged development files changed; installed Zenith editions, real Roblox sessions and installed reference apps were preserved.
 
 ## Quality-loop launch queue checkpoint (Z1251, R-launch-1)

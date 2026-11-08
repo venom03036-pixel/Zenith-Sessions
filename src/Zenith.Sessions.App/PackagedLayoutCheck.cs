@@ -143,8 +143,8 @@ internal static class PackagedLayoutCheck
         catch (Exception ex) { failure = ex; }
         finally
         {
-            try { if (vm is not null) await vm.DisposeAsync(); }
-            catch (Exception ex) { failure ??= ex; }
+            try { if (vm is not null) await SelfCheckOwners.UseAsync(vm, _ => failure is null ? Task.CompletedTask : Task.FromException(failure)); }
+            catch (Exception ex) { failure = ex; }
             try { window?.Close(); }
             catch (Exception ex) { failure ??= ex; }
         }
