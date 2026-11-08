@@ -14,8 +14,11 @@ public sealed partial class LaunchCoordinator
     // Refusal backoff. A provider's Rejected answer before any client started (StartupRejected, or a
     // provider-reported PreparationRejected) doubles the next gap per refusal in a row, up to 60 s,
     // with up to ±1 s of jitter so retries do not line up. The answer does not say why: the native
-    // provider also rejects for local faults, busy, trust and cancel outcomes, so the pause text names
-    // no single cause. Starting a client resets it; so does a refusal that arrives 10 minutes after
+    // provider also rejects for its own local faults, a busy provider, an untrusted client and a page
+    // the user closed or cancelled, so the pause text names no single cause. A stop or timeout from
+    // this coordinator is never counted: its wait ends with an exception, not a Rejected answer (the
+    // native provider throws when this coordinator's token is cancelled), and a Rejected answer that
+    // lands after a stop is not counted either. Starting a client resets it; so does a refusal that arrives 10 minutes after
     // the previous one. An explicit resume does not: it is permission to continue, not proof the
     // cause is gone. Memory-only like the gate itself: no timer, no persisted deadline. The existing
     // presentation cadence re-signals the queue.
