@@ -77,7 +77,7 @@ public sealed partial class ClientPreviewPresentationTests
         var unreadable=new UploadLimitControlProbe{Unreadable=true};
         await using(var shell=await ReadyUploadLimit(new PriorityDesktopMonitor(1),unreadable))
         {
-            Assert.Equal("Zenith could not read its record of the upload limit (upload-limit.json in the data folder), so it cannot say whether one is in force. Apply upload limit or Remove replaces the record.",shell.CurrentUploadLimitText);
+            Assert.Equal("Zenith could not read its record of the upload limit (upload-limit.json in the data folder), so it cannot rule out an older helper. New changes are blocked; review the record for recovery.",shell.CurrentUploadLimitText);
             Assert.True(shell.IsReady);
         }
     });
@@ -109,7 +109,7 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.True(call.Token.IsCancellationRequested);
         call.Reply.TrySetResult(new(UploadLimitAction.Apply,UploadLimitStatus.Cancelled,1000,0,null));
         await shell.ApplyUploadLimit.Execution;
-        Assert.Equal("Upload limit work stopped by Panic or Lock. If the administrator prompt was already approved, that PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure.",shell.UploadLimitStatus);
+        Assert.Equal("Upload limit wait stopped by Panic or Lock. No unresolved helper remains; review the current result before retrying.",shell.UploadLimitStatus);
         Assert.False(shell.IsChangingUploadLimit);
     });
 
@@ -124,7 +124,7 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.True(call.Token.IsCancellationRequested);Assert.Equal(1,control.CancelCalls);
         call.Reply.TrySetResult(new(UploadLimitAction.Apply,UploadLimitStatus.Cancelled,1000,0,null));
         await shell.ApplyUploadLimit.Execution;
-        Assert.StartsWith("The upload limit operation was stopped.",shell.UploadLimitStatus,StringComparison.Ordinal);
+        Assert.StartsWith("The upload limit wait was stopped.",shell.UploadLimitStatus,StringComparison.Ordinal);
         Assert.Equal("",shell.ErrorNotice);
         // A refused run is an error with the typed subsystem; a declined prompt is the user's own choice and only a status line.
         control.Defer=false;control.Outcome=UploadLimitStatus.Refused;control.ExitCode=1;
@@ -205,6 +205,26 @@ public sealed partial class ClientPreviewPresentationTests
         await Dispatcher.CurrentDispatcher.InvokeAsync(()=>{},DispatcherPriority.Background);
         Assert.Contains("Windows confirmed the upload limit",shell.UploadLimitStatus);
         Assert.Contains("4,500 kbit/s",shell.CurrentUploadLimitText);
+    });
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task AnUnresolvedUploadLimitOwnerDisablesMutationsUntilReconciled(bool unreadable)=>OnUi(async ()=>
+    {
+        var control=new UploadLimitControlProbe{Unreadable=unreadable,Record=unreadable?null:new(UploadLimitAction.Apply,1000,DateTimeOffset.UtcNow,false,HelperUnresolved:true)};
+        await using var shell=await ReadyUploadLimit(new PriorityDesktopMonitor(1),control);
+        Assert.False(shell.CanChangeUploadLimit);
+        shell.ApplyUploadLimit.Execute(null);await shell.ApplyUploadLimit.Execution;
+        shell.RemoveUploadLimit.Execute(null);await shell.RemoveUploadLimit.Execution;
+        Assert.Equal(0,control.ApplyCalls+control.RemoveCalls);
+        if(unreadable) Assert.Contains("cannot rule out an older helper",shell.CurrentUploadLimitText);
+        else Assert.Equal(UploadLimitResult.PendingHelper,shell.CurrentUploadLimitText);
+        int changed=0;shell.PropertyChanged+=(_,a)=>{if(a.PropertyName==nameof(shell.CanChangeUploadLimit))changed++;};
+        control.Record=null;control.Unreadable=false;
+        control.Reconcile(new(control.OperationRevision,new(UploadLimitAction.Apply,UploadLimitStatus.Declined,1000,0,null)));
+        await Dispatcher.CurrentDispatcher.InvokeAsync(()=>{},DispatcherPriority.Background);
+        Assert.True(shell.CanChangeUploadLimit);Assert.True(changed>0);
     });
 
     private async Task<ShellViewModel> ReadyUploadLimit(PriorityDesktopMonitor monitor,UploadLimitControlProbe? control,bool sample=false)

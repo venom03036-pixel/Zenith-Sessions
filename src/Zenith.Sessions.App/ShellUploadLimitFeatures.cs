@@ -25,7 +25,7 @@ public sealed partial class ShellViewModel
     /// <summary>The typed rate in kilobits per second; read at the click. Prefilled with the recorded rate when there is one.</summary>
     public string UploadLimitRate { get => _uploadLimitRate; set => Set(ref _uploadLimitRate, value ?? ""); }
     public string UploadLimitStatus { get => _uploadLimitStatus; private set => Set(ref _uploadLimitStatus, value); }
-    public bool CanChangeUploadLimit => _uploadLimitPermitted && _ready && !IsLocked && !_shuttingDown && !_changingUploadLimit;
+    public bool CanChangeUploadLimit => _uploadLimitPermitted && _ready && !IsLocked && !_shuttingDown && !_changingUploadLimit && !_uploadLimit.RecordUnreadable && _uploadLimit.Current?.HelperUnresolved != true;
     public bool IsChangingUploadLimit => _changingUploadLimit;
     public AsyncCommand ApplyUploadLimit { get; private set; } = null!;
     public AsyncCommand RemoveUploadLimit { get; private set; } = null!;
@@ -41,9 +41,10 @@ public sealed partial class ShellViewModel
         {
             if (_uploadLimit.RecordUnreadable)
                 return "Zenith could not read its record of the upload limit (" + WindowsUploadLimitControl.RecordFileName
-                    + " in the data folder), so it cannot say whether one is in force. Apply upload limit or Remove replaces the record.";
+                    + " in the data folder), so it cannot rule out an older helper. New changes are blocked; review the record for recovery.";
             return _uploadLimit.Current switch
             {
+                { HelperUnresolved: true } => UploadLimitResult.PendingHelper,
                 null => "No upload limit applied by Zenith in this Windows session. Reading Windows' policy list needs administrator rights, so Zenith shows only its own record.",
                 { Confirmed: true } record => "Upload limit applied by Zenith in this Windows session: " + UploadLimitPolicy.FormatRate(record.KilobitsPerSecond)
                     + " for all Roblox clients together, confirmed by Windows at " + LocalTime(record.AtUtc)
@@ -77,7 +78,7 @@ public sealed partial class ShellViewModel
         {
             if (_shuttingDown || reconciliation.OperationRevision != _uploadLimit.OperationRevision) return;
             _uploadLimitReconciliation = reconciliation;
-            Raise(nameof(CurrentUploadLimitText));
+            Raise(nameof(CurrentUploadLimitText)); Raise(nameof(CanChangeUploadLimit));
             if (!_changingUploadLimit) ReportUploadLimit(reconciliation.Result);
         }));
     }
@@ -138,7 +139,7 @@ public sealed partial class ShellViewModel
     private void ReportUploadLimit(UploadLimitResult result)
     {
         string text = result.Status == Status.Cancelled && _uploadLimitStoppedByPanic
-            ? "Upload limit work stopped by Panic or Lock. If the administrator prompt was already approved, that PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure."
+            ? "Upload limit wait stopped by Panic or Lock. " + (result.Current?.HelperUnresolved == true ? UploadLimitResult.PendingHelper : "No unresolved helper remains; review the current result before retrying.")
             : result.Explanation;
         if (!result.RecordSaved) _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit, typeof(IOException));
         switch (result.Status)
@@ -148,7 +149,7 @@ public sealed partial class ShellViewModel
                     ? "Upload limit of " + UploadLimitPolicy.FormatRate(result.KilobitsPerSecond) + " applied for all Roblox clients together."
                     : "Upload limit removed; Windows confirmed Zenith's policies are gone.");
                 break;
-            case Status.Refused or Status.NotConfirmed or Status.Unavailable or Status.TimedOut:
+            case Status.Refused or Status.NotConfirmed or Status.Unavailable or Status.TimedOut or Status.OwnershipUnavailable:
                 ShowError(text);
                 AddEvent("Upload limit change failed (" + result.Status + ").");
                 _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit);
@@ -168,7 +169,8 @@ public sealed partial class ShellViewModel
 
     private void ReportUploadLimitFailure(Exception error)
     {
-        UploadLimitStatus = "The upload limit operation could not be confirmed. Choose Apply upload limit or Remove again to be sure.";
+        UploadLimitStatus = "The upload limit operation could not be confirmed. " + (_uploadLimit.RecordUnreadable ? CurrentUploadLimitText
+            : _uploadLimit.Current?.HelperUnresolved == true ? UploadLimitResult.PendingHelper : "No unresolved helper remains; review the current result before retrying.");
         Fail(error, ManagerSubsystem.UploadLimit);
     }
 
@@ -184,9 +186,9 @@ public sealed partial class ShellViewModel
         }
         catch (Exception error) when (error is not OperationCanceledException)
         {
-            Fail(error, ManagerSubsystem.UploadLimit, "Zenith could not read its record of the upload limit, so it cannot say whether one is in force. Apply upload limit or Remove replaces the record.");
+            Fail(error, ManagerSubsystem.UploadLimit, "Zenith could not read its upload-limit ownership record. New changes require a readable record; review the data folder for recovery.");
         }
-        Raise(nameof(CurrentUploadLimitText));
+        Raise(nameof(CurrentUploadLimitText)); Raise(nameof(CanChangeUploadLimit));
     }
 
     private async Task DisposeUploadLimitFeaturesAsync()

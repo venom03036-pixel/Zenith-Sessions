@@ -115,9 +115,9 @@ public sealed class UploadLimitPolicyTests
         var mismatch = new UploadLimitResult(UploadLimitAction.Remove, UploadLimitStatus.NotConfirmed, 0, 3, new(UploadLimitAction.Remove, 1000, DateTimeOffset.UtcNow, false));
         Assert.Equal("Windows did not confirm the change: a policy Zenith read back afterwards did not match. Whether a limit is in force is now uncertain; choose Apply upload limit or Remove again to be sure.", mismatch.Explanation);
         var timedOut = new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.TimedOut, 1000, 0, null);
-        Assert.Equal("Windows did not answer within 60 seconds. The administrator PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure.", timedOut.Explanation);
+        Assert.Equal("Windows did not answer within 60 seconds. " + UploadLimitResult.PendingHelper, timedOut.Explanation);
         var cancelled = new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.Cancelled, 1000, 0, null);
-        Assert.Equal("The upload limit operation was stopped. If the administrator prompt was already approved, that PowerShell may still finish on its own; choose Apply upload limit or Remove again to be sure.", cancelled.Explanation);
+        Assert.Equal("The upload limit wait was stopped. No unresolved helper remains; review the current result before retrying.", cancelled.Explanation);
         Assert.Equal("Windows PowerShell could not be started, so nothing was changed.", new UploadLimitResult(UploadLimitAction.Apply, UploadLimitStatus.Unavailable, 1000, 0, null).Explanation);
         Assert.Equal("Another upload limit operation is still running. Wait for it or choose Cancel.", new UploadLimitResult(UploadLimitAction.Remove, UploadLimitStatus.Busy, 0, 0, null).Explanation);
         Assert.Equal("Upload limit controls are closed.", new UploadLimitResult(UploadLimitAction.Remove, UploadLimitStatus.Closed, 0, 0, null).Explanation);

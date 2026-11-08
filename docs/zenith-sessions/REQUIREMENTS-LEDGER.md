@@ -812,3 +812,7 @@ VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity c
 ### D3 0.66 — fence public-network observation publication
 
 **CAP-11-03, CAP-13-04, PROD-QA-03.** Four controlled regressions reproduced a stale network reading lifting the latest admission hold, including callbacks surviving stop/restart. Per-watch generations and per-reading revisions now reject old callbacks and atomically preserve the latest hold through UI publication. **77 combined network/shutdown/lifecycle/production-window checks passed**, with no real network changes or shutdown. [Exact red/green evidence and limits](SHUTDOWN-NETWORK-REVIEW-REPAIRS.md). Native and release acceptance remain open.
+
+### D3 0.69 — retain upload-limit writers through actual exit
+
+**CAP-11-03, CAP-13-04, PROD-QA-03.** A cancelled/timed-out UAC helper could outlive its operation task and overwrite a newer confirmed policy change. Nine red regressions reproduced the controller, helper-lifetime and presentation gaps. An unresolved marker is now flushed before start, actual no-start/exit reconciles its exact owner, and another mutation stays blocked while a helper can still write. A lost same-session owner or legacy uncertain record requires Windows restart; unreadable ownership fails closed. Existing controls and Guide copy explain the hold. **86 affected tests passed, 0 failed, 0 skipped** in upload-owner-final.trx; [exact evidence and scope](UPLOAD-LIMIT-OWNER-REVIEW-REPAIR.md). No real UAC/QoS operation or paid test ran; attended acceptance and release readiness remain pending.

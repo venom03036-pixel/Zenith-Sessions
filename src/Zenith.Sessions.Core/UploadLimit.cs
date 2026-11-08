@@ -23,7 +23,11 @@ public enum UploadLimitStatus
     TimedOut,
     /// <summary>The wait was stopped (Cancel, Panic, Lock or exit); an approved run may still finish on its own; the record is uncertain.</summary>
     Cancelled,
-    Busy, Closed
+    Busy, Closed,
+    /// <summary>An older external writer can still mutate policy; another mutation is refused.</summary>
+    HelperUnresolved,
+    /// <summary>The durable external-operation marker could not be established; no helper started.</summary>
+    OwnershipUnavailable
 }
 
 /// <summary>
@@ -31,7 +35,8 @@ public enum UploadLimitStatus
 /// known rate), when, and whether Windows confirmed it. Not a readback: reading the active policy store needs administrator
 /// rights, so this is what the user sees between clicks. It lives in one Windows session; the policy ends when Windows restarts.
 /// </summary>
-public sealed record UploadLimitRecord(UploadLimitAction LastAction, int KilobitsPerSecond, DateTimeOffset AtUtc, bool Confirmed);
+public sealed record UploadLimitRecord(UploadLimitAction LastAction, int KilobitsPerSecond, DateTimeOffset AtUtc, bool Confirmed,
+    bool HelperUnresolved = false);
 public sealed record UploadLimitReconciliation(long OperationRevision, UploadLimitResult Result);
 
 public sealed record UploadLimitResult(UploadLimitAction Action, UploadLimitStatus Status, int KilobitsPerSecond, int ExitCode,
@@ -48,12 +53,15 @@ public sealed record UploadLimitResult(UploadLimitAction Action, UploadLimitStat
         UploadLimitStatus.NotConfirmed => "Windows did not confirm the change: a policy Zenith read back afterwards did not match. " + Uncertain,
         UploadLimitStatus.Unavailable => "Windows PowerShell could not be started, so nothing was changed." + UnsavedNote,
         UploadLimitStatus.TimedOut => "Windows did not answer within " + UploadLimitPolicy.HelperTimeout.TotalSeconds.ToString("0", CultureInfo.InvariantCulture)
-            + " seconds. The administrator PowerShell may still finish on its own; " + AgainToBeSure,
-        UploadLimitStatus.Cancelled => "The upload limit operation was stopped. If the administrator prompt was already approved, that PowerShell may still finish on its own; " + AgainToBeSure,
+            + " seconds. " + PendingHelper,
+        UploadLimitStatus.Cancelled => "The upload limit wait was stopped. " + (Current?.HelperUnresolved == true ? PendingHelper : "No unresolved helper remains; review the current result before retrying."),
+        UploadLimitStatus.HelperUnresolved => PendingHelper,
+        UploadLimitStatus.OwnershipUnavailable => "The upload-limit ownership record could not be saved or read safely. No helper started. Review the data folder before trying again.",
         UploadLimitStatus.Busy => "Another upload limit operation is still running. Wait for it or choose Cancel.",
         _ => "Upload limit controls are closed."
     };
     private const string AgainToBeSure = "choose Apply upload limit or Remove again to be sure.";
+    public const string PendingHelper = "An earlier administrator prompt or PowerShell may still change the upload limit. New changes are blocked until its no-start or exit is observed. If that owner was lost when Zenith closed, restart Windows before changing this limit.";
     private const string Uncertain = "Whether a limit is in force is now uncertain; " + AgainToBeSure;
     private string UnsavedNote => RecordSaved ? "" : " Zenith could not save its record of this change (" + UploadLimitPolicy.RecordFileName
         + " in the data folder), so the next run of Zenith will not show it.";
@@ -150,7 +158,7 @@ public static class UploadLimitPolicy
 /// </summary>
 public interface IUploadLimitControl : IAsyncDisposable
 {
-    /// <summary>A cancelled prompt later proved that nothing started. Reports reconciliation of the latest operation only.</summary>
+    /// <summary>An abandoned operation later proved no-start or reached actual process exit. Reports reconciliation of the latest operation only.</summary>
     event Action<UploadLimitReconciliation>? Reconciled;
     /// <summary>Changes when a new operation starts; consumers discard an older queued reconciliation.</summary>
     long OperationRevision { get; }

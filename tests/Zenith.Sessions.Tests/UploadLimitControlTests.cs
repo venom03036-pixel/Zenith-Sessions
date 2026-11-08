@@ -48,7 +48,8 @@ public sealed class UploadLimitControlTests : IDisposable
         Assert.Equal("Apply", file.RootElement.GetProperty("lastAction").GetString());
         Assert.Equal(Now, file.RootElement.GetProperty("atUtc").GetDateTimeOffset());
         Assert.Equal(Boot, file.RootElement.GetProperty("bootUtc").GetDateTimeOffset());
-        Assert.Equal(6, file.RootElement.EnumerateObject().Count());
+        Assert.False(file.RootElement.GetProperty("helperUnresolved").GetBoolean());
+        Assert.Equal(7, file.RootElement.EnumerateObject().Count());
     }
 
     [Fact]
@@ -73,7 +74,7 @@ public sealed class UploadLimitControlTests : IDisposable
     }
 
     [Fact]
-    public async Task ADamagedRecordIsReportedUnreadableAndReplacedByTheNextConfirmedChange()
+    public async Task ADamagedOwnershipRecordIsPreservedAndPreventsAnotherHelper()
     {
         Directory.CreateDirectory(_root);
         await File.WriteAllTextAsync(RecordPath, "{ not json");
@@ -82,9 +83,10 @@ public sealed class UploadLimitControlTests : IDisposable
         Assert.Null(await control.LoadRecordAsync(CancellationToken.None));
         Assert.True(control.RecordUnreadable);
         var result = await control.ApplyAsync(100, CancellationToken.None);
-        Assert.Equal(UploadLimitStatus.Confirmed, result.Status);
-        Assert.False(control.RecordUnreadable);
-        Assert.Equal(100, control.Current?.KilobitsPerSecond);
+        Assert.Equal(UploadLimitStatus.OwnershipUnavailable, result.Status);
+        Assert.True(control.RecordUnreadable);
+        Assert.Empty(runner.Runs);
+        Assert.Equal("{ not json", await File.ReadAllTextAsync(RecordPath));
     }
 
     [Fact]
@@ -166,7 +168,7 @@ public sealed class UploadLimitControlTests : IDisposable
         await using var control = Control(runner);
         var result = await control.ApplyAsync(1000, CancellationToken.None);
         Assert.Equal(UploadLimitStatus.TimedOut, result.Status);
-        Assert.Equal(new UploadLimitRecord(UploadLimitAction.Apply, 1000, Now, false), control.Current);
+        Assert.Equal(new UploadLimitRecord(UploadLimitAction.Apply, 1000, Now, false, HelperUnresolved: true), control.Current);
     }
 
     [Fact]
@@ -197,8 +199,10 @@ public sealed class UploadLimitControlTests : IDisposable
         var result = await first.WaitAsync(TimeSpan.FromSeconds(5));
         Assert.Equal(UploadLimitStatus.Cancelled, result.Status);
         Assert.True(run.Token.IsCancellationRequested);
-        Assert.Equal(new UploadLimitRecord(UploadLimitAction.Apply, 1000, Now, false), control.Current);
-        // After the cancel, a new operation is accepted again.
+        Assert.Equal(new UploadLimitRecord(UploadLimitAction.Apply, 1000, Now, false, HelperUnresolved: true), control.Current);
+        // Cancellation does not release an external writer. A definite no-start does.
+        Assert.Equal(UploadLimitStatus.HelperUnresolved, (await control.RemoveAsync(default)).Status);
+        run.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
         runner.Hold = false; runner.Outcome = new(ElevatedRunKind.Exited, 0);
         Assert.Equal(UploadLimitStatus.Confirmed, (await control.RemoveAsync(CancellationToken.None)).Status);
         Assert.Null(control.Current);
@@ -233,9 +237,8 @@ public sealed class UploadLimitControlTests : IDisposable
     [Fact]
     public async Task AConfirmedChangeWhoseRecordCannotBeSavedIsStillConfirmedAndSaysTheRecordIsMissing()
     {
-        // The record path is a folder, so the write is refused while the policy itself was applied.
-        Directory.CreateDirectory(RecordPath);
-        var runner = new FakeRunner { Outcome = new(ElevatedRunKind.Exited, 0) };
+        // The initial ownership marker succeeds; only the final result write fails.
+        var runner = new FakeRunner { Outcome = new(ElevatedRunKind.Exited, 0), BeforeReturn = () => { File.Delete(RecordPath); Directory.CreateDirectory(RecordPath); } };
         await using var control = Control(runner);
         var result = await control.ApplyAsync(1000, CancellationToken.None);
         Assert.Equal(UploadLimitStatus.Confirmed, result.Status);
@@ -262,7 +265,7 @@ public sealed class UploadLimitControlTests : IDisposable
         var before = control.Current;
         runner.Hold = true;
         var pending = remove ? control.RemoveAsync(default) : control.ApplyAsync(2500, default);
-        var abandoned = runner.Runs[^1];
+        var abandoned = await runner.WaitForRunsAsync(existing ? 2 : 1);
         control.CancelOperations();
         Assert.Equal(UploadLimitStatus.Cancelled, (await pending).Status);
         Assert.False(control.Current?.Confirmed);
@@ -278,8 +281,9 @@ public sealed class UploadLimitControlTests : IDisposable
         var runner = new FakeRunner { Hold = true };
         await using var control = Control(runner);
         var pending = control.ApplyAsync(1000, default);
-        var abandoned = runner.Runs[^1];
+        var abandoned = await runner.WaitForRunsAsync(1);
         control.CancelOperations(); await pending;
+        abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
         runner.Hold = false;
         await control.ApplyAsync(4000, default);
         var latest = control.Current;
@@ -295,6 +299,7 @@ public sealed class UploadLimitControlTests : IDisposable
         var runner = new FakeRunner { Hold = true, DeclineDuringCancel = true };
         await using var control = Control(runner);
         var pending = control.ApplyAsync(1000, default);
+        await runner.WaitForRunsAsync(1);
         control.CancelOperations();
         Assert.Equal(UploadLimitStatus.Declined, (await pending).Status);
         Assert.Null(control.Current); Assert.False(File.Exists(RecordPath));
@@ -308,7 +313,7 @@ public sealed class UploadLimitControlTests : IDisposable
         await control.ApplyAsync(1700, default); var before = control.Current;
         int published = 0; control.Reconciled += _ => published++;
         runner.Hold = true;
-        var pending = control.RemoveAsync(default); var abandoned = runner.Runs[^1];
+        var pending = control.RemoveAsync(default); var abandoned = await runner.WaitForRunsAsync(2);
         await control.DisposeAsync(); await pending;
         abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
         Assert.Equal(0, published); Assert.Equal(before, control.Current);
@@ -317,21 +322,17 @@ public sealed class UploadLimitControlTests : IDisposable
     }
 
     [Fact]
-    public async Task ReconciliationKeepsPriorUncertaintyAndNeverClaimsAbsenceAfterAnUnreadableRecord()
+    public async Task UnreadableOwnershipNeverStartsAHelperOrClaimsAbsence()
     {
         Directory.CreateDirectory(_root); await File.WriteAllTextAsync(RecordPath, "broken");
         var runner = new FakeRunner { Hold = true };
         await using var control = Control(runner);
         await control.LoadRecordAsync(default); Assert.True(control.RecordUnreadable);
-        UploadLimitReconciliation? reconciliation = null;
-        control.Reconciled += value => reconciliation = value;
-        var pending = control.ApplyAsync(1000, default); var abandoned = runner.Runs[^1];
-        control.CancelOperations(); await pending;
-        abandoned.AbandonedStartCompleted?.Invoke(new(ElevatedRunKind.Declined));
-        Assert.True(control.RecordUnreadable); Assert.False(control.Current?.Confirmed);
-        Assert.NotNull(reconciliation); Assert.False(reconciliation.Result.RecordSaved);
+        var result = await control.ApplyAsync(1000, default);
+        Assert.Equal(UploadLimitStatus.OwnershipUnavailable, result.Status);
+        Assert.Empty(runner.Runs); Assert.True(control.RecordUnreadable);
         await using var reloaded = Control(new FakeRunner());
-        Assert.False((await reloaded.LoadRecordAsync(default))?.Confirmed);
+        await reloaded.LoadRecordAsync(default); Assert.True(reloaded.RecordUnreadable);
     }
 
     public void Dispose()
@@ -351,6 +352,7 @@ public sealed class UploadLimitControlTests : IDisposable
         public ElevatedRunOutcome Outcome { get; set; } = new(ElevatedRunKind.Exited, 0);
         public bool Hold { get; set; }
         public bool DeclineDuringCancel { get; set; }
+        public Action? BeforeReturn { get; set; }
         public async Task<ElevatedRunOutcome> RunAsync(string script, TimeSpan timeout, CancellationToken ct, Action<ElevatedRunOutcome>? abandonedStartCompleted = null)
         {
             var run = new FakeRun(script, timeout, ct, abandonedStartCompleted);
@@ -365,7 +367,16 @@ public sealed class UploadLimitControlTests : IDisposable
                     throw;
                 }
             }
+            BeforeReturn?.Invoke();
             return Outcome;
+        }
+        public async Task<FakeRun> WaitForRunsAsync(int count)
+        {
+            while (true)
+            {
+                lock (Runs) if (Runs.Count >= count) return Runs[count - 1];
+                await _started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+            }
         }
         public Task ReleaseAsync(CancellationToken ct) => Task.CompletedTask;
         public Task<FakeRun> NextAsync() => _started.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
