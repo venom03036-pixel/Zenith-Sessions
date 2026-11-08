@@ -105,6 +105,22 @@ public sealed class TestEnvironmentCategoryTests
             + "skips them: " + string.Join(", ", extra));
     }
 
+    // Each real Core Audio test needs a Windows audio session, which no program can have without an active output device.
+    [Fact]
+    public void RealCoreAudioTestsAreSkippedOnlyWhereThereIsNoActiveOutputDevice()
+    {
+        MethodInfo[] tests = typeof(ClientAudioMuteNativeTests).GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.DeclaredOnly)
+            .Where(method => method.GetCustomAttributesData().Any(attribute => typeof(FactAttribute).IsAssignableFrom(attribute.AttributeType))).ToArray();
+        Assert.NotEmpty(tests);
+        string[] plain = tests.Where(method => method.GetCustomAttributesData().Count(attribute => typeof(FactAttribute).IsAssignableFrom(attribute.AttributeType)) != 1
+            || !method.GetCustomAttributesData().Any(attribute => attribute.AttributeType == typeof(AudioOutputFactAttribute))).Select(Describe).ToArray();
+        Assert.True(plain.Length == 0, "These tests play sound through a real Windows audio session but are not [AudioOutputFact], so they "
+            + "fail instead of skipping on a PC with no active audio output device: " + string.Join(", ", plain));
+        Assert.NotNull(AudioOutputFactAttribute.SkipReasonFor(0));
+        Assert.Null(AudioOutputFactAttribute.SkipReasonFor(1));
+        Assert.Null(AudioOutputFactAttribute.SkipReasonFor(null)); // A Core Audio error runs the test, so it fails with that error.
+    }
+
     private static MethodInfo Method(Type type, string name) =>
         type.GetMethod(name, BindingFlags.Instance | BindingFlags.Public) ?? throw new InvalidOperationException(type.Name + "." + name + " no longer exists.");
 

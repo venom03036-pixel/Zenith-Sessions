@@ -24,6 +24,21 @@ public sealed partial class ShellViewModel
         && !IsChangingClientPriority && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
     public bool IsChangingClientPriority => _changingClientPriority;
     public int PendingPriorityRestoreCount => _clientPriority.PendingRestoreCount;
+    /// <summary>
+    /// Exit's warning, read after DisposeAsync: null until Exit starts, and then unless Windows did not confirm that every client
+    /// Zenith changed got its original settings back. A pending restore can cover the priority class, EcoQoS, memory priority
+    /// and affinity; Task Manager shows and resets all but memory priority, which only a restart of the client returns.
+    /// </summary>
+    internal string? ExitPriorityWarning => !_shuttingDown ? null : PendingPriorityRestoreCount switch
+    {
+        <= 0 => null,
+        1 => "Windows could not confirm that Zenith restored the original priority, efficiency or core settings of 1 client. "
+            + "They last until you change them or the client exits. Review its priority, efficiency mode and affinity in Task Manager. "
+            + "Task Manager cannot show or reset memory priority; the client's own memory priority returns when it restarts.",
+        var count => $"Windows could not confirm that Zenith restored the original priority, efficiency or core settings of {count} clients. "
+            + "They last until you change them or the clients exit. Review their priority, efficiency mode and affinity in Task Manager. "
+            + "Task Manager cannot show or reset memory priority; each client's own memory priority returns when it restarts."
+    };
     public string ClientPriorityStatus { get => _clientPriorityStatus; private set => Set(ref _clientPriorityStatus, value); }
     public AsyncCommand SetClientsNormalPriority { get; private set; } = null!;
     public AsyncCommand SetClientsBelowNormalPriority { get; private set; } = null!;
@@ -196,7 +211,8 @@ public sealed partial class ShellViewModel
         catch (Exception error)
         {
             _diagnostics.RecordFailure(ManagerSubsystem.ClientPriority, error.GetType());
-            ClientPriorityStatus = "Windows could not confirm every original priority was restored. Review those clients in Task Manager.";
+            ClientPriorityStatus = "Windows could not confirm that every original priority, efficiency or core setting was restored. "
+                + "Review those clients in Task Manager; memory priority returns only when a client restarts.";
         }
     }
 }

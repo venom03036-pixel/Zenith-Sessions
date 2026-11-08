@@ -77,6 +77,12 @@ public sealed class SettingsSearchTests
     [InlineData("below normal", "client-priority", "ClientPriority", "Sessions")]
     [InlineData("previews", "client-previews", "Previews", "Sessions")]
     [InlineData("thumbnails", "client-previews", "Previews", "Sessions")]
+    [InlineData("mute", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("unmute", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("sound", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("audio", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("volume", "client-sound", "ClientSound", "Sessions")]
+    [InlineData("mute when they appear", "client-sound", "ClientSound", "Sessions")]
     [InlineData("diagnostics filter", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     [InlineData("warnings", "diagnostics-filters", "DiagnosticsFilters", "Diagnostics")]
     public void PreferencesOnOtherPagesRankFirstForTheirOwnWords(string query, string id, string target, string page)
@@ -139,6 +145,18 @@ public sealed class SettingsSearchTests
         Assert.Contains("Sessions", result.Description, StringComparison.Ordinal);
         Assert.Contains("Client CPU priority", result.Description, StringComparison.Ordinal);
         Assert.DoesNotContain("client CPU/render", result.Description, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void PendingClientPerformanceListsOnlyAutomaticAffinityAsUnavailableBesideCoreSpreading()
+    {
+        // Core spreading sets process affinity in Sessions, so the pending explanation must not call affinity itself
+        // unconfigurable.
+        var result = Assert.Single(SettingsSearchCatalog.Search("fps"));
+        Assert.Equal("pending-client-performance", result.Id);
+        Assert.Contains("CPU caps and automatic affinity policies are not configurable here", result.Description, StringComparison.Ordinal);
+        Assert.DoesNotContain("cap/affinity", result.Description, StringComparison.Ordinal);
+        Assert.Contains("core spreading are set in Sessions", result.Description, StringComparison.Ordinal);
     }
 
     [Fact]

@@ -21,8 +21,11 @@ internal interface IClientAudioNativeApi
     bool ReadProcess(SafeProcessHandle process, out ClientAudioProcessSnapshot? snapshot);
     /// <summary>The mute state of each live audio session of the process on every active output device; null on a Core Audio error.</summary>
     bool[]? ReadSessions(int processId, out int hresult);
-    /// <summary>Sets every live session of the process to <paramref name="desired"/>, only while every one still reads <paramref name="expected"/>.</summary>
-    ClientAudioNativeWrite SetSessions(int processId, bool expected, bool desired);
+    /// <summary>
+    /// Sets every live session of the process to <paramref name="desired"/>, only while every one still reads <paramref name="expected"/>;
+    /// a null <paramref name="expected"/> sets every session whatever it reads.
+    /// </summary>
+    ClientAudioNativeWrite SetSessions(int processId, bool? expected, bool desired);
 }
 
 /// <summary>
@@ -95,16 +98,22 @@ internal sealed class NativeClientAudioMuteAdapter : IClientAudioAdapter
             return new(ClientAudioMuteStatus.Unchanged, muted);
         }
 
-        public ClientAudioWrite Change(bool expectedMuted, bool desired, Func<bool> stopped)
+        public ClientAudioWrite Change(bool? expectedMuted, bool desired, Func<bool> stopped)
         {
             var current = Read();
-            if (current.Status != ClientAudioMuteStatus.Unchanged || current.Muted is not { } now)
-                return new(false, current.Status, current.Muted, current.Retired);
-            if (now != expectedMuted) return new(false, ClientAudioMuteStatus.Conflict, now);
+            bool? now = current.Muted;
+            // Turning the sound on also starts from a partly muted client (Read's Conflict) and sets every session on. A mute refuses
+            // one, and needs the whole client still in the state the caller read.
+            bool partly = !desired && current.Status == ClientAudioMuteStatus.Conflict;
+            if (!partly && (current.Status != ClientAudioMuteStatus.Unchanged || now is null))
+                return new(false, current.Status, now, current.Retired);
+            if (desired ? now != expectedMuted : now is not null && expectedMuted is not null && now != expectedMuted)
+                return new(false, ClientAudioMuteStatus.Conflict, now);
             if (stopped()) return new(false, ClientAudioMuteStatus.Cancelled, now);
-            // Windows has no compare-and-set for a mute. The native call compares every session again in the same enumeration it
-            // writes from, and writes all of them, so Stop cannot leave the client half muted. A change in between can still race.
-            var write = native.SetSessions(expected.ProcessId, expectedMuted, desired);
+            // Windows has no compare-and-set for a mute. A mute compares every session again in the same enumeration it writes from;
+            // turning the sound on sets every session whatever it reads, so a partly muted client ends all on. Either way all of
+            // them are written, so Stop cannot leave the client half changed. A change in between can still race.
+            var write = native.SetSessions(expected.ProcessId, desired ? expectedMuted : null, desired);
             bool accepted = write.Accepted > 0;
             if (Refusal() is { } after) return new(accepted, after.Status, Retired: after.Retired);
             if (write.Mismatch) return new(false, ClientAudioMuteStatus.Conflict);
@@ -181,19 +190,20 @@ internal sealed class NativeClientAudioApi : IClientAudioNativeApi
         return hresult == 0 ? states : null;
     }
 
-    public ClientAudioNativeWrite SetSessions(int processId, bool expected, bool desired)
+    public ClientAudioNativeWrite SetSessions(int processId, bool? expected, bool desired)
     {
         int sessions = 0, accepted = 0;
         bool mismatch = false;
         int hresult = WithSessions(processId, volumes =>
         {
             sessions = volumes.Count;
-            foreach (var volume in volumes)
-            {
-                int read = volume.GetMute(out bool muted);
-                if (read != 0) return read;
-                if (muted != expected) { mismatch = true; return 0; }
-            }
+            if (expected is { } state)
+                foreach (var volume in volumes)
+                {
+                    int read = volume.GetMute(out bool muted);
+                    if (read != 0) return read;
+                    if (muted != state) { mismatch = true; return 0; }
+                }
             var context = ZenithEventContext;
             foreach (var volume in volumes)
             {

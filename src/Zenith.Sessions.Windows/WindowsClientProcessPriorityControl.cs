@@ -20,7 +20,8 @@ internal interface IClientPriorityAdapter
 
 /// <summary>
 /// One actual worker and no queued requests. The adapter is borrowed. No native operation runs on
-/// the caller's thread. A set and its unconditional readback share the same short-lived handle.
+/// the caller's thread. A client's first read, set and unconditional readback share the same short-lived handle;
+/// Spread over cores keeps the handles of its clients (at most 128) open until its operation ends.
 /// The restore map is bounded and never evicts unresolved ownership.
 /// </summary>
 public sealed class WindowsClientProcessPriorityControl : IClientProcessPriorityControl
@@ -84,24 +85,50 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         // stored instance must be checked separately so the replacement can still be restored.
         var duplicatePids = ownedSelection ? null
             : pinned.GroupBy(session => session.ProcessId).Where(group => group.Count() > 1).Select(group => group.Key).ToHashSet();
-        var results = new List<ClientProcessPriorityResult>(pinned.Length);
-        for (int index = 0; index < pinned.Length; index++)
+        Func<bool> stopped = () => Stopped(generation, ct, cleanup);
+        // Spreading reads every client before changing any, so the cores are divided only among the clients it can
+        // change and a refused client leaves no unused share. Each read handle stays open for that client's change.
+        bool readAllFirst = action == ClientProcessPriorityAction.SpreadCores;
+        var results = new ClientProcessPriorityResult[pinned.Length];
+        var ready = new ReadClient?[pinned.Length];
+        try
         {
-            var session = pinned[index];
-            var key = Key(session);
-            if (Stopped(generation, ct, cleanup))
-                results.Add(Result(session, action, ClientProcessPriorityStatus.Cancelled));
-            else if (!key.IsValid || session.Problem is not null || duplicatePids?.Contains(session.ProcessId) == true)
-                results.Add(Result(session, action, ClientProcessPriorityStatus.InvalidClient));
-            else
-                results.Add(ChangeOne(session, action, () => Stopped(generation, ct, cleanup), index, pinned.Length));
+            for (int index = 0; index < pinned.Length; index++)
+            {
+                var session = pinned[index];
+                if (stopped())
+                    results[index] = Result(session, action, ClientProcessPriorityStatus.Cancelled);
+                else if (!Key(session).IsValid || session.Problem is not null || duplicatePids?.Contains(session.ProcessId) == true)
+                    results[index] = Result(session, action, ClientProcessPriorityStatus.InvalidClient);
+                else if (ReadOne(session, action, stopped, out var read) is { } refusal)
+                    results[index] = refusal;
+                else if (readAllFirst)
+                    ready[index] = read;
+                else
+                    using (read!.Handle) results[index] = ChangeOne(read, action, stopped, index, pinned.Length);
+            }
+            int sharers = ready.Count(read => read is not null), share = 0;
+            for (int index = 0; index < pinned.Length; index++)
+                if (ready[index] is { } read)
+                    results[index] = stopped()
+                        ? Result(read.Session, action, ClientProcessPriorityStatus.Cancelled, read.Current.Class, current: read.Current.Class)
+                        : ChangeOne(read, action, stopped, share++, sharers);
+        }
+        finally
+        {
+            foreach (var read in ready) read?.Handle.Dispose();
         }
         return new(results, Stopped(generation, ct, cleanup), PendingRestoreCount);
     }
 
-    private ClientProcessPriorityResult ChangeOne(SessionObservation session, ClientProcessPriorityAction action, Func<bool> stopped,
-        int index, int count)
+    /// <summary>
+    /// Opens and reads one exact client and makes every check that comes before choosing its values. Null means it
+    /// can be changed, and the caller then owns <paramref name="read"/>'s handle; otherwise the handle is already closed.
+    /// </summary>
+    private ClientProcessPriorityResult? ReadOne(SessionObservation session, ClientProcessPriorityAction action, Func<bool> stopped,
+        out ReadClient? read)
     {
+        read = null;
         var key = Key(session);
         OwnedPriority? owned;
         lock (_gate) _owned.TryGetValue(key, out owned);
@@ -110,35 +137,56 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
         ClientPriorityOpen opened;
         try { opened = _adapter.Open(session); }
         catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed); }
-        using var handle = opened.Handle;
+        var handle = opened.Handle;
         if (handle is null)
         {
             if (opened.Retired) Forget(key);
             return Result(session, action, Failure(opened.Status));
         }
-        if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled);
-        ClientPriorityRead before;
-        try { before = handle.Read(); }
-        catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed); }
-        if (before.Retired)
+        try
         {
-            Forget(key);
-            return Result(session, action, ClientProcessPriorityStatus.InvalidClient);
+            if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled);
+            ClientPriorityRead before;
+            try { before = handle.Read(); }
+            catch (Exception) { return Result(session, action, ClientProcessPriorityStatus.NotConfirmed); }
+            if (before.Retired)
+            {
+                Forget(key);
+                return Result(session, action, ClientProcessPriorityStatus.InvalidClient);
+            }
+            if (before.Status != ClientProcessPriorityStatus.Unchanged || before.Settings is not { } current)
+                return Result(session, action, Failure(before.Status), current: before.Current);
+            var currentClass = current.Class;
+            if (currentClass is not (ClientProcessPriorityClass.Normal or ClientProcessPriorityClass.BelowNormal))
+                return Result(session, action, ClientProcessPriorityStatus.UnsupportedPriority, currentClass, current: currentClass);
+            if (action == ClientProcessPriorityAction.RestoreOriginal && owned is not null && current == owned.Original)
+            {
+                Forget(key);
+                return Result(session, action, ClientProcessPriorityStatus.Unchanged, currentClass, owned.Original.Class, currentClass);
+            }
+            // Every value this owner wrote must still be what it last applied; any other observed change is preserved.
+            if (owned is not null && current != owned.LastApplied)
+                return Result(session, action, ClientProcessPriorityStatus.Conflict, currentClass, current: currentClass);
+            // Cores Windows did not report could never be restored, so that client takes no share.
+            if (action == ClientProcessPriorityAction.SpreadCores && (current.Affinity is null || before.SystemAffinity is null))
+                return Result(session, action, ClientProcessPriorityStatus.SettingUnavailable, currentClass, current: currentClass);
+            read = new(session, handle, owned, current, before.SystemAffinity);
+            return null;
         }
-        if (before.Status != ClientProcessPriorityStatus.Unchanged || before.Settings is not { } current)
-            return Result(session, action, Failure(before.Status), current: before.Current);
+        finally
+        {
+            if (read is null) handle.Dispose();
+        }
+    }
+
+    /// <summary>Changes one client <see cref="ReadOne"/> accepted, through its still-open handle, which the caller closes.</summary>
+    private ClientProcessPriorityResult ChangeOne(ReadClient read, ClientProcessPriorityAction action, Func<bool> stopped,
+        int index, int count)
+    {
+        var (session, handle, owned, current) = (read.Session, read.Handle, read.Owned, read.Current);
+        var key = Key(session);
         var currentClass = current.Class;
-        if (currentClass is not (ClientProcessPriorityClass.Normal or ClientProcessPriorityClass.BelowNormal))
-            return Result(session, action, ClientProcessPriorityStatus.UnsupportedPriority, currentClass, current: currentClass);
-        if (action == ClientProcessPriorityAction.RestoreOriginal && owned is not null && current == owned.Original)
-        {
-            Forget(key);
-            return Result(session, action, ClientProcessPriorityStatus.Unchanged, currentClass, owned.Original.Class, currentClass);
-        }
-        // Every value this owner wrote must still be what it last applied; any other observed change is preserved.
-        if (owned is not null && current != owned.LastApplied)
-            return Result(session, action, ClientProcessPriorityStatus.Conflict, currentClass, current: currentClass);
-        if (Desired(action, current, owned, before.SystemAffinity, index, count, out var refusal) is not { } desired)
+        if (Desired(action, current, owned, read.SystemAffinity, index, count, out var refusal) is not { } desired)
             return Result(session, action, refusal, currentClass, current: currentClass);
         if (stopped()) return Result(session, action, ClientProcessPriorityStatus.Cancelled, currentClass, desired.Class, currentClass);
         if (current == desired)
@@ -276,4 +324,7 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
     }
     /// <summary>The client's own values before this owner's first change, and every value this owner last applied.</summary>
     private sealed record OwnedPriority(SessionObservation Session, ClientProcessSettings Original, ClientProcessSettings LastApplied);
+    /// <summary>One client's checked read and the open handle it came from, owned by <see cref="Run"/> until that client's change ends.</summary>
+    private sealed record ReadClient(SessionObservation Session, IClientPriorityHandle Handle, OwnedPriority? Owned,
+        ClientProcessSettings Current, ulong? SystemAffinity);
 }

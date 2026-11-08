@@ -34,7 +34,7 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
         await helper.TouchAgainAsync();
 
         // Same PID, different start: the identity a recycled PID would present. It must not be trimmed.
-        var reused =await control.TrimAsync([exact with { ProcessStartUtcTicks = exact.ProcessStartUtcTicks - 1 }], default);
+        var reused = await control.TrimAsync([exact with { ProcessStartUtcTicks = exact.ProcessStartUtcTicks - 1 }], default);
         var refused = Assert.Single(reused.Results);
         Assert.Equal(ClientWorkingSetTrimStatus.InvalidClient, refused.Status);
         Assert.Null(refused.Before);
@@ -43,7 +43,7 @@ public sealed class ClientWorkingSetTrimTests(ITestOutputHelper output)
 
         helper.EmptyAsTheSystemMight();
         await helper.TouchAgainAsync();
-        var trimmed =await control.TrimAsync([exact], default);
+        var trimmed = await control.TrimAsync([exact], default);
         var row = Assert.Single(trimmed.Results);
         Assert.Equal(ClientWorkingSetTrimStatus.Trimmed, row.Status);
         Assert.False(trimmed.Cancelled);

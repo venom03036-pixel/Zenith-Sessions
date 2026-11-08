@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.IO;
+using System.Runtime.InteropServices;
 using System.Text;
 using Xunit;
 using Zenith.Sessions.Core;
@@ -11,11 +12,12 @@ namespace Zenith.Sessions.Tests;
 /// Real Core Audio calls on a test-owned Windows PowerShell helper that loops a second of silence through System.Media.SoundPlayer
 /// (winmm over WASAPI), never a Roblox client. Only the accepted executable name is the helper's; rights, identity checks, the
 /// session match by PID, readback, Unmute and Exit restoration are the shipped path. Each step is read back separately through the
-/// adapter's own Core Audio enumeration, beneath the control and its ownership map.
+/// adapter's own Core Audio enumeration, beneath the control and its ownership map. Skipped where Windows reports no active audio
+/// output device (<see cref="AudioOutputFactAttribute"/>).
 /// </summary>
 public sealed class ClientAudioMuteNativeTests
 {
-    [Fact]
+    [AudioOutputFact]
     public async Task MuteChangesOnlyTheTestOwnedHelpersOwnSoundAndRestoreAndExitUnmuteIt()
     {
         await using var helper = await SilentHelper.StartAsync();
@@ -59,7 +61,7 @@ public sealed class ClientAudioMuteNativeTests
     /// while another is muted starts with its sound on, but one started after a muted helper exited starts muted, because Windows
     /// remembered that mute. Either way, a later instance Zenith mutes or finds muted that way is unmuted on Exit.
     /// </summary>
-    [Fact]
+    [AudioOutputFact]
     public async Task LaterHelpersOfTheSameProgramAreUnmutedOnExitEvenWhenWindowsStartsOneMuted()
     {
         var first = await SilentHelper.StartAsync();
@@ -151,7 +153,7 @@ public sealed class ClientAudioMuteNativeTests
         {
             if (_disposed || _process.HasExited) return;
             var states = NativeApi().ReadSessions(_process.Id, out _);
-            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, true, false);
+            if (states is { Length: > 0 } && states.Any(muted => muted)) NativeApi().SetSessions(_process.Id, null, false);
         }
 
         // The adapter's production Core Audio calls, without its identity checks or the control's ownership map.
@@ -172,6 +174,41 @@ public sealed class ClientAudioMuteNativeTests
                 }
             }
             finally { _process.Dispose(); }
+        }
+    }
+}
+
+/// <summary>
+/// A real Core Audio test. Skipped only where Windows reports no active audio output device (for example a headless or remote
+/// session, or a VM without one), because no program there can get a Windows audio session. When Core Audio cannot list the devices,
+/// the test still runs, so it fails with that error.
+/// </summary>
+public sealed class AudioOutputFactAttribute : FactAttribute
+{
+    public AudioOutputFactAttribute() => Skip = SkipReasonFor(ActiveOutputDevices());
+
+    /// <param name="activeOutputDevices">How many active output devices Windows reports; null when Core Audio could not list them.</param>
+    internal static string? SkipReasonFor(uint? activeOutputDevices) => activeOutputDevices == 0
+        ? "Needs an active audio output device. Windows reports none on this PC (for example in a headless or remote session, or a VM "
+          + "without one), so no program here can get a Windows audio session to mute."
+        : null;
+
+    /// <summary>Counted through the adapter's own Core Audio declarations (eRender, DEVICE_STATE_ACTIVE); null on a Core Audio error.</summary>
+    private static uint? ActiveOutputDevices()
+    {
+        object? enumerator = null;
+        NativeClientAudioApi.CoreAudio.IMMDeviceCollection? devices = null;
+        try
+        {
+            enumerator = new NativeClientAudioApi.CoreAudio.MMDeviceEnumerator();
+            if (((NativeClientAudioApi.CoreAudio.IMMDeviceEnumerator)enumerator).EnumAudioEndpoints(0, 0x1, out devices) != 0) return null;
+            return devices.GetCount(out uint count) == 0 ? count : null;
+        }
+        catch (Exception error) when (error is COMException or InvalidCastException) { return null; } // For example, no audio service.
+        finally
+        {
+            if (devices is not null) Marshal.ReleaseComObject(devices);
+            if (enumerator is not null) Marshal.ReleaseComObject(enumerator);
         }
     }
 }

@@ -16,14 +16,17 @@ public sealed partial class ShellViewModel
     internal static readonly TimeSpan ArrivalMuteWindow = TimeSpan.FromSeconds(120);
 
     private IClientAudioMuteControl _clientSound = null!;
-    private bool _soundPermitted, _changingClientSound, _muteArrivingClients;
-    private CancellationTokenSource? _clientSoundStop;
+    // _changingClientSound is a Mute or Unmute click, from the click until its results are shown; _mutingArrivals an arrival
+    // operation. Only a click turns Mute and Unmute off.
+    private bool _soundPermitted, _changingClientSound, _mutingArrivals, _muteArrivingClients;
+    private CancellationTokenSource? _clientSoundStop, _arrivalSoundStop;
     private Task _clientSoundWork = Task.CompletedTask;
     private long _clientSoundGeneration;
     private sealed record ClientSoundRequest(long Generation, SessionObservation[] Processes, string Refusal);
     private string _clientSoundStatus = "Choose clients to mute or unmute their sound in Windows.";
-    // Arrival muting, on the dispatcher only: the exact instances in the last usable scan, and the new ones still waiting for
-    // Windows to list their sound. Both hold at most one entry per client in a scan, so at most 128.
+    // Arrival muting, on the dispatcher only: the exact instances in the last usable scan (with those it could not read kept
+    // by PID), and the new ones still waiting for Windows to list their sound. Both hold at most one entry per PID in a scan,
+    // so at most 128.
     private readonly HashSet<SessionProcessKey> _soundSeenClients = [];
     private readonly Dictionary<SessionProcessKey, DateTimeOffset> _soundArrivals = [];
     private bool _soundBaseline, _arrivalMutePaused;
@@ -31,7 +34,8 @@ public sealed partial class ShellViewModel
     public ObservableCollection<ClientAudioMuteResult> ClientSoundResults { get; } = [];
     public bool CanChangeClientSound => _soundPermitted && _ready && !IsLocked && !_shuttingDown
         && !_changingClientSound && (Sessions.Any(row => row.IsChecked) || SelectedSession is not null);
-    public bool IsChangingClientSound => _changingClientSound;
+    /// <summary>A click's change or an arrival operation is running; Cancel sound work stops either.</summary>
+    public bool IsChangingClientSound => _changingClientSound || _mutingArrivals;
     public int PendingSoundRestoreCount => _clientSound.PendingRestoreCount;
     public string ClientSoundStatus { get => _clientSoundStatus; private set => Set(ref _clientSoundStatus, value); }
     /// <summary>The draft of the saved "Mute clients when they appear" preference; only the saved value is applied.</summary>
@@ -101,8 +105,10 @@ public sealed partial class ShellViewModel
     /// Dispatcher, after each sample. Only a fresh scan that names every readable client can tell which clients are new, so
     /// any other scan is skipped. Clients in the first such scan, and clients already running when the setting is saved on,
     /// are never arrivals. A new client is muted once Windows lists its sound, tried again on later scans for at most
-    /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per scan on the sound worker. No timer or thread is added: this
-    /// rides the existing sample cadence.
+    /// <see cref="ArrivalMuteWindow"/>, one Core Audio read per waiting client per scan (up to four on the scan that mutes it) on
+    /// the sound worker. No timer or thread is added: this rides the existing sample cadence. A row Windows could not read
+    /// names a PID that is still running but not which instance, so a client already known under that PID stays known (and a
+    /// waiting arrival keeps waiting) instead of counting as new when a later scan reads it again.
     /// </summary>
     private void ObserveClientSoundArrivals(DesktopSnapshot snapshot)
     {
@@ -111,30 +117,41 @@ public sealed partial class ShellViewModel
         bool watching = _soundBaseline && _savedSettings.MuteArrivingClients && !_arrivalMutePaused && _soundPermitted && _ready
             && !IsLocked && !_shuttingDown;
         var current = new HashSet<SessionProcessKey>();
-        foreach (var row in rows) if (row.Problem is null) current.Add(row.ProcessKey);
+        HashSet<int>? unreadable = null;
+        // Only identity-unavailable rows pass FreshClientInventory with a Problem, and every PID in it is distinct.
+        foreach (var row in rows)
+            if (row.Problem is null) current.Add(row.ProcessKey);
+            else (unreadable ??= []).Add(row.ProcessId);
+        if (unreadable is not null)
+            foreach (var key in _soundSeenClients) if (unreadable.Contains(key.ProcessId)) current.Add(key);
         if (watching) foreach (var key in current) if (!_soundSeenClients.Contains(key)) _soundArrivals.TryAdd(key, now);
         _soundSeenClients.Clear(); _soundSeenClients.UnionWith(current); _soundBaseline = true;
         foreach (var key in _soundArrivals.Keys.ToArray())
             if (!watching || !current.Contains(key)) _soundArrivals.Remove(key);
-        if (_soundArrivals.Count == 0 || _changingClientSound) return;
+        if (_soundArrivals.Count == 0 || IsChangingClientSound) return;
         var arrived = rows.Where(row => row.Problem is null && _soundArrivals.ContainsKey(row.ProcessKey)).ToArray();
         var pinned = PinFreshClientInstances(arrived, out _);
         if (pinned.Length > 0) _ = StartClientSoundWork(pinned, ClientAudioMuteAction.Mute, arrival: true);
     }
 
     /// <summary>
-    /// One operation at a time, tracked in <see cref="_clientSoundWork"/> and joined on Exit. An explicit operation's failure
-    /// reaches its command; an arrival operation reports its own, because no command awaits it.
+    /// One operation at a time reaches the control. An arrival operation starts only when nothing else runs, and it never turns
+    /// Mute and Unmute off, so a click during one is kept: it waits for that operation to finish and then runs. Each operation
+    /// waits for the one before it, so <see cref="_clientSoundWork"/>, the latest, is the one Exit joins. An explicit
+    /// operation's failure reaches its command; an arrival operation reports its own, because no command awaits it.
     /// </summary>
     private Task StartClientSoundWork(SessionObservation[] pinned, ClientAudioMuteAction action, bool arrival)
     {
         var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
-        _clientSoundStop = stop;
+        if (arrival) { _arrivalSoundStop = stop; _mutingArrivals = true; }
+        else
+        {
+            _clientSoundStop = stop; _changingClientSound = true;
+            _clientSoundStatus = "Checking the selected clients and changing their sound…";
+        }
         long generation = _clientSoundGeneration;
         var published = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        _changingClientSound = true;
-        if (!arrival) _clientSoundStatus = "Checking the selected clients and changing their sound…";
-        _clientSoundWork = RunClientSoundAsync(pinned, action, generation, stop, published.Task, arrival);
+        _clientSoundWork = RunClientSoundAsync(pinned, action, generation, stop, published.Task, _clientSoundWork, arrival);
         try
         {
             if (!arrival) ClientSoundResults.Clear();
@@ -145,11 +162,15 @@ public sealed partial class ShellViewModel
     }
 
     private async Task RunClientSoundAsync(SessionObservation[] pinned, ClientAudioMuteAction action,
-        long generation, CancellationTokenSource stop, Task published, bool arrival)
+        long generation, CancellationTokenSource stop, Task published, Task previous, bool arrival)
     {
         await published;
         try
         {
+            // Only a click can start while another operation, an arrival one, is unfinished; it waits for it here. Stop does not cut
+            // the wait short (it cancels that operation too), so this one never ends first. Any failure of the earlier operation
+            // was already reported, by itself or by its command.
+            await previous.ConfigureAwait(ConfigureAwaitOptions.ContinueOnCapturedContext | ConfigureAwaitOptions.SuppressThrowing);
             stop.Token.ThrowIfCancellationRequested();
             var result = await _clientSound.ChangeAsync(Array.AsReadOnly(pinned), action, stop.Token);
             if (result.Results.Count != pinned.Length || result.PendingRestoreCount is < 0 or > ClientAudioMuteBatchResult.MaximumProcesses
@@ -171,8 +192,8 @@ public sealed partial class ShellViewModel
         catch (Exception error) when (arrival) { ReportClientSoundFailure(error); }
         finally
         {
-            if (ReferenceEquals(_clientSoundStop, stop)) _clientSoundStop = null;
-            _changingClientSound = false;
+            if (arrival) { if (ReferenceEquals(_arrivalSoundStop, stop)) _arrivalSoundStop = null; _mutingArrivals = false; }
+            else { if (ReferenceEquals(_clientSoundStop, stop)) _clientSoundStop = null; _changingClientSound = false; }
             stop.Dispose();
             Raise(nameof(IsChangingClientSound)); Raise(nameof(CanChangeClientSound)); Raise(nameof(PendingSoundRestoreCount));
         }
@@ -195,7 +216,8 @@ public sealed partial class ShellViewModel
             _soundArrivals.Remove(key);
             final.Add(row);
         }
-        if (final.Count == 0) return;
+        // A Mute or Unmute clicked while this ran has cleared the list for its own results, which would replace these anyway.
+        if (final.Count == 0 || _changingClientSound) return;
         ClientSoundResults.Clear();
         foreach (var row in final) ClientSoundResults.Add(row);
         // Only clients Zenith will unmute count as muted by it; one already muted for another reason is named separately.
@@ -214,6 +236,7 @@ public sealed partial class ShellViewModel
         _arrivalMutePaused = true;
         RaiseArrivalMute();
         _clientSoundStop?.Cancel();
+        _arrivalSoundStop?.Cancel();
         _clientSound.CancelOperations();
     }
 

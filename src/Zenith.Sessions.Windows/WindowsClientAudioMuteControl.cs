@@ -13,8 +13,12 @@ internal interface IClientAudioHandle : IDisposable
     /// when it has none; Conflict when only some are muted.
     /// </summary>
     ClientAudioRead Read();
-    /// <summary>Sets every session to <paramref name="desired"/> only while all still read <paramref name="expected"/>.</summary>
-    ClientAudioWrite Change(bool expected, bool desired, Func<bool> stopped);
+    /// <summary>
+    /// A mute sets every session muted only while all still read <paramref name="expected"/>. Turning the sound on sets every session
+    /// on, also when only some are muted or <paramref name="expected"/> is null (the client was read partly muted); Conflict with
+    /// <see cref="ClientAudioWrite.Muted"/> false when the whole client is found already on instead of the muted state read before.
+    /// </summary>
+    ClientAudioWrite Change(bool? expected, bool desired, Func<bool> stopped);
 }
 internal interface IClientAudioAdapter
 {
@@ -129,16 +133,20 @@ public sealed class WindowsClientAudioMuteControl : IClientAudioMuteControl
             Forget(key);
             return Result(session, action, ClientAudioMuteStatus.InvalidClient);
         }
-        if (before.Status != ClientAudioMuteStatus.Unchanged || before.Muted is not { } muted)
+        bool desired = action == ClientAudioMuteAction.Mute; // Unmute and RestoreOriginal both turn the sound on.
+        // Only some sessions muted (Read's Conflict): turning the sound on sets every one on, the safe direction the user asked for;
+        // a mute leaves it as found.
+        bool partly = !desired && before.Status == ClientAudioMuteStatus.Conflict;
+        if (!partly && (before.Status != ClientAudioMuteStatus.Unchanged || before.Muted is null))
             return Result(session, action, Failure(before.Status));
+        bool? muted = before.Muted; // Null when only part of the client's sound is muted.
         // Sound Zenith muted that is on again was turned on outside Zenith: there is nothing left to restore.
-        if (owned && !muted)
+        if (owned && muted == false)
         {
             Forget(key);
             owned = false;
             if (action == ClientAudioMuteAction.RestoreOriginal) return Result(session, action, ClientAudioMuteStatus.Unchanged, false, false);
         }
-        bool desired = action == ClientAudioMuteAction.Mute; // Unmute and RestoreOriginal both turn the sound on.
         if (stopped()) return Result(session, action, ClientAudioMuteStatus.Cancelled, muted, muted);
         if (muted == desired)
         {

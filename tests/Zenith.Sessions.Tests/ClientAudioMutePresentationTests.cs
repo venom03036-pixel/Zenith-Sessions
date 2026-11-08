@@ -64,7 +64,44 @@ public sealed partial class ClientPreviewPresentationTests
 
         await Refresh(shell);await Refresh(shell);
         Assert.Equal(2,control.ChangeCalls); // Muted once; never again.
-        Assert.True(File.ReadAllText(Path.Combine(_root,"settings.json")).Contains("\"MuteArrivingClients\":true"));
+        Assert.Contains("\"MuteArrivingClients\":true",File.ReadAllText(Path.Combine(_root,"settings.json")));
+    });
+
+    [Fact]
+    public Task ArrivalMuteLeavesARunningClientAloneWhenOneScanCouldNotReadIt()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=2};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        await Refresh(shell);
+        // One scan cannot read client 2, which keeps running; the next scans read it again.
+        monitor.Unreadable=2;await Refresh(shell);
+        monitor.Unreadable=0;await Refresh(shell);await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls); // The same running client is not an arrival.
+        Assert.Empty(shell.ClientSoundResults);
+        // A client that really appears afterwards is still muted.
+        monitor.Count=3;await Refresh(shell);
+        Assert.Equal(3,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+    });
+
+    [Fact]
+    public Task ArrivalMuteKeepsWaitingForANewClientThroughAScanThatCouldNotReadIt()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe{NoSoundFirst=true};var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+        monitor.Count=2;await Refresh(shell);
+        Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>!shell.IsChangingClientSound);
+        Assert.Empty(shell.ClientSoundResults); // No sound yet: it waits.
+        // A scan that cannot read it neither tries it nor gives up on it.
+        monitor.Unreadable=2;await Refresh(shell);
+        Assert.Equal(1,control.ChangeCalls);
+        monitor.Unreadable=0;await Refresh(shell);
+        Assert.Equal(2,Assert.Single((await control.NextAsync()).Targets).ProcessId);
+        await Until(()=>shell.ClientSoundResults.Count==1);
+        Assert.Equal(ClientAudioMuteStatus.Applied,shell.ClientSoundResults[0].Status);
+        Assert.Contains("1 of 1 new clients muted",shell.ClientSoundStatus);
     });
 
     [Theory]
@@ -103,6 +140,62 @@ public sealed partial class ClientPreviewPresentationTests
         monitor.Count=5;await Refresh(shell);
         Assert.Equal(5,Assert.Single((await control.NextAsync()).Targets).ProcessId);
     });
+
+    [Fact]
+    public Task AClickDuringAnArrivalRetryIsKeptAndReachesWindowsWhenTheRetryEnds()=>OnUi(()=>WithArrivalRetryRunning(async (shell,control,retry)=>
+    {
+        // The retry leaves Mute and Unmute on, so a click made now is kept instead of dropped.
+        Assert.True(shell.CanChangeClientSound);Assert.True(shell.IsChangingClientSound);
+        shell.MuteClients.Execute(null);
+        Assert.False(shell.CanChangeClientSound);
+        // The click waits for the retry, so Windows still sees one sound operation at a time.
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Equal(1,control.ChangeCalls);
+        retry.Reply.TrySetResult(SoundReport(retry,ClientAudioMuteStatus.Applied));
+        var click=await control.NextAsync();
+        Assert.Equal(ClientAudioMuteAction.Mute,click.Action);Assert.Equal(1,Assert.Single(click.Targets).ProcessId);
+        click.Reply.TrySetResult(SoundReport(click,ClientAudioMuteStatus.Applied));
+        await shell.MuteClients.Execution;
+        // The list shows the clicked operation's own results, not mixed with the retry's.
+        var row=Assert.Single(shell.ClientSoundResults);
+        Assert.Equal(1,row.Session.ProcessId);Assert.Equal(ClientAudioMuteStatus.Applied,row.Status);
+        Assert.Equal("1 of 1 sound outcomes confirmed. 0 muted by Zenith and not yet unmuted.",shell.ClientSoundStatus);
+        Assert.False(shell.IsChangingClientSound);Assert.True(shell.CanChangeClientSound);
+        // The retry's client was muted, so it is not tried again.
+        await Refresh(shell);
+        Assert.Equal(2,control.ChangeCalls);
+    }));
+
+    [Fact]
+    public Task PanicStopsAClickThatIsWaitingForAnArrivalRetry()=>OnUi(()=>WithArrivalRetryRunning(async (shell,control,retry)=>
+    {
+        shell.MuteClients.Execute(null);
+        shell.Panic.Execute(null);
+        Assert.True(retry.Token.IsCancellationRequested);
+        retry.Reply.TrySetResult(SoundReport(retry,ClientAudioMuteStatus.Applied));
+        await shell.MuteClients.Execution;
+        Assert.Equal(1,control.ChangeCalls); // The waiting click never reaches Windows after Panic (Rule 11).
+        Assert.Empty(shell.ClientSoundResults);
+        Assert.Equal("Sound work cancelled. A change Windows already accepted stays until Unmute or Exit.",shell.ClientSoundStatus);
+        Assert.False(shell.IsChangingClientSound);Assert.True(shell.IsArrivalMutePaused);
+    }));
+
+    /// <summary>Arrival muting saved on, client 1 selected, and the arrival retry for new client 2 held inside the control.</summary>
+    private async Task WithArrivalRetryRunning(Func<ShellViewModel,SoundControlProbe,SoundCall,Task> test)
+    {
+        var control=new SoundControlProbe{Defer=true};var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        try
+        {
+            shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);await shell.SaveSettings.Execution;
+            shell.SelectedSession=shell.Sessions.Single(row=>row.Observation.ProcessId==1);
+            monitor.Count=2;await Refresh(shell);
+            var retry=await control.NextAsync();
+            Assert.Equal(2,Assert.Single(retry.Targets).ProcessId);
+            await test(shell,control,retry);
+        }
+        finally{control.ReleaseHeld();} // A failed assertion must not leave Exit waiting for a held reply.
+    }
 
     [Fact]
     public Task SavingArrivalMuteOnAfterItWasOffStartsItAgainAfterAStop()=>OnUi(async ()=>
@@ -184,6 +277,7 @@ public sealed partial class ClientPreviewPresentationTests
     private sealed class SoundControlProbe:IClientAudioMuteControl
     {
         private readonly Channel<SoundCall> _calls=Channel.CreateBounded<SoundCall>(8);
+        private readonly List<SoundCall> _held=[];
         internal bool Defer,NoSoundFirst;
         internal int ChangeCalls,CancelCalls,AlreadyMutedPid;
         public int PendingRestoreCount=>0;
@@ -191,27 +285,35 @@ public sealed partial class ClientPreviewPresentationTests
         {
             ChangeCalls++;var call=new SoundCall(Array.AsReadOnly(sessions.ToArray()),action,ct);
             Assert.True(_calls.Writer.TryWrite(call));
-            if(Defer)return await call.Reply.Task;
+            if(Defer){_held.Add(call);return await call.Reply.Task;}
             return SoundReport(call,NoSoundFirst && ChangeCalls==1?ClientAudioMuteStatus.NoAudioSession:ClientAudioMuteStatus.Applied,AlreadyMutedPid);
         }
         internal Task<SoundCall> NextAsync()=>_calls.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));
+        /// <summary>Answers every held call still waiting, as stopped, so a test that failed early can still exit.</summary>
+        internal void ReleaseHeld(){foreach(var call in _held)call.Reply.TrySetResult(SoundReport(call,ClientAudioMuteStatus.Cancelled));}
         public void CancelOperations()=>CancelCalls++;
         public Task<ClientAudioMuteBatchResult> RestoreAllAsync(CancellationToken ct)=>Task.FromResult(new ClientAudioMuteBatchResult([],false,0));
         public ValueTask DisposeAsync()=>ValueTask.CompletedTask;
     }
-    /// <summary>A complete, fresh inventory of <see cref="Count"/> synthetic clients; raising Count makes a new client appear.</summary>
+    /// <summary>
+    /// A complete, fresh inventory of <see cref="Count"/> synthetic clients; raising Count makes a new client appear. A nonzero
+    /// <see cref="Unreadable"/> PID is reported as WindowsDesktopMonitor reports a client it could not read: a row with a Problem
+    /// and no start time, in an incomplete scan.
+    /// </summary>
     private sealed class SoundDesktopMonitor:IDesktopMonitor
     {
-        internal volatile int Count;
+        internal volatile int Count,Unreadable;
         private long _revision;
         internal static long Start(int pid)=>new DateTimeOffset(2026,1,1,0,0,pid,TimeSpan.Zero).UtcTicks;
         public Task<DesktopSnapshot> SampleAsync(CancellationToken ct)
         {
-            ct.ThrowIfCancellationRequested();var now=DateTimeOffset.UtcNow;
-            var rows=Enumerable.Range(1,Count).Select(pid=>new SessionObservation(pid,Start(pid),
-                "Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
+            ct.ThrowIfCancellationRequested();var now=DateTimeOffset.UtcNow;int unreadable=Unreadable;
+            var rows=Enumerable.Range(1,Count).Select(pid=>pid==unreadable
+                ?new SessionObservation(pid,0,"Unavailable",0,"Roblox",false,false,0,0,null,now,
+                    "Process identity or access was unavailable during observation.")
+                :new SessionObservation(pid,Start(pid),"Synthetic",pid+100,"Synthetic",false,true,1,1,0,now)).ToArray();
             return Task.FromResult(new DesktopSnapshot(new(now,32*CapacityPolicy.GiB,20*CapacityPolicy.GiB,64*CapacityPolicy.GiB,20*CapacityPolicy.GiB,10),
-                rows,null,now,Interlocked.Increment(ref _revision),true));
+                rows,null,now,Interlocked.Increment(ref _revision),unreadable==0));
         }
         public Task<bool> FocusAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No window mutation expected.");
         public Task<bool> RequestCloseAsync(SessionObservation session,CancellationToken ct)=>throw new InvalidOperationException("No process action expected.");

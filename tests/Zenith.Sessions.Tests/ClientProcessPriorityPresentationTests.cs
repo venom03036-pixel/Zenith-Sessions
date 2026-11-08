@@ -315,6 +315,35 @@ public sealed partial class ClientPreviewPresentationTests
         Assert.Equal(1,control.RestoreCalls);
     });
 
+    // A pending restore covers every setting Zenith changed (priority, EcoQoS, memory priority, affinity), and Task Manager cannot
+    // show or reset memory priority, so Exit's warning names each kind and says how memory priority comes back.
+    [Theory]
+    [InlineData(1,true,"Windows could not confirm that Zenith restored the original priority, efficiency or core settings of 1 client. "
+        +"They last until you change them or the client exits. Review its priority, efficiency mode and affinity in Task Manager. "
+        +"Task Manager cannot show or reset memory priority; the client's own memory priority returns when it restarts.")]
+    [InlineData(2,true,"Windows could not confirm that Zenith restored the original priority, efficiency or core settings of 2 clients. "
+        +"They last until you change them or the clients exit. Review their priority, efficiency mode and affinity in Task Manager. "
+        +"Task Manager cannot show or reset memory priority; each client's own memory priority returns when it restarts.")]
+    [InlineData(2,false,null)]
+    public Task ExitPriorityWarningNamesEverySettingAPendingRestoreCoversAndHowMemoryPriorityReturns(int clients,bool restoreFails,string? expected)=>OnUi(async ()=>
+    {
+        var control=new PriorityControlProbe{RestoreFails=restoreFails};
+        var shell=await ReadyPriority(new PriorityDesktopMonitor(2),control);
+        try
+        {
+            for(int index=0;index<clients;index++)shell.Sessions[index].IsChecked=true;
+            shell.SetClientsEfficiencyMode.Execute(null);await shell.SetClientsEfficiencyMode.Execution;
+            Assert.Equal(clients,shell.PendingPriorityRestoreCount);
+            Assert.Null(shell.ExitPriorityWarning);
+        }
+        finally{await shell.DisposeAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(5));}
+        Assert.Equal(restoreFails?clients:0,shell.PendingPriorityRestoreCount);
+        if(restoreFails)
+            Assert.Equal("Windows could not confirm that every original priority, efficiency or core setting was restored. "
+                +"Review those clients in Task Manager; memory priority returns only when a client restarts.",shell.ClientPriorityStatus);
+        Assert.Equal(expected,shell.ExitPriorityWarning);
+    });
+
     [Fact]
     public Task ShellDisposeFinishesCleanupAndKeepsPendingRestoreWhenALaterOwnerDisposalThrows()=>OnUi(async ()=>
     {
