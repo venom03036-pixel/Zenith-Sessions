@@ -364,18 +364,19 @@ public sealed class PublicGameDirectoryTests
     }
 
     [Theory]
-    [InlineData("Pending", PublicDirectoryState.Deferred)]
-    [InlineData("InReview", PublicDirectoryState.Deferred)]
-    [InlineData("Blocked", PublicDirectoryState.Unknown)]
-    [InlineData("Error", PublicDirectoryState.Unknown)]
-    [InlineData("Other", PublicDirectoryState.Unknown)]
-    public async Task IconPreparationAndUnavailableStatesDoNotDownloadAnything(string state, PublicDirectoryState expected)
+    [InlineData("Pending", PublicDirectoryState.Deferred, "The public game icon is still being prepared.")]
+    [InlineData("InReview", PublicDirectoryState.Deferred, "The public game icon is still being prepared.")]
+    [InlineData("Blocked", PublicDirectoryState.Unknown, "The public game icon is unavailable.")]
+    [InlineData("Error", PublicDirectoryState.Unknown, "The public game icon is unavailable.")] // Roblox's own name for a picture it could not make.
+    [InlineData("Other", PublicDirectoryState.Unknown, "The public game icon state is not supported.")] // A name Zenith does not know yet.
+    public async Task IconPreparationAndUnavailableStatesDoNotDownloadAnything(string state, PublicDirectoryState expected, string message)
     {
         using var handler = new FakeHandler((_, _) => Task.FromResult(Json(IconJson(state))));
         using var http = new HttpClient(handler);
         var result = await new RobloxPublicDirectory(http).GetGameIconAsync(Universe, default);
         Assert.Equal(expected, result.State);
         Assert.Null(result.Value);
+        Assert.Equal(message, result.Message);
         Assert.Equal<TimeSpan?>(expected == PublicDirectoryState.Deferred ? TimeSpan.FromSeconds(30) : null, result.RetryAfter);
         Assert.Equal(1, handler.Calls);
     }

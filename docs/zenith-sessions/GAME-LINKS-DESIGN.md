@@ -58,6 +58,10 @@ These are observed first-party behaviour, not promised stable schemas. Fixtures 
 - `RobloxPublicDirectory` implements it with the existing transport: 2 shared request slots, 64 KiB JSON cap,
   `TryValidateAvatarUri` host allowlist, 2 MiB image cap, 64 MiB/512-entry encoded cache, rate-limit cooldown.
   Unknown/duplicate universe IDs in the response → invalid response. `Pending`/`Blocked` items have no URI.
+  Roblox's state names are read in one place, `MapThumbnailState` (headshots, game icons, game pictures and gallery
+  pictures), which also says whether an unavailable name is Roblox's own `Error` or one Zenith does not know yet; the
+  single headshot and game-icon lookups answer "unavailable" for the first and "state is not supported" for the second.
+  `PublicDirectorySharedRulesTests` fails on any other comparison with a raw state name.
 
 ### 1.2 Presentation
 

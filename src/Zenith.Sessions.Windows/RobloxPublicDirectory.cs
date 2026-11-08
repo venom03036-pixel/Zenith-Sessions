@@ -103,11 +103,11 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
             if (data.GetArrayLength() != 1) throw new InvalidPublicResponseException();
             JsonElement item = data[0];
             if (ReadId(item, "targetId") != userId) throw new InvalidPublicResponseException();
-            string state = ReadText(item, "state", 32);
-            if (MapThumbnailState(state) == PublicRobloxThumbnailState.Pending)
+            var state = MapThumbnailState(ReadText(item, "state", 32), out bool known);
+            if (state == PublicRobloxThumbnailState.Pending)
                 return Deferred<PublicRobloxAvatar>("The public avatar is still being prepared.", TimeSpan.FromSeconds(30));
-            if (state is "Blocked" or "Error") return Unknown<PublicRobloxAvatar>("The public avatar is unavailable.");
-            if (state != "Completed") return Unknown<PublicRobloxAvatar>("The public avatar state is not supported.");
+            if (state != PublicRobloxThumbnailState.Ready)
+                return Unknown<PublicRobloxAvatar>(known ? "The public avatar is unavailable." : "The public avatar state is not supported.");
             if (!TryValidateAvatarUri(ReadText(item, "imageUrl", 2048), out Uri? imageUri)) throw new InvalidPublicResponseException();
             return Success(new PublicRobloxAvatar(userId, imageUri!, 150, 150, _clock.GetUtcNow()), "Public avatar information.");
         }, ct);
@@ -170,14 +170,23 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
     }
 
     // Roblox's thumbnail states, shared by every thumbnail reply: headshots, game icons, game pictures and gallery pictures.
-    // A state Roblox adds later is unavailable.
-    private static PublicRobloxThumbnailState MapThumbnailState(string state) => state switch
+    // This is the only place that reads Roblox's names (PublicDirectorySharedRulesTests fails on a second one). Error is
+    // Roblox's own name for a picture it could not make; a state Roblox adds later is also unavailable, and known tells
+    // the two apart for callers that word them differently.
+    private static PublicRobloxThumbnailState MapThumbnailState(string state) => MapThumbnailState(state, out _);
+
+    private static PublicRobloxThumbnailState MapThumbnailState(string state, out bool known)
     {
-        "Completed" => PublicRobloxThumbnailState.Ready,
-        "Pending" or "InReview" => PublicRobloxThumbnailState.Pending,
-        "Blocked" => PublicRobloxThumbnailState.Blocked,
-        _ => PublicRobloxThumbnailState.Unavailable
-    };
+        known = true;
+        switch (state)
+        {
+            case "Completed": return PublicRobloxThumbnailState.Ready;
+            case "Pending" or "InReview": return PublicRobloxThumbnailState.Pending;
+            case "Blocked": return PublicRobloxThumbnailState.Blocked;
+            case "Error": return PublicRobloxThumbnailState.Unavailable;
+            default: known = false; return PublicRobloxThumbnailState.Unavailable;
+        }
+    }
 
     public async Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)
     {
