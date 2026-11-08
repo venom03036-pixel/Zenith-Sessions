@@ -8,9 +8,10 @@ public sealed partial class RobloxSessionLinkService
     /// <summary>
     /// For a caller that is about to remove these profiles. Stops the owned operation if it is working on one of them,
     /// including an Add that moved onto one to refresh its saved sign-in, and waits for it to actually finish. Until the
-    /// returned lease is disposed, an Add refuses to move onto one of these profiles. Only the caller can know which rows
-    /// it removes and only this service knows which row an Add moved onto, so the check and the move share the state gate.
-    /// Hold the lease until the profiles and their saved sign-ins are removed.
+    /// returned lease is disposed, no saved-session operation starts on one of these profiles (it is refused with
+    /// <see cref="Zenith.Sessions.Core.AccountLinkException.ProfileRemoved"/>, before anything is read or sent), and an Add refuses to move onto
+    /// one. Only the caller can know which rows it removes and only this service knows which row an Add moved onto, so the
+    /// check and the move share the state gate. Hold the lease until the profiles and their saved sign-ins are removed.
     /// </summary>
     public async Task<ProfileRemovalLease> BeginProfileRemovalAsync(IReadOnlyCollection<Guid> profileIds, CancellationToken ct)
     {
@@ -44,7 +45,7 @@ public sealed partial class RobloxSessionLinkService
     }
 
     /// <summary>
-    /// Held by a profile removal; disposing it lets an Add refresh these profiles again. <see cref="StoppedOperation"/>
+    /// Held by a profile removal; disposing it lets operations start on these profiles, and an Add refresh them, again. <see cref="StoppedOperation"/>
     /// is true when an operation working on one of them was stopped and has finished.
     /// </summary>
     public sealed class ProfileRemovalLease : IDisposable

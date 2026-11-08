@@ -156,6 +156,40 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
         Assert.True(added.Refreshed); Assert.Equal(existing.Id, added.ProfileId); Assert.Equal(Record(existing.Id, 2), await fixture.Inner.ReadAsync(existing.Id, default));
     }
 
+    // N-B1a-1: the removal lease holds its rows against every saved-session operation, not only an Add moving onto one.
+    // Nothing is sent to Roblox, no sign-in window or page opens, and the saved sign-in is not written.
+    [Fact]
+    public async Task NoSavedSessionOperationStartsOnARowWhileThatRowIsBeingRemovedAndOneCanAfterTheRemovalEnds()
+    {
+        await using var fixture = await Fixture.Open(Root); var probe = new Probe();
+        var existing = await fixture.InnerProfiles.SaveAsync(AccountProfile.Create("Main alt") with { Username = "verified_player", RobloxUserId = 456 }, default);
+        var saved = Record(existing.Id, cookie: Stale); await fixture.Inner.SaveAsync(saved, default);
+        using (var removal = await fixture.Service.BeginProfileRemovalAsync([existing.Id], default))
+        {
+            Assert.False(removal.StoppedOperation);
+            foreach (var refused in new Func<Task>[] { () => fixture.Service.CheckSavedAsync(existing.Id, default), () => fixture.Service.LinkAsync(existing.Id, default) })
+            {
+                var error = await Assert.ThrowsAsync<AccountLinkException>(refused);
+                Assert.True(error.ProfileRemoved); Assert.False(error.OperationInProgress);
+                Assert.Contains("being removed", error.Message); Assert.DoesNotContain(Stale, error.Message);
+            }
+            Assert.Equal(RobloxHandoffProbeOutcome.Busy, (await fixture.Service.InspectHandoffAsync(existing.Id, 42, probe, default)).Outcome);
+            Assert.Equal(0, fixture.Client.Calls); Assert.Empty(fixture.Browser.Ids); Assert.Equal(0, probe.Calls);
+            Assert.Equal(0, fixture.Vault.Commits); Assert.Equal(0, fixture.Vault.Fences); Assert.Equal(saved, await fixture.Inner.ReadAsync(existing.Id, default));
+        }
+        Assert.Equal(Identity(), await fixture.Service.CheckSavedAsync(existing.Id, default)); Assert.Equal(1, fixture.Client.Calls);
+        Assert.Equal(AuthorizationHealth.Linked, (await fixture.Inner.ReadAsync(existing.Id, default))!.Health);
+    }
+
+    // N-B1a-1: a profile that no longer exists refuses the same way, so a batch counts it as removed, not as needing sign-in.
+    [Fact]
+    public async Task ASavedSessionCheckOfARemovedProfileSaysTheProfileWasRemovedAndContactsNobody()
+    {
+        await using var fixture = await Fixture.Open(Root);
+        var error = await Assert.ThrowsAsync<AccountLinkException>(() => fixture.Service.CheckSavedAsync(Guid.NewGuid(), default));
+        Assert.True(error.ProfileRemoved); Assert.False(error.OperationInProgress); Assert.Equal(0, fixture.Client.Calls); Assert.Equal(0, fixture.Vault.Commits);
+    }
+
     [Fact]
     public async Task EditableMetadataNeverAutoMatchesOrOverwritesAnExistingProfile()
     {
@@ -451,6 +485,14 @@ public sealed class RobloxSessionAccountCreationTests : IDisposable
         public Task<RobloxSessionCredential> SignInAsync(Guid id, CancellationToken ct)
         { Ids.Add(id); return Run?.Invoke(id, ct) ?? Task.FromResult(Credential()); }
         public void Dispose() => Disposed = true;
+    }
+    /// <summary>A handoff probe that records whether any inspection reached it. No page opens in this fixture.</summary>
+    private sealed class Probe : IRobloxHandoffProbe
+    {
+        public int Calls;
+        public Task<RobloxHandoffProbeCapture> InspectAsync(RobloxHandoffProbeContext context, RobloxSessionCredential credential, CancellationToken ct)
+        { Calls++; throw new InvalidOperationException("Synthetic probe: no page opens in this fixture."); }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
     }
     private sealed class Client : IRobloxSessionClient, IDisposable
     {

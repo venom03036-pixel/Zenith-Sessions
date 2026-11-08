@@ -404,7 +404,7 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
                 throw new AccountLinkException("A saved sign-in is being removed, so this account's saved sign-in was not refreshed. Add the account again after that finishes.");
             // A removal holds its rows from before it decides whether an operation owns one until they are gone (BeginProfileRemovalAsync).
             if (_removing.ContainsKey(profileId))
-                throw new AccountLinkException("This account is being removed from your library, so its saved sign-in was not refreshed. Add the account again after the removal finishes.");
+                throw new AccountLinkException("This account is being removed from your library, so its saved sign-in was not refreshed. Add the account again after the removal finishes.") { ProfileRemoved = true };
             operation.ProfileId = profileId;
         }
         var snapshot = await ReadSnapshotAsync(operation).ConfigureAwait(false);
@@ -414,7 +414,10 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         return snapshot;
     }
     private async Task RequireProfile(Guid profileId, CancellationToken ct)
-    { if (await profiles.FindAsync(profileId, ct).ConfigureAwait(false) is null) throw new AccountLinkException("This saved profile no longer exists. No session was attached."); }
+    {
+        if (await profiles.FindAsync(profileId, ct).ConfigureAwait(false) is null)
+            throw new AccountLinkException("This saved profile no longer exists. No session was attached.") { ProfileRemoved = true };
+    }
     private async Task<AuthorizationWriteSnapshot> ReadSnapshotAsync(Operation operation)
     {
         if (vault is not ISnapshotAuthorizationVault conditional) throw new AccountLinkException("The protected store cannot atomically preserve this saved sign-in. Update Zenith before signing in again; existing files were preserved.");
@@ -458,6 +461,9 @@ public sealed partial class RobloxSessionLinkService(IAccountRepository profiles
         lock (_state)
         {
             ObjectDisposedException.ThrowIf(_disposed, this);
+            // A removal holds its rows until they and their saved sign-ins are gone (BeginProfileRemovalAsync): nothing starts on one.
+            if (_removing.ContainsKey(profileId))
+                throw new AccountLinkException("This account is being removed from your library. Its saved sign-in was not used or changed.") { ProfileRemoved = true };
             if (_active is not null || _disconnect is not null)
                 throw new AccountLinkException("Another saved-session operation is in progress. Finish or cancel it first.") { OperationInProgress = true };
             return _active = new(profileId, CancellationTokenSource.CreateLinkedTokenSource(ct, _shutdown.Token));

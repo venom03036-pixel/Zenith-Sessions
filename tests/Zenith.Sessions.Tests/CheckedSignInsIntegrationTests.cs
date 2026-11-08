@@ -127,6 +127,47 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
     });
 
+    // N-B1a-1: a checked row removed from the library while the batch runs is skipped: it is never sent to Roblox and is not
+    // counted as needing sign-in, whether its removal still holds the row or has already removed it. The rest are checked.
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public Task CheckedSignInsSkipARowRemovedWhileTheyRunAndCheckTheRest(bool removalFinished) => OnUi(async () =>
+    {
+        using var repository = new AccountRepository(_root); await repository.InitializeAsync(default);
+        var signIn = new HealthSignIn(); var client = new HealthClient(); var gate = new HealthRemovalGate(repository) { Hold = !removalFinished };
+        await using var shell = await HealthShell(signIn, client, linked: 3, accounts: gate);
+        foreach (var row in shell.Accounts) row.IsChecked = true;
+        var order = shell.Accounts.Select(row => (Cookie: CookieOf(row), row.Profile.Id)).ToArray();
+        client.HoldCookie = order[0].Cookie;
+        shell.CheckCheckedSignIns.Execute(null); Task checking = shell.CheckCheckedSignIns.Execution; Task? removing = null;
+        try
+        {
+            await client.Entered.Task.WaitAsync(TimeSpan.FromSeconds(30));
+            removing = shell.DeleteAccountsAsync([shell.Accounts.Single(row => row.Profile.Id == order[1].Id)]);
+            if (removalFinished) await removing.WaitAsync(TimeSpan.FromSeconds(10));
+            else await gate.DeleteEntered.Task.WaitAsync(TimeSpan.FromSeconds(10)); // The removal now holds the row and its saved sign-in.
+            client.Release(); await checking.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            client.Release(); gate.Release(); await checking.WaitAsync(TimeSpan.FromSeconds(10));
+            if (removing is not null) await removing.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+
+        Assert.Equal(new[] { order[0].Cookie, order[2].Cookie }, client.Snapshot().Select(call => call.Cookie));
+        string summary = Assert.Single(shell.Events, item => item.Contains("Saved sign-in check", StringComparison.Ordinal));
+        Assert.Contains("Saved sign-in check finished. 2 verified.", summary);
+        Assert.Contains("1 checked account was being removed from your library, so it was not checked.", summary);
+        Assert.DoesNotContain("need sign-in", summary); Assert.DoesNotContain("needs sign-in", summary); Assert.DoesNotContain("left unchanged", summary);
+        // Whichever finished last wrote the notice: the check after a finished removal, the removal after the check.
+        Assert.StartsWith(removalFinished ? "Saved sign-in check finished." : "Removed 1 profile(s).", shell.Notice);
+        using var vault = new ProtectedCredentialVault(_root);
+        foreach (var kept in new[] { order[0].Id, order[2].Id }) Assert.Equal(AuthorizationHealth.Linked, (await vault.GetSummaryAsync(kept, default))!.Health);
+        Assert.Null(await repository.FindAsync(order[1].Id, default)); Assert.Null(await vault.ReadAsync(order[1].Id, default));
+        Assert.Equal(2, shell.Accounts.Count); Assert.Equal("", shell.ErrorNotice); Assert.False(shell.IsAuthorizing); HealthNoSecrets(shell);
+    });
+
     // M-L1a-5: Roblox never processed a check, and another operation replaced its fence before the restore. The restore is
     // refused (the newer sign-in is kept), but Roblox was still unreachable or busy, so the batch must stop there.
     [Fact]
@@ -236,9 +277,10 @@ public sealed partial class ClientWindowIntegrationTests
     private static string HealthCookie(int index) => HealthCookiePrefix + index.ToString("00", CultureInfo.InvariantCulture);
     private static string CookieOf(AccountRow row) => HealthCookie((int)(row.KnownUserId!.Value - 1000));
     private static AccountRow HealthRow(ShellViewModel shell, int index) => shell.Accounts.Single(row => row.Alias == $"Health {index:00}");
-    private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0, IRobloxShareLinkClient? shareLinks = null)
+    private async Task<ShellViewModel> HealthShell(HealthSignIn signIn, HealthClient client, int linked, int unlinked = 0, IRobloxShareLinkClient? shareLinks = null,
+        IAccountRepository? accounts = null)
     {
-        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), signIn: signIn, sessionClient: client, shareLinkClient: shareLinks);
+        var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), accounts: accounts, signIn: signIn, sessionClient: client, shareLinkClient: shareLinks);
         try
         {
             await shell.InitializeAsync();
@@ -296,6 +338,28 @@ public sealed partial class ClientWindowIntegrationTests
             int index = int.Parse(cookie[HealthCookiePrefix.Length..], CultureInfo.InvariantCulture); long userId = 1000 + index;
             return new(new(userId, "health_" + index, RobloxSessionIdentity.Issuer, userId.ToString(CultureInfo.InvariantCulture)));
         }
+    }
+    /// <summary>The library, except that when <see cref="Hold"/> is set a profile removal waits, holding its rows, until released.</summary>
+    private sealed class HealthRemovalGate(IAccountRepository inner) : IAccountRepository
+    {
+        public bool Hold;
+        public readonly TaskCompletionSource DeleteEntered = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public void Release() => _release.TrySetResult();
+        public async Task DeleteManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct)
+        {
+            if (Hold) { DeleteEntered.TrySetResult(); await _release.Task.WaitAsync(ct).ConfigureAwait(false); }
+            await inner.DeleteManyAsync(profiles, ct).ConfigureAwait(false);
+        }
+        public Task InitializeAsync(CancellationToken ct) => inner.InitializeAsync(ct);
+        public Task<AccountProfile?> FindAsync(Guid id, CancellationToken ct) => inner.FindAsync(id, ct);
+        public Task<AccountPage> ReadAsync(AccountQuery query, CancellationToken ct) => inner.ReadAsync(query, ct);
+        public Task<IReadOnlyList<string>> ReadGroupsAsync(CancellationToken ct) => inner.ReadGroupsAsync(ct);
+        public Task<AccountProfile> SaveAsync(AccountProfile account, CancellationToken ct) => inner.SaveAsync(account, ct);
+        public Task DeleteAsync(Guid id, long revision, CancellationToken ct) => inner.DeleteAsync(id, revision, ct);
+        public Task CreateManyAsync(IReadOnlyList<AccountProfile> profiles, CancellationToken ct) => inner.CreateManyAsync(profiles, ct);
+        public Task<CredentialCleanupPage> ReadCredentialCleanupAsync(CancellationToken ct) => inner.ReadCredentialCleanupAsync(ct);
+        public Task CompleteCredentialCleanupAsync(Guid id, CancellationToken ct) => inner.CompleteCredentialCleanupAsync(id, ct);
     }
     /// <summary>A share-link check that holds the saved-session service until released, then answers "unavailable" (no write).</summary>
     private sealed class HoldingShareLinks : IRobloxShareLinkClient
