@@ -5,10 +5,14 @@ using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.App;
 
-public sealed record InstallationCandidateRow(ClientInstallationCandidate Candidate, ClientReleaseMatch Release = ClientReleaseMatch.NotChecked)
+public sealed class InstallationCandidateRow(ClientInstallationCandidate candidate, ClientReleaseMatch release = ClientReleaseMatch.NotChecked) : Observable
 {
-    // Compared with Roblox's current public release on the last explicit refresh. Leftover older version folders are
-    // "Not current" on their own row; whether an update is pending is said once, for the installation as a whole.
+    private ClientReleaseMatch _release = release;
+    public ClientInstallationCandidate Candidate { get; } = candidate;
+    // Compared with Roblox's current public release on the last explicit refresh. The row is listed before Roblox answers
+    // and filled in place when it does, so a selected row (and a verification of it) keeps its identity. Leftover older
+    // version folders are "Not current" on their own row; whether an update is pending is said once, for the installation.
+    public ClientReleaseMatch Release { get => _release; internal set { if (Set(ref _release, value)) Raise(nameof(ReleaseStatus)); } }
     public string ReleaseStatus => Release switch
     {
         ClientReleaseMatch.Current => "Current release",
@@ -69,8 +73,13 @@ public sealed partial class ShellViewModel
     private IClientInstallationDiscovery _installationDiscovery = null!;
     private IPublicRobloxClientReleaseDirectory? _clientReleases;
     private CancellationTokenSource? _installationStop;
+    // Set only while the local list is shown and Roblox's answer is still awaited: Cancel check then stops that request alone.
+    private CancellationTokenSource? _installationReleaseStop;
     private long _installationGeneration;
     private bool _installationBusy;
+    // True until a refresh has shown the rows it read from this PC; the release request that follows does not hold them.
+    private bool _installationListPending;
+    private const string InstallationReleaseStopped = "Release check stopped. The installations already found stay listed as not checked; refresh to ask Roblox's public version service again.";
     private const string InstallationNotChecked = "Refresh to inspect installed Roblox and compatible bootstrapper hints and to ask Roblox's public version service for its current release. No program will be downloaded, opened or changed.";
     private string _installationStatus = InstallationNotChecked;
     private string _installationObserved = "Not checked";
@@ -96,21 +105,24 @@ public sealed partial class ShellViewModel
         _installationDiscovery = discovery ?? new WindowsClientInstallationDiscovery();
         InitializePublisherVerification(verifier);
         RefreshInstallations = new(_ => RefreshInstallationsAsync(), ReportInstallationFailure);
-        CancelInstallationDiscovery = new(_ => CancelInstallationWork());
+        CancelInstallationDiscovery = new(_ => CancelInstallationCheck());
     }
     private async Task RefreshInstallationsAsync()
     {
         if (!CanRefreshInstallations) return;
         using var stop = CancellationTokenSource.CreateLinkedTokenSource(_lifetime.Token);
+        // Panic, Lock and shutdown stop the whole refresh through `stop`; Cancel check after the list is shown stops only this.
+        using var releaseStop = CancellationTokenSource.CreateLinkedTokenSource(stop.Token);
         _installationStop = stop; long generation = _installationGeneration;
-        IsInstallationDiscoveryBusy = true;
+        bool Current() => !stop.IsCancellationRequested && generation == _installationGeneration && !IsLocked && !_shuttingDown;
+        _installationListPending = true; IsInstallationDiscoveryBusy = true;
         InstallationCandidates.Clear(); InstallationIssues.Clear(); SelectedInstallation = null;
         InstallationObserved = "Checking…"; InstallationStatus = "Reading bounded installation metadata. Native account launch remains unavailable.";
         InstallationReleaseStatus = _clientReleases is null ? "" : "Asking Roblox's public version service for its current release…";
         try
         {
             var snapshot = await _installationDiscovery.DiscoverAsync(stop.Token);
-            if (stop.IsCancellationRequested || generation != _installationGeneration || IsLocked || _shuttingDown) return;
+            if (!Current()) return;
             if (!Enum.IsDefined(snapshot.Status) || snapshot.Candidates.Count > 64 || snapshot.Issues.Count > 32
                 || snapshot.ObservedUtc > DateTimeOffset.UtcNow.AddSeconds(2)
                 || snapshot.Candidates.Any(item => !Enum.IsDefined(item.Product) || !Enum.IsDefined(item.FileState)
@@ -120,18 +132,29 @@ public sealed partial class ShellViewModel
                     || issue.Source is { } source && !Enum.IsDefined(source))
                 || snapshot.Candidates.Select(item => item.ExecutablePath).Distinct(StringComparer.OrdinalIgnoreCase).Count() != snapshot.Candidates.Count)
                 throw new InvalidOperationException("The installation inventory returned inconsistent metadata.");
-            var release = await ReadCurrentReleaseAsync(stop.Token);
-            if (stop.IsCancellationRequested || generation != _installationGeneration || IsLocked || _shuttingDown) return;
-            var latest = release is { State: PublicDirectoryState.Success } && RobloxClientRelease.IsValid(release.Value) ? release.Value : null;
-            foreach (var candidate in snapshot.Candidates)
-                InstallationCandidates.Add(new(candidate with { Evidence = Array.AsReadOnly(candidate.Evidence.ToArray()) }, RobloxClientRelease.Compare(candidate, latest)));
+            // The local rows never wait for the network: an unreachable service can hold the request for the client's whole
+            // timeout. They are shown now, "Not checked", and Roblox's answer fills their Release column in place.
+            var rows = new InstallationCandidateRow[snapshot.Candidates.Count];
+            for (int index = 0; index < rows.Length; index++)
+            {
+                var candidate = snapshot.Candidates[index];
+                InstallationCandidates.Add(rows[index] = new(candidate with { Evidence = Array.AsReadOnly(candidate.Evidence.ToArray()) }));
+            }
             foreach (var issue in snapshot.Issues)
                 if (InstallationCandidateRow.IssueLine(issue) is var line && !InstallationIssues.Contains(line)) InstallationIssues.Add(line);
             InstallationObserved = snapshot.ObservedUtc.ToUniversalTime().ToString("u");
             InstallationStatus = snapshot.Status + " · " + snapshot.Summary;
-            InstallationReleaseStatus = ReleaseSummary(release, latest);
+            _installationListPending = false; Raise(nameof(CanVerifyInstallationPublisher));
+            if (_clientReleases is null) return;
+            _installationReleaseStop = releaseStop;
+            var release = await ReadCurrentReleaseAsync(releaseStop.Token);
+            // Cancel check already said the release check stopped; an answer that still arrives is not applied.
+            if (!Current() || releaseStop.IsCancellationRequested) return;
+            var latest = release is { State: PublicDirectoryState.Success } && RobloxClientRelease.IsValid(release.Value) ? release.Value : null;
+            foreach (var row in rows) row.Release = RobloxClientRelease.Compare(row.Candidate, latest);
+            InstallationReleaseStatus = ReleaseSummary(release, latest, rows);
         }
-        catch (OperationCanceledException) when (stop.IsCancellationRequested) { }
+        catch (OperationCanceledException) when (stop.IsCancellationRequested || releaseStop.IsCancellationRequested) { }
         catch (Exception error)
         {
             if (generation == _installationGeneration && !IsLocked && !_shuttingDown) ReportInstallationFailure(error);
@@ -140,11 +163,13 @@ public sealed partial class ShellViewModel
         finally
         {
             if (ReferenceEquals(_installationStop, stop)) _installationStop = null;
-            IsInstallationDiscoveryBusy = false;
+            if (ReferenceEquals(_installationReleaseStop, releaseStop)) _installationReleaseStop = null;
+            _installationListPending = false; IsInstallationDiscoveryBusy = false;
         }
     }
-    // One anonymous request per explicit refresh, owned by that refresh's cancellation. An unreachable or malformed answer
-    // never fails the local list; its exception text is never shown or recorded, only its type.
+    // One anonymous request per explicit refresh, owned by that refresh's cancellation and awaited by it, so Dispose (which
+    // awaits the refresh) never releases the HTTP client under it. An unreachable or malformed answer never fails or delays
+    // the local list; its exception text is never shown or recorded, only its type.
     private async Task<PublicDirectoryResult<PublicRobloxClientRelease>?> ReadCurrentReleaseAsync(CancellationToken ct)
     {
         if (_clientReleases is null) return null;
@@ -155,15 +180,15 @@ public sealed partial class ShellViewModel
             return new(PublicDirectoryState.Failure, null, "The request to the public version service failed.");
         }
     }
-    private string ReleaseSummary(PublicDirectoryResult<PublicRobloxClientRelease>? result, PublicRobloxClientRelease? latest)
+    private static string ReleaseSummary(PublicDirectoryResult<PublicRobloxClientRelease>? result, PublicRobloxClientRelease? latest, IReadOnlyList<InstallationCandidateRow> rows)
     {
         if (result is null) return "";
         if (latest is null)
             return "Could not check Roblox's current release. " + (result.State == PublicDirectoryState.Success ? "The public version service returned an unusable release." : result.Message);
         string named = latest.Version + " (" + latest.ClientVersionUpload + ")";
-        if (InstallationCandidates.Any(row => row.Release == ClientReleaseMatch.Current))
+        if (rows.Any(row => row.Release == ClientReleaseMatch.Current))
             return "Up to date: an installed Roblox player matches Roblox's current release " + named + ".";
-        if (InstallationCandidates.Any(row => row.Release == ClientReleaseMatch.NotCurrent))
+        if (rows.Any(row => row.Release == ClientReleaseMatch.NotCurrent))
             return "Update pending: no installed Roblox player matches Roblox's current release " + named
                 + ". Roblox normally updates when it next starts; Zenith never downloads or installs updates.";
         return "Roblox's current release is " + named + ". No installed Roblox player could be compared with it.";
@@ -174,6 +199,13 @@ public sealed partial class ShellViewModel
         InstallationObserved = "Check failed";
         InstallationStatus = "Installation metadata could not be checked. No executable or provider was selected; retry when the files are available.";
         _diagnostics.RecordFailure(ManagerSubsystem.Installation, error.GetType());
+    }
+    // Cancel check: once the local list is shown only Roblox's answer is awaited, so only that request stops and the rows
+    // already read stay. Before then, and always for Panic, Lock and shutdown, CancelInstallationWork clears everything.
+    private void CancelInstallationCheck()
+    {
+        if (_installationReleaseStop is { } release) { release.Cancel(); InstallationReleaseStatus = InstallationReleaseStopped; return; }
+        CancelInstallationWork();
     }
     private void CancelInstallationWork()
     {
