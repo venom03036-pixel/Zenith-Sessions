@@ -27,6 +27,24 @@ public sealed class DiscordAlertTests : IDisposable
     private static readonly BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     private static readonly TimeSpan Positive = TimeSpan.FromSeconds(30);
 
+    [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotRestartDiscordAlertsAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        var transport = new TransportProbe();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordWebhookStore: new StoreProbe(), discordTransport: transport);
+        await vm.InitializeAsync();
+        using (var held = new HeldPreferencesWrite(vm))
+        {
+            vm.DiscordAlerts = true; vm.SaveSettings.Execute(null);
+            Assert.False(vm.SaveSettings.Execution.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await vm.SaveSettings.Execution;
+        Assert.False(vm.IsDiscordAlertsActive);
+        Assert.Empty(transport.Requests);
+    });
+
     [Theory]
     [InlineData("https://discord.com/api/webhooks/123456789012345678/" + Token, true, "discord.com")]
     [InlineData("https://discordapp.com/api/webhooks/123456789012345678/" + Token, true, "discordapp.com")]

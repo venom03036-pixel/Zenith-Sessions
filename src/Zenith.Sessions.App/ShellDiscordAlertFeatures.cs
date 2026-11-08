@@ -313,7 +313,7 @@ public sealed partial class ShellViewModel
     // the outbox stopped until Resume alerts or the choice is saved on after being off.
     private void StopDiscordAlertOperations(bool locking)
     {
-        if (locking || !_savedSettings.DiscordAlerts || !_alertsPermitted) return;
+        if (locking || !_alertsPermitted) return;
         _alertOutbox.Stop();
         _alertStop = AlertStop.Panic;
         RefreshDiscordAlertStatus();

@@ -15,6 +15,29 @@ public sealed class KeepAwakeIntegrationTests : IDisposable
     private static readonly CapabilityGate Verified = new([new ProviderCapability(CapabilityGate.BackgroundInputCapability, CapabilityState.Supported, "Fixture: trial passed.")]);
 
     [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotStartKeepAwakeAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        var input = new Executor(); var foreground = new Foreground(0x5000);
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(600),
+            keepAwakeInput: input, foregroundSwitch: foreground, userIdle: new Idle(TimeSpan.FromHours(1)), capabilityGate: Verified);
+        await vm.InitializeAsync();
+        vm.Refresh.Execute(null); await vm.Refresh.Execution;
+        using (var held = new HeldPreferencesWrite(vm))
+        {
+            vm.KeepAwakeMinutes = 5;
+            vm.SaveSettings.Execute(null);
+            Assert.False(vm.SaveSettings.Execution.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await vm.SaveSettings.Execution;
+        await vm.RunKeepAwakeTickAsync();
+        Assert.Empty(input.Transport.Accepted);
+        Assert.Empty(foreground.Requests);
+        Assert.Null(vm.KeepAwakeDue);
+        Assert.True(vm.CanResumeKeepAwake);
+    });
+
+    [Fact]
     public Task ASavedGapArmsOneTimerAndATickPressesEachClientThroughTheInputOwnerThenReArmsIt() => OnDispatcherAsync(async () =>
     {
         var monitor = new Monitor(600, 601); var input = new Executor(); var foreground = new Foreground(0x5000); var idle = new Idle(TimeSpan.FromHours(1));

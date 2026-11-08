@@ -10,6 +10,23 @@ namespace Zenith.Sessions.Tests;
 
 public sealed partial class ClientPreviewPresentationTests
 {
+    [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotRestartArrivalMuteAfterPanic()=>OnUi(async ()=>
+    {
+        var control=new SoundControlProbe();var monitor=new SoundDesktopMonitor{Count=1};
+        await using var shell=await ReadySound(monitor,control);
+        using(var held=new HeldPreferencesWrite(shell))
+        {
+            shell.MuteArrivingClients=true;shell.SaveSettings.Execute(null);
+            Assert.False(shell.SaveSettings.Execution.IsCompleted);
+            shell.Panic.Execute(null);
+        }
+        await shell.SaveSettings.Execution;
+        Assert.True(shell.IsArrivalMutePaused);
+        await Refresh(shell);monitor.Count=2;await Refresh(shell);
+        Assert.Equal(0,control.ChangeCalls);
+    });
+
     [Theory]
     [InlineData(ClientAudioMuteAction.Mute)]
     [InlineData(ClientAudioMuteAction.Unmute)]

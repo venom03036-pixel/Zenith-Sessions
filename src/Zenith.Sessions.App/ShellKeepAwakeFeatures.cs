@@ -64,9 +64,9 @@ public sealed partial class ShellViewModel
     }
 
     // UI thread, after settings load or a save that changed the choice. Saving it on after it was off also clears a Panic or Lock stop.
-    private void ApplySavedKeepAwake(int previousMinutes)
+    private void ApplySavedKeepAwake(int previousMinutes, bool allowResume = true)
     {
-        if (previousMinutes == 0 && SavedKeepAwakeMinutes > 0) _keepAwakeStopped = false;
+        if (allowResume && previousMinutes == 0 && SavedKeepAwakeMinutes > 0) _keepAwakeStopped = false;
         KeepAwakeChoices = KeepAwakePolicy.ChoicesFor(SavedKeepAwakeMinutes);
         Raise(nameof(CanResumeKeepAwake));
         ScheduleKeepAwake();
@@ -163,9 +163,9 @@ public sealed partial class ShellViewModel
     private void StopKeepAwake()
     {
         bool active = _keepAwakeTimer is { IsEnabled: true } || !_keepAwakeTick.IsCompleted;
-        if (!active) return; // Preserve the gate/transport explanation for a feature that never ran.
         _keepAwakeGeneration++;
         _keepAwakeStopped = true;
+        if (!active) return; // Fence a pending save too, while preserving the gate/transport explanation for a feature that never ran.
         _keepAwakeTimer?.Stop();
         _keepAwakeStop?.Cancel();
         Raise(nameof(CanResumeKeepAwake));

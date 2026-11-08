@@ -139,6 +139,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
 {
     private readonly IAccountRepository _accounts;
     private readonly SettingsStore _settingsStore;
+    // Dispatcher-owned: a completed local write cannot reactivate work stopped after its request began.
+    private long _settingsActivationGeneration;
+    private bool SettingsActivationCurrent(long generation) => generation == _settingsActivationGeneration && !_shuttingDown;
     private readonly IFavoriteDestinationStore _favoriteStore;
     public FavoriteDestinationsViewModel DestinationFavorites { get; }
     private readonly IDesktopMonitor _monitor;
@@ -1015,6 +1018,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private async Task SavePreferencesAsync()
     {
         if(!_ready) throw new AccountLinkException("Local services have not opened successfully. Resolve the startup error before changing preferences.");
+        long activationGeneration = _settingsActivationGeneration;
         var culture = CultureInfo.CurrentCulture;
         if (!double.TryParse(SpareRam, NumberStyles.Float, culture, out double spare) || !double.TryParse(PhysicalPerClient, NumberStyles.Float, culture, out double physical)
             || !double.TryParse(CommitPerClient, NumberStyles.Float, culture, out double commit)) throw new ArgumentException("Enter valid memory amounts in GiB.");
@@ -1033,14 +1037,17 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         if(performance.MainAccountProfileId is { } main && await Task.Run(()=>_accounts.FindAsync(main,_lifetime.Token)) is null)
             throw new ArgumentException("The chosen main account no longer exists. Choose another saved profile or clear the selection before saving.");
         bool muteArrivalsWasOn=_savedSettings.MuteArrivingClients;bool updateChecksWereOn=_savedSettings.CheckRobloxUpdates;bool discordAlertsWereOn=_savedSettings.DiscordAlerts,discordPresenceWasOn=_savedSettings.DiscordPresence;
-        await SaveCurrentSettingsAsync(requested);
+        await SaveCurrentSettingsAsync(requested, activationGeneration);
         DefaultClientArguments=defaultClientArguments;
         ShowSavedPanicShortcut(panicShortcut);
-        ArrivalMutePreferenceSaved(muteArrivalsWasOn);
-        ClientUpdateCheckPreferenceSaved(updateChecksWereOn);
+        if (SettingsActivationCurrent(activationGeneration)) ArrivalMutePreferenceSaved(muteArrivalsWasOn);
+        else RaiseArrivalMute();
+        if (SettingsActivationCurrent(activationGeneration)) ClientUpdateCheckPreferenceSaved(updateChecksWereOn);
         ApplySavedPublicNetworkGuard();
-        ApplySavedDiscordAlerts(discordAlertsWereOn);
-        ApplySavedDiscordPresence(discordPresenceWasOn);
+        if (SettingsActivationCurrent(activationGeneration)) ApplySavedDiscordAlerts(discordAlertsWereOn);
+        else RefreshDiscordAlertStatus();
+        if (SettingsActivationCurrent(activationGeneration)) ApplySavedDiscordPresence(discordPresenceWasOn);
+        else RefreshDiscordPresenceStatus();
     }
     private void PreferencesEdited()
     {
@@ -1067,7 +1074,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Raise(nameof(CallbackUrl));
         SaveStatus = _pendingSaves > 0 ? "Saving…" : _saveFailed ? "Save failed — retry" : !unchanged?"Unsaved settings":_settingsNeedRepair?"Recovered settings — save to repair":"Settings saved";
     }
-    private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null)
+    private async Task SaveCurrentSettingsAsync(SessionsSettings? requested=null, long? activationGeneration=null)
     {
         string theme=_settings.Theme,language=_settings.Language;bool dense=_settings.DenseAccounts;var window=_settings.ManagerWindow;
         _pendingSaves++; PreferencesEdited();
@@ -1089,7 +1096,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
                 ApplyClientGpu(snapshot.ShowClientGpu);
                 if (snapshot.IdleLockMinutes != _idleLock.Minutes) ApplySavedIdleLock();
                 // Only a changed choice re-arms the timer; a theme or window autosave leaves the scheduled press where it is.
-                if (snapshot.KeepAwakeMinutes != keepAwakeBefore) ApplySavedKeepAwake(keepAwakeBefore);
+                if (snapshot.KeepAwakeMinutes != keepAwakeBefore)
+                    ApplySavedKeepAwake(keepAwakeBefore, activationGeneration is not { } captured || SettingsActivationCurrent(captured));
                 _diagnostics.Record(ManagerEventKind.SettingsSaved);
                 Notice = "Preferences saved to your writable settings folder.";
                 // Only Save settings registers the saved panic shortcut, or tries a refused one again; autosaves leave it alone.
@@ -1149,6 +1157,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     private void StopOperations(string reason,ManagerEventKind kind=ManagerEventKind.Panic)
     {
+        _settingsActivationGeneration++;
         bool locking=kind==ManagerEventKind.ControlsLocked;
         List<Type>? failed=null;
         void Step(Action step) { try { step(); } catch(Exception ex) { (failed??=[]).Add(ex.GetType()); } }
@@ -1252,6 +1261,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private void BeginShutdown()
     {
         if(_shuttingDown) return;
+        _settingsActivationGeneration++;
         _shuttingDown=true;
         // Cancellation callbacks and presentation listeners are external to this owner. Every stop must still run if one throws.
         StopShutdownStep(ReleaseUpdates.BeginShutdown);

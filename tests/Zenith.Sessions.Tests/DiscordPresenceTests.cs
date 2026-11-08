@@ -28,6 +28,24 @@ public sealed class DiscordPresenceTests : IDisposable
     private static readonly TimeSpan Positive = TimeSpan.FromSeconds(30);
 
     [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotRestartDiscordPresenceAfterPanic() => OnDispatcherAsync(async () =>
+    {
+        await using var discord = new FakeDiscord();
+        await using var vm = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new ClientMonitor(),
+            discordPresencePipe: new WindowsDiscordPresencePipe(discord.Prefix));
+        await vm.InitializeAsync();
+        using (var held = new HeldPreferencesWrite(vm))
+        {
+            vm.DiscordPresence = true; vm.DiscordApplicationId = AppId; vm.SaveSettings.Execute(null);
+            Assert.False(vm.SaveSettings.Execution.IsCompleted);
+            vm.Panic.Execute(null);
+        }
+        await vm.SaveSettings.Execution;
+        Assert.False(vm.IsDiscordPresenceActive);
+        Assert.Equal(0, discord.Connections);
+    });
+
+    [Fact]
     public void PresenceTextNamesTheCountAndTheGameFromLocalKnowledgeOnlyAndStaysBounded()
     {
         Assert.Equal("No clients running", PresenceText.Details(0));

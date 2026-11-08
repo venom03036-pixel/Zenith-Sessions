@@ -19,6 +19,26 @@ public sealed class RobloxUpdateIntegrationTests : IDisposable
     private string SettingsPath => Path.Combine(_root, "settings.json");
 
     [Fact]
+    public Task AnEarlierPendingSettingsSaveCannotRestartAutomaticChecksAfterPanic() => OnUi(async () =>
+    {
+        var releases = new Releases { Answer = Release() }; var inventory = new Inventory(_root, StaleFolder);
+        await using var shell = await ReadyAsync(new Monitor(), releases, inventory, new Installer());
+        using (var held = new HeldPreferencesWrite(shell))
+        {
+            shell.CheckRobloxUpdates = true;
+            shell.SaveSettings.Execute(null);
+            Assert.False(shell.SaveSettings.Execution.IsCompleted);
+            shell.Panic.Execute(null);
+        }
+        await shell.SaveSettings.Execution;
+        Assert.Contains("\"CheckRobloxUpdates\":true", await File.ReadAllTextAsync(SettingsPath), StringComparison.Ordinal);
+        await shell.RunAutomaticUpdateCheckNowAsync();
+        Assert.Equal(0, releases.Calls);
+        Assert.Equal(0, inventory.Calls);
+        Assert.Null(shell.ClientUpdateCheckDue);
+    });
+
+    [Fact]
     public Task AutomaticChecksAreOffByDefaultAndAnOlderSettingsFileStillLoads() => OnUi(async () =>
     {
         Directory.CreateDirectory(_root);
