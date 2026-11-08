@@ -248,13 +248,39 @@ public sealed class ViewModelTests : IDisposable
         using var owner=new SingleInstanceCoordinator(_root);
         using var squatter=new NamedPipeServerStream(owner.PipeName,PipeDirection.In,1,PipeTransmissionMode.Byte,PipeOptions.Asynchronous|PipeOptions.CurrentUserOnly);
         var started=DateTime.UtcNow;
-        owner.Listen(_=>Task.CompletedTask);
+        var reports=new System.Collections.Concurrent.ConcurrentQueue<(Type Error,bool Stopped)>();
+        owner.Listen(_=>Task.CompletedTask,(error,stopped)=>reports.Enqueue((error,stopped)));
         while(!owner.IsListenerFaulted)
         { if(DateTime.UtcNow-started>TimeSpan.FromSeconds(12)) throw new TimeoutException("The listener kept retrying a persistent fault."); await Task.Delay(50); }
         // Bounded: the retry pause keeps the consecutive-fault cap from spinning.
         Assert.True(DateTime.UtcNow-started>=TimeSpan.FromSeconds(3));
         Assert.NotNull(owner.LastListenerFault);
         await owner.StopAsync();
+        // The owner hears of the fault when the run starts and once more when it stops the listener, never on every retry.
+        Assert.Equal(new[]{(owner.LastListenerFault!,false),(owner.LastListenerFault!,true)},reports.ToArray());
+    }).WaitAsync(TimeSpan.FromSeconds(15));
+    [Fact]
+    public Task ARestoreFaultInTheRunningAppIsRecordedInItsDiagnosticsByType()=>OnDispatcherAsync(async ()=>
+    {
+        await using var vm=new ShellViewModel(_root,false,Dispatcher.CurrentDispatcher,new SyntheticMonitor()); await vm.InitializeAsync();
+        vm.Navigate.Execute("Diagnostics");
+        using var owner=new SingleInstanceCoordinator(_root); Assert.True(owner.IsOwner);
+        // The app's own wiring, with a restore that fails like Window.Show() on a closing window.
+        Zenith.Sessions.App.App.ListenForRepeatLaunches(owner,vm,_=>throw new InvalidOperationException("Synthetic restore failure quoting PRIVATE-FIXTURE-TEXT."));
+        try
+        {
+            using var second=await Task.Run(()=>new SingleInstanceCoordinator(_root));
+            Assert.True(await second.RestoreExistingAsync(default));
+            var until=DateTime.UtcNow.AddSeconds(3);
+            while(!vm.DiagnosticRows.Any(r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch))
+            { if(DateTime.UtcNow>until) throw new TimeoutException("The failed restore never reached Diagnostics."); await Task.Delay(20); }
+            var row=Assert.Single(vm.DiagnosticRows,r=>r.Event.Subsystem==ManagerSubsystem.RepeatLaunch);
+            Assert.Equal("Error",row.Level); Assert.Equal("InvalidOperationException",row.ErrorType);
+            Assert.DoesNotContain("PRIVATE-FIXTURE-TEXT",vm.BuildDiagnosticReport());
+            // The listener survived this fault, so Diagnostics does not claim later launches are cut off.
+            Assert.DoesNotContain(ShellViewModel.RepeatLaunchStoppedStatus,vm.DiagnosticsStatus);
+        }
+        finally { await owner.StopAsync(); }
     }).WaitAsync(TimeSpan.FromSeconds(15));
     [Fact]
     public Task IsolatedSamplePreviewCannotClaimAGlobalDesktopShortcut()=>OnDispatcherAsync(async ()=>

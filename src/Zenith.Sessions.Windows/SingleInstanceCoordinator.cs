@@ -21,7 +21,7 @@ public sealed class SingleInstanceCoordinator : IDisposable
     /// <summary>True when another copy holds this data folder under a Windows token this launch may not use (for example one
     /// started as administrator). This launch is then not the owner and cannot ask that copy to show its window.</summary>
     public bool OwnerHasDifferentPermissions { get; }
-    /// <summary>Type of the latest pipe or restore fault the listener survived or stopped on; never its message (Rule 10).</summary>
+    /// <summary>Type of the latest pipe, restore or fault-reporter fault the listener survived or stopped on; never its message (Rule 10).</summary>
     public Type? LastListenerFault => _lastListenerFault;
     /// <summary>True once repeated consecutive faults stopped the listener; later launches then cannot restore this instance.</summary>
     public bool IsListenerFaulted => _listenerFaulted;
@@ -75,9 +75,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
         catch (IOException ex) when (ex.HResult is SharingViolation or LockViolation) { return null; }
     }
     private const int SharingViolation = unchecked((int)0x80070020), LockViolation = unchecked((int)0x80070021);
-    public void Listen(Func<CancellationToken, Task> restore)
-    { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _lastListenerFault = null; _listenerFaulted = false; _server = ListenAsync(restore, _lifetime.Token); }
-    private async Task ListenAsync(Func<CancellationToken, Task> restore, CancellationToken ct)
+    /// <summary>
+    /// Serves launch requests until <see cref="StopAsync"/>. <paramref name="faulted"/>, when given, hears of listener faults on
+    /// the listener's own task, by type only (Rule 10): once when a run of consecutive faults begins (stopped false) and once
+    /// more if that run stops the listener (stopped true), so a persistent fault cannot flood it. It must return quickly.
+    /// </summary>
+    public void Listen(Func<CancellationToken, Task> restore, Action<Type, bool>? faulted = null)
+    { if (!IsOwner || !_server.IsCompleted) throw new InvalidOperationException("The instance cannot start another listener."); _lastListenerFault = null; _listenerFaulted = false; _server = ListenAsync(restore, faulted, _lifetime.Token); }
+    private async Task ListenAsync(Func<CancellationToken, Task> restore, Action<Type, bool>? faulted, CancellationToken ct)
     {
         int faults = 0;
         try
@@ -90,8 +95,10 @@ public sealed class SingleInstanceCoordinator : IDisposable
                 {
                     // Type only (Rule 10). A refused pipe creation or accept usually clears after a short pause; a fault
                     // that repeats past the cap stops the listener with IsListenerFaulted set instead of spinning.
-                    _lastListenerFault = ex.GetType();
-                    if (++faults >= MaxConsecutiveFaults) { _listenerFaulted = true; return; }
+                    Type error = ex.GetType();
+                    _lastListenerFault = error;
+                    if (++faults == 1) Report(faulted, error, stopped: false);
+                    if (faults >= MaxConsecutiveFaults) { _listenerFaulted = true; Report(faulted, error, stopped: true); return; }
                     await Task.Delay(FaultRetryDelay, ct).ConfigureAwait(false);
                 }
             }
@@ -99,6 +106,14 @@ public sealed class SingleInstanceCoordinator : IDisposable
         // Stopping ends the loop normally, so StopAsync never rethrows into Exit or EntryPoint's teardown.
         // A non-cancellation fault that raced with Stop is still kept by type.
         catch (Exception ex) when (ct.IsCancellationRequested) { if (ex is not OperationCanceledException) _lastListenerFault = ex.GetType(); }
+    }
+    private void Report(Action<Type, bool>? faulted, Type error, bool stopped)
+    {
+        if (faulted is null) return;
+        // The reporter is the owner's own diagnostics, so its fault has nowhere else to go. It is kept by type like any
+        // listener fault and can never end the listener every later launch needs, or make Stop rethrow into teardown.
+        try { faulted(error, stopped); }
+        catch (Exception reporterFault) { _lastListenerFault = reporterFault.GetType(); }
     }
     private async Task ServeOneAsync(Func<CancellationToken, Task> restore, CancellationToken ct)
     {

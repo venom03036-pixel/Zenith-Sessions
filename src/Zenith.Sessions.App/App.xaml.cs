@@ -39,9 +39,15 @@ public partial class App : Application
             ApplyStartupTheme(Resources, Options.DataRoot);
             _shell = new ShellViewModel(Options.DataRoot, Options.SampleProfiles, Dispatcher,enableAutomaticPublicImages:!Options.SampleProfiles);
             MainWindow = new MainWindow(_shell); MainWindow.Show();
-            Coordinator?.Listen(ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
+            ListenForRepeatLaunches(Coordinator,_shell,ct => Dispatcher.InvokeAsync(() => ((MainWindow)MainWindow).RestoreFromLaunch(), System.Windows.Threading.DispatcherPriority.Normal, ct).Task);
         },()=>_shell,guard.Record,text=>MessageBox.Show(text,"Zenith Sessions"),Shutdown);
     }
+    /// <summary>
+    /// Starts the owner's restore listener, so a later launch shows this window. A fault it survives or stops on reaches the
+    /// shell's Diagnostics by type only (Rule 10) instead of leaving every later "already starting" message unexplained.
+    /// </summary>
+    internal static void ListenForRepeatLaunches(Zenith.Sessions.Windows.SingleInstanceCoordinator? coordinator,ShellViewModel shell,Func<CancellationToken,Task> restore)=>
+        coordinator?.Listen(restore,shell.RestoreListenerFaulted);
     /// <summary>
     /// The visible startup and its failure path, apart from the Application object (one per process) so tests can run both.
     /// <paramref name="open"/> builds the workspace and shows its window; <paramref name="workspace"/> returns whatever part of

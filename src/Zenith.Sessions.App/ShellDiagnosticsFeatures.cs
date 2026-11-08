@@ -39,6 +39,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientPriority=>"Client priority",
         ManagerSubsystem.Lifecycle=>"Startup and shutdown",
         ManagerSubsystem.ClientMemory=>"Client memory",
+        ManagerSubsystem.RepeatLaunch=>"Repeat launch",
         _=>"Unrecognized subsystem"
     };
 }
@@ -115,15 +116,36 @@ public sealed partial class ShellViewModel
         finally {if(ReferenceEquals(_diagnosticExportStop,stop)) _diagnosticExportStop=null;}
     }
     private void CancelDiagnosticExport()=>_diagnosticExportStop?.Cancel();
+    internal const string RepeatLaunchStoppedStatus="a new launch cannot bring this window forward until you exit from the tray and start Zenith Sessions again";
+    // UI thread only: set by the dispatcher step below, read by RefreshDiagnosticsStatus.
+    private bool _repeatLaunchListenerStopped;
+    /// <summary>
+    /// The single-instance restore listener's fault reporter, called on the listener's own task. The type alone is recorded
+    /// (Rule 10). Once the listener has stopped, Diagnostics says that a new launch cannot show this window, because that
+    /// launch can only say "already starting". The status and visible rows update now, not on the next monitor tick.
+    /// </summary>
+    internal void RestoreListenerFaulted(Type errorType,bool stopped)
+    {
+        _diagnostics.RecordFailure(ManagerSubsystem.RepeatLaunch,errorType);
+        if(_dispatcher.HasShutdownStarted) return;
+        _dispatcher.BeginInvoke(new Action(()=>
+        {
+            if(_shuttingDown) return;
+            if(stopped) _repeatLaunchListenerStopped=true;
+            RefreshDiagnosticsView();
+        }));
+    }
     private void RefreshDiagnosticsStatus()
     {
         bool live=DiagnosticsLive;long dropped=_diagnostics.DroppedEvents;
         string? stopped=live?null:_overviewMonitorStopped?"monitoring stopped":_libraryUnavailable?"startup needs attention":null;
         // A disk-writer failure always wins so the header agrees with the storage footer.
-        DiagnosticsStatus=_diagnostics.Failure??(stopped is not null
+        string status=_diagnostics.Failure??(stopped is not null
             ? $"{(dropped>0?$"Diagnostics busy: {dropped} routine events skipped":"Diagnostics recording")} · {stopped} · view updates when refreshed"
             : !live?"Diagnostics starting"
             : dropped>0?$"Diagnostics busy: {dropped} routine events skipped.":"Diagnostics active · bounded to three log files");
+        // A stopped restore listener is a separate fact, so it is kept even next to a disk-writer failure.
+        DiagnosticsStatus=_repeatLaunchListenerStopped?status+" · "+RepeatLaunchStoppedStatus:status;
         // Keep the view label honest even when the tab is hidden, paused or locked as liveness changes.
         if(live!=_diagnosticsLiveShown) {_diagnosticsLiveShown=live;Raise(nameof(DiagnosticViewStatus));}
     }
