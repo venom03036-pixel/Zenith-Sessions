@@ -66,6 +66,8 @@ public static class SettingsSearchCatalog
             SettingsSearchTarget.Appearance, "shutdown", "shut down", "power off", "turn off", "switch off", "timer", "countdown", "sleep timer", "schedule", "auto shutdown"),
         E("public-network-guard", "Hold launches on a public network", "Choose whether new launches are held and the dashboard locks while Windows files the active connection as Public (café, hotel or airport Wi-Fi). Off by default; held requests start again once the network is private. Save settings to apply.",
             SettingsSearchTarget.Appearance, "public network", "public wifi", "wifi", "wi-fi", "hotspot", "café", "cafe", "hotel", "airport", "network profile", "untrusted network", "guard", "security", "privacy"),
+        E("discord-alerts", "Send Discord alerts", "Choose whether Zenith posts an alert to one saved Discord webhook when a client crashes, stops responding or is disconnected, and when a launch batch has finished. Off by default; the webhook URL is kept protected. Save settings to apply.",
+            SettingsSearchTarget.Appearance, "discord", "webhook", "web hook", "alert", "alerts", "notification", "notifications", "notify", "crash", "hang", "disconnect", "batch finished", "message", "ping", "channel"),
 
         E("profile-maximum-efficiency", "Maximum Efficiency", "Choose the manager profile with less frequent process observations and wider eligible-start spacing.",
             SettingsSearchTarget.Performance, "performance preset", "monitoring", "cadence", "sampling"),

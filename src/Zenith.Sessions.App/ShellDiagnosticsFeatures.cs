@@ -42,6 +42,7 @@ public sealed record DiagnosticRow(ManagerDiagnosticEvent Event)
         ManagerSubsystem.ClientSound=>"Client sound",
         ManagerSubsystem.ScheduledShutdown=>"Scheduled shutdown",
         ManagerSubsystem.PublicNetwork=>"Public-network guard",
+        ManagerSubsystem.DiscordAlerts=>"Discord alerts",
         _=>"Unrecognized subsystem"
     };
 }

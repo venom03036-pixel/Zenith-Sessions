@@ -413,6 +413,8 @@ public sealed partial class ShellViewModel
             // after the commit withdraws the rows this command created; rows the queue already
             // cancelled for a stop are left alone.
             bool withdrawn=ct.IsCancellationRequested||epoch!=_directoryGeneration;
+            // The recorded requests are one batch for Discord alerts, which announce it once every request has settled.
+            if(!withdrawn) NoteLaunchBatchRecorded(rows,target.PlaceId);
             int withServer=0;
             foreach(var row in rows)
             {

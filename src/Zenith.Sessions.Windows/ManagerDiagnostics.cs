@@ -7,14 +7,14 @@ public enum ManagerEventKind { Started,ProfileSaved,ProfilesRemoved,ProfilesImpo
     AuthorizationDisconnected,OperationFailed,Panic,ControlsLocked,Shutdown,DroppedEvents,
     // Appended so earlier numeric values keep their meaning; the disk log and export store names.
     AuthorizationChecked,HandoffInspected,HandoffNotCompleted,ControlsUnlocked,ShutdownScheduled,ShutdownScheduleCancelled,
-    PublicNetworkDetected,PublicNetworkCleared }
+    PublicNetworkDetected,PublicNetworkCleared,DiscordWebhookSaved,DiscordWebhookCleared,DiscordAlertSent }
 
 /// <summary>
 /// The closed set of manager areas a failure can be attributed to, so a record says which subsystem failed
 /// without any free text. Append new members only; the live journal and the report carry the name.
 /// </summary>
 public enum ManagerSubsystem { Library,Vault,Queue,SignIn,Directory,Telemetry,ClientWindows,Previews,MacroHost,Settings,Diagnostics,
-    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ScheduledShutdown,PublicNetwork }
+    Launch,Installation,ClientPriority,Lifecycle,ClientMemory,RepeatLaunch,ClientSound,ScheduledShutdown,PublicNetwork,DiscordAlerts }
 
 // No free-text payload: tokens, URLs, profile names, window titles and exception messages cannot enter this log.
 public sealed class ManagerDiagnostics : IAsyncDisposable
@@ -216,6 +216,8 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
         if(typeof(InvalidOperationException).IsAssignableFrom(type)) return "InvalidOperationException";
         if(typeof(NotSupportedException).IsAssignableFrom(type)) return "NotSupportedException";
         if(typeof(System.ComponentModel.Win32Exception).IsAssignableFrom(type)) return "Win32Exception";
+        // Outbound web faults (the Discord webhook, for one) are kept apart from local I/O faults; still a type name only.
+        if(typeof(System.Net.Http.HttpRequestException).IsAssignableFrom(type)) return "HttpRequestException";
         if(typeof(System.Data.Common.DbException).IsAssignableFrom(type)) return "DatabaseException";
         return typeof(Exception).IsAssignableFrom(type)?"Exception":"NonExceptionType";
     }

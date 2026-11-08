@@ -140,6 +140,10 @@ internal static class PackagedLayoutCheck
                 throw new InvalidOperationException("The packaged client sound controls could not be laid out.");
             if (window.FindName("SettingsPublicNetworkGuard") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsPublicNetworkHeld)
                 throw new InvalidOperationException("The packaged public-network guard control lost its binding or its off default.");
+            if (window.FindName("SettingsDiscordAlerts") is not System.Windows.Controls.CheckBox { IsChecked: false } || vm.IsDiscordAlertsActive || vm.HasDiscordWebhook
+                || window.FindName("SettingsDiscordWebhook") is not System.Windows.Controls.PasswordBox { Password.Length: 0 }
+                || window.FindName("SettingsSendTestAlert") is not System.Windows.Controls.Button { IsEnabled: false })
+                throw new InvalidOperationException("The packaged Discord alert controls lost their binding, their masked webhook field or their off default.");
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }

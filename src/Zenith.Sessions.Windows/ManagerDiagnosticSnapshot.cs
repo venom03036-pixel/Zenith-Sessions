@@ -37,6 +37,9 @@ public sealed record ManagerDiagnosticEvent(long Sequence, DateTimeOffset Utc, M
         ManagerEventKind.ShutdownScheduleCancelled => "Windows cancelled the scheduled PC shutdown.",
         ManagerEventKind.PublicNetworkDetected => "A Public network connected: the guard held new launches and locked the controls.",
         ManagerEventKind.PublicNetworkCleared => "The active network is no longer Public; held launch requests may start again.",
+        ManagerEventKind.DiscordWebhookSaved => "A Discord webhook URL was saved to protected storage.",
+        ManagerEventKind.DiscordWebhookCleared => "The saved Discord webhook was removed.",
+        ManagerEventKind.DiscordAlertSent => "Discord accepted an alert message.",
         ManagerEventKind.DroppedEvents => "Some disk diagnostic events were skipped.",
         _ => "Unrecognized diagnostic event."
     };
