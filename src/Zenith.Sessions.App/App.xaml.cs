@@ -72,12 +72,14 @@ public partial class App : Application
         static async Task StopAsync(IAsyncDisposable started)=>await started.DisposeAsync();
     }
     /// <summary>
-    /// UI thread, before the manager window is created: the theme saved in <paramref name="root"/>, so the first frame does not
-    /// flash the default palette. A missing, damaged or unreadable file keeps the default without delay; the settings load that
-    /// follows the window's Loaded event applies the theme it reads (for example from the backup) and reports any problem.
+    /// UI thread, before the manager window is created: the theme saved in <paramref name="root"/>, as Windows currently shows it
+    /// (Follow Windows and High Contrast), so the first frame does not flash the default palette. A missing, damaged or unreadable
+    /// file keeps the default without delay; the settings load that follows the window's Loaded event applies the theme it reads
+    /// (for example from the backup) and reports any problem.
     /// </summary>
-    internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>
-        ThemeManager.Apply(resources,Zenith.Sessions.Windows.SettingsStore.ReadTheme(root)??ThemeCatalog.DefaultId);
+    internal static void ApplyStartupTheme(ResourceDictionary resources,string root)=>ApplyStartupTheme(resources,root,SystemAppearance.Read());
+    internal static void ApplyStartupTheme(ResourceDictionary resources,string root,SystemAppearance system)=>
+        ThemeManager.Apply(resources,SessionsThemes.Effective(Zenith.Sessions.Windows.SettingsStore.ReadTheme(root),system));
     internal static string StartupFailureMessage(Type error)=>
         $"Zenith Sessions could not open its local workspace ({error.Name}). Existing files were preserved. Check the app files and data-folder access, then retry.";
 }

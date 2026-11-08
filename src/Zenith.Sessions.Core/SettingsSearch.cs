@@ -29,8 +29,8 @@ public static class SettingsSearchCatalog
     // pages are found by typing, which keeps the blank list within the ten-result bound.
     private static readonly SettingsSearchEntry[] Entries =
     [
-        E("appearance", "Appearance", "Choose an existing theme palette. Theme changes apply immediately.",
-            SettingsSearchTarget.Appearance, "theme", "palette", "colour", "color", "accent", "dark"),
+        E("appearance", "Appearance", "Choose a dark theme, Light, or Follow Windows to match the Windows app mode. Windows High Contrast replaces the theme while it is on. Theme changes apply immediately.",
+            SettingsSearchTarget.Appearance, "theme", "palette", "colour", "color", "accent", "dark", "light", "dark mode", "light mode", "follow windows", "system", "high contrast"),
         E("performance-profiles", "Manager performance profiles", "Choose one of five manager monitoring and future-start pacing profiles, then save settings.",
             SettingsSearchTarget.Performance, "presets", "efficiency", "balanced", "high performance", "main account priority", "custom"),
         E("custom-timing", "Custom timing", "Inspect process, dashboard, launch spacing and stabilization intervals. Choose Custom in the profile control to edit them.",

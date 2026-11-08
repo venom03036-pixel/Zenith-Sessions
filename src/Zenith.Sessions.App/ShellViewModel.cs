@@ -217,7 +217,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public ObservableCollection<LaunchRow> Launches { get; }=[];
     public IReadOnlyList<GroupFilter> Groups { get; private set; } = [GroupFilter.All];
     public ObservableCollection<string> Events { get; } = [];
-    public IReadOnlyList<ThemePreset> Themes => ThemeCatalog.Presets;
+    public IReadOnlyList<ThemePreset> Themes => SessionsThemes.Choices;
     public RecentClientHistoryViewModel RecentClients { get; }
     private string _processInventoryStatus="Process inventory freshness has not been established.";
     public string ProcessInventoryStatus {get=>_processInventoryStatus;private set=>Set(ref _processInventoryStatus,value);}
@@ -281,7 +281,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     /// </summary>
     internal bool CloseButtonExitsNow => _savedSettings.CloseButtonExits && !_shuttingDown;
     public bool IsAuthorizing => _authorizationStop is not null;
-    public string ThemeName => ThemeCatalog.Resolve(_settings.Theme).Name;
+    public string ThemeName => SessionsThemes.Choice(_settings.Theme).Name;
     public Command Navigate { get; }
     public Command OpenFolder { get; }
     public Command Panic { get; }
@@ -365,7 +365,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Panic = new(_ => StopOperations("Panic stop: automation paused. Roblox clients remain open."));
         Lock = new(_ => LockDashboard()); Unlock = new(_ => { bool wasLocked = IsLocked; IsLocked = false; if (wasLocked) _diagnostics.Record(ManagerEventKind.ControlsUnlocked); ReloadFavoritesAfterUnlock(); Notice = "Dashboard unlocked. Automation remains stopped until explicitly started."; RestartIdleLock(); LoadClientDisplaysOnce(); });
         SaveSettings = new(_ => SavePreferencesAsync(), error => Fail(error,ManagerSubsystem.Settings));
-        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = ThemeCatalog.Resolve(id).Id }; ThemeChanged?.Invoke(ThemeCatalog.Resolve(id)); Raise(nameof(ThemeName)); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
+        ApplyTheme = new(async p => { if (_ready && p is string id) { _settings = _settings with { Theme = SessionsThemes.Normalize(id) }; ApplyEffectiveTheme(); await SaveCurrentSettingsAsync(); } }, error => Fail(error,ManagerSubsystem.Settings));
         NextPage = new(async _ => { if ((_page + 1L) * 100 < _filteredTotal) { _page++; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         PreviousPage = new(async _ => { if (_page > 0) { _page--; await LoadAccountsAsync(_lifetime.Token); } }, error => Fail(error,ManagerSubsystem.Library));
         FocusSession = new(async p => { if (!IsLocked && p is SessionRow session) Notice = await _monitor.FocusAsync(session.Observation, _lifetime.Token) ? "Roblox window activated." : "Window changed or Windows denied activation. Select its taskbar button to bring it forward."; }, error => Fail(error,ManagerSubsystem.ClientWindows));
@@ -418,7 +418,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             LoadPerformanceDraft(_settings.Performance!);ApplyPerformance(_settings.Performance!);
             LoadClientLayoutDraft(_settings.WindowLayout!);
             foreach (string field in new[] { nameof(SpareRam), nameof(PhysicalPerClient), nameof(CommitPerClient), nameof(MaximumClients), nameof(OAuthClientId), nameof(CallbackPort),nameof(CallbackUrl), nameof(Dense), nameof(ThemeName), nameof(CloseButtonExits), nameof(CloseButtonLabel), nameof(IdleLockMinutes), nameof(PanicShortcutText) }) Raise(field);
-            ThemeChanged?.Invoke(ThemeCatalog.Resolve(_settings.Theme));
+            ApplyEffectiveTheme();
             stage=ManagerSubsystem.Library;await Task.Run(() => _accounts.InitializeAsync(_lifetime.Token));
             stage=ManagerSubsystem.SignIn;await SweepSignInFoldersAsync();
             stage=ManagerSubsystem.Vault;await CleanupCredentialsAsync();

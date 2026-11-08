@@ -12,6 +12,9 @@
   <ItemGroup>
     <Compile Include="../MacroSuite.App/Themes/ThemeCatalog.cs" Link="Themes/ThemeCatalog.cs" />
     <Compile Include="../MacroSuite.App/Themes/ThemeManager.cs" Link="Themes/ThemeManager.cs" />
+    <!-- Contrast-enforced palette generation for the Light theme. AppearanceStore (the macro host's custom-theme file) is not linked. -->
+    <Compile Include="../MacroSuite.App/Themes/AppearancePalette.cs" Link="Themes/AppearancePalette.cs" />
+    <Compile Include="../MacroSuite.App/Themes/AppearanceProfile.cs" Link="Themes/AppearanceProfile.cs" />
     <Compile Include="../MacroSuite.App/Themes/ThemeAwareLogo.cs" Link="Themes/ThemeAwareLogo.cs" />
     <Compile Include="../MacroSuite.App/Common/ValueConverters.cs" Link="Common/ValueConverters.cs" />
     <Page Include="../MacroSuite.App/Themes/Colors.xaml" Link="Themes/Colors.xaml" />

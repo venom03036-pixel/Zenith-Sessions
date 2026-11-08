@@ -1348,6 +1348,7 @@
                 </DataTemplate>
               </ItemsControl.ItemTemplate>
             </ItemsControl>
+            <TextBlock x:Name="SettingsThemeStatus" Text="{Binding ThemeStatus}" Style="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" Margin="0,0,0,16" />
             <CheckBox x:Name="SettingsCloseButtonExits" Content="Close button exits the manager" IsChecked="{Binding CloseButtonExits}" HorizontalAlignment="Left" MinHeight="36" AutomationProperties.Name="Close button exits the manager" />
             <TextBlock Text="Off by default: the close button keeps the manager running in the tray, and one click on the tray icon reopens it. When on, the close button stops this manager the same way as Exit. Save settings to apply." Style="{StaticResource Muted}" FontSize="12" Margin="0,4,0,16" />
             <StackPanel Orientation="Horizontal">

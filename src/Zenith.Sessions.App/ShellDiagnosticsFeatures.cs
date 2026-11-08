@@ -5,7 +5,6 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using MacroSuite.App.Themes;
 using Zenith.Sessions.Core;
 using Zenith.Sessions.Windows;
 
@@ -205,7 +204,7 @@ public sealed partial class ShellViewModel
             Performance=new {performance.Profile,CustomTiming=performance.Profile==ManagerPerformanceProfile.Custom,
                 performance.ProcessSampleMs,performance.PresentationMs,performance.StaggerMs,performance.StabilizationMs},
             // The catalog id, never the stored text, so an edited settings file cannot carry free text into a report.
-            Theme=ThemeCatalog.Resolve(_settings.Theme).Id,
+            Theme=SessionsThemes.Normalize(_settings.Theme),
             Capacity=new {limits.SparePhysicalPercent,limits.SparePhysicalGiB,limits.SpareCommitPercent,limits.SpareCommitGiB,
                 limits.NewClientPhysicalGiB,limits.NewClientCommitGiB,limits.UserMaximum},
             SessionTotals=new {snapshot.TotalEvents,snapshot.InfoCount,snapshot.WarningCount,snapshot.ErrorCount},

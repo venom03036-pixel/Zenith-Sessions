@@ -15,7 +15,7 @@ public partial class MainWindow : Window
 {
     private readonly ShellViewModel _vm;
     private readonly Forms.NotifyIcon? _tray;
-    private bool _exiting, _exitStarted;
+    private bool _exiting, _exitStarted, _closed;
     private HwndSource? _source;
     private readonly GlobalPanicRegistration _panicKey=new();
     private readonly ManagerWindowPlacement? _startPlacement;
@@ -39,6 +39,11 @@ public partial class MainWindow : Window
         StateChanged+=(_,_)=>UpdatePreviewVisibility();
         UpdatePreviewVisibility();
         vm.ThemeChanged += SetTheme;
+        // Light or dark app mode and High Contrast: read once now, then only when Windows announces a change (Rule 14).
+        // Settings apply the palette when they load; OnClosed removes both static subscriptions (Rule 13).
+        vm.SetSystemAppearance(SystemAppearance.Read());
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
+        SystemParameters.StaticPropertyChanged += OnSystemParameterChanged;
         vm.PropertyChanged += AnnouncePageChange;
         using var stream = Application.GetResourceStream(new Uri("pack://application:,,,/Assets/Zenith_Macros_Teal.ico")).Stream;
         using var original = new System.Drawing.Icon(stream);
@@ -76,6 +81,16 @@ public partial class MainWindow : Window
         if(_vm.CompactLayout!=compact) _vm.CompactLayout=compact;
     }
     private void SetTheme(ThemePreset theme) => ThemeManager.Apply(Application.Current.Resources, theme);
+    // SystemEvents raises on its own thread and WPF raises StaticPropertyChanged on this one; both re-read here on the UI thread.
+    // Switching the app mode arrives as General, a contrast theme as Accessibility or Color.
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
+    {
+        if (e.Category is UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.VisualStyle or UserPreferenceCategory.Accessibility)
+            Dispatcher.BeginInvoke(RefreshSystemAppearance);
+    }
+    private void OnSystemParameterChanged(object? sender, PropertyChangedEventArgs e)
+    { if (e.PropertyName == nameof(SystemParameters.HighContrast)) Dispatcher.BeginInvoke(RefreshSystemAppearance); }
+    private void RefreshSystemAppearance() { if (!_closed) _vm.SetSystemAppearance(SystemAppearance.Read()); }
     private void UpdatePreviewVisibility()=>_vm.SetPreviewWindowVisible(IsVisible && WindowState!=WindowState.Minimized);
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs e)
     { if (e.Reason == SessionSwitchReason.SessionLock) Dispatcher.BeginInvoke(_vm.LockDashboard); }
@@ -110,7 +125,8 @@ public partial class MainWindow : Window
     }
     protected override void OnClosed(EventArgs e)
     {
-        _panicKey.Dispose();
+        _panicKey.Dispose(); _closed = true;
+        SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged; SystemParameters.StaticPropertyChanged -= OnSystemParameterChanged;
         _source?.RemoveHook(OnMessage); SystemEvents.SessionSwitch -= OnSessionSwitch; InputManager.Current.PostProcessInput -= NoteUserInput; _vm.ThemeChanged -= SetTheme; _vm.PropertyChanged -= AnnouncePageChange;
         _vm.SettingsSearchNavigationRequested-=OpenSearchedSetting;
         if (_tray is not null) { _tray.Visible = false; _tray.ContextMenuStrip?.Dispose(); _tray.Icon?.Dispose(); _tray.Dispose(); } base.OnClosed(e);

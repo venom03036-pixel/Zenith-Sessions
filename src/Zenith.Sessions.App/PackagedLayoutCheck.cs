@@ -123,6 +123,7 @@ internal static class PackagedLayoutCheck
             if (trimTools.ActualHeight <= 0)
                 throw new InvalidOperationException("The packaged memory trim controls could not be laid out.");
             RequireSearchReachesSessionsLayout(window, vm);
+            RequireEveryThemeLaysOut(app.Resources, content, SessionsThemes.PackagedPalettes());
             ct.ThrowIfCancellationRequested();
         }
         catch (Exception ex) { failure = ex; }
@@ -134,6 +135,23 @@ internal static class PackagedLayoutCheck
             catch (Exception ex) { failure ??= ex; }
         }
         if (failure is not null) ExceptionDispatchInfo.Capture(failure).Throw();
+    }
+
+    // Every palette Settings can show, and High Contrast from this computer's SystemColors, must fill every key the shipped window
+    // reads, keep its text readable and lay the window out. The default palette is restored afterwards, whatever happened.
+    internal static void RequireEveryThemeLaysOut(ResourceDictionary resources, FrameworkElement content, IEnumerable<ThemePreset> palettes)
+    {
+        try
+        {
+            foreach (var palette in palettes)
+            {
+                if (SessionsThemes.ReadabilityProblem(palette) is { } problem)
+                    throw new InvalidOperationException($"The packaged {palette.Name} theme is not readable: {problem}.");
+                ThemeManager.Apply(resources, palette);
+                content.Measure(new Size(1320, 840)); content.Arrange(new Rect(0, 0, 1320, 840)); content.UpdateLayout();
+            }
+        }
+        finally { ThemeManager.Apply(resources, ThemeCatalog.DefaultId); }
     }
 
     // Settings search must reach a preference on another page through the shipped window: open Sessions and the collapsed
