@@ -8,6 +8,9 @@
     <IsPackable>false</IsPackable>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <UseWPF>true</UseWPF>
+    <!-- Match the referenced App's compile-time profile, including an explicit Debug override. -->
+    <DeveloperMode Condition="'$(DeveloperMode)' == '' and '$(Configuration)' == 'Debug'">true</DeveloperMode>
+    <DeveloperMode Condition="'$(DeveloperMode)' == ''">false</DeveloperMode>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(DeveloperMode)' == 'true'">

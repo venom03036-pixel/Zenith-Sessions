@@ -54,7 +54,11 @@ public sealed class LicensingViewModelTests : IDisposable
         vm.InstallLicenseCommand.Execute(null);
 
         vm.LicenseTier.Should().Be("FREE");
+#if DEVELOPER_MODE
         vm.StatusMessage.Should().Be(LicenseInstallPolicy.UnverifiedKeyMessage);
+#else
+        vm.StatusMessage.Should().Be(LicenseInstallPolicy.VerificationUnavailableMessage);
+#endif
         vm.Features.First(f => f.FeatureName == nameof(FeatureId.AIVision)).IsLicensed.Should().BeFalse();
         vm.Features.First(f => f.FeatureName == nameof(FeatureId.PluginExecution)).IsLicensed.Should().BeFalse();
         vm.Features.First(f => f.FeatureName == nameof(FeatureId.AutonomousMode)).IsLicensed.Should().BeFalse();
@@ -107,18 +111,25 @@ public sealed class LicensingViewModelTests : IDisposable
         vm.InstallLicenseCommand.Execute(null);
         vm.LicenseTier.Should().Be("FREE");
 
-        vm.ApplyAdminKeyCommand.Execute(null);
+        // Clearing a populated store is independent of whether this build permits admin activation.
+        // The fixture owns this synthetic license and file; the separate command test covers the gate.
+        service.InstallLicense(LicenseInfo.CreateAdministrator("SYNTHETIC-CLEAR-FIXTURE", "Administrator",
+            "fixture@example.invalid", DateTimeOffset.UtcNow, DateTimeOffset.MaxValue));
         vm.LicenseTier.Should().Be("ADMINISTRATOR");
+        vm.IsRootAuthority.Should().BeTrue();
+        vm.Features.Should().OnlyContain(f => f.IsLicensed);
 
         vm.ClearLicenseCommand.Execute(null);
 
         vm.LicenseTier.Should().Be("FREE");
         vm.StatusMessage.Should().Contain("Reverted to Free tier");
         vm.Features.First(f => f.FeatureName == nameof(FeatureId.AIVision)).IsLicensed.Should().BeFalse();
+        vm.IsRootAuthority.Should().BeFalse();
+        File.Exists(_testLicensePath).Should().BeFalse();
     }
 
     [Fact]
-    public void ApplyAdminKey_ActivatesAdministratorTier_WithEmailAndRootAuthority()
+    public void ApplyAdminKey_HonorsBuildProfile_AndReportsExactEntitlements()
     {
         var service = new LocalLicenseService(_testLicensePath);
         var vm = new LicensingViewModel(service);
@@ -126,6 +137,8 @@ public sealed class LicensingViewModelTests : IDisposable
         vm.EmailInput = "dev@zenithmacros.dev";
         vm.ApplyAdminKeyCommand.Execute(null);
 
+#if DEVELOPER_MODE
+        vm.IsDeveloperMode.Should().BeTrue();
         vm.LicenseTier.Should().Be("ADMINISTRATOR");
         vm.CustomerId.Should().Be("Administrator");
         vm.LicensedEmail.Should().Be("dev@zenithmacros.dev");
@@ -136,5 +149,17 @@ public sealed class LicensingViewModelTests : IDisposable
         vm.ExpirationText.Should().Be("Permanent License");
         vm.UnlockedCountText.Should().Be("10/10 unlocked");
         vm.Features.Should().OnlyContain(f => f.IsLicensed);
+#else
+        vm.IsDeveloperMode.Should().BeFalse();
+        vm.BuildProfileText.Should().Be("Public Release");
+        vm.LicenseTier.Should().Be("FREE");
+        vm.IsRootAuthority.Should().BeFalse();
+        vm.ProductAccessText.Should().Be("Free");
+        vm.StatusMessage.Should().Be("Master Admin Key activation is restricted to internal developer builds.");
+        vm.UnlockedCountText.Should().Be("2/10 unlocked");
+        vm.Features.Where(f => f.FeatureName is not (nameof(FeatureId.BasicPlayback) or nameof(FeatureId.BasicMacroRecording)))
+            .Should().OnlyContain(f => !f.IsLicensed);
+        File.Exists(_testLicensePath).Should().BeFalse();
+#endif
     }
 }
