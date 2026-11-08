@@ -39,7 +39,7 @@ public sealed class LaunchEvidenceRow(LaunchOperation operation) : Observable
             LaunchLogLinkStatus.Linked when link.Process is { } holder=>$"Client log: names this launch's browser tracker · held by PID {holder.ProcessId} · supporting evidence only, not account or arrival proof",
             LaunchLogLinkStatus.Linked=>"Client log: names this launch's browser tracker · no running process holds it now · supporting evidence only, not account or arrival proof",
             LaunchLogLinkStatus.NotLinked=>"Client log: none found yet that names this launch's browser tracker",
-            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker",
+            LaunchLogLinkStatus.Ambiguous=>"Client log: not matched · more than one log or launch shares this browser tracker, or the log naming it also names another launch's tracker",
             LaunchLogLinkStatus.Unavailable=>"Client log: unavailable · client logs could not be read right now",
             _=>"Client log: not checked yet"
         };

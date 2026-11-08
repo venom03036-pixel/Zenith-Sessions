@@ -60,10 +60,14 @@ public enum LaunchLogLinkStatus
     NotLinked,
     /// <summary>
     /// Every log written since the launch began has had a successful head read, exactly one such log names it, no other
-    /// offered launch with the same tracker began at the same instant, and that log names no other offered launch's tracker.
+    /// offered launch with the same tracker began at the same instant, and that log names the tracker of no other offered
+    /// launch that had begun when the log was created (a launch that began later cannot own it).
     /// </summary>
     Linked,
-    /// <summary>More than one such log names it, another offered launch with the same tracker began at the same instant, or the log names another launch's tracker too.</summary>
+    /// <summary>
+    /// More than one such log names it, another offered launch with the same tracker began at the same instant, or the log
+    /// also names the tracker of another launch that had begun when the log was created.
+    /// </summary>
     Ambiguous,
     /// <summary>Client log discovery, or the whole pass, is unavailable.</summary>
     Unavailable
@@ -512,7 +516,8 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
     /// One row per offered launch. A launch links to a log only when, among the logs written since it began, every one's
     /// head has been read and its last read succeeded, and exactly one names its tracker and is this launch's (OwnerOf: created since it
     /// began, and before any later offered launch with that tracker began); no other launch with that tracker began at the
-    /// same instant; and that log names no other offered launch's tracker. A relaunch with the same tracker therefore links each
+    /// same instant; and that log names no other offered launch's tracker, counting only launches that had begun when the
+    /// log was created, since a launch that began later cannot own it. A relaunch with the same tracker therefore links each
     /// launch to its own log. Process is that log's holder only while the holder binding is current and unique, exactly as
     /// the per-process rows report it.
     /// </summary>
@@ -544,12 +549,16 @@ public sealed class WindowsSessionLogCorrelator : IAsyncDisposable
         {
             if (linked[index] is not { Head: { } head } reader) continue;
             // Exclusive: the log names no other offered launch's tracker, whether or not that launch could link itself
-            // (Ambiguous or pending), and no other launch links to it. Same-tracker launches are settled by OwnerOf.
-            // Bounded: at most MaximumLaunches x 4 tracker comparisons per linked launch, and no allocation.
+            // (Ambiguous or pending), and no other launch links to it. Same-tracker launches are settled by OwnerOf, and a
+            // launch that began after the log was created cannot own it (the same time rule the loop above applies), so
+            // its tracker in the head takes nothing from this launch. Bounded: at most MaximumLaunches x 4 tracker
+            // comparisons per linked launch, and no allocation.
             bool exclusive = true;
             for (int other = 0; other < launches.Length; other++)
                 exclusive &= other == index || !ReferenceEquals(linked[other], reader)
-                    && (launches[other].BrowserTrackerId == launches[index].BrowserTrackerId || Array.IndexOf(head.Trackers, launches[other].BrowserTrackerId) < 0);
+                    && (launches[other].BrowserTrackerId == launches[index].BrowserTrackerId
+                        || launches[other].NotBeforeUtcTicks > head.CreatedUtcTicks
+                        || Array.IndexOf(head.Trackers, launches[other].BrowserTrackerId) < 0);
             links[index] = !exclusive ? new(launches[index].OperationId, LaunchLogLinkStatus.Ambiguous)
                 : new(launches[index].OperationId, LaunchLogLinkStatus.Linked,
                     reader.Process is { } process && matches.TryGetValue(process, out var holder) && ReferenceEquals(holder, reader) ? process : null);

@@ -122,6 +122,29 @@ public sealed partial class SessionLogCorrelatorTests
     [Theory]
     [InlineData(true)]
     [InlineData(false)]
+    public async Task ALogNamingTheTrackerOfALaunchThatBeganAfterItWasCreatedStillLinksTheLaunchItBelongsTo(bool secondBeganAfterTheLog)
+    {
+        // The held log, created 30 minutes ago, names both launches' trackers. When the second launch began 20 minutes
+        // ago, that log cannot be its own (it was created before the launch began), so naming the second's tracker does
+        // not make the log any less the first launch's. Had the second launch begun at the instant the log was created,
+        // the log could be either's, and neither links.
+        var client = Key(77); var now = DateTimeOffset.UtcNow; var created = now.AddMinutes(-30);
+        Write(TrackerLine() + TrackerLine(Tracker + 1, "BTID is overriden to "));
+        File.SetCreationTimeUtc(Log, created.UtcDateTime);
+        var probe = new Probe(Log, client) { Files = [new(Log, ClientLogVariant.Win32, now)] };
+        LaunchLogExpectation first = Launch(notBefore: now.AddHours(-1).UtcTicks),
+            second = Launch(Tracker + 1, (secondBeganAfterTheLog ? created.AddMinutes(10) : created).UtcTicks);
+        await using var worker = new WindowsSessionLogCorrelator(probe);
+        worker.Offer(Desktop(client), client.HostId, [first, second]);
+        LaunchLogLink[] expected = secondBeganAfterTheLog
+            ? [new(first.OperationId, LaunchLogLinkStatus.Linked, client), new(second.OperationId, LaunchLogLinkStatus.NotLinked)]
+            : [new(first.OperationId, LaunchLogLinkStatus.Ambiguous), new(second.OperationId, LaunchLogLinkStatus.Ambiguous)];
+        Assert.Equal(expected, (await After(worker)).Launches);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
     public async Task ARelaunchWithTheSameTrackerLinksEachLogToTheLatestLaunchThatBeganBeforeIt(bool previousLogKept)
     {
         // One browser tracker, launched two hours ago and again an hour ago. The log created since the second launch began
