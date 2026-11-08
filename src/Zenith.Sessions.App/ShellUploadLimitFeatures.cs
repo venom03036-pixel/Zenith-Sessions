@@ -192,7 +192,7 @@ public sealed partial class ShellViewModel
     private async Task DisposeUploadLimitFeaturesAsync()
     {
         _uploadLimit.Reconciled -= UploadLimitReconciled;
-        StopUploadLimitOperations(panic: false);
+        StopShutdownStep(()=>StopUploadLimitOperations(panic: false));
         try { await _uploadLimitWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.UploadLimit, error.GetType()); }
         PropertyChanged -= UploadLimitOwnerChanged;

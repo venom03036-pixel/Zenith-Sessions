@@ -1245,29 +1245,38 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         if(_shuttingDown) return;
         _shuttingDown=true;
-        ClearPrivateAccountObservations();
-        StopIdleLock();
-        StopKeepAwakeForShutdown();
-        StopClientPriorityOperations();
-        StopClientTrimOperations();
-        StopClientSoundOperations();
-        StopSignInBrowserData();
-        StopShutdownCountdown();
-        StopPublicNetworkWatch();
-        StopDiscordAlertOutbox();
-        StopDiscordPresence();
-        StopClientCloseOperations();
-        DestinationSearch?.CancelWork(clearInput:true);
-        MacroAssignments.CancelWork();
-        MacroHostCatalog.CancelWork();
-        DisposeSettingsSearch();
-        RefreshClientPreviewContext();
-        CancelPerformanceTransfers();
-        StopDataEncryption();News.Stop();
-        CancelInstallationWork();
-        RecipientBundles.CancelWork();
-        _launchQueue.SignalPanic();
-        _lifetime.Cancel(); _queryCancellation?.Cancel(); _authorizationStop?.Cancel();
+        // Cancellation callbacks and presentation listeners are external to this owner. Every stop must still run if one throws.
+        StopShutdownStep(ClearPrivateAccountObservations);
+        StopShutdownStep(StopIdleLock);
+        StopShutdownStep(StopKeepAwakeForShutdown);
+        StopShutdownStep(StopClientPriorityOperations);
+        StopShutdownStep(StopClientTrimOperations);
+        StopShutdownStep(StopClientSoundOperations);
+        StopShutdownStep(StopSignInBrowserData);
+        StopShutdownStep(StopShutdownCountdown);
+        StopShutdownStep(StopPublicNetworkWatch);
+        StopShutdownStep(StopDiscordAlertOutbox);
+        StopShutdownStep(StopDiscordPresence);
+        StopShutdownStep(StopClientCloseOperations);
+        StopShutdownStep(()=>StopUploadLimitOperations(panic:false));
+        StopShutdownStep(()=>DestinationSearch?.CancelWork(clearInput:true));
+        StopShutdownStep(MacroAssignments.CancelWork);
+        StopShutdownStep(MacroHostCatalog.CancelWork);
+        StopShutdownStep(DisposeSettingsSearch);
+        StopShutdownStep(RefreshClientPreviewContext);
+        StopShutdownStep(CancelPerformanceTransfers);
+        StopShutdownStep(StopDataEncryption);StopShutdownStep(News.Stop);
+        StopShutdownStep(CancelInstallationWork);
+        StopShutdownStep(()=>RecipientBundles.CancelWork());
+        StopShutdownStep(_launchQueue.SignalPanic);
+        StopShutdownStep(_lifetime.Cancel);
+        StopShutdownStep(()=>_queryCancellation?.Cancel());
+        StopShutdownStep(()=>_authorizationStop?.Cancel());
+    }
+    private void StopShutdownStep(Action stop)
+    {
+        try { stop(); }
+        catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.Lifecycle,error.GetType()); }
     }
     // The journal exists to explain a failed exit, so the fault and the shutdown marker are written and the
     // writer drained even when an owner throws. _lifetime stays undisposed then: skipped owners may still read its token.
@@ -1288,19 +1297,19 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         BeginShutdown();
         // Exit only. Work is already fenced and cancelled, so this write, bounded on its own, only delays waiting for owners that are stopping.
         await SaveManagerWindowAsync(exitWindow);
-        await DisposeClientPriorityFeaturesAsync();
-        await DisposeClientMemoryTrimFeaturesAsync();
-        await DisposeClientSoundFeaturesAsync();
-        await DisposeClientLogCleanupFeaturesAsync();
-        await DisposeClientUpdateFeaturesAsync();
+        await StopOwnerAsync(DisposeClientPriorityFeaturesAsync);
+        await StopOwnerAsync(DisposeClientMemoryTrimFeaturesAsync);
+        await StopOwnerAsync(DisposeClientSoundFeaturesAsync);
+        await StopOwnerAsync(DisposeClientLogCleanupFeaturesAsync);
+        await StopOwnerAsync(DisposeClientUpdateFeaturesAsync);
         await StopOwnerAsync(()=>_keepAwakeTick);
-        await DisposeScheduledShutdownFeaturesAsync();
-        DisposePublicNetworkGuardFeatures();
-        await DisposeDiscordAlertFeaturesAsync();
-        await DisposeDiscordPresenceFeaturesAsync();
+        await StopOwnerAsync(DisposeScheduledShutdownFeaturesAsync);
+        StopShutdownStep(DisposePublicNetworkGuardFeatures);
+        await StopOwnerAsync(DisposeDiscordAlertFeaturesAsync);
+        await StopOwnerAsync(DisposeDiscordPresenceFeaturesAsync);
         await StopOwnerAsync(DisposeDataEncryptionAsync);await StopOwnerAsync(DisposeNewsAsync);
-        await DisposeUploadLimitFeaturesAsync();
-        await DisposeClientCloseFeaturesAsync();
+        await StopOwnerAsync(DisposeUploadLimitFeaturesAsync);
+        await StopOwnerAsync(DisposeClientCloseFeaturesAsync);
         await _initializeTask;
         // Each owner stops on its own from here: a failed stop is recorded by type and must not skip the owners after it,
         // the Shutdown record, or exit's warning about client priorities Windows could not restore.
@@ -1322,7 +1331,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         await StopOwnerAsync(()=>RecentClients.DisposeAsync());
         try {await ClientPreviews.DisposeAsync();} catch(Exception ex) {Fail(ex,ManagerSubsystem.Previews);}
         TrackOverviewFocusRow(); // _shuttingDown is set, so this releases the selected tile's subscription.
-        await DisposeClientWindowFeaturesAsync();
+        await StopOwnerAsync(DisposeClientWindowFeaturesAsync);
         await _favoritesReloadTask;
         await StopOwnerAsync(()=>DestinationFavorites.DisposeAsync());
         await Task.WhenAll(DestinationFavorites.Refresh.Execution,DestinationFavorites.SaveCurrent.Execution,DestinationFavorites.Rename.Execution,DestinationFavorites.Delete.Execution);
@@ -1343,13 +1352,13 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         try { await stop(); }
         catch (OperationCanceledException) { }
-        catch (Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
+        catch (Exception ex) { StopShutdownStep(()=>Fail(ex,ManagerSubsystem.Lifecycle)); }
     }
     private Task StopOwnerAsync(Func<Task> stop)=>StopOwnerAsync(()=>new ValueTask(stop()));
     private void StopOwner(IDisposable? owner)
     {
         try { owner?.Dispose(); }
-        catch (Exception ex) { Fail(ex,ManagerSubsystem.Lifecycle); }
+        catch (Exception ex) { StopShutdownStep(()=>Fail(ex,ManagerSubsystem.Lifecycle)); }
     }
     private async Task AuthorizeSelectedAsync(bool refresh)
     {

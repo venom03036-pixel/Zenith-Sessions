@@ -315,7 +315,7 @@ public sealed partial class ShellViewModel
 
     private async Task DisposeClientSoundFeaturesAsync()
     {
-        StopClientSoundOperations();
+        StopShutdownStep(StopClientSoundOperations);
         try { await _clientSoundWork; }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ClientSound, error.GetType()); }
         PropertyChanged -= ClientSoundOwnerChanged;

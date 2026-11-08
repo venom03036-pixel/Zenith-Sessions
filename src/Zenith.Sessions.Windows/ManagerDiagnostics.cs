@@ -203,6 +203,7 @@ public sealed class ManagerDiagnostics : IAsyncDisposable
     {
         if(type is null) return null;
         if(typeof(OperationCanceledException).IsAssignableFrom(type)) return "OperationCanceledException";
+        if(typeof(AggregateException).IsAssignableFrom(type)) return "AggregateException";
         if(typeof(UnauthorizedAccessException).IsAssignableFrom(type)) return "UnauthorizedAccessException";
         if(typeof(System.Security.Cryptography.CryptographicException).IsAssignableFrom(type)) return "CryptographicException";
         if(typeof(JsonException).IsAssignableFrom(type)) return "JsonException";
