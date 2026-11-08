@@ -19,6 +19,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
     private readonly HttpClient _http;
     private readonly TimeSpan _requestTimeout;
     private readonly TimeProvider _time;
+    private readonly string _origin = "https://games.roblox.com";
 
     public RobloxServerDirectory(HttpClient http, TimeSpan? requestTimeout = null, TimeProvider? time = null)
     {
@@ -29,6 +30,10 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
         _time = time ?? TimeProvider.System;
         RequireAnonymousClient();
     }
+
+    // Test-only: browse a loopback test server over a real socket. Only the origin moves; the path and query stay the production ones.
+    internal RobloxServerDirectory(HttpClient http, Uri loopbackOrigin, TimeSpan? requestTimeout = null, TimeProvider? time = null)
+        : this(http, requestTimeout, time) => _origin = LoopbackTestOrigin.Require(loopbackOrigin);
 
     public static HttpClient CreatePublicHttpClient() => new(CreatePublicHandler())
         { Timeout = Timeout.InfiniteTimeSpan, MaxResponseContentBufferSize = MaximumResponseBytes };
@@ -65,7 +70,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
             {
                 deadline.Token.ThrowIfCancellationRequested();
                 RequireAnonymousClient();
-                Uri endpoint = Endpoint(query, cursor);
+                Uri endpoint = Endpoint(_origin, query, cursor);
                 using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
                 request.Headers.Accept.ParseAdd("application/json");
                 using var response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, deadline.Token).ConfigureAwait(false);
@@ -136,7 +141,7 @@ public sealed class RobloxServerDirectory : IRobloxPublicServerDirectory
             || _http.DefaultRequestHeaders.Contains("Proxy-Authorization") || _http.DefaultRequestHeaders.Contains("x-api-key"))
             throw new ArgumentException("Public server browsing requires a dedicated anonymous HTTP client without authorization headers.");
     }
-    private static Uri Endpoint(RobloxPublicServerQuery query, string? cursor) => new("https://games.roblox.com/v1/games/"
+    private static Uri Endpoint(string origin, RobloxPublicServerQuery query, string? cursor) => new(origin + "/v1/games/"
         + query.PlaceId.ToString(CultureInfo.InvariantCulture) + "/servers/Public?sortOrder=" + query.SortOrder
         + "&excludeFullGames=" + (query.ExcludeFullGames ? "true" : "false") + "&limit=" + query.PageSize.ToString(CultureInfo.InvariantCulture)
         + (cursor is null ? "" : "&cursor=" + Uri.EscapeDataString(cursor)));

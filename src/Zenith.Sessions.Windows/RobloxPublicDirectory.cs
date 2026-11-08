@@ -80,8 +80,8 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         return ReadJsonAsync(uri, root =>
         {
             if (ReadId(root, "id") != userId) throw new InvalidPublicResponseException();
-            string username = ReadText(root, "name", 20);
-            if (username.Any(c => !(char.IsAsciiLetterOrDigit(c) || c == '_'))) throw new InvalidPublicResponseException();
+            string username = ReadText(root, "name", PublicRobloxUsername.MaximumLength);
+            if (!PublicRobloxUsername.HasValidCharacters(username)) throw new InvalidPublicResponseException();
             string displayName = ReadText(root, "displayName", 100);
             return Success(new PublicRobloxUser(userId, username, displayName, _clock.GetUtcNow()),
                 "Public profile information. This does not verify sign-in or identify a running client.");
@@ -117,15 +117,8 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
     {
         ct.ThrowIfCancellationRequested();
         const string invalid = "Request between one and fifty distinct positive 64-bit Roblox user IDs.";
-        if (userIds is null || userIds.Count is 0 or > PublicRobloxAvatarBatchLimits.MaximumBatch)
+        if (DistinctPositiveIds(userIds, PublicRobloxAvatarBatchLimits.MaximumBatch) is not { } requested)
             return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxAvatarBatchItem>>(invalid));
-        var requested = new long[userIds.Count]; var distinct = new HashSet<long>();
-        for (int index = 0; index < requested.Length; index++)
-        {
-            long id = userIds[index];
-            if (id <= 0 || !distinct.Add(id)) return Task.FromResult(Invalid<IReadOnlyList<PublicRobloxAvatarBatchItem>>(invalid));
-            requested[index] = id;
-        }
         // The same official headshot endpoint as GetAvatarAsync, asked once for the whole batch.
         var uri = new Uri("https://thumbnails.roblox.com/v1/users/avatar-headshot?userIds="
             + string.Join(",", requested.Select(id => id.ToString(CultureInfo.InvariantCulture)))
@@ -144,13 +137,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         {
             long userId = ReadId(item, "targetId");
             if (!expected.Contains(userId) || found.ContainsKey(userId)) throw new InvalidPublicResponseException();
-            var state = ReadText(item, "state", 32) switch
-            {
-                "Completed" => PublicRobloxThumbnailState.Ready,
-                "Pending" or "InReview" => PublicRobloxThumbnailState.Pending,
-                "Blocked" => PublicRobloxThumbnailState.Blocked,
-                _ => PublicRobloxThumbnailState.Unavailable
-            };
+            var state = MapThumbnailState(ReadText(item, "state", 32));
             PublicRobloxAvatar? avatar = null;
             if (state == PublicRobloxThumbnailState.Ready)
             {
@@ -167,6 +154,29 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxDirectory, IPub
         return Success<IReadOnlyList<PublicRobloxAvatarBatchItem>>(Array.AsReadOnly(result),
             "Public avatar information. This does not verify sign-in or identify a running client.");
     }
+
+    // Batch routes take 1 to maximum distinct positive IDs, kept in the caller's order; null when the input breaks that rule.
+    private static long[]? DistinctPositiveIds(IReadOnlyList<long>? ids, int maximum)
+    {
+        if (ids is null || ids.Count < 1 || ids.Count > maximum) return null;
+        var requested = new long[ids.Count]; var distinct = new HashSet<long>();
+        for (int index = 0; index < requested.Length; index++)
+        {
+            long id = ids[index];
+            if (id <= 0 || !distinct.Add(id)) return null;
+            requested[index] = id;
+        }
+        return requested;
+    }
+
+    // Roblox's batch thumbnail states, shared by avatar batches and game pictures. A state Roblox adds later is unavailable.
+    private static PublicRobloxThumbnailState MapThumbnailState(string state) => state switch
+    {
+        "Completed" => PublicRobloxThumbnailState.Ready,
+        "Pending" or "InReview" => PublicRobloxThumbnailState.Pending,
+        "Blocked" => PublicRobloxThumbnailState.Blocked,
+        _ => PublicRobloxThumbnailState.Unavailable
+    };
 
     public async Task<PublicDirectoryResult<EncodedPublicAvatar>> FetchAvatarAsync(PublicRobloxAvatar avatar, CancellationToken ct)
     {
@@ -473,9 +483,10 @@ internal static class PublicDirectoryRetryAfter
         now = now.ToUniversalTime();
         TimeSpan maximum = DateTimeOffset.MaxValue - now;
         TimeSpan? pause = ReadRetryAfter(response, now, maximum);
-        // On a 429 Roblox's x-ratelimit-reset names when the request window really reopens. Retry-After
-        // can be much shorter (5 s against a 50 s reset), and waiting only for it earns another 429.
-        if (response.StatusCode == HttpStatusCode.TooManyRequests && ReadWindowReset(response, maximum) is { } reset
+        // On a 429 whose route window is used up, Roblox's x-ratelimit-reset names when the window really
+        // reopens. Retry-After can be much shorter (5 s against a 50 s reset), and waiting only for it earns
+        // another 429. While the window still has room the 429 came from another limiter, so Retry-After stands.
+        if (response.StatusCode == HttpStatusCode.TooManyRequests && ReadUsedUpWindowReset(response, maximum) is { } reset
             && (pause is null || reset > pause)) pause = reset;
         if (pause is not null || !useDefaultPause) return pause;
         return maximum < TimeSpan.FromSeconds(30) ? maximum : TimeSpan.FromSeconds(30);
@@ -483,10 +494,14 @@ internal static class PublicDirectoryRetryAfter
 
     // A successful response whose x-ratelimit-remaining is 0 used the last request of the window, so
     // the next request would be refused until x-ratelimit-reset. Missing or unreadable values mean no pause.
-    public static TimeSpan? ReadUsedUpWindow(HttpResponseMessage response, DateTimeOffset now)
+    public static TimeSpan? ReadUsedUpWindow(HttpResponseMessage response, DateTimeOffset now) =>
+        ReadUsedUpWindowReset(response, DateTimeOffset.MaxValue - now.ToUniversalTime());
+
+    // The window reset, only when x-ratelimit-remaining is a single all-zero value (the window is used up).
+    private static TimeSpan? ReadUsedUpWindowReset(HttpResponseMessage response, TimeSpan maximum)
     {
         if (ReadSingle(response, "x-ratelimit-remaining") is not { } remaining || remaining.Any(c => c != '0')) return null;
-        return ReadWindowReset(response, DateTimeOffset.MaxValue - now.ToUniversalTime());
+        return ReadWindowReset(response, maximum);
     }
 
     private static TimeSpan? ReadRetryAfter(HttpResponseMessage response, DateTimeOffset now, TimeSpan maximum)

@@ -285,14 +285,34 @@ public sealed class PublicGameDirectoryTests
     [InlineData("\"createVipServersAllowed\":\"true\"")]
     [InlineData("\"createVipServersAllowed\":1")]
     [InlineData("\"createVipServersAllowed\":null")]
-    public async Task MalformedVisitsOrPrivateServerFlagIsAnInvalidListing(string field)
+    public async Task MalformedVisitsOrPrivateServerFlagIsUnknownInsteadOfAnInvalidListing(string field)
     {
-        string json = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false," + field);
+        // Display-only extras: a malformed one is left unknown, the well-formed other one and the listing survive.
+        bool visitsMalformed = field.StartsWith("\"visits\"", StringComparison.Ordinal);
+        string other = visitsMalformed ? "\"createVipServersAllowed\":true" : "\"visits\":7";
+        string json = GameJson().Replace("\"isContentRestricted\":false", "\"isContentRestricted\":false," + field + "," + other);
         using var handler = new FakeHandler((request, _) => Task.FromResult(Json(IsMapping(request) ? MappingJson() : json)));
         using var http = new HttpClient(handler);
         var result = await new RobloxPublicDirectory(http).LookupGameAsync(Place, default);
-        Assert.Equal(PublicDirectoryState.Failure, result.State);
-        Assert.Null(result.Value);
+        Assert.Equal(PublicDirectoryState.Success, result.State);
+        var game = Assert.IsType<PublicRobloxGame>(result.Value);
+        Assert.Equal("Synthetic game!", game.Name);
+        Assert.Equal(visitsMalformed ? null : (long?)7, game.Visits);
+        Assert.Equal(visitsMalformed ? (bool?)true : null, game.PrivateServersAllowed);
+    }
+
+    [Fact]
+    public async Task BatchNamesSurviveMalformedVisitsAndPrivateServerFlagOnOneUniverse()
+    {
+        string odd = Game(11, 110, "Eleven").Replace("\"isContentRestricted\":false",
+            "\"isContentRestricted\":false,\"visits\":null,\"createVipServersAllowed\":\"yes\"");
+        using var handler = new FakeHandler((_, _) => Task.FromResult(Json("{\"data\":[" + odd + "," + Game(22, 220, "Twenty-two") + "]}")));
+        using var http = new HttpClient(handler);
+        var result = await new RobloxPublicDirectory(http).LookupGamesAsync([11, 22], default);
+        Assert.Equal(PublicDirectoryState.Success, result.State);
+        var games = result.Value!;
+        Assert.Equal(new[] { "Eleven", "Twenty-two" }, games.Select(game => game.Name));
+        Assert.Null(games[0].Visits); Assert.Null(games[0].PrivateServersAllowed);
     }
 
     [Fact]

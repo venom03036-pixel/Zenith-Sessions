@@ -551,6 +551,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
             // Attach cached images only at final UI publication, after any Lock/Panic clear.
             if(!IsLocked && row.KnownUserId is { } userId && _publicPresentation.TryGetCached(userId,out var presentation) && presentation is not null && _publicPresentation.IsCurrent(presentation))
                 row.SetPublicPresentation(presentation);
+            if(!IsLocked) ApplyKnownPreferredGameName(row);
             Accounts.Add(row);
         }
         RefreshAccountLaunchStates();

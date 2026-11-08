@@ -61,7 +61,7 @@ public sealed partial class RobloxPublicDirectory : IPublicRobloxUsernameDirecto
             if (!positions.TryGetValue(echoed, out int position) || found[position] is not null) throw new InvalidPublicResponseException();
             long userId = ReadId(item, "id");
             string username = ReadText(item, "name", PublicRobloxUsername.MaximumLength);
-            if (username.Any(c => !(char.IsAsciiLetterOrDigit(c) || c == '_'))) throw new InvalidPublicResponseException();
+            if (!PublicRobloxUsername.HasValidCharacters(username)) throw new InvalidPublicResponseException();
             found[position] = new PublicRobloxUser(userId, username, ReadText(item, "displayName", 100), now);
         }
         var matches = new List<PublicRobloxUsernameMatch>(requested.Length);

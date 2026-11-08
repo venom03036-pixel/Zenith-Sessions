@@ -207,12 +207,14 @@ name, creator line, playing + rating, accent border and check when it is the cur
   (R-accounts-3; whether Roblox invalidates the old cookie after rotating it is not established.) Every other outcome
   leaves the vault unchanged.
 - Outcomes: `Experience(placeId, universeId)`, `PrivateServer(placeId, universeId, ownerUserId?, ProtectedPrivateServerCode)`,
-  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `Cancelled`. Nothing in the result or its `ToString()`
+  `ServerInstance(placeId, jobId)`, `Expired`, `Invalid`, `SignInRequired`, `Unavailable`, `NotListed`, `Cancelled`. Nothing in the result or its `ToString()`
   contains the share code or the link code.
 - `universeId` is required; `placeId` is optional, because Roblox's own web page reads only `status`, `universeId`
   (and `linkCode` for servers) and opens the universe's root place. When `placeId` is absent,
   `RootPlaceShareLinkResolver` reads `rootPlaceId` with one anonymous `games.roblox.com/v1/games?universeIds=…`
-  request after the signed-in resolve has finished. A restricted, missing or failed lookup is `Unavailable`.
+  request after the signed-in resolve has finished. A listing that answers without the universe (restricted universes are
+  left out) or the directory's own Unknown answer is `NotListed`, shown as "This link's game is restricted or not publicly
+  listed, so it cannot be opened from Zenith." with no retry advice; a failed or deferred lookup stays `Unavailable`.
 - Friend invites (`ExperienceInvite`, `NotificationExperienceInvite`) read `experienceInviteData` /
   `notificationExperienceInviteData`: `status`, a required `placeId`, an optional `universeId` and `instanceId`. Only a
   `Valid` invite whose `instanceId` is a nonempty dashed GUID becomes `ServerInstance(placeId, jobId)`, with the job ID
@@ -234,7 +236,7 @@ name, creator line, playing + rating, accent border and check when it is the cur
 - `PrivateServer` → the 05c result row: game name/icon (public lookup), owner when known, "Link code …{last 4}".
   **Save as favorite** stores it in a new `PrivateServerStore`: DPAPI `CurrentUser` protected JSON in the writable
   data folder, at most 100 entries, per-record revision like favorite destinations, code bytes only inside the
-  protected blob. Saved private servers list: name, game, last 4, Remove (confirmed).
+  protected blob. Saved private servers list: name, game, last 4, Remove (confirmed). File versions: §4.5.
 
 ### 4.4 Launching (not in this cycle)
 
@@ -242,6 +244,25 @@ The native handoff accepts only `RequestGame`/`RequestGameJob` today. Joining a 
 `RequestPrivateGame` with a link code through the launch authorization path, which is its own launcher change with
 its own review (redesign migration step 8). Until then the private result's primary button is disabled with
 "Joining private servers needs launcher support (coming next)". The saved code is kept so it works once that lands.
+
+### 4.5 Saved private servers file versions (migration note)
+
+`private-servers.dat` holds one JSON document (`Version`, `Revision`, `Items`) inside the DPAPI blob. The protection
+(scope and entropy) did not change; only the JSON did.
+
+- **Version 1** (builds before G10, `2157fdc`): each item has `Id`, `Name`, `PlaceId`, `UniverseId`, `OwnerUserId`,
+  `Code`, `Revision`.
+- **Version 2** (G10 and later): each item also has `GameName`, the checked game's name or null. The list shows it
+  instead of "Place {ID}".
+- **Upgrade:** this build reads both versions. A version 1 file reads as-is with no game names (its rows show
+  "Place {ID}"); reading the file never rewrites it. The first successful save or removal rewrites the whole file
+  as version 2 and keeps every row; rows from version 1 still have no game name.
+- **Downgrade:** a build from before G10 accepts only version 1. Given a version 2 file, its saved list says "Saved
+  private servers could not be read. Existing files were preserved; review the data folder." and saving says "Saved
+  private servers could not be written. Existing files were preserved." It never overwrites the file. This covers any
+  copy of the app run against the same data folder, including branches or worktrees cut before G10. This build
+  likewise refuses any version other than 1 or 2 and keeps that file.
+- **No converter:** nothing writes a version 2 file back as version 1.
 
 ## 5. Figma
 
@@ -266,7 +287,7 @@ Update the Screens page (file `WLGgnKxi4wYzWlfzpZAnKr`), using existing Foundati
 | Errors | Explicit states per row/chip ("Picture unavailable", "Favorites unavailable", "Sign in required", "Link expired"); cooldown is shown, never retried automatically. |
 | Testability | Fake `HttpMessageHandler`/`TimeProvider`, sanitized fixtures, view models tested without WPF windows. |
 | Security | Public calls are anonymous. Only §4 uses a credential: one explicit click, one host, no logging. Share and link codes are protected types, never logged/serialized in plain text; the private store is DPAPI-protected. |
-| Compatibility | Optional interfaces, trailing optional record members, new store file; no schema migration of existing data. |
+| Compatibility | Optional interfaces, trailing optional record members, new store file. One format change: `private-servers.dat` version 1 to 2 (adds `GameName`); version 1 still reads, and builds before G10 refuse version 2 without overwriting it (§4.5). |
 
 ## 7. Rule 20 migration
 
@@ -281,8 +302,11 @@ Update the Screens page (file `WLGgnKxi4wYzWlfzpZAnKr`), using existing Foundati
 - **Detection:** new and updated unit tests per step; a log/serialization scan test asserting no share or link code
   appears; `dotnet build` and the Sessions test project after each step; rendered layout check at 960 × 640 and
   1320 × 840.
-- **Rollback:** revert the step's files; no persisted data needs reversal except deleting `private-servers.dat`,
-  which nothing else reads.
+- **Rollback:** revert the step's files. The one persisted change is `private-servers.dat`, which nothing else reads:
+  once this build saves or removes a saved private server it is version 2 (§4.5). To roll back past G10, either keep
+  the file (the older build cannot list or save private servers, but the file stays intact and any G10 or later build
+  uses it again) or delete it (every saved private server and its link code on this PC is lost; the older build
+  starts with an empty list).
 
 ## 8. Tests
 

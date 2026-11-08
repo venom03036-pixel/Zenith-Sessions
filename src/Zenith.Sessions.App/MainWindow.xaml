@@ -1033,7 +1033,7 @@
                     </StackPanel>
                     <Border Style="{StaticResource Divider}" />
                     <StackPanel DataContext="{Binding ServerBrowser}">
-                      <Button Content="Quick join · any server" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="Queue the checked accounts (or the selected account) for this game. Roblox picks the server." />
+                      <Button Content="{Binding QuickJoinLabel}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="{Binding QuickJoinToolTip}" />
                       <Button Content="Browse servers" Command="{Binding DataContext.ShowJoinStep, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="2" MinHeight="36" Margin="0,8,0,0" />
                       <WrapPanel Margin="0,8,0,0">
                         <Button Content="Open on Roblox.com" Click="OpenGamePageClick" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,4,0" ToolTip="Open this game's public Roblox page in your browser. Nothing is launched or signed in." />

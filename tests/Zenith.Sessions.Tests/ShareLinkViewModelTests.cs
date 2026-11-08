@@ -157,6 +157,27 @@ public sealed class ShareLinkViewModelTests
     });
 
     [Fact]
+    public Task FindBoxDoesNotClaimACheckForALinkThePrivateTabRefused()=>SearchTest.OnUi(async()=>
+    {
+        const string Sent="Share link sent to Browse servers → Private server. That tab shows whether it was checked. Its code was not searched.";
+        await using var f=new SearchTest();var resolver=new Resolver{Hold=true,Response=_=>Private()};var store=new Store();
+        await using var vm=new ShareLinkViewModel(resolver,store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+        await using var find=new DestinationSearchViewModel(f.Directory,f.Browser,f.Details,()=>f.Allowed,clock:f.Clock,shareLinkHandler:link=>vm.CheckAsync(link));
+        vm.LinkInput=Link("Server");Task first=vm.CheckAsync();await resolver.Entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        try
+        {
+            // A second link pasted in the Find box while the first is still being checked: the Private server tab refuses it.
+            f.Browser.LinkInput=Link("ExperienceDetails");await find.SearchOrUseAsync();
+            Assert.Equal(1,resolver.Calls);Assert.Equal("",f.Browser.LinkInput);Assert.Contains("was not checked",vm.Status,StringComparison.Ordinal);
+            // Back on the Find step, the status points at the tab that owns the answer instead of saying a check is under way.
+            Assert.Equal(Sent,find.Status);Assert.DoesNotContain(ShareCode,find.Status,StringComparison.Ordinal);
+        }
+        finally {resolver.Hold=false;resolver.Release();await first.WaitAsync(TimeSpan.FromSeconds(5));}
+        Assert.True(vm.HasPrivateResult);Assert.Null(f.Browser.Destination);
+        Assert.Equal(Sent,find.Status); // Still true once the earlier check has finished (a private result leaves the destination alone).
+    });
+
+    [Fact]
     public Task PrivateResultShowsLast4AndDisabledJoin()=>SearchTest.OnUi(async()=>
     {
         await using var f=new SearchTest();var resolver=new Resolver{Response=_=>Private()};var store=new Store();
@@ -181,6 +202,44 @@ public sealed class ShareLinkViewModelTests
         vm.LinkInput=Link("Server");await vm.CheckAsync();Assert.True(vm.HasPrivateResult);Assert.Contains("Place 100",vm.ResultTitle);
         await vm.SaveAsFavoriteAsync();
         var saved=Assert.Single(store.Items);Assert.Equal(100,saved.PlaceId);Assert.Equal(6,saved.UniverseId);Assert.Equal(LinkCode,store.Codes[saved.Id]);
+    });
+
+    // Roblox's public listing answered without the link's universe (restricted or not listed): retrying cannot help, so the
+    // status says the game cannot be opened and gives no retry advice. A failed or timed-out lookup keeps the retry advice.
+    public static TheoryData<string,string> UniverseLookups=>new()
+    {
+        {"restricted","This link's game is restricted or not publicly listed, so it cannot be opened from Zenith."},
+        {"unknown","This link's game is restricted or not publicly listed, so it cannot be opened from Zenith."},
+        {"failure","The share link could not be checked right now. Try again later."},
+        {"deferred","The share link could not be checked right now. Try again later."}
+    };
+
+    [Theory]
+    [MemberData(nameof(UniverseLookups))]
+    public Task AUniverseOnlyLinkToARestrictedGameSaysItCannotBeOpenedWithoutRetryAdvice(string lookup,string status)=>SearchTest.OnUi(async()=>
+    {
+        await using var f=new SearchTest();var store=new Store();
+        var listing=new Listing(lookup switch
+        {
+            "restricted"=>SearchTest.Ok<IReadOnlyList<PublicRobloxGame>>(Array.Empty<PublicRobloxGame>()), // Restricted universes are left out.
+            "unknown"=>new(PublicDirectoryState.Unknown,null,"The requested public game information is unavailable or restricted."),
+            "deferred"=>new(PublicDirectoryState.Deferred,null,"The public Roblox request timed out."),
+            _=>new(PublicDirectoryState.Failure,null,"The public Roblox service could not be reached.")
+        });
+        var code=new ProtectedPrivateServerCode(LinkCode);
+        foreach(var (type,answer) in new (string,Func<RobloxShareLinkResolution>)[]
+        {
+            ("ExperienceDetails",()=>new(RobloxShareLinkOutcome.Experience,null,6)),
+            ("Server",()=>new(RobloxShareLinkOutcome.PrivateServer,null,6,7,code))
+        })
+        {
+            var resolver=new Resolver{Response=_=>answer()};
+            await using var vm=new ShareLinkViewModel(new RootPlaceShareLinkResolver(resolver,listing),store,f.Browser,()=>ProfileA,()=>f.Allowed,games:f.Directory);
+            vm.LinkInput=Link(type);await vm.CheckAsync();
+            Assert.Equal(status,vm.Status);Assert.False(vm.HasResult);Assert.Null(f.Browser.Destination);Assert.False(vm.IsBusy);
+        }
+        Assert.Equal(2,listing.Calls);Assert.Equal(0,f.Directory.GameRequests);Assert.Empty(store.Items);
+        Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{})); // The unused private server code is zeroed either way.
     });
 
     // A friend's invite names their server: it becomes the requested server (place + job), never a claim of arrival.
@@ -255,6 +314,7 @@ public sealed class ShareLinkViewModelTests
     [InlineData(RobloxShareLinkOutcome.Invalid,"This share link is not valid for a game or private server.")]
     [InlineData(RobloxShareLinkOutcome.Unavailable,"The share link could not be checked right now. Try again later.")]
     [InlineData(RobloxShareLinkOutcome.Busy,"Another account operation is running. Try again when it finishes.")]
+    [InlineData(RobloxShareLinkOutcome.NotListed,"This link's game is restricted or not publicly listed, so it cannot be opened from Zenith.")]
     [InlineData(RobloxShareLinkOutcome.Cancelled,"Share link check cancelled.")]
     public Task OutcomesMapToStatusesWithoutCodes(RobloxShareLinkOutcome outcome,string status)=>SearchTest.OnUi(async()=>
     {
@@ -399,6 +459,12 @@ public sealed class ShareLinkViewModelTests
             IReadOnlyList<PublicRobloxGame> games=[new(rootPlaceId,universeId,rootPlaceId,"Synthetic root",7,"Creator",PublicRobloxCreatorKind.User,3,20,DateTimeOffset.UnixEpoch)];
             return Task.FromResult(SearchTest.Ok(games));
         }
+    }
+    private sealed class Listing(PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>> answer):IPublicRobloxGameBatchDirectory
+    {
+        public int Calls;
+        public Task<PublicDirectoryResult<IReadOnlyList<PublicRobloxGame>>> LookupGamesAsync(IReadOnlyList<long> universeIds,CancellationToken ct)
+        {Calls++;Assert.Equal(new long[]{6},universeIds.ToArray());return Task.FromResult(answer);}
     }
     // A game lookup that honours its token, like the real directory: cancelling it ends the lookup with OperationCanceledException.
     private sealed class CancellableGames:IPublicRobloxGameDirectory

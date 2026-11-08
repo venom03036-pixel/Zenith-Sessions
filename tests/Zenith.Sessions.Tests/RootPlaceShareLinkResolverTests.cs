@@ -4,7 +4,8 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Tests;
 
 // A share link whose payload names only a universe opens that universe's root place, like Roblox's own web page.
-// The root place comes from the anonymous public games listing; a restricted, missing or failed lookup is Unavailable.
+// The root place comes from the anonymous public games listing; a restricted or unlisted universe is NotListed and a
+// failed lookup is Unavailable.
 public sealed class RootPlaceShareLinkResolverTests
 {
     private static readonly Guid Profile=Guid.Parse("22222222-2222-4222-8222-222222222222");
@@ -34,11 +35,17 @@ public sealed class RootPlaceShareLinkResolverTests
         resolution.Dispose();Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{}));
     }
 
-    public static TheoryData<string> FailedLookups=>new(){"restricted","other universe","unknown","deferred","failure","no directory"};
+    // Roblox answered without the universe (left out as restricted, or the directory's own Unknown answer): checking again
+    // cannot help, so it is NotListed, apart from a lookup that failed or never ran, which is Unavailable and may succeed later.
+    public static TheoryData<string,RobloxShareLinkOutcome> FailedLookups=>new()
+    {
+        {"restricted",RobloxShareLinkOutcome.NotListed},{"other universe",RobloxShareLinkOutcome.NotListed},{"unknown",RobloxShareLinkOutcome.NotListed},
+        {"deferred",RobloxShareLinkOutcome.Unavailable},{"failure",RobloxShareLinkOutcome.Unavailable},{"no directory",RobloxShareLinkOutcome.Unavailable}
+    };
 
     [Theory]
     [MemberData(nameof(FailedLookups))]
-    public async Task ARestrictedMissingOrFailedLookupIsUnavailableAndDisposesTheCode(string lookup)
+    public async Task ARestrictedMissingOrFailedLookupNeverGuessesAndDisposesTheCode(string lookup,RobloxShareLinkOutcome expected)
     {
         var code=new ProtectedPrivateServerCode(LinkCode);
         var inner=new Inner(()=>new(RobloxShareLinkOutcome.PrivateServer,null,6,7,code));
@@ -53,7 +60,7 @@ public sealed class RootPlaceShareLinkResolverTests
         };
         using var link=Link(RobloxShareLinkType.Server);
         using var resolution=await new RootPlaceShareLinkResolver(inner,games).ResolveShareLinkAsync(Profile,link,default);
-        Assert.Equal(RobloxShareLinkOutcome.Unavailable,resolution.Outcome);Assert.Null(resolution.PlaceId);Assert.Null(resolution.PrivateServerCode);
+        Assert.Equal(expected,resolution.Outcome);Assert.Null(resolution.PlaceId);Assert.Null(resolution.PrivateServerCode);
         Assert.Throws<ObjectDisposedException>(()=>code.Reveal(_=>{})); // Never guessed, and the unused code is zeroed.
     }
 
@@ -66,7 +73,8 @@ public sealed class RootPlaceShareLinkResolverTests
             ()=>new(RobloxShareLinkOutcome.Experience,5,6),
             ()=>new(RobloxShareLinkOutcome.ServerInstance,5,null,jobId:"0f8fad5b-d9cb-469f-a165-70867728950e"), // An invite's server keeps its own place.
             ()=>new(RobloxShareLinkOutcome.Expired),()=>new(RobloxShareLinkOutcome.Invalid),()=>new(RobloxShareLinkOutcome.SignInRequired),
-            ()=>new(RobloxShareLinkOutcome.Unavailable),()=>new(RobloxShareLinkOutcome.Cancelled),()=>new(RobloxShareLinkOutcome.Busy)
+            ()=>new(RobloxShareLinkOutcome.Unavailable),()=>new(RobloxShareLinkOutcome.Cancelled),()=>new(RobloxShareLinkOutcome.Busy),
+            ()=>new(RobloxShareLinkOutcome.NotListed)
         })
         {
             var expected=made();var inner=new Inner(()=>expected);
