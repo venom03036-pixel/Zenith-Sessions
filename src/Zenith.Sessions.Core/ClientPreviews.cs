@@ -66,9 +66,13 @@ public sealed record ClientPreviewBatchResult(int AttemptedCount, IReadOnlyList<
 /// Stopping means publication was cleared but actual provider cleanup has not completed successfully.
 /// Overview may retain an accepted frame's original generation/time across exact-identity roster updates;
 /// the snapshot generation identifies the current publication context, not a new capture of those pixels.
+/// RosterReplacement is true only while a pending overview request waits for cleanup because an active
+/// overview's roster changed (UpdateOverviewTargets); an explicit Start or StartOverview, a stop and
+/// disposal publish false.
 /// </summary>
 public sealed record ClientPreviewSnapshot(long Generation, bool Running, IReadOnlyList<ClientPreviewResult> Results,
-    string Explanation, long Revision = 0, bool Stopping = false, ClientPreviewMode Mode = ClientPreviewMode.Selected);
+    string Explanation, long Revision = 0, bool Stopping = false, ClientPreviewMode Mode = ClientPreviewMode.Selected,
+    bool RosterReplacement = false);
 
 public sealed class ClientPreviewException : Exception
 {

@@ -23,7 +23,7 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
     private DateTimeOffset? _eligibilityExpiresUtc;
     private string _stoppedExplanation = "Client previews are off.";
     private const string EligibilityExpired = "Preview eligibility expired. Start previews again after fresh resource observations.";
-    private bool _providerOwned, _releaseRequested, _releaseFailed, _disposed;
+    private bool _providerOwned, _releaseRequested, _releaseFailed, _disposed, _rosterReplacement;
     private Task? _dispose;
 
     /// <param name="failed">
@@ -70,8 +70,10 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
 
     // The caller holds _gate. Retained frames were already validated and are keyed by exact identity;
     // their original generation and capture time are never changed to match the new request.
-    private void ReplaceRequest(ClientPreviewTarget[] owned, ClientPreviewMode mode, DateTimeOffset? expiry)
+    // rosterReplacement: an active overview's roster changed, as opposed to an explicit start.
+    private void ReplaceRequest(ClientPreviewTarget[] owned, ClientPreviewMode mode, DateTimeOffset? expiry, bool rosterReplacement = false)
     {
+        _rosterReplacement = rosterReplacement;
         var previous = _request;
         var retained = mode == ClientPreviewMode.Overview && previous?.Mode == ClientPreviewMode.Overview
             ? OverviewRows(owned, _snapshot.Results) : Pending(owned);
@@ -112,7 +114,7 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
             if (_disposed || _request is not { Mode: ClientPreviewMode.Overview } request) return;
             if (!LeaseExpired() && !SameTargets(request.Targets, owned))
             {
-                ReplaceRequest(owned, ClientPreviewMode.Overview, _eligibilityExpiresUtc);
+                ReplaceRequest(owned, ClientPreviewMode.Overview, _eligibilityExpiresUtc, rosterReplacement: true);
                 capture = _capture;
                 changed = true;
             }
@@ -566,8 +568,11 @@ public sealed class ClientPreviewCoordinator : IAsyncDisposable
         for (int index = 0; index < results.Length; index++) results[index] = Result(targets[index], status);
         return Array.AsReadOnly(results);
     }
+    // A roster replacement is reported only while its pending overview request still waits for cleanup;
+    // a stop, failed cleanup or disposal has already cleared _request.
     private void Publish(long generation, bool running, IReadOnlyList<ClientPreviewResult> results, string explanation, bool stopping)
-        => _snapshot = new(generation, running, results, explanation, checked(++_revision), stopping, _request?.Mode ?? _snapshot.Mode);
+        => _snapshot = new(generation, running, results, explanation, checked(++_revision), stopping, _request?.Mode ?? _snapshot.Mode,
+            stopping && _rosterReplacement && _request is { Mode: ClientPreviewMode.Overview });
     private static TaskCompletionSource<bool> CompletedDrain()
     { var result = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously); result.SetResult(true); return result; }
     private void EnsureDrainPending()
