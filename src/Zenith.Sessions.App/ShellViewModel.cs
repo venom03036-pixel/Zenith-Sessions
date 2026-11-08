@@ -161,6 +161,12 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     public bool QueueReady { get=>_queueReady;private set {if(Set(ref _queueReady,value)) {if(value) RefreshVisibleQueueStatus();Raise(nameof(CanSetAsideInterruptedQueueWrite));RefreshOverview();}} }
     /// <summary>Offered only while the queue is unavailable because an interrupted save sits behind a readable queue.</summary>
     public bool CanSetAsideInterruptedQueueWrite=>!QueueReady && _queueStore.RecoveryBlocker is {Kind:LaunchQueueBlockerKind.InterruptedWrite};
+    /// <summary>The question the view asks before Set aside interrupted save. A queue that was
+    /// already running cannot reopen in this run, so that question promises only a restart.</summary>
+    public string SetAsideInterruptedQueueWriteConfirmation=>(_launchQueue.Opened
+        ?"An interrupted save (launch-queue.json.tmp) stopped the launch queue. Rename it to a kept launch-queue.json.interrupted file? Nothing is deleted. The queue stays stopped until you restart Zenith Sessions; it then reopens paused from its last completed save and no client is started."
+        :"An interrupted save (launch-queue.json.tmp) is blocking the launch queue. Rename it to a kept launch-queue.json.interrupted file and reopen the queue from its last completed save? Nothing is deleted. Requests reopen paused for review and no client is started.")
+        +" A client started while that save was being written will appear as needing review.";
     public string QueuePauseLabel=>EffectiveQueuePaused?"Resume queue":"Pause queue";
     private readonly ResourcePressureTracker _pressure=new();
     private CancellationTokenSource? _authorizationStop;
@@ -1340,7 +1346,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     {
         QueueStatus=_queueStore.RecoveryBlocker switch
         {
-            {Kind:LaunchQueueBlockerKind.InterruptedWrite} b=>$"Launch queue unavailable: an interrupted save left {b.FileName} next to the last completed save. Choose Set aside interrupted save to keep it under a new name and reopen the queue.",
+            {Kind:LaunchQueueBlockerKind.InterruptedWrite} b=>$"Launch queue unavailable: an interrupted save left {b.FileName} next to the last completed save. Choose Set aside interrupted save to keep it under a new name"
+                +(_launchQueue.Opened?", then restart Zenith Sessions to reopen the queue.":" and reopen the queue."),
             {Kind:LaunchQueueBlockerKind.OrphanEvidence} b=>$"Launch queue unavailable: {b.FileName} was found without a readable saved queue. It was kept; review it via More options › Open data folder.",
             {Kind:LaunchQueueBlockerKind.ConflictingDamagedCopy} b=>$"Launch queue unavailable: launch-queue.json is damaged and differs from the copy already kept as {b.FileName}. Both were kept; review them via More options › Open data folder.",
             {Kind:LaunchQueueBlockerKind.UnreadableQueue} b=>$"Launch queue unavailable: {b.FileName} could not be read and no usable backup was found. It was kept; review it via More options › Open data folder.",
@@ -1351,7 +1358,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         Raise(nameof(CanSetAsideInterruptedQueueWrite));
     }
     // The view confirms first. The store renames (never deletes) the interrupted save only behind a
-    // readable committed queue; startup then reopens that queue paused, with nothing resumed.
+    // readable committed queue. A queue that never opened then opens paused, with nothing resumed;
+    // one that was already running stays stopped until a restart.
     private async Task SetAsideInterruptedQueueWriteAsync()
     {
         if(_shuttingDown || !CanSetAsideInterruptedQueueWrite) return;

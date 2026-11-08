@@ -82,6 +82,68 @@ public sealed class ShellQueueRecoveryTests : IDisposable
     });
 
     [Fact]
+    public Task SettingAsideASaveThatRecordedAStartedClientLeavesItsRequestNeedingReviewAsTheConfirmationSays() => OnUi(async () =>
+    {
+        // M-L2-3: a crash while saving a provider's result leaves the started client's PID/start
+        // receipt only in the interrupted save. The committed Launching row must come back as a
+        // reserving review row, and the confirmation must say so before the user agrees.
+        var profile = await CreateProfile(); var at = DateTimeOffset.UtcNow;
+        var launching = new LaunchOperation(new(Guid.NewGuid(), profile.Id, profile.Revision, 123, 42, 0, at.AddMinutes(-2), 7),
+            LaunchState.Launching, LaunchProblem.None, at.AddMinutes(-1), ResourceBudget: new(4 * CapacityPolicy.GiB, 5 * CapacityPolicy.GiB));
+        var started = launching with { State = LaunchState.ClientStartedUnverified, Problem = LaunchProblem.ClientStartedUnverified, UpdatedUtc = at,
+            ProcessReceipt = new(900001, at.AddSeconds(-30).UtcTicks, at) };
+        await File.WriteAllBytesAsync(QueuePath, JsonSerializer.SerializeToUtf8Bytes(new { Version = 7, Queue = new LaunchQueueSnapshot(true, [launching]) }));
+        byte[] interrupted = JsonSerializer.SerializeToUtf8Bytes(new { Version = 7, Queue = new LaunchQueueSnapshot(true, [started]) });
+        await File.WriteAllBytesAsync(QueuePath + ".tmp", interrupted);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new NoNativeMonitor());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); Assert.True(shell.CanSetAsideInterruptedQueueWrite, shell.QueueStatus);
+        Assert.Contains("keep it under a new name and reopen the queue", shell.QueueStatus);
+        string confirmation = shell.SetAsideInterruptedQueueWriteConfirmation;
+        Assert.Contains("reopen the queue from its last completed save?", confirmation);
+        Assert.Contains("A client started while that save was being written will appear as needing review.", confirmation);
+
+        shell.SetAsideInterruptedQueueWrite.Execute(null); await shell.SetAsideInterruptedQueueWrite.Execution;
+
+        Assert.True(shell.QueueReady, shell.QueueStatus + " / " + shell.Notice);
+        string kept = Assert.Single(Directory.GetFiles(_root, "launch-queue.json.interrupted-*"));
+        Assert.Equal(interrupted, await File.ReadAllBytesAsync(kept)); // The receipt is kept for the user, not applied.
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (shell.Launches.Count == 0) await Task.Delay(5, stop.Token);
+        var row = Assert.Single(shell.Launches); Assert.Equal(launching.Intent, row.Operation.Intent);
+        Assert.Equal(LaunchState.ReviewRequired, row.Operation.State); Assert.Equal(LaunchProblem.Interrupted, row.Operation.Problem);
+        Assert.Null(row.Operation.ProcessReceipt); Assert.True(LaunchDescriptions.NeedsReservation(row.Operation.State)); Assert.True(row.CanReview);
+        Assert.Contains("Paused", shell.QueueStatus); Assert.Empty(shell.Sessions);
+    });
+
+    [Fact]
+    public Task AnInterruptedWriteThatStopsARunningQueueSaysARestartIsNeededToReopenIt() => OnUi(async () =>
+    {
+        // M-L2-3: an opened queue never initializes again, so setting the save aside cannot reopen
+        // it in this run. The status and the confirmation must say a restart is needed, as the result does.
+        await CreateProfile();
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new NoNativeMonitor());
+        await shell.InitializeAsync(); Assert.True(shell.QueueReady, shell.QueueStatus);
+        byte[] interrupted = "{\"Version\":7,\"Queue\":"u8.ToArray(); await File.WriteAllBytesAsync(QueuePath + ".tmp", interrupted);
+        shell.ToggleQueuePause.Execute(null); await shell.ToggleQueuePause.Execution; // Resume saves and meets the kept save.
+        using var stop = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (shell.QueueReady) await Task.Delay(5, stop.Token);
+        Assert.True(shell.CanSetAsideInterruptedQueueWrite, shell.QueueStatus);
+        Assert.Contains("launch-queue.json.tmp", shell.QueueStatus);
+        Assert.Contains("keep it under a new name, then restart Zenith Sessions to reopen the queue.", shell.QueueStatus);
+        string confirmation = shell.SetAsideInterruptedQueueWriteConfirmation;
+        Assert.DoesNotContain("reopen the queue from its last completed save?", confirmation);
+        Assert.Contains("The queue stays stopped until you restart Zenith Sessions", confirmation);
+        Assert.Contains("A client started while that save was being written will appear as needing review.", confirmation);
+
+        shell.SetAsideInterruptedQueueWrite.Execute(null); await shell.SetAsideInterruptedQueueWrite.Execution;
+
+        Assert.False(shell.QueueReady); Assert.False(shell.CanSetAsideInterruptedQueueWrite); Assert.False(File.Exists(QueuePath + ".tmp"));
+        string kept = Assert.Single(Directory.GetFiles(_root, "launch-queue.json.interrupted-*"));
+        Assert.Equal(interrupted, await File.ReadAllBytesAsync(kept));
+        Assert.Contains("Restart Zenith Sessions to reopen the launch queue.", shell.QueueStatus); Assert.Empty(shell.Sessions);
+    });
+
+    [Fact]
     public Task AnOrphanInterruptedWriteIsNamedButNotOfferedForSetAside() => OnUi(async () =>
     {
         await CreateProfile(); Directory.CreateDirectory(_root);

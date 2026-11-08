@@ -144,6 +144,9 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
     public event Action<Exception>? Faulted;
     public string ProviderExplanation=>_provider.AccountLaunch.Explanation;
     public bool IsHealthy=>_initialized && !_unhealthy && !_stop.IsCancellationRequested;
+    /// <summary>True once InitializeAsync has opened the queue. InitializeAsync never opens it a
+    /// second time, so an opened queue that stops after a fault reopens only after a restart.</summary>
+    public bool Opened=>_initialized;
     // Immutable publication does not resume a paused/stopped queue or change an active start.
     public void ConfigurePerformance(ManagerPerformancePolicy policy)
     {

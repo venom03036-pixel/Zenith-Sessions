@@ -291,8 +291,14 @@ public sealed class LaunchQueueStore(string root) : ILaunchQueueStore,IDisposabl
     /// <summary>
     /// Renames a kept interrupted save (<c>launch-queue.json.tmp</c>) to a timestamped
     /// <c>launch-queue.json.interrupted-...</c> file so the committed queue can be saved again.
-    /// Nothing is deleted, overwritten or decoded. The coordinator persists each state before
-    /// acting on it, so an uncommitted save never carries an effect the readable primary lacks.
+    /// Nothing is deleted, overwritten or decoded. The interrupted save can be newer than the
+    /// primary: a crash while saving a provider's result leaves a started client's PID/start
+    /// receipt only there. Setting it aside stays fail-closed because the coordinator commits
+    /// Launching before any provider call, and when the queue reopens a row in Launching or any
+    /// later unresolved state comes back as a reserving row that needs review. A lost newer save can
+    /// therefore only leave more work held, never release a reservation or allow a second start.
+    /// Such a row has lost its receipt, so exact-observation reconciliation cannot clear it; the
+    /// user reviews it instead.
     /// Refuses unless the primary is a readable supported generation and no other blocker exists.
     /// Returns the kept file name, or null when there was no interrupted save to set aside.
     /// </summary>
