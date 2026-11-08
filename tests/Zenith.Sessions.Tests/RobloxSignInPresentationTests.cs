@@ -362,7 +362,8 @@ public sealed class RobloxSignInPresentationTests : IDisposable
     {
         string browserRoot = Path.Combine(_root, "signin-browser-data");
         for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
-        Assert.Equal(new SignInSweepResult(8, 2), SignInProfileDirectory.SweepOwned(_root, default));
+        // The two folders past the budget were not opened: they are left for the next run, not kept for review.
+        Assert.Equal(new SignInSweepResult(8, 0, 2), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.Equal(2, Directory.EnumerateDirectories(browserRoot).Count());
         Assert.Equal(new SignInSweepResult(2, 0), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.Empty(Directory.EnumerateFileSystemEntries(browserRoot));
@@ -402,12 +403,75 @@ public sealed class RobloxSignInPresentationTests : IDisposable
         string browserRoot = Path.Combine(_root, "signin-browser-data");
         for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
         // The two folders left for the next run are recoverable and within one admission's budget.
-        Assert.Equal(new SignInSweepResult(8, 2), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.Equal(new SignInSweepResult(8, 0, 2), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
         for (int i = 0; i < 15; i++) Leftover(browserRoot, true);
-        Assert.Equal(new SignInSweepResult(8, 9), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.Equal(new SignInSweepResult(8, 0, 9), SignInProfileDirectory.SweepOwned(_root, default));
         Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
     }
+    // What a sweep kept, left for later or could not check may stay on disk until a sweep or an admission finds the root
+    // clean; the shell's startup note about those folders lasts only that long.
+    [Fact]
+    public void SweptLeftoversAreRememberedUntilASweepOrAnAdmissionFindsTheRootClean()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        Assert.Equal(default, SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.SweptLeftoversMayRemain(_root));
+        string busy = Leftover(browserRoot, true);
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+            Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.True(SignInProfileDirectory.SweptLeftoversMayRemain(_root));
+        Assert.False(SignInProfileDirectory.SweptLeftoversMayRemain(_root + "-other"));
+        // An admission removes every leftover before it creates its own folder.
+        SignInProfileDirectory.Create(_root, Guid.NewGuid(), default).Remove(default);
+        Assert.False(Directory.Exists(busy));
+        Assert.False(SignInProfileDirectory.SweptLeftoversMayRemain(_root));
+        // Folders past the budget stay on disk too, until a sweep that leaves nothing behind.
+        for (int i = 0; i < 9; i++) Leftover(browserRoot, true);
+        Assert.Equal(new SignInSweepResult(8, 0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.True(SignInProfileDirectory.SweptLeftoversMayRemain(_root));
+        Assert.Equal(new SignInSweepResult(1, 0), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.SweptLeftoversMayRemain(_root));
+    }
+    // Folders past one sweep's budget are not opened, and the next sign-in or start removes them. They were described as
+    // kept because they were in use, not recognized or could not be removed, and recorded as a sign-in failure.
+    [Fact]
+    public Task StartupLeavesFoldersPastItsBudgetForTheNextRunWithoutReportingAFailure() => OnUi(async () =>
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        for (int i = 0; i < 10; i++) Leftover(browserRoot, true);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice);
+        Assert.Equal(2, Directory.EnumerateDirectories(browserRoot).Count());
+        Assert.DoesNotContain("signin-browser-data", shell.CredentialCleanupStatus);
+        Assert.Contains(shell.Events, line => line.Contains("Removed 8 leftover private sign-in folder", StringComparison.Ordinal));
+        Assert.Contains(shell.Events, line => line.Contains("2 more leftover private sign-in folder(s) were left for the next sign-in or start", StringComparison.Ordinal));
+        Assert.DoesNotContain(shell.Events, line => line.Contains("kept for review", StringComparison.Ordinal));
+        shell.RefreshDiagnostics.Execute(null);
+        Assert.DoesNotContain(shell.DiagnosticRows, row => row.Event.Kind == ManagerEventKind.OperationFailed && row.Event.Subsystem == ManagerSubsystem.SignIn);
+    });
+    // The startup note about kept folders was added to every later credential-cleanup status, so it stayed after a sign-in's
+    // admission had removed those folders, and each Retry credential cleanup showed it again.
+    [Fact]
+    public Task StartupNoteAboutKeptSignInFoldersEndsOnceAnAdmissionRemovesThem() => OnUi(async () =>
+    {
+        string locked = Leftover(Path.Combine(_root, "signin-browser-data"), true);
+        await using var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new Monitor(), sessionClient: new Client());
+        // Stands in for a browser file another program still had open at startup.
+        using (new FileStream(Path.Combine(locked, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+        { await shell.InitializeAsync(); Assert.True(shell.IsReady, shell.Notice); }
+        const string note = "1 leftover private sign-in folder(s) in signin-browser-data were kept";
+        Assert.Contains(note, shell.CredentialCleanupStatus);
+        // Nothing has removed the folder yet, so retrying still says so.
+        shell.CleanupCredentials.Execute(null); await shell.CleanupCredentials.Execution;
+        Assert.Contains(note, shell.CredentialCleanupStatus);
+        Assert.True(Directory.Exists(locked));
+        // A sign-in's admission removes every leftover before it opens its browser.
+        SignInProfileDirectory.Create(_root, Guid.NewGuid(), default).Remove(default);
+        Assert.False(Directory.Exists(locked));
+        shell.CleanupCredentials.Execute(null); await shell.CleanupCredentials.Execution;
+        Assert.Equal("No pending credential cleanup.", shell.CredentialCleanupStatus);
+    });
     // Only leftover data that admission must not open is remembered for review. A leftover file another program (an
     // antivirus scan, or a browser a crash left running) still had open was remembered too, so every handoff check said
     // cleanup failed and native launch stopped until restart, although the next attempt could succeed.

@@ -22,6 +22,8 @@ public sealed class SignInProfileDirectory
     // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
     // reserved, including from the UI thread, so it is memory only; the value is unused.
     private static readonly ConcurrentDictionary<string, byte> ReviewPending = new(StringComparer.OrdinalIgnoreCase);
+    // Browser-data roots whose last sweep did not find them clean; see SweptLeftoversMayRemain. Memory only; the value is unused.
+    private static readonly ConcurrentDictionary<string, byte> SweptLeftovers = new(StringComparer.OrdinalIgnoreCase);
     // Leases an owner keeps after its cleanup failed, per browser-data root and per folder: a subset of HeldLeases. The
     // owner holds them until it is disposed, when Zenith closes, so nothing in this session frees them and every admission
     // under that root is refused until then. Like HeldLeases, reading them opens no lock file.
@@ -79,6 +81,18 @@ public sealed class SignInProfileDirectory
         return ReviewPending.ContainsKey(BrowserRootOf(dataRoot));
     }
 
+    /// <summary>
+    /// True from the start of a <see cref="SweepOwned"/> under <paramref name="dataRoot"/> until a sweep or an admission
+    /// finds that root clean, so folders the sweep kept, left for a later run or could not check may still be on disk and
+    /// what the sweep reported about them may still be true. A successful <see cref="Create"/> removes every leftover before
+    /// it creates its own folder, so it clears this. Memory only, like <see cref="LeftoverNeedsReview"/>.
+    /// </summary>
+    public static bool SweptLeftoversMayRemain(string dataRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        return SweptLeftovers.ContainsKey(BrowserRootOf(dataRoot));
+    }
+
     public static SignInProfileDirectory Create(string dataRoot, Guid profileId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
@@ -117,6 +131,8 @@ public sealed class SignInProfileDirectory
             // program still has open, is a storage problem the next attempt may not have.
             catch (SignInDirectoryNeedsReviewException) { ReviewPending.TryAdd(browserRoot, 0); throw; }
             ReviewPending.TryRemove(browserRoot, out _);
+            // Every folder an earlier sweep kept or left for later is gone now.
+            SweptLeftovers.TryRemove(browserRoot, out _);
             string path = System.IO.Path.Combine(browserRoot, profileId.ToString("N") + "-" + Guid.NewGuid().ToString("N"));
             ct.ThrowIfCancellationRequested();
             Directory.CreateDirectory(path);
@@ -130,10 +146,12 @@ public sealed class SignInProfileDirectory
     /// Removes leftover sign-in folders under <paramref name="dataRoot"/> (left by a crash or an interrupted cleanup)
     /// that no browser holds, with the same name, marker, lease and redirection checks as <see cref="Create"/>, and
     /// creates nothing. Unlike admission it keeps going past a folder it must preserve: a folder that is held,
-    /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. Only leftover data that needs
-    /// review, which the next admission would also refuse, is reported by <see cref="LeftoverNeedsReview"/>. A redirected
-    /// or unreadable storage root is refused as a whole with an <see cref="IOException"/>; like every other storage
-    /// failure it is not remembered for review. Meant for startup, under the single-instance lock.
+    /// unrecognized, redirected or cannot be removed is left untouched and counted as kept. Folders past the per-run
+    /// budget are not opened and are counted as deferred: the next admission or sweep removes them. Only leftover data
+    /// that needs review, which the next admission would also refuse, is reported by <see cref="LeftoverNeedsReview"/>.
+    /// A redirected or unreadable storage root is refused as a whole with an <see cref="IOException"/>; like every other
+    /// storage failure it is not remembered for review. Until a sweep or admission finds the root clean,
+    /// <see cref="SweptLeftoversMayRemain"/> is true. Meant for startup, under the single-instance lock.
     /// </summary>
     public static SignInSweepResult SweepOwned(string dataRoot, CancellationToken ct)
     {
@@ -146,15 +164,17 @@ public sealed class SignInProfileDirectory
         Admission.Wait(ct);
         try
         {
-            if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); return default; }
+            if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); SweptLeftovers.TryRemove(browserRoot, out _); return default; }
+            // Set first, so a root this sweep cannot check, or a sweep that stops early, is not reported as clean.
+            SweptLeftovers.TryAdd(browserRoot, 0);
             // A redirected or unreadable root is a storage problem, not leftover data, so it is not remembered for review.
             AssertAncestors(browserRoot);
-            int removed = 0, kept = 0; bool review = false;
+            int removed = 0, kept = 0, deferred = 0; bool review = false;
             foreach (string old in Directory.EnumerateDirectories(browserRoot))
             {
                 ct.ThrowIfCancellationRequested();
                 // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
-                if (removed + kept >= RecoveryBudget) { kept++; continue; }
+                if (removed + kept >= RecoveryBudget) { deferred++; continue; }
                 try { RecoverLeftover(old, ct); removed++; }
                 // A held folder is busy and frees itself, and a storage error (such as a file another program still has
                 // open) may clear on the next attempt; only data that needs review waits for someone to look at it.
@@ -163,8 +183,9 @@ public sealed class SignInProfileDirectory
                 catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
             }
             // Admission also refuses when more folders remain than one admission may open.
-            if (review || kept > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
-            return new(removed, kept);
+            if (review || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
+            if (kept + deferred == 0) SweptLeftovers.TryRemove(browserRoot, out _);
+            return new(removed, kept, deferred);
         }
         finally { Admission.Release(); }
     }
@@ -315,8 +336,12 @@ public sealed class SignInProfileDirectory
     }
 }
 
-/// <summary>What a startup sweep did: leftover sign-in folders removed, and folders kept untouched for review or a later run.</summary>
-public readonly record struct SignInSweepResult(int Removed, int Kept);
+/// <summary>
+/// What a startup sweep did: leftover sign-in folders removed; folders it opened but kept untouched because they were held,
+/// unrecognized, redirected or could not be removed; and folders past its budget that it did not open, which the next
+/// admission or sweep removes.
+/// </summary>
+public readonly record struct SignInSweepResult(int Removed, int Kept, int Deferred = 0);
 
 /// <summary>
 /// Another private browser holds its sign-in folder. Nothing was opened or removed. Usually that owner is open or still
