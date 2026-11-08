@@ -168,6 +168,7 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
     [Theory]
     [InlineData(RobloxHandoffProbeOutcome.CleanupFailed,NativeHandoffPreparationStatus.CleanupFailed)]
     [InlineData(RobloxHandoffProbeOutcome.Busy,NativeHandoffPreparationStatus.Busy)]
+    [InlineData(RobloxHandoffProbeOutcome.StorageUnavailable,NativeHandoffPreparationStatus.StorageUnavailable)]
     public async Task RefusedCaptureNeverOpensBrowserOrChangesTheLinkedGrant(RobloxHandoffProbeOutcome refusal,NativeHandoffPreparationStatus expected)
     {
         // CleanupFailed must stay CleanupFailed so the configured provider still poisons itself.

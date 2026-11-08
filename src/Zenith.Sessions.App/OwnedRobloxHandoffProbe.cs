@@ -33,8 +33,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
     /// <summary>
     /// What <see cref="InspectAsync"/> would answer without opening anything: CleanupFailed once latched, while
     /// leftover sign-in data kept by the startup sweep or any admission waits for review, or while another owner keeps
-    /// its folder after a failed cleanup; Busy while this or another owner holds a private folder it may yet release;
-    /// Cancelled after disposal. Memory only.
+    /// its folder after a failed cleanup; StorageUnavailable while the data folder is remote or the last admission or
+    /// sweep failed on storage itself (see <see cref="SignInProfileDirectory.StorageUnavailable"/>); Busy while this or
+    /// another owner holds a private folder it may yet release; Cancelled after disposal. Memory only.
     /// </summary>
     public RobloxHandoffProbeOutcome? Refusal
     {
@@ -50,6 +51,9 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             // A folder kept after another owner's failed cleanup stops every admission until Zenith closes: retrying cannot help.
             if(SignInProfileDirectory.LeftoverNeedsReview(dataRoot)||SignInProfileDirectory.HasFolderKeptAfterFailedCleanup(dataRoot))
                 return RobloxHandoffProbeOutcome.CleanupFailed;
+            // The next admission would most likely fail on the same storage after its grant was reserved, costing that
+            // account its saved sign-in. Not a cleanup failure, so native launch is refused without stopping.
+            if(SignInProfileDirectory.StorageUnavailable(dataRoot))return RobloxHandoffProbeOutcome.StorageUnavailable;
             return SignInProfileDirectory.HasLiveOwner(dataRoot)?RobloxHandoffProbeOutcome.Busy:null;
         }
     }
@@ -94,7 +98,8 @@ public sealed class OwnedRobloxHandoffProbe(string dataRoot, Dispatcher dispatch
             // Leftover data kept for review persists until someone reviews it. Latch so later checks are refused
             // before any account's grant is reserved, instead of blaming WebView2 each time. Any other storage failure
             // (remote, redirected, unwritable or full storage, or a file another program has open) is not this probe's
-            // cleanup: it falls through to BrowserUnavailable below, latches nothing and leaves native launch usable.
+            // cleanup: it falls through to BrowserUnavailable below and latches nothing here. Admission remembers it, so
+            // Refusal answers StorageUnavailable before the next grant is reserved while native launch stays usable.
             catch(SignInDirectoryNeedsReviewException)
             {lock(_state)_blocked=true;result=Capture(RobloxHandoffProbeOutcome.CleanupFailed);return result;}
             result=await dispatcher.InvokeAsync(()=>

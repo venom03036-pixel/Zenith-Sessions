@@ -408,9 +408,65 @@ public sealed class RobloxSignInPresentationTests : IDisposable
             Assert.True(File.Exists(Path.Combine(inside, "EBWebView", "Default", "synthetic")), "Startup followed a redirected signin-browser-data folder.");
             Assert.Contains("could not be checked at startup, so signin-browser-data was left unchanged", shell.CredentialCleanupStatus);
             Assert.DoesNotContain(_root, shell.CredentialCleanupStatus);
+            // Every admission would fail on this root, so the first handoff check is refused before it reserves a grant,
+            // as storage rather than as a cleanup failure that would stop native launch.
+            Assert.True(SignInProfileDirectory.StorageUnavailable(_root), "A root the startup sweep could not check was not remembered.");
+            Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+            await using var probe = new OwnedRobloxHandoffProbe(_root, Dispatcher.CurrentDispatcher);
+            Assert.Equal(RobloxHandoffProbeOutcome.StorageUnavailable, probe.Refusal);
         }
         finally { if (Directory.Exists(browserRoot)) Directory.Delete(browserRoot, false); }
     });
+    // A storage failure that is not leftover data to review is remembered apart from review: the handoff checks refuse before
+    // reserving another account's grant, without the cleanup refusal that stops native launch. Only an admission that
+    // prepares its folder or a sweep that meets no storage failure has tested the storage again, so only they clear it.
+    [Fact]
+    public void StorageFailureIsRememberedApartFromReviewUntilAnAdmissionOrSweepMeetsNone()
+    {
+        string browserRoot = Path.Combine(_root, "signin-browser-data");
+        Assert.False(SignInProfileDirectory.StorageUnavailable(_root));
+        // Admission refuses remote storage outright, so it is unavailable before any attempt, without opening anything.
+        Assert.True(SignInProfileDirectory.StorageUnavailable(@"\\zenith-test.invalid\share\data"));
+        string busy = Leftover(browserRoot, true);
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+        {
+            var refused = Assert.ThrowsAny<IOException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+            Assert.IsNotType<SignInDirectoryNeedsReviewException>(refused);
+            Assert.True(SignInProfileDirectory.StorageUnavailable(_root), "An admission's storage failure was not remembered.");
+            Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+            Assert.False(SignInProfileDirectory.StorageUnavailable(_root + "-other"));
+        }
+        // A sweep that leaves nothing behind clears it; one that meets a storage failure sets it.
+        Assert.Equal(new SignInSweepResult(1, 0), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.False(SignInProfileDirectory.StorageUnavailable(_root));
+        busy = Leftover(browserRoot, true);
+        using (new FileStream(Path.Combine(busy, "EBWebView", "Default", "synthetic"), FileMode.Open, FileAccess.Read, FileShare.None))
+            Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        Assert.True(SignInProfileDirectory.StorageUnavailable(_root), "A sweep's storage failure was not remembered.");
+        Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        // A folder another owner holds, data to review and a cancellation say nothing about storage and change nothing; a
+        // sweep that skipped a held folder did not test it again.
+        using (new FileStream(Path.Combine(busy, "owner.lock"), FileMode.Open, FileAccess.ReadWrite, FileShare.None))
+        {
+            Assert.Throws<SignInDirectoryInUseException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+            Assert.Equal(new SignInSweepResult(0, 1), SignInProfileDirectory.SweepOwned(_root, default));
+        }
+        Assert.True(SignInProfileDirectory.StorageUnavailable(_root));
+        string unmarked = Leftover(browserRoot, false);
+        Assert.Throws<SignInDirectoryNeedsReviewException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), default));
+        Assert.True(SignInProfileDirectory.StorageUnavailable(_root)); Assert.True(SignInProfileDirectory.LeftoverNeedsReview(_root));
+        Directory.Delete(unmarked, true);
+        using (var cancelled = new CancellationTokenSource())
+        {
+            cancelled.Cancel();
+            Assert.ThrowsAny<OperationCanceledException>(() => SignInProfileDirectory.Create(_root, Guid.NewGuid(), cancelled.Token));
+        }
+        Assert.True(SignInProfileDirectory.StorageUnavailable(_root));
+        // An admission that prepares its folder, such as a sign-in, which reserves no saved grant, clears it.
+        SignInProfileDirectory.Create(_root, Guid.NewGuid(), default).Remove(default);
+        Assert.False(Directory.Exists(busy));
+        Assert.False(SignInProfileDirectory.StorageUnavailable(_root)); Assert.False(SignInProfileDirectory.LeftoverNeedsReview(_root));
+    }
     [Fact]
     public void StartupSweepCreatesNothingWhenNoSignInFolderExists()
     {
@@ -591,6 +647,7 @@ public sealed class RobloxSignInPresentationTests : IDisposable
                     Assert.DoesNotContain(_root, refused.Message);
                     Assert.False(signIn.CleanupPending, "A refusal that created nothing latched the sign-in owner.");
                     Assert.False(SignInProfileDirectory.LeftoverNeedsReview(dataRoot), "A storage failure was remembered as leftover data to review.");
+                    Assert.True(SignInProfileDirectory.StorageUnavailable(dataRoot), "The handoff checks were not told that storage failed.");
                 }
             Assert.Empty(Directory.EnumerateFileSystemEntries(real));
             Assert.False(Directory.Exists(Path.Combine(denied.FullName, "signin-browser-data")));

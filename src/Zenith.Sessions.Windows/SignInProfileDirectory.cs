@@ -22,6 +22,10 @@ public sealed class SignInProfileDirectory
     // Browser-data roots whose last admission or sweep kept leftover data for review. Read before any grant is
     // reserved, including from the UI thread, so it is memory only; the value is unused.
     private static readonly ConcurrentDictionary<string, byte> ReviewPending = new(StringComparer.OrdinalIgnoreCase);
+    // Browser-data roots whose last admission or sweep failed on storage itself rather than on leftover data kept for review;
+    // see StorageUnavailable. Read before any grant is reserved, including from the UI thread, so it is memory only; the
+    // value is unused.
+    private static readonly ConcurrentDictionary<string, byte> StorageRefused = new(StringComparer.OrdinalIgnoreCase);
     // Browser-data roots whose last sweep did not find them clean; see SweptLeftoversMayRemain. Memory only; the value is unused.
     private static readonly ConcurrentDictionary<string, byte> SweptLeftovers = new(StringComparer.OrdinalIgnoreCase);
     // Leases an owner keeps after its cleanup failed, per browser-data root and per folder: a subset of HeldLeases. The
@@ -72,7 +76,7 @@ public sealed class SignInProfileDirectory
     /// <summary>
     /// True while the last admission or sweep under <paramref name="dataRoot"/> kept leftover data it must not open or
     /// remove (see <see cref="SignInDirectoryNeedsReviewException"/>), so the next <see cref="Create"/> would refuse as
-    /// well. Other storage failures are not remembered: they say nothing about leftover data and may clear on retry.
+    /// well. Other storage failures say nothing about leftover data; <see cref="StorageUnavailable"/> reports them instead.
     /// Memory only, like <see cref="HasLiveOwner"/>; a clean admission or sweep clears it, and every start begins with a sweep.
     /// </summary>
     public static bool LeftoverNeedsReview(string dataRoot)
@@ -93,17 +97,37 @@ public sealed class SignInProfileDirectory
         return SweptLeftovers.ContainsKey(BrowserRootOf(dataRoot));
     }
 
+    /// <summary>
+    /// True when an admission under <paramref name="dataRoot"/> is expected to fail on storage itself, not on leftover data
+    /// kept for review: the root is remote, which <see cref="Create"/> refuses outright, or the last admission or sweep under
+    /// it failed with an <see cref="IOException"/> or <see cref="UnauthorizedAccessException"/> that was neither leftover data
+    /// to review nor a folder another owner holds (redirected storage, permissions, a full disk, or a file another program
+    /// still has open). The handoff checks read it before any grant is reserved, so one storage failure costs at most the
+    /// account whose check met it, not every account after it. Memory only, like <see cref="LeftoverNeedsReview"/>. Only an
+    /// admission that prepares its folder, or a sweep that checks the root and leaves no leftover behind, has tested the
+    /// storage again, so only they clear it; a timer or a metadata check could not tell that a permission, a full disk or a
+    /// file held by another program is fixed. A sign-in's admission reserves no saved grant, so sign-in is never refused
+    /// for this and can clear it.
+    /// </summary>
+    public static bool StorageUnavailable(string dataRoot)
+    {
+        ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
+        string root = System.IO.Path.GetFullPath(dataRoot);
+        return IsRemote(root) || StorageRefused.ContainsKey(System.IO.Path.Combine(root, "signin-browser-data"));
+    }
+
     public static SignInProfileDirectory Create(string dataRoot, Guid profileId, CancellationToken ct)
     {
         ArgumentException.ThrowIfNullOrWhiteSpace(dataRoot);
         if (profileId == Guid.Empty) throw new ArgumentException("A saved account profile is required.");
         ct.ThrowIfCancellationRequested();
         string root = System.IO.Path.GetFullPath(dataRoot);
-        if (root.StartsWith(@"\\", StringComparison.Ordinal)) throw new IOException("Browser sign-in needs local private storage.");
+        // StorageUnavailable reports this from the path alone, so nothing needs to be remembered for it.
+        if (IsRemote(root)) throw new IOException("Browser sign-in needs local private storage.");
         Admission.Wait(ct);
+        string browserRoot = System.IO.Path.Combine(root, "signin-browser-data");
         try
         {
-            string browserRoot = System.IO.Path.Combine(root, "signin-browser-data");
             try
             {
                 // Reject links in existing ancestors before creating anything below the app's data root.
@@ -126,9 +150,7 @@ public sealed class SignInProfileDirectory
                 }
             }
             // Leftover data that stopped admission stays on disk until someone reviews it. Remember it so the handoff
-            // checks refuse before reserving a grant. Nothing else is remembered: a folder another owner holds is only
-            // busy, a cancel changes nothing, and remote, redirected, unwritable or full storage, or a file another
-            // program still has open, is a storage problem the next attempt may not have.
+            // checks refuse before reserving a grant. A folder another owner holds is only busy, and a cancel changes nothing.
             catch (SignInDirectoryNeedsReviewException) { ReviewPending.TryAdd(browserRoot, 0); throw; }
             ReviewPending.TryRemove(browserRoot, out _);
             // Every folder an earlier sweep kept or left for later is gone now.
@@ -137,8 +159,15 @@ public sealed class SignInProfileDirectory
             ct.ThrowIfCancellationRequested();
             Directory.CreateDirectory(path);
             File.WriteAllText(System.IO.Path.Combine(path, Marker), MarkerContents);
-            return new(path, new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None));
+            var lease = new FileStream(System.IO.Path.Combine(path, OwnerLock), FileMode.CreateNew, FileAccess.ReadWrite, FileShare.None);
+            // This storage just held a new private folder, so whatever stopped an earlier admission or sweep is gone.
+            StorageRefused.TryRemove(browserRoot, out _);
+            return new(path, lease);
         }
+        // Redirected, unwritable or full storage, or a file another program still has open, is not leftover data to review,
+        // but the next admission would most likely fail the same way. Remember it apart from review, so the handoff checks
+        // refuse before reserving another account's grant without stopping native launch as a cleanup failure would.
+        catch (Exception ex) when (IsStorageFailure(ex)) { StorageRefused.TryAdd(browserRoot, 0); throw; }
         finally { Admission.Release(); }
     }
 
@@ -150,8 +179,9 @@ public sealed class SignInProfileDirectory
     /// budget are not opened and are counted as deferred: the next admission or sweep removes them. Only leftover data
     /// that needs review, which the next admission would also refuse, is reported by <see cref="LeftoverNeedsReview"/>.
     /// A redirected or unreadable storage root is refused as a whole with an <see cref="IOException"/>; like every other
-    /// storage failure it is not remembered for review. Until a sweep or admission finds the root clean,
-    /// <see cref="SweptLeftoversMayRemain"/> is true. Meant for startup, under the single-instance lock.
+    /// storage failure it is not remembered for review but is reported by <see cref="StorageUnavailable"/> until a sweep
+    /// checks the root and leaves no leftover behind or an admission prepares its folder. Until a sweep or admission finds
+    /// the root clean, <see cref="SweptLeftoversMayRemain"/> is true. Meant for startup, under the single-instance lock.
     /// </summary>
     public static SignInSweepResult SweepOwned(string dataRoot, CancellationToken ct)
     {
@@ -159,31 +189,41 @@ public sealed class SignInProfileDirectory
         ct.ThrowIfCancellationRequested();
         string root = System.IO.Path.GetFullPath(dataRoot);
         // Create never makes sign-in folders on remote storage, so there is nothing of ours to sweep there.
-        if (root.StartsWith(@"\\", StringComparison.Ordinal)) return default;
+        if (IsRemote(root)) return default;
         string browserRoot = System.IO.Path.Combine(root, "signin-browser-data");
         Admission.Wait(ct);
         try
         {
+            // Nothing is left to review or remove. Storage is not tested here (an unwritable data folder never gets this far
+            // in Create either), so a storage refusal stays until an admission prepares its folder.
             if (!Directory.Exists(browserRoot)) { ReviewPending.TryRemove(browserRoot, out _); SweptLeftovers.TryRemove(browserRoot, out _); return default; }
             // Set first, so a root this sweep cannot check, or a sweep that stops early, is not reported as clean.
             SweptLeftovers.TryAdd(browserRoot, 0);
-            // A redirected or unreadable root is a storage problem, not leftover data, so it is not remembered for review.
-            AssertAncestors(browserRoot);
-            int removed = 0, kept = 0, deferred = 0; bool review = false;
-            foreach (string old in Directory.EnumerateDirectories(browserRoot))
+            int removed = 0, kept = 0, deferred = 0; bool review = false, storage = false;
+            try
             {
-                ct.ThrowIfCancellationRequested();
-                // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
-                if (removed + kept >= RecoveryBudget) { deferred++; continue; }
-                try { RecoverLeftover(old, ct); removed++; }
-                // A held folder is busy and frees itself, and a storage error (such as a file another program still has
-                // open) may clear on the next attempt; only data that needs review waits for someone to look at it.
-                catch (SignInDirectoryInUseException) { kept++; }
-                catch (SignInDirectoryNeedsReviewException) { kept++; review = true; }
-                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; }
+                AssertAncestors(browserRoot);
+                foreach (string old in Directory.EnumerateDirectories(browserRoot))
+                {
+                    ct.ThrowIfCancellationRequested();
+                    // Same per-run budget as admission: later folders are counted, not opened, and wait for the next run.
+                    if (removed + kept >= RecoveryBudget) { deferred++; continue; }
+                    try { RecoverLeftover(old, ct); removed++; }
+                    // A held folder is busy and frees itself, and only data that needs review waits for someone to look at
+                    // it. A storage error (such as a file another program still has open) would stop the next admission too.
+                    catch (SignInDirectoryInUseException) { kept++; }
+                    catch (SignInDirectoryNeedsReviewException) { kept++; review = true; }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { kept++; storage = true; }
+                }
             }
+            // A redirected or unreadable root is a storage problem, not leftover data: it is not remembered for review, but
+            // every admission would fail on it, so the handoff checks refuse before reserving a grant.
+            catch (Exception ex) when (IsStorageFailure(ex)) { StorageRefused.TryAdd(browserRoot, 0); throw; }
             // Admission also refuses when more folders remain than one admission may open.
             if (review || kept + deferred > RecoveryBudget) ReviewPending.TryAdd(browserRoot, 0); else ReviewPending.TryRemove(browserRoot, out _);
+            // Only a sweep that left nothing behind has tested every folder again: one it skipped because it was held, kept
+            // for review or past the budget may still hold what stopped the last admission.
+            if (storage) StorageRefused.TryAdd(browserRoot, 0); else if (kept + deferred == 0) StorageRefused.TryRemove(browserRoot, out _);
             if (kept + deferred == 0) SweptLeftovers.TryRemove(browserRoot, out _);
             return new(removed, kept, deferred);
         }
@@ -285,6 +325,10 @@ public sealed class SignInProfileDirectory
         finally { HeldLeases.AddOrUpdate(LeaseRoot(Path), 0, static (_, held) => held - 1); }
     }
     private static string LeaseRoot(string path) => System.IO.Path.GetDirectoryName(path)!;
+    private static bool IsRemote(string fullRoot) => fullRoot.StartsWith(@"\\", StringComparison.Ordinal);
+    // Storage itself failed: not leftover data kept for review, not a folder another owner holds, not a cancellation.
+    private static bool IsStorageFailure(Exception ex) => ex is (IOException or UnauthorizedAccessException)
+        and not (SignInDirectoryNeedsReviewException or SignInDirectoryInUseException);
     private static string BrowserRootOf(string dataRoot) => System.IO.Path.Combine(System.IO.Path.GetFullPath(dataRoot), "signin-browser-data");
     private static FileStream OpenLease(string path)
     {

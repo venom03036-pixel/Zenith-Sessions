@@ -37,7 +37,7 @@ public interface IRobloxNativeHandoffCapture : IAsyncDisposable
 }
 
 public enum NativeHandoffPreparationStatus
-{ Ready, Busy, RequestChanged, SignInRequired, IdentityMismatch, AuthorizationChanged, CaptureRejected, CleanupFailed, Expired, Cancelled, Failed }
+{ Ready, Busy, RequestChanged, SignInRequired, IdentityMismatch, AuthorizationChanged, CaptureRejected, CleanupFailed, Expired, Cancelled, Failed, StorageUnavailable }
 
 /// <summary>Short-lived owned preparation, never queue data or verified native identity.</summary>
 public sealed class NativeHandoffPreparation : IDisposable

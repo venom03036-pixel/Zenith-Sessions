@@ -41,6 +41,17 @@ public sealed class NativeLaunchDiagnosticPresentationTests
         Assert.True(view.Available);Assert.Contains(expected,view.Trust);Assert.Contains("not reached or not recorded",view.Preparation);
         Assert.Contains("not reached or not recorded",view.Dispatch);Assert.DoesNotContain("start was reported",view.Dispatch);
     }
+    [Fact]
+    public void PreparationRefusedForStorageSaysTheSavedSignInWasKeptRatherThanAnotherPreparationWasOwned()
+    {
+        // Mapped to Busy, a storage refusal read "another preparation was still owned", which sent support looking for a window.
+        var id=Guid.NewGuid();var view=NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id) with
+        {PreparationStatus=NativeHandoffPreparationStatus.StorageUnavailable,BrowserOutcome=null,ShapeStatus=null,DispatchStatus=null});
+        Assert.Contains("storage",view.Preparation);Assert.Contains("saved sign-in was kept",view.Preparation);
+        Assert.DoesNotContain("still owned",view.Preparation);
+        view=NativeLaunchDiagnosticPresentation.Project(id,Snapshot(id) with {BrowserOutcome=RobloxHandoffProbeOutcome.StorageUnavailable,ShapeStatus=null});
+        Assert.Contains("storage",view.Browser);
+    }
     [Theory]
     [InlineData("foreign")]
     [InlineData("enum")]

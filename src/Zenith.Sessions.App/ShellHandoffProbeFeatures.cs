@@ -13,7 +13,8 @@ public sealed partial class ShellViewModel
     public bool CanInspectNativeHandoff=>_ready&&!IsLocked&&!IsAuthorizing&&!_nativeLaunch.IsBusy&&!_shuttingDown&&!_lifetime.IsCancellationRequested
         &&SelectedAccount?.KnownUserId is >0&&ServerBrowser.ReadyDestination is {PlaceId:>0,JobId:null}
         // Only the permanent cleanup latch disables the button; a transient Busy is answered on click,
-        // since nothing would re-enable the button when another browser finishes closing.
+        // since nothing would re-enable the button when another browser finishes closing. A storage
+        // refusal is answered on click too, so its status can say what lifts it.
         &&_handoffProbe.Refusal is not RobloxHandoffProbeOutcome.CleanupFailed;
     public string HandoffSelectionSummary=>SelectedAccount is { } row
         ?$"Selected: {row.Profile.Label} · "+(row.KnownUserId is { } id?$"last-known player ID {id}":"saved sign-in required")
@@ -81,7 +82,8 @@ public sealed partial class ShellViewModel
         RobloxHandoffProbeOutcome.IdentityMismatch=>"The private page's current sign-in did not match the selected player ID. It was not saved as that account; no client was started.",
         RobloxHandoffProbeOutcome.AuthorizationChanged=>"The account's saved authorization changed during inspection. The old result was discarded; no client was started.",
         RobloxHandoffProbeOutcome.CleanupFailed=>"Private browser or sign-in cleanup did not finish. No native dispatch was permitted. Preserve the data folder and close Zenith before retrying; if this repeats, review signin-browser-data in the Zenith data folder.",
-        RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser or its storage is unavailable, or its required launch-cancellation guard could not be installed. Check WebView2 Runtime, and that the Zenith data folder is on a local drive that is not redirected, with free space and write permission; no page handoff was allowed.",
+        RobloxHandoffProbeOutcome.BrowserUnavailable=>"The private browser or its storage is unavailable, or its required launch-cancellation guard could not be installed. Check WebView2 Runtime, and that the Zenith data folder is on a local drive that is not redirected, with free space and write permission. No page handoff was allowed. The selected account's saved sign-in now needs renewal: sign in again once this is fixed.",
+        RobloxHandoffProbeOutcome.StorageUnavailable=>"The private browser's storage could not be prepared on the last attempt, so this check was refused before it used the selected account's saved sign-in, which is still saved; no page was opened. The Zenith data folder must be on a local drive that is not redirected, with free space and write permission, and no other program may be using signin-browser-data. Fix that, then sign in to any account or restart Zenith Sessions; checks stay refused until one of those prepares the storage.",
         RobloxHandoffProbeOutcome.Busy=>"Another account operation or private browser window is still open or closing. Finish or cancel it, then retry the inspection; no page was opened.",
         RobloxHandoffProbeOutcome.ContextRejected=>"The game page changed or was not the approved game-only destination. No handoff was accepted. Renew sign-in if required, then retry with the intended game.",
         RobloxHandoffProbeOutcome.OriginRejected=>"The request did not report the expected official Roblox page origin. It was cancelled and no client was started.",
