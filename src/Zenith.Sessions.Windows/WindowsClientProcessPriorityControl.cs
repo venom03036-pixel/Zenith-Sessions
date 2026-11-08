@@ -198,6 +198,10 @@ public sealed class WindowsClientProcessPriorityControl : IClientProcessPriority
             }
             if (before.Status != ClientProcessPriorityStatus.Unchanged || before.Settings is not { } current)
                 return Result(session, action, Failure(before.Status), current: before.Current);
+            // Membership in another program's job is not a value this owner changed. If Zenith never set a cap,
+            // keep the currently observed cap state through comparisons and restoration of our other settings.
+            if (owned is not null && owned.LastApplied.CpuCap is null or 0)
+                owned=owned with { Original=owned.Original with { CpuCap=current.CpuCap },LastApplied=owned.LastApplied with { CpuCap=current.CpuCap } };
             var currentClass = current.Class;
             if (currentClass is not (ClientProcessPriorityClass.Normal or ClientProcessPriorityClass.BelowNormal))
                 return Result(session, action, ClientProcessPriorityStatus.UnsupportedPriority, currentClass, current: currentClass);

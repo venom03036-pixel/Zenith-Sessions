@@ -54,10 +54,13 @@ internal sealed class SafeJobObjectHandle : SafeHandleZeroOrMinusOneIsInvalid
 internal sealed record ClientPriorityNativeSnapshot(int ProcessId, long StartUtcTicks, bool Running,
     string ImagePath, string UserSid, uint Priority, ClientPowerThrottling? Throttling = null, uint? MemoryPriority = null,
     ulong? Affinity = null, ulong? SystemAffinity = null);
+internal readonly record struct ClientPriorityInstance(long StartUtcTicks, bool Running);
 internal interface IClientPriorityNativeApi
 {
     string? CurrentUserSid { get; }
     SafeProcessHandle Open(int processId, out int error);
+    SafeProcessHandle OpenForQuery(int processId, out int error);
+    bool ReadInstance(SafeProcessHandle handle, out ClientPriorityInstance instance);
     bool Read(SafeProcessHandle handle, out ClientPriorityNativeSnapshot? snapshot);
     bool Set(SafeProcessHandle handle, uint priority, out int error);
     bool SetThrottling(SafeProcessHandle handle, ClientPowerThrottling throttling, out int error);
@@ -132,13 +135,13 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         {
             if (stopped()) { stoppedEarly = true; break; }
             lock (_gate) if (_jobs.ContainsKey(record)) continue; // Capped by this run: not a leftover.
-            using var process = _native.Open(record.ProcessId, out int error);
+            using var process = _native.OpenForQuery(record.ProcessId, out int error);
             if (process.IsInvalid)
             {
                 if (error == 87) ForgetQuietly(record); else notChecked++;
                 continue;
             }
-            if (!_native.Read(process, out var current) || current is null) { notChecked++; continue; }
+            if (!_native.ReadInstance(process, out var current)) { notChecked++; continue; }
             if (!current.Running || current.StartUtcTicks != record.StartUtcTicks) { ForgetQuietly(record); continue; }
             if (!_native.IsInJob(process, null, out bool inJob)) { notChecked++; continue; }
             if (inJob) stillCapped++; else ForgetQuietly(record);
@@ -363,6 +366,19 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
             return handle;
         }
 
+        public SafeProcessHandle OpenForQuery(int processId, out int error)
+        {
+            // Startup reconciliation needs identity/liveness and IsProcessInJob only, never mutation or token rights.
+            var handle=Native.OpenProcess(0x1000,false,processId);
+            error=Marshal.GetLastWin32Error();return handle;
+        }
+        public bool ReadInstance(SafeProcessHandle process,out ClientPriorityInstance instance)
+        {
+            instance=default;
+            if(ProcessInstanceIdentity.StartTicks(process) is not { } start || !Native.GetExitCodeProcess(process,out uint exit)) return false;
+            instance=new(start,exit==259);return true; // STILL_ACTIVE; one bounded read, never an exit polling loop.
+        }
+
         public bool Read(SafeProcessHandle process, out ClientPriorityNativeSnapshot? snapshot)
         {
             snapshot = null;
@@ -493,6 +509,8 @@ internal sealed class NativeClientProcessPriorityAdapter : IClientPriorityAdapte
         // https://learn.microsoft.com/windows/win32/api/winnt/ns-winnt-jobobject_cpu_rate_control_information
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern SafeProcessHandle OpenProcess(uint access, [MarshalAs(UnmanagedType.Bool)] bool inherit, int processId);
+        [DllImport("kernel32.dll", SetLastError = true)] [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool GetExitCodeProcess(SafeProcessHandle process,out uint exitCode);
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern uint GetProcessId(SafeProcessHandle process);
         [DllImport("kernel32.dll", SetLastError = true)] internal static extern uint WaitForSingleObject(SafeProcessHandle process, uint milliseconds);
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]

@@ -57,9 +57,10 @@ internal sealed class InMemoryClientCpuCapLedger : IClientCpuCapLedger
 /// (a temporary file replaces the old one). A damaged file is reported through <see cref="Unreadable"/> and replaced by the
 /// next change instead of being guessed at. Every call runs on the priority control's single worker.
 /// </summary>
-internal sealed class ClientCpuCapLedgerFile(string path) : IClientCpuCapLedger
+internal sealed class ClientCpuCapLedgerFile(string path, DateTimeOffset? bootUtc = null) : IClientCpuCapLedger
 {
     private readonly string _path = path ?? throw new ArgumentNullException(nameof(path));
+    private readonly DateTimeOffset _bootUtc = bootUtc ?? DateTimeOffset.UtcNow - TimeSpan.FromMilliseconds(Environment.TickCount64);
     private readonly object _gate = new();
     private List<ClientCpuCapRecord>? _records;
     private bool _unreadable;
@@ -102,8 +103,12 @@ internal sealed class ClientCpuCapLedgerFile(string path) : IClientCpuCapLedger
             {
                 var file = JsonSerializer.Deserialize<LedgerFile>(File.ReadAllBytes(_path), Options);
                 if (file is not { Schema: 1 }) _unreadable = true;
-                else foreach (var row in file.Caps ?? [])
-                    if (row is { ProcessId: > 0, StartUtcTicks: > 0 } && records.Count < IClientCpuCapLedger.Capacity)
+                // Jobs cannot survive a Windows restart. Legacy schema-1 records have no boot stamp; retain only
+                // instances whose start could belong to this boot. Two minutes allow normal clock-reading jitter.
+                else if (file.BootUtc is null || (file.BootUtc.Value - _bootUtc).Duration() <= TimeSpan.FromMinutes(2))
+                    foreach (var row in file.Caps ?? [])
+                    if (row is { ProcessId: > 0, StartUtcTicks: > 0 } && records.Count < IClientCpuCapLedger.Capacity
+                        && (file.BootUtc is not null || row.StartUtcTicks >= _bootUtc.AddMinutes(-2).UtcTicks))
                         records.Add(new(row.ProcessId, row.StartUtcTicks));
             }
             catch (Exception error) when (error is JsonException or IOException or UnauthorizedAccessException) { _unreadable = true; }
@@ -113,7 +118,7 @@ internal sealed class ClientCpuCapLedgerFile(string path) : IClientCpuCapLedger
 
     private void Save(List<ClientCpuCapRecord> records)
     {
-        var file = new LedgerFile { Caps = records.Select(record => new LedgerRow { ProcessId = record.ProcessId, StartUtcTicks = record.StartUtcTicks }).ToArray() };
+        var file = new LedgerFile { BootUtc = _bootUtc, Caps = records.Select(record => new LedgerRow { ProcessId = record.ProcessId, StartUtcTicks = record.StartUtcTicks }).ToArray() };
         string folder = Path.GetDirectoryName(Path.GetFullPath(_path))!;
         Directory.CreateDirectory(folder);
         string temporary = _path + ".tmp";
@@ -127,6 +132,7 @@ internal sealed class ClientCpuCapLedgerFile(string path) : IClientCpuCapLedger
     private sealed class LedgerFile
     {
         [JsonPropertyName("schema")] public int Schema { get; set; } = 1;
+        [JsonPropertyName("bootUtc")] public DateTimeOffset? BootUtc { get; set; }
         [JsonPropertyName("caps")] public LedgerRow[]? Caps { get; set; }
     }
     private sealed class LedgerRow

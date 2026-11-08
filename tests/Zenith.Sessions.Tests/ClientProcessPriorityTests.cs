@@ -788,6 +788,50 @@ public sealed class ClientProcessPriorityTests
         Assert.Empty(fixture.Ledger.Records);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task AForeignJobJoinedAfterAPriorityChangeDoesNotBlockItsRestoration(bool onExit)
+    {
+        await using var fixture=new Fixture(1);
+        await fixture.Change(ClientProcessPriorityAction.BelowNormal,1);
+        fixture.Native.Clients[1].ForeignJob=true;
+        if(onExit) await fixture.Control.DisposeAsync();
+        else Assert.Equal(ClientProcessPriorityStatus.Restored,Assert.Single((await fixture.Control.RestoreAllAsync(default)).Results).Status);
+        Assert.Equal(0x20u,fixture.Native.Clients[1].Priority);
+        Assert.True(fixture.Native.Clients[1].ForeignJob);Assert.Empty(fixture.Native.Jobs);
+        Assert.Equal(0,fixture.Control.PendingRestoreCount);
+    }
+
+    [Fact]
+    public async Task LeftoverChecksUseOnlyQueryRightsAndDropAReusedPidWithoutReadingMutableSettings()
+    {
+        await using var fixture=new Fixture(1);
+        fixture.Ledger.Remember(new(1,Session(1).ProcessStartUtcTicks));
+        fixture.Native.OpenError=5;fixture.Native.FailRead=true;
+        fixture.Native.Clients[1].Start++;
+        Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+        Assert.Empty(fixture.Ledger.Records);Assert.Equal(1,fixture.Native.QueryOpens);Assert.Empty(fixture.Native.Reads);
+    }
+
+    [Fact]
+    public async Task AWindowsRestartForgetsOldCapsBeforeOpeningADeniedReusedPid()
+    {
+        string root=Path.Combine(Path.GetTempPath(),"zenith-cap-boot-"+Guid.NewGuid().ToString("N"));
+        try
+        {
+            string path=Path.Combine(root,"caps.json");
+            new ClientCpuCapLedgerFile(path,Now.AddHours(-5)).Remember(new(1,Session(1).ProcessStartUtcTicks));
+            await using var fixture=new Fixture(new ClientCpuCapLedgerFile(path,Now),1);
+            fixture.Native.OpenError=5;fixture.Native.QueryError=5;
+            Assert.Equal(new ClientCpuCapLeftovers(0,0,false,false),await fixture.Control.CheckLeftoverCpuCapsAsync(default));
+            Assert.Empty(fixture.Ledger.Records);Assert.Equal(0,fixture.Native.QueryOpens);Assert.Empty(fixture.Native.Handles);
+            var sameBoot=new ClientCpuCapLedgerFile(path,Now.AddHours(-5).AddSeconds(2));
+            Assert.Single(sameBoot.Records);
+        }
+        finally { if(Directory.Exists(root)) Directory.Delete(root,true); }
+    }
+
     [Fact]
     public async Task AClientThatExitedReleasesItsJobHandleAndItsRecord()
     {
@@ -921,6 +965,7 @@ public sealed class ClientProcessPriorityTests
         public Action<Client>? BeforeSet, AfterSet;
         public bool DenySet, FailRead, DenyThrottling, DenyCap;
         public int OpenError;
+        public int QueryError,QueryOpens;
         public int Attempts;
         public sealed class Job
         {
@@ -985,6 +1030,14 @@ public sealed class ClientProcessPriorityTests
             if (!handle.IsInvalid) _handles.Add(handle, Clients[pid]);
             return handle;
         }
+        public SafeProcessHandle OpenForQuery(int pid,out int error)
+        {
+            QueryOpens++;error=QueryError;
+            var handle=new SafeProcessHandle(QueryError!=0?0:(nint)(Handles.Count+1000),ownsHandle:false);
+            Handles.Add(handle);if(!handle.IsInvalid)_handles.Add(handle,Clients[pid]);return handle;
+        }
+        public bool ReadInstance(SafeProcessHandle handle,out ClientPriorityInstance instance)
+        { var client=_handles[handle];instance=new(client.Start,client.Running);return true; }
         public bool Read(SafeProcessHandle handle, out ClientPriorityNativeSnapshot? snapshot)
         {
             var client = _handles[handle];
