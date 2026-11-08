@@ -119,6 +119,16 @@ public sealed class RequestedServerSelectionTests
         => RequestedServerSelection.SpreadServers(Place, page, count, Now, shuffle: false, random: null);
 
     [Fact]
+    public void ASpreadCarriesCountsAndDestinationsOnlySoExplainRecordedIsItsOneWording()
+    {
+        // The queue hands servers only to the requests it records (N-B2-1), so the notice is ExplainRecorded. A second,
+        // review-time text stored on the record described accounts that "will join" the place, was read by nothing in
+        // production and could drift from the one the user sees; the record stores no text at all (O-C2-5).
+        Assert.Null(typeof(ServerSpread).GetProperty("Explanation"));
+        Assert.DoesNotContain(typeof(ServerSpread).GetProperties(), property => property.PropertyType == typeof(string));
+    }
+
+    [Fact]
     public void SpreadingHandsEachServerWithRoomForOneMoreAndASpareSeatOutOnceThenFallsBackToThePlace()
     {
         // 18/20 and 0/20 leave two or more open seats. 19/20 leaves one, 20/20 none and 21/20 is overfull; a stale row, another
@@ -134,14 +144,17 @@ public sealed class RequestedServerSelectionTests
         Assert.Equal(new[] { RobloxServerKind.Public, RobloxServerKind.Public, RobloxServerKind.Unknown, RobloxServerKind.Unknown },
             spread.Destinations.Select(destination => destination.ServerKind));
         Assert.Equal(2, spread.SpreadCount); Assert.Equal(2, spread.PlaceOnlyCount); Assert.Equal(5, spread.UsableCount);
-        Assert.Contains("2 of 4 accounts got their own listed server", spread.Explanation);
-        Assert.Contains("the other 2 will join the place without a chosen server", spread.Explanation);
-        Assert.Contains("not reserved", spread.Explanation);
+        // With every reviewed account recorded, the notice describes the spread's own counts.
+        string recorded = spread.ExplainRecorded(4, spread.SpreadCount);
+        Assert.Contains("2 of 4 requests got their own listed server", recorded);
+        Assert.Contains("the other 2 ask for the place without a chosen server", recorded);
+        Assert.Contains("not reserved", recorded);
 
         var everyone = Spread(2, page);
         Assert.Equal(new[] { Job(1), Job(5) }, everyone.Destinations.Select(destination => destination.JobId));
-        Assert.Equal(0, everyone.PlaceOnlyCount); Assert.Contains("Each of the 2 accounts got its own listed server", everyone.Explanation);
-        Assert.Contains("The account got its own listed server", Spread(1, page).Explanation);
+        Assert.Equal(0, everyone.PlaceOnlyCount); Assert.Contains("Each of the 2 requests got its own listed server", everyone.ExplainRecorded(2, everyone.SpreadCount));
+        var one = Spread(1, page);
+        Assert.Contains("The request got its own listed server", one.ExplainRecorded(1, one.SpreadCount));
     }
 
     [Fact]
@@ -149,12 +162,14 @@ public sealed class RequestedServerSelectionTests
     {
         var filledSince = Spread(2, Row(1, 5, when: Now.AddSeconds(-30)), Row(1, 19));
         Assert.Equal(new string?[] { null, null }, filledSince.Destinations.Select(destination => destination.JobId));
-        Assert.Contains("None of the loaded servers had room for one more player and a spare seat, so 2 accounts will join the place without a chosen server", filledSince.Explanation);
+        Assert.Equal(0, filledSince.SpreadCount); Assert.Equal(1, filledSince.UsableCount);
+        Assert.Contains("None of the loaded servers had room for one more player and a spare seat, so the 2 requests ask for the place without a chosen server",
+            filledSince.ExplainRecorded(2, filledSince.SpreadCount));
         var emptiedSince = Spread(2, Row(1, 19, when: Now.AddSeconds(-30)), Row(1, 5));
         Assert.Equal(new[] { Job(1), null }, emptiedSince.Destinations.Select(destination => destination.JobId));
         var none = Spread(3);
         Assert.Equal(3, none.PlaceOnlyCount); Assert.Equal(0, none.UsableCount);
-        Assert.Contains("No fresh public server is loaded, so 3 accounts will join the place without a chosen server", none.Explanation);
+        Assert.Contains("No fresh public server is loaded, so the 3 requests ask for the place without a chosen server", none.ExplainRecorded(3, none.SpreadCount));
     }
 
     [Fact]

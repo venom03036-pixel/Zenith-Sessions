@@ -15,12 +15,14 @@ public sealed record RequestedServerChoice(RequestedServerChoiceKind Kind, Roblo
 /// <summary>
 /// One requested destination per account, in recipient order: a different listed public server for each account while
 /// servers last, then the place with no chosen server. Reported room is advice: it never reserves a seat or proves arrival.
+/// The spread carries counts, not text: the queue hands its servers only to the requests it records, so the one wording is
+/// <see cref="ExplainRecorded"/>, written from those requests.
 /// </summary>
 /// <param name="SpreadCount">Accounts given their own listed server.</param>
 /// <param name="PlaceOnlyCount">Accounts left with the place and no chosen server.</param>
 /// <param name="UsableCount">Distinct fresh, well-formed servers of the place that were compared.</param>
 public sealed record ServerSpread(IReadOnlyList<RobloxRequestedDestination> Destinations, int SpreadCount, int PlaceOnlyCount,
-    int UsableCount, string Explanation)
+    int UsableCount)
 {
     /// <summary>
     /// What this spread gave the <paramref name="requests"/> a queue recorded from it, <paramref name="withServer"/> of them with
@@ -84,18 +86,7 @@ public static class RequestedServerSelection
         RobloxRequestedDestination? place = null;
         for (int i = 0; i < count; i++)
             destinations[i] = i < spread ? withRoom[i].Server.RequestedDestination : place ??= new(placeId);
-
-        string accounts = Accounts(count);
-        string explanation = count == 0 ? "No accounts to spread." : placeOnly == 0
-            ? (count == 1 ? "The account got its own listed server" : $"Each of the {accounts} got its own listed server")
-                + " with room for one more player and a spare seat."
-            : spread > 0
-                ? $"{spread.ToString(CultureInfo.InvariantCulture)} of {accounts} got their own listed server with room for one more player and a spare seat. Only {spread.ToString(CultureInfo.InvariantCulture)} loaded {(spread == 1 ? "server had" : "servers had")} that room, so the other {placeOnly.ToString(CultureInfo.InvariantCulture)} will join the place without a chosen server."
-                : newest.Count == 0
-                    ? $"No fresh public server is loaded, so {accounts} will join the place without a chosen server. Browse public servers first to spread them."
-                    : $"None of the loaded servers had room for one more player and a spare seat, so {accounts} will join the place without a chosen server.";
-        if (spread > 0) explanation += " Seats are not reserved, room can change and arrival still needs verification.";
-        return new(Array.AsReadOnly(destinations), spread, placeOnly, newest.Count, explanation);
+        return new(Array.AsReadOnly(destinations), spread, placeOnly, newest.Count);
     }
 
     /// <summary>
@@ -152,8 +143,6 @@ public static class RequestedServerSelection
         }
         return newest;
     }
-
-    private static string Accounts(int count) => count == 1 ? "1 account" : count.ToString(CultureInfo.InvariantCulture) + " accounts";
 
     private static (RobloxPublicServer Server, int Index) Fuller((RobloxPublicServer Server, int Index)? best, (RobloxPublicServer Server, int Index) candidate)
         => best is not { } current || candidate.Server.Playing > current.Server.Playing
