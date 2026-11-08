@@ -154,6 +154,9 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private sealed record ResourceAdmissionSnapshot(DesktopSnapshot Desktop,LaunchAdmission Admission);
     private ResourceAdmissionSnapshot? _resourceAdmission;
     private DesktopSnapshot? _latestDesktop;
+    // When the newest fresh complete process inventory was observed (UTC ticks; 0 before one). Noted by the sampler and by
+    // admission, so it is current whether or not the queue is deciding; it only moves forward.
+    private long _trustedInventoryUtcTicks;
     private string _queueStatus="Opening launch queue…";
     private bool _queueExpanded;
     public bool QueueExpanded { get=>_queueExpanded;set=>Set(ref _queueExpanded,value); }
@@ -838,6 +841,7 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var memory = snapshot.Resources;var now=DateTimeOffset.UtcNow;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;
         var projection=LaunchReservationProjection.Evaluate(Volatile.Read(ref _latestQueue),snapshot,limits,now);
+        NoteTrustedInventory(snapshot,projection);
         var capacity=CapacityPolicy.Evaluate(memory,limits,projection.Reservations,projection.OccupiedForAdmission,now);
         bool previousHold=_lastPressure.Held;
         // Cached half-second calls must not reset a one-second safety sample's recovery history.
@@ -1344,7 +1348,8 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
     private LaunchAdmission ReadCandidateLaunchAdmission(LaunchOperation candidate,IReadOnlyList<LaunchOperation> operations)
         => candidate.ResourceBudget is { } budget?ReadLaunchAdmissionForBudget(operations,budget,LaunchDescriptions.AwaitsClientUpdate(candidate))
             :new(false,"The request has no recorded memory budget. Review it before starting.");
-    /// <param name="heldForUpdate">The candidate already waits on a Roblox update: a fresh count of at least one running client held it.</param>
+    /// <param name="heldForUpdate">The candidate already waits on a Roblox update: a fresh count of at least one running client held it.
+    /// Without a trusted count it keeps that reason only for <see cref="ClientUpdateHold.UntrustedSampleGrace"/> after the newest trusted inventory.</param>
     private LaunchAdmission ReadLaunchAdmissionForBudget(IReadOnlyList<LaunchOperation> operations,LaunchResourceBudget budget,bool heldForUpdate)
     {
         var observed=Volatile.Read(ref _resourceAdmission);
@@ -1352,19 +1357,36 @@ public sealed partial class ShellViewModel : Observable, IAsyncDisposable
         var snapshot=observed.Desktop;var admission=observed.Admission;
         var limits=Volatile.Read(ref _savedSettings).Capacity!;var now=DateTimeOffset.UtcNow;
         var projection=LaunchReservationProjection.Evaluate(new(true,operations),snapshot,limits,now);
+        NoteTrustedInventory(snapshot,projection);
         // Checked before headroom: it is the reason the user can act on, and it changes only when clients open or close.
         // Possible clients this queue started count as running; only a fresh complete inventory makes the count trustworthy.
-        // A stale or incomplete one refuses every start below anyway, so a row already held (on a fresh count of at least one)
-        // stays held until the next fresh sample: deciding on an untrusted count would re-save the queue and switch the row's
-        // text between two explanations on every such sample. The comparison is still re-read, so it can end the hold meanwhile.
+        // A stale, incomplete or failed one refuses every start below anyway, so a row already held (on a fresh count of at
+        // least one) stays held through a short run of them: deciding on each untrusted count would re-save the queue and
+        // switch the row's text between two explanations on every such sample. Once the newest trusted inventory is older
+        // than the grace, no count supports the claim that a client runs, so the row returns to the wait for fresh evidence
+        // (O-C9-1). The comparison is still re-read, so it can end the hold meanwhile.
         // The selected row's comparison (and its file) is read only while a client may run: with none, nothing can close.
-        int running=projection.FreshProcessInventory?projection.OccupiedForAdmission:heldForUpdate?1:0;
+        int running=projection.FreshProcessInventory?projection.OccupiedForAdmission
+            :heldForUpdate && ClientUpdateHold.KeepsHoldWithoutTrustedCount(new DateTimeOffset(Volatile.Read(ref _trustedInventoryUtcTicks),TimeSpan.Zero),now)?1:0;
         if(projection.ForecastsKnown && running>0
             && ClientUpdateHold.Evaluate(LaunchReleaseMatchForHold(),running) is {Hold:true} update)
             return new(false,update.Reason,LaunchHoldReason.ClientUpdate);
         var decision=CapacityPolicy.Evaluate(snapshot.Resources,limits,projection.Reservations,projection.OccupiedForAdmission,now,budget);
         return new(admission.Allowed && projection.ForecastsKnown && projection.FreshProcessInventory && decision.SamplesHealthy && decision.MemoryOnlySlots>0,
             !projection.ForecastsKnown||!projection.FreshProcessInventory?projection.Explanation:!decision.SamplesHealthy||decision.MemoryOnlySlots==0?decision.Explanation:admission.Explanation);
+    }
+    // Lock-free and allocation-free (it runs once per sample and once per admission): a plain compare-and-swap keeps the
+    // newest observation whichever of the sampler or the queue notes it first.
+    private void NoteTrustedInventory(DesktopSnapshot snapshot,LaunchReservationProjectionResult projection)
+    {
+        if(!projection.FreshProcessInventory || snapshot.ProcessObservedUtc is not { } observed) return;
+        long ticks=observed.UtcTicks,seen=Volatile.Read(ref _trustedInventoryUtcTicks);
+        while(ticks>seen)
+        {
+            long prior=Interlocked.CompareExchange(ref _trustedInventoryUtcTicks,ticks,seen);
+            if(prior==seen) return;
+            seen=prior;
+        }
     }
     private IReadOnlySet<Guid> ReadObservedReservations(IReadOnlyList<LaunchOperation> operations)
     {
