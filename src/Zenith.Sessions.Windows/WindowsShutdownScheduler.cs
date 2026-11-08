@@ -85,32 +85,59 @@ public sealed class WindowsShutdownScheduler : IShutdownScheduler
 internal interface IShutdownToolRunner
 {
     /// <summary>
-    /// The tool's exit code, or null when it was still running at <paramref name="timeout"/> (it is then stopped). Throws when
-    /// the tool cannot start (for example <see cref="Win32Exception"/>) or when <paramref name="ct"/> is cancelled first.
+    /// The tool's exit code, or null when a started tool's result is unconfirmed (timeout, cancellation or failed wait).
+    /// Throws only before a tool starts. Once started it may already have changed Windows' schedule, even if its wait is cancelled.
     /// </summary>
     Task<int?> RunAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct);
 }
 
 internal sealed class ShutdownToolProcessRunner : IShutdownToolRunner
 {
+    private readonly Func<ProcessStartInfo, IShutdownToolProcess?> _start;
+    internal ShutdownToolProcessRunner() : this(start => Process.Start(start) is { } process ? new ShutdownToolProcess(process) : null) { }
+    internal ShutdownToolProcessRunner(Func<ProcessStartInfo, IShutdownToolProcess?> start) => _start = start;
+
     public async Task<int?> RunAsync(string fileName, IReadOnlyList<string> arguments, TimeSpan timeout, CancellationToken ct)
     {
         var start = new ProcessStartInfo(fileName) { UseShellExecute = false, CreateNoWindow = true };
         foreach (string argument in arguments) start.ArgumentList.Add(argument);
         // Process creation stays off the caller's thread (the manager's UI thread). Nothing the tool prints is read or kept.
-        using var process = await Task.Run(() => Process.Start(start), ct).ConfigureAwait(false)
+        using var process = await Task.Run(() => { ct.ThrowIfCancellationRequested(); return _start(start); }, ct).ConfigureAwait(false)
             ?? throw new InvalidOperationException("Windows did not start the requested tool.");
         using var bound = CancellationTokenSource.CreateLinkedTokenSource(ct);
         bound.CancelAfter(timeout);
         try { await process.WaitForExitAsync(bound.Token).ConfigureAwait(false); return process.ExitCode; }
         catch (OperationCanceledException) when (bound.IsCancellationRequested)
         {
-            // Still running: stop it and anything it started, then report no exit code, or the caller's own cancellation.
-            try { process.Kill(entireProcessTree: true); }
-            catch (InvalidOperationException) { } // It exited on its own in the meantime.
-            catch (Win32Exception) { } // Windows refused to stop it; the caller is told the result is not confirmed.
-            if (ct.IsCancellationRequested) throw;
+            // The tool may already have submitted the OS schedule. Killing it cannot undo that side effect: return its
+            // known exit code, or an unconfirmed result so the owner retains an abort obligation through Panic/Exit.
+            if (ReadExitCode(process) is { } completed) return completed;
+            try { process.Stop(); }
+            catch (Exception) { } // It exited or Windows refused to stop it; the result remains unconfirmed.
             return null;
         }
+        catch (Exception) { return null; } // A failed wait after start must not erase the possible OS side effect.
     }
+
+    private static int? ReadExitCode(IShutdownToolProcess process)
+    {
+        try { return process.ExitCode; }
+        catch (Exception) { return null; }
+    }
+}
+
+// Synthetic process seam: tests never start shutdown.exe or alter Windows' schedule.
+internal interface IShutdownToolProcess : IDisposable
+{
+    int? ExitCode { get; }
+    Task WaitForExitAsync(CancellationToken ct);
+    void Stop();
+}
+
+internal sealed class ShutdownToolProcess(Process process) : IShutdownToolProcess
+{
+    public int? ExitCode => process.HasExited ? process.ExitCode : null;
+    public Task WaitForExitAsync(CancellationToken ct) => process.WaitForExitAsync(ct);
+    public void Stop() => process.Kill(entireProcessTree: true);
+    public void Dispose() => process.Dispose();
 }

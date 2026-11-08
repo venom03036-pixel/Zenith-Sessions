@@ -798,3 +798,7 @@ VA-04-02, VA-04-03, VA-07-03 and CHAT-20: M-L1a-6 adds durable-fenced identity c
 ### D3 0.63 — private trial and password-vault integration
 
 **CAP-12-02, VA-07-03, CHAT-20.** Password mode integration preserves private-trial refusal while locked, including a lock during browser preparation. Synthetic tests confirm no native preparation/grant escapes, no post-lock account API validation is made, and the protected private target lease is released. **969 passed, 0 failed, 0 skipped** in `private-password-merged.trx`; [evidence](PRIVATE-SERVER-TRIAL-VERIFICATION.md). No real account/client test or release-readiness claim.
+
+### D3 0.65 — retain scheduled-shutdown cleanup through cancellation
+
+**CAP-11-03, CAP-13-04, PROD-QA-03.** Independent source review of `ec48e0d` found that cancellation after the shutdown tool started could discard an OS schedule and skip abort on Exit. Three synthetic regressions failed before repair. The runner now preserves a known or unconfirmed submitted result, and the shell retains the cleanup obligation through Panic/Exit while leaving known preexisting schedules and Windows session end alone. **57 affected tests passed**, no real shutdown or network mutation. [Review, exact artifacts and limits](SHUTDOWN-NETWORK-REVIEW-REPAIRS.md). Live/release readiness remains false.

@@ -23,6 +23,9 @@ public sealed partial class ShellViewModel
     private DispatcherTimer? _shutdownCountdownTimer;
     private Task _shutdownWork = Task.CompletedTask;
     private bool _shutdownPermitted, _shutdownBusy, _shutdownScheduled, _shutdownMayBeHeldElsewhere, _windowsSessionEnding;
+    // An unconfirmed request may have installed our schedule. Keep that cleanup obligation separate from a confirmed
+    // preexisting schedule, which only the user's explicit Cancel may abort.
+    private bool _shutdownAttemptUnconfirmed;
     private long _shutdownGeneration, _shutdownScheduledAt;
     private TimeSpan _shutdownDelay;
     private DateTimeOffset _shutdownDueAt;
@@ -81,7 +84,7 @@ public sealed partial class ShellViewModel
         switch (result.Status)
         {
             case ShutdownScheduleStatus.Scheduled:
-                _shutdownScheduled = true; _shutdownMayBeHeldElsewhere = false;
+                _shutdownScheduled = true; _shutdownMayBeHeldElsewhere = false; _shutdownAttemptUnconfirmed = false;
                 _shutdownScheduledAt = _clock.GetTimestamp(); _shutdownDelay = delay; _shutdownDueAt = _clock.GetLocalNow() + delay;
                 _diagnostics.Record(ManagerEventKind.ShutdownScheduled);
                 AddEvent($"Windows shutdown scheduled for {Clock(_shutdownDueAt)}, after {ScheduledShutdownPolicy.Duration(minutes)}.");
@@ -89,8 +92,6 @@ public sealed partial class ShellViewModel
                 // Exit already stopped the timers; it cancels this schedule itself once the command's task is awaited.
                 if (!_shuttingDown) StartShutdownCountdown();
                 UpdateShutdownCountdown();
-                // Panic arrived while Windows was still answering. It promised that clients stay open, so the shutdown is called off now.
-                if (generation != _shutdownGeneration) { _shutdownWork = CancelScheduledShutdownAsync(ShutdownCancelOrigin.Panic, _lifetime.Token); await _shutdownWork; }
                 break;
             case ShutdownScheduleStatus.AlreadyScheduled:
                 _shutdownMayBeHeldElsewhere = true;
@@ -101,14 +102,19 @@ public sealed partial class ShellViewModel
                 Fail(new Win32Exception(ShutdownAccessDenied), ManagerSubsystem.ScheduledShutdown, "Windows refused to schedule the shutdown (access denied). Nothing was scheduled.");
                 break;
             case ShutdownScheduleStatus.NotConfirmed:
+                _shutdownAttemptUnconfirmed = true;
                 _shutdownMayBeHeldElsewhere = true;
-                ShutdownStatus = NoShutdownScheduled;
+                ShutdownStatus = "Windows could not confirm whether the shutdown was scheduled.";
                 Fail(UnconfirmedShutdownFault(result), ManagerSubsystem.ScheduledShutdown, result.Explanation + " A shutdown may or may not be scheduled; Cancel shutdown clears any that Windows holds.");
                 break;
             default: // Busy or Closed: the controls were disabled, so only a race can reach this; the status says what happened.
                 ShutdownStatus = result.Explanation;
                 break;
         }
+        // Panic also owns a late, unconfirmed submission. Exit uses its independent cleanup budget below; a Windows
+        // session end may be this shutdown arriving and must never abort itself.
+        if ((_shutdownScheduled || _shutdownAttemptUnconfirmed) && generation != _shutdownGeneration && !_windowsSessionEnding)
+        { _shutdownWork = CancelScheduledShutdownAsync(ShutdownCancelOrigin.Panic, _lifetime.Token); await _shutdownWork; }
         RaiseShutdownAvailability();
     }
 
@@ -156,20 +162,20 @@ public sealed partial class ShellViewModel
         RaiseShutdownAvailability();
     }
 
-    // The tool's exit codes are Windows error codes, so an unrecognised one is kept as a Win32Exception by type only (Rule 10); a
-    // tool that never answered is a timeout.
+    // Exit codes are Windows error codes; an unconfirmed started request can be a timeout, cancellation or wait failure.
+    // Keep a fixed diagnostic type/message rather than any tool output (Rule 10).
     private static Exception UnconfirmedShutdownFault(ShutdownScheduleResult result)
-        => result.ErrorCode is { } code ? new Win32Exception(code) : new TimeoutException("Windows' shutdown tool did not finish in time.");
+        => result.ErrorCode is { } code ? new Win32Exception(code) : new InvalidOperationException("Windows' shutdown tool did not return a confirmed result.");
 
     private void ReportShutdownToolFailure(Exception error, string message)
     {
-        if (!_shutdownScheduled) ShutdownStatus = NoShutdownScheduled;
+        if (!_shutdownScheduled && !_shutdownAttemptUnconfirmed) ShutdownStatus = NoShutdownScheduled;
         Fail(error, ManagerSubsystem.ScheduledShutdown, message);
     }
 
     private void ClearScheduledShutdown()
     {
-        _shutdownScheduled = false; _shutdownMayBeHeldElsewhere = false;
+        _shutdownScheduled = false; _shutdownMayBeHeldElsewhere = false; _shutdownAttemptUnconfirmed = false;
         StopShutdownCountdown();
         ShutdownCountdown = "";
     }
@@ -215,7 +221,7 @@ public sealed partial class ShellViewModel
     {
         if (locking) return;
         _shutdownGeneration++;
-        if (!_shutdownScheduled || _shutdownBusy) return;
+        if ((!_shutdownScheduled && !_shutdownAttemptUnconfirmed) || _shutdownBusy) return;
         _shutdownWork = CancelScheduledShutdownAsync(ShutdownCancelOrigin.Panic, _lifetime.Token);
     }
 
@@ -229,7 +235,8 @@ public sealed partial class ShellViewModel
         StopShutdownCountdown();
         // Tray Exit only: Zenith cancels the shutdown it scheduled, so nothing it started outlives its countdown and Cancel. A Windows
         // session end leaves it alone: that end may be this very shutdown, and aborting it would undo what the user asked for.
-        if (_shutdownScheduled && !_windowsSessionEnding) await CancelScheduledShutdownAsync(ShutdownCancelOrigin.Exit, CancellationToken.None);
+        if ((_shutdownScheduled || _shutdownAttemptUnconfirmed) && !_windowsSessionEnding)
+            await CancelScheduledShutdownAsync(ShutdownCancelOrigin.Exit, CancellationToken.None);
         try { await _shutdownScheduler.DisposeAsync(); }
         catch (Exception error) { _diagnostics.RecordFailure(ManagerSubsystem.ScheduledShutdown, error.GetType()); }
     }
