@@ -3,8 +3,13 @@ import { useEffect, useRef, useState } from 'react';
 import { PublicGameDetails } from './public-game-details';
 
 type Game = { placeId: string; name: string };
-type Server = { id: string; playing: number; maxPlayers: number; ping: number | null };
-type ServerPage = { servers: Server[]; nextCursor: string | null };
+type Server = { id: string; playing: number; maxPlayers: number; ping: number | null; fps: number | null };
+type ServerPage = { servers: Server[]; previousCursor: string | null; nextCursor: string | null };
+type ServerView = { pages: ServerPage[]; index: number };
+type PageDirection = 'previous' | 'next';
+type ServerOrder = 'least_players' | 'most_players';
+type ServerFilters = { order: ServerOrder; includeFull: boolean };
+const MAX_CACHED_SERVER_PAGES = 8;
 
 export type Destination = { place: string; name: string; job: string | null };
 
@@ -15,20 +20,23 @@ export function DestinationPicker({ destination, onChange, disabled }: {
 }) {
   const [query, setQuery] = useState('');
   const [games, setGames] = useState<Game[] | null>(null);
-  const [servers, setServers] = useState<ServerPage | null>(null);
+  const [serverView, setServerView] = useState<ServerView | null>(null);
+  const [filters, setFilters] = useState<ServerFilters>({ order: 'least_players', includeFull: false });
   const [searching, setSearching] = useState(false);
   const [browsing, setBrowsing] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [serverError, setServerError] = useState('');
   const searches = useRef(0);
   const pages = useRef(0);
+  const pendingPage = useRef<number | null>(null);
+  const servers = serverView?.pages[serverView.index];
+  const pinnedServer = servers?.servers.find(server => server.id === destination.job);
 
-  useEffect(() => () => { searches.current++; pages.current++; }, []);
+  useEffect(() => () => { searches.current++; pages.current++; pendingPage.current = null; }, []);
 
   function changePlace(place: string, name = '') {
     pages.current++;
-    setServers(null);
-    setBrowsing(false);
+    setServerView(null);
     setServerError('');
     onChange({ place, name, job: null });
   }
@@ -48,18 +56,50 @@ export function DestinationPicker({ destination, onChange, disabled }: {
     }
   }
 
-  async function browse(cursor: string | null) {
+  async function browse(cursor: string | null, queryFilters = filters, direction?: PageDirection) {
+    if (pendingPage.current !== null) return;
     const request = ++pages.current;
+    pendingPage.current = request;
     setBrowsing(true);
     setServerError('');
     try {
-      const result = await invoke<ServerPage>('browse_public_servers', { place: destination.place, cursor });
-      if (pages.current === request) setServers(result);
+      const result = await invoke<ServerPage>('browse_public_servers', { place: destination.place, cursor, filters: queryFilters });
+      if (pages.current === request) {
+        setServerView(previous => {
+          if (!previous || !direction) return { pages: [result], index: 0 };
+          if (direction === 'previous') return { pages: [result, ...previous.pages].slice(0, MAX_CACHED_SERVER_PAGES), index: 0 };
+          const pages = [...previous.pages, result].slice(-MAX_CACHED_SERVER_PAGES);
+          return { pages, index: pages.length - 1 };
+        });
+      }
     } catch (error) {
       if (pages.current === request) setServerError(typeof error === 'string' ? error : 'Could not load Roblox servers.');
     } finally {
-      if (pages.current === request) setBrowsing(false);
+      if (pendingPage.current === request) {
+        pendingPage.current = null;
+        setBrowsing(false);
+      }
     }
+  }
+
+  function changeFilters(next: ServerFilters) {
+    if (pendingPage.current !== null) return;
+    setFilters(next);
+    setServerView(null);
+    setServerError('');
+    if (servers || serverError) void browse(null, next);
+  }
+
+  function step(direction: PageDirection) {
+    if (!serverView || !servers || pendingPage.current !== null) return;
+    const index = serverView.index + (direction === 'previous' ? -1 : 1);
+    if (serverView.pages[index]) {
+      setServerError('');
+      setServerView({ ...serverView, index });
+      return;
+    }
+    const cursor = direction === 'previous' ? servers.previousCursor : servers.nextCursor;
+    if (cursor) void browse(cursor, filters, direction);
   }
 
   return <div className="destination-picker">
@@ -86,25 +126,43 @@ export function DestinationPicker({ destination, onChange, disabled }: {
         {browsing ? 'Loading…' : 'Browse public servers'}
       </button>
     </div>
+    <div className="server-options row-actions">
+      <label>Public server order <select aria-label="Public server order" value={filters.order} disabled={disabled || browsing}
+        onChange={event => changeFilters({ ...filters, order: event.target.value as ServerOrder })}>
+        <option value="least_players">Fewest players first</option>
+        <option value="most_players">Most players first</option>
+      </select></label>
+      <label className="pair-choice"><input type="checkbox" aria-label="Show full servers" checked={filters.includeFull} disabled={disabled || browsing}
+        onChange={event => changeFilters({ ...filters, includeFull: event.target.checked })}/> Show full servers</label>
+    </div>
     {destination.name && <p>Game selected · {destination.name}</p>}
     {destination.place.trim() && <PublicGameDetails key={destination.place} place={destination.place} disabled={disabled}/>}
     {destination.job && <div className="row-actions directory-selection">
       <p>Selected server · <code>{destination.job}</code></p>
       <button className="secondary-button" disabled={disabled} onClick={() => onChange({ ...destination, job: null })}>Use any server</button>
     </div>}
+    {pinnedServer && pinnedServer.playing >= pinnedServer.maxPlayers &&
+      <p role="status">Roblox reported the selected server full on this page. Its server ID is still selected.</p>}
     {serverError && <p role="alert">{serverError}</p>}
     {servers && <>
-      <p>Reported occupancy can change. Roblox assigns seats when you join.</p>
+      <p>Reported occupancy can change. Roblox assigns seats when you join. Ping and server FPS appear when Roblox reports them.</p>
       {servers.servers.length ? <ul className="directory-results" aria-label="Public servers">
         {servers.servers.map(server => <li key={server.id}>
-          <button className="secondary-button" disabled={disabled || server.playing >= server.maxPlayers}
+          <button className="secondary-button" disabled={disabled || browsing || server.playing >= server.maxPlayers}
             aria-pressed={destination.job === server.id} onClick={() => onChange({ ...destination, job: server.id })}>
-            <code>{server.id}</code><span>{server.playing} / {server.maxPlayers} players{server.ping === null ? '' : ` · ${server.ping} ms`}</span>
+            <code>{server.id}</code><span>{server.playing} / {server.maxPlayers} players
+              {server.playing === server.maxPlayers && ' · Full'}{server.ping === null ? '' : ` · ${server.ping} ms`}
+              {server.fps === null ? '' : ` · ${server.fps.toLocaleString(undefined, { maximumFractionDigits: 1 })} server FPS`}</span>
           </button>
         </li>)}
-      </ul> : <p role="status">Roblox returned no public servers with room on this page.</p>}
-      {servers.nextCursor && <button className="secondary-button" disabled={disabled || browsing}
-        onClick={() => void browse(servers.nextCursor)}>Next 25 servers</button>}
+      </ul> : <p role="status">{filters.includeFull ? 'Roblox returned no public servers on this page.'
+        : 'Roblox returned no public servers with room on this page.'}</p>}
+      {serverView && (servers.previousCursor || servers.nextCursor || serverView.pages.length > 1) && <div className="row-actions directory-selection">
+        {(servers.previousCursor || serverView.index > 0) && <button className="secondary-button" disabled={disabled || browsing}
+          onClick={() => step('previous')}>Previous 25 servers</button>}
+        {(servers.nextCursor || serverView.index + 1 < serverView.pages.length) && <button className="secondary-button" disabled={disabled || browsing}
+          onClick={() => step('next')}>Next 25 servers</button>}
+      </div>}
     </>}
   </div>;
 }

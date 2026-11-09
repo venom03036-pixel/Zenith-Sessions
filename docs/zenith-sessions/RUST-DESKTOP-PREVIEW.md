@@ -18,9 +18,21 @@ The rebuild branch now has a Tauri desktop workspace with the exported Zenith co
 
 The preview rechecks the signed standard Roblox player and verifies the saved account with Roblox before starting it. **Arrival confirmed** requires the owned process and window plus attributable client evidence for the initial account, place, and server if specified. A confirmed mismatch stops the owned process. **Running · unconfirmed** means there was a process receipt and Zenith could not confirm arrival. Stop targets the process this attempt started. If Windows declines Focus, use Roblox's taskbar window.
 
-Server browsing requests one public page at a time. Occupancy is reported by Roblox when the page loads, and seats are assigned when Roblox joins the server. Changing the destination clears the selected server. The initial game-name results are capped at 50. Use **Private servers** for Roblox private invitations.
+Server browsing requests one public page at a time. Occupancy is reported by Roblox when the page loads, and seats are assigned when Roblox joins the server. Changing the place clears the selected server. The initial game-name results are capped at 50. Use **Private servers** for Roblox private invitations.
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
+
+## Preview 1.28 public server browser
+
+In **Sessions**, enter a place and select **Browse public servers**. Choose **Fewest players first** or **Most players first**, and turn on **Show full servers** to inspect full rows. Each page shows reported player counts, plus ping and server FPS when Roblox provides them. **Previous 25 servers** and **Next 25 servers** reuse up to eight pages already loaded under the current filters. A page outside that cache is requested with Roblox's cursor. [Roblox public server API](https://create.roblox.com/docs/cloud/reference/domains/games#places)
+
+Sorting and filtering start a fresh page after browsing has begun. A server you select stays pinned across both page directions and filter changes. Full rows are unavailable for a new selection. If a fresh page reports your already selected server full, Zenith displays that observation and retains its exact ID. Changing the place clears the selection and discards any late page from the previous place. Roblox assigns seats at join time.
+
+The browser regression failed on 1.27 and now covers both page directions, cached and evicted pages, FPS, full rows, selection preservation, and a late response after editing the place. Native unit tests verify the fixed anonymous endpoint, encoded cursor, typed filters, duplicate-cursor rejection, and bounded FPS. Anonymous checks against Anime Card Clash observed both orders, reported FPS, and a forward page with a back cursor. Roblox returned HTTP 429 when the test used that back cursor, including after the advertised cooldown. Uncached back paging has controlled coverage and still needs a successful public request.
+
+To check the uncached route, open a busy public place, select **Most players first**, load nine pages, and step back to the first page. The eight most recent pages are kept locally and the first page uses the previous-page cursor. If Roblox rate-limits that request, wait for the time in the message before retrying. For an attended join, select a server that reports room, launch a designated account, and compare the confirmed initial server with the selected ID.
+
+The 1.28 executable has SHA-256 `017C90CCA158FA8829D95C0DE9732F8A33AFA343EB5D8BDF1B19CFD49B534370`. Eighty-one offline Rust tests, twenty-two browser checks against the Release assets, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both runs of the staged executable passed all seven self-check stages.
 
 ## Preview 1.27 normal close and exact force stop
 

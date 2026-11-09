@@ -18,7 +18,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .macro-catalog .row-actions { margin-top: .75rem; }
 .session-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1rem; }
 .session-fields label, .destination-input label, .appearance-preview label { display: grid; gap: .5rem; color: var(--muted); }
-.destination-input input, .session-fields select, .appearance-preview select, .support-report-path input {
+.destination-input input, .session-fields select, .appearance-preview select, .support-report-path input, .server-options select {
   width: 100%; border: 1px solid var(--border); border-radius: .5rem; color: var(--heading);
   background: var(--field); font: inherit; padding: .7rem;
 }
@@ -36,8 +36,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .directory-results { display: grid; gap: .35rem; list-style: none; max-height: 14rem; overflow: auto; margin: 0; padding: .2rem; }
 .directory-results button { width: 100%; display: flex; flex-wrap: wrap; justify-content: space-between; gap: .5rem; text-align: left; }
 .directory-results button[aria-pressed="true"] { color: var(--mint); border-color: var(--mint); background: var(--field); }
-.destination-picker button:focus-visible, .destination-picker input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
+.destination-picker button:focus-visible, .destination-picker input:focus-visible, .destination-picker select:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .directory-selection { flex-wrap: wrap; }
+.server-options { flex-wrap: wrap; align-items: end; }
+.server-options label:first-child { display: grid; gap: .35rem; color: var(--muted); }
+.server-options .pair-choice { margin: 0; min-height: 2.5rem; }
 .private-servers { margin-bottom: .8rem; border: 1px solid var(--border); border-radius: .55rem; padding: .7rem; }
 .private-servers summary { cursor: pointer; color: var(--heading); }
 .private-invite-content, .private-invite-form { display: grid; gap: .65rem; margin-top: .65rem; }

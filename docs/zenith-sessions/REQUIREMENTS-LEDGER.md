@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust public server filters and paging (1.28)
+
+**CAP-12-02, CAP-12-03, PROD-UI-03.** Public browsing accepts typed player-count order and a full-server filter. Forward and back cursors stay with the chosen filters, and up to eight loaded pages can be revisited without a request. Occupancy, ping and server FPS are provider observations. Full rows cannot become new selections. Sorting, filtering and paging retain an explicitly pinned launch target, and place edits discard late results. The browser and native regressions cover these boundaries. Exact live client arrival and server history remain separate. [Preview 1.28](RUST-DESKTOP-PREVIEW.md#preview-128-public-server-browser)
+
 ## Rust normal close and exact force stop (1.27)
 
 **CAP-11-03, CAP-13-04, PROD-CORE-06, PROD-UI-05.** Sessions posts one identity-checked close request to the owned window and confirms process exit through the existing monitor. A five-second grace period restores the prior phase if the client is alive. Requesting close disarms automatic restart for that attempt. Separate per-client force confirmation binds the exact attempt. Native fixture, lifecycle and browser tests passed. Configurable and bulk normal-close policies and the Roblox leave-prompt trial remain open. [Preview 1.27](RUST-DESKTOP-PREVIEW.md#preview-127-normal-close-and-exact-force-stop)

@@ -44,7 +44,7 @@ use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
     auth::RobloxAuth,
-    directory::{Directory, Game, GameArt, GameDetails, ServerPage, public_place},
+    directory::{Directory, Game, GameArt, GameDetails, ServerFilters, ServerPage, public_place},
     private_invite::PrivateInvite,
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
@@ -511,10 +511,11 @@ async fn browse_public_servers(
     state: State<'_, Arc<Workspace>>,
     place: String,
     cursor: Option<String>,
+    filters: ServerFilters,
 ) -> Result<ServerPage, String> {
     let place = public_place(&place)?;
     let state = Arc::clone(state.inner());
-    spawn_blocking(move || state.directory.servers(place, cursor.as_deref()))
+    spawn_blocking(move || state.directory.servers(place, cursor.as_deref(), filters))
         .await
         .map_err(|_| STATE_ERROR.to_owned())?
 }

@@ -44,6 +44,12 @@ function exerciseWorkspace() {
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
   let releaseGame;
+  const serverRequests = [];
+  const longServerRequests = [];
+  const sparseServer = '22222222-0000-0000-0000-000000000001';
+  const busyServer = '22222222-0000-0000-0000-000000000002';
+  const fullServer = '22222222-0000-0000-0000-000000000003';
+  let releaseServerPage;
   let detailsRequested = false;
   let detailsResolved = false;
   let pendingPrivateProfile = false;
@@ -179,8 +185,30 @@ function exerciseWorkspace() {
           if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale private launch permit.');
           launchedTarget = args;
           return;
-        case 'browse_public_servers':
-          return { servers: [{ id: '11111111-0000-0000-0000-000000000001', playing: 4, maxPlayers: 8, ping: null }], nextCursor: null };
+        case 'browse_public_servers': {
+          if (place === '1822') {
+            longServerRequests.push(cursor);
+            const index = cursor === null ? 0 : Number(cursor.slice('long:'.length));
+            const id = `33333333-0000-0000-0000-${String(index).padStart(12, '0')}`;
+            return { servers: [{ id, playing: index + 1, maxPlayers: 12, ping: null, fps: null }],
+              previousCursor: index ? `long:${index - 1}` : null, nextCursor: index < 8 ? `long:${index + 1}` : null };
+          }
+          if (place !== '1820') return { servers: [{ id: '11111111-0000-0000-0000-000000000001', playing: 4, maxPlayers: 8, ping: null, fps: null }], nextCursor: null, previousCursor: null };
+          const { filters } = args;
+          serverRequests.push({ ...filters, cursor });
+          const sparse = { id: sparseServer, playing: 2, maxPlayers: 8, ping: 21, fps: 59.5 };
+          const busy = { id: busyServer, playing: 7, maxPlayers: 8, ping: 35, fps: null };
+          const full = { id: fullServer, playing: 8, maxPlayers: 8, ping: null, fps: null };
+          if (cursor === 'full-next') {
+            await new Promise(resolve => { releaseServerPage = resolve; });
+            return { servers: [full], nextCursor: null, previousCursor: 'full-back' };
+          }
+          if (filters?.includeFull) return { servers: [full, { ...sparse, playing: 8 }, busy], nextCursor: 'full-next', previousCursor: null };
+          if (cursor === 'busy-next') return { servers: [sparse], nextCursor: null, previousCursor: 'busy-back' };
+          return filters?.order === 'most_players'
+            ? { servers: [busy], nextCursor: 'busy-next', previousCursor: null }
+            : { servers: [sparse], nextCursor: null, previousCursor: null };
+        }
         case 'public_game_details': {
           if (place === '1818') {
             detailsRequested = true;
@@ -361,6 +389,91 @@ function exerciseWorkspace() {
         releaseGame?.();
         find('button[aria-label="Accounts"]').click();
       }
+    });
+    await check('public server filters scope both page directions and preserve the pinned server', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      const listing = () => find('[aria-label="Public servers"]');
+      const typePlace = value => {
+        const field = find('input[placeholder="Enter a place ID or game link"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, value);
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => find('select[aria-label="Public server order"]'), 'the server order control is missing');
+        typePlace('1820');
+        button('Browse public servers').click();
+        await until(() => listing()?.textContent.includes('59.5 server FPS') && listing()?.textContent.includes('21 ms'),
+          'reported server FPS and ping did not load');
+        listing().querySelector('button').click();
+        const order = find('select[aria-label="Public server order"]');
+        order.value = 'most_players';
+        order.dispatchEvent(new Event('change', { bubbles: true }));
+        await until(() => listing()?.textContent.includes(busyServer) && button('Next 25 servers'), 'changing order did not load the first new page');
+        if (!find('.directory-selection')?.textContent.includes(sparseServer)) throw new Error('sorting replaced the pinned server');
+        button('Next 25 servers').click();
+        await until(() => button('Previous 25 servers'), 'the previous-page cursor was lost');
+        button('Previous 25 servers').click();
+        await until(() => listing()?.textContent.includes(busyServer) && !button('Previous 25 servers'), 'the previous page was not loaded');
+        button('Next 25 servers').click();
+        await until(() => listing()?.textContent.includes(sparseServer) && button('Previous 25 servers'), 'the cached next page was not loaded');
+        find('input[aria-label="Show full servers"]').click();
+        await until(() => listing()?.textContent.includes(fullServer) && button('Next 25 servers'), 'the full-server filter did not load the first page');
+        if (![...listing().querySelectorAll('button')].find(row => row.textContent.includes(fullServer))?.disabled) {
+          throw new Error('a full server could be selected');
+        }
+        if (!find('.directory-selection')?.textContent.includes(sparseServer) ||
+          !find('.destination-picker [role="status"]')?.textContent.includes('reported the selected server full')) {
+          throw new Error('the selected server becoming full was hidden or changed the launch target');
+        }
+        button('Next 25 servers').click();
+        await until(() => releaseServerPage, 'the last page request did not start');
+        typePlace('1819');
+        releaseServerPage();
+        await until(() => button('Browse public servers')?.disabled === false && !listing(), 'a stale server page reappeared after changing places');
+        if (find('.directory-selection')) throw new Error('changing places kept the previous pinned server');
+        const expected = [
+          ['least_players', false, null], ['most_players', false, null],
+          ['most_players', false, 'busy-next'],
+          ['most_players', true, null], ['most_players', true, 'full-next'],
+        ];
+        if (JSON.stringify(serverRequests.map(({ order, includeFull, cursor }) => [order, includeFull, cursor])) !== JSON.stringify(expected)) {
+          throw new Error('sort, full filter, or cursor was lost across page requests');
+        }
+      } finally {
+        releaseServerPage?.();
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('the server browser reuses bounded history and fetches an evicted page by its cursor', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      const showing = index => find('[aria-label="Public servers"]')?.textContent.includes(`${index + 1} / 12 players`);
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => button('Browse public servers'), 'server browser did not open');
+        const field = find('input[placeholder="Enter a place ID or game link"]');
+        const setPlace = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set;
+        setPlace.call(field, '1822');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+        button('Browse public servers').click();
+        await until(() => showing(0), 'the first server page did not load');
+        for (let index = 1; index <= 8; index++) {
+          button('Next 25 servers').click();
+          await until(() => showing(index), 'a forward page did not load');
+        }
+        for (let index = 7; index >= 1; index--) {
+          button('Previous 25 servers').click();
+          await until(() => showing(index), 'a cached previous page did not load');
+        }
+        if (longServerRequests.length !== 9) throw new Error('returning to cached pages made repeat requests');
+        button('Previous 25 servers').click();
+        await until(() => showing(0), 'the evicted page did not load through Roblox’s previous cursor');
+        if (longServerRequests.length !== 10 || longServerRequests.at(-1) !== 'long:0') {
+          throw new Error('the cache did not use the provider cursor beyond its limit');
+        }
+        setPlace.call(field, '1819');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      } finally { find('button[aria-label="Accounts"]').click(); }
     });
     await check('a protected invite launches by reference without a public target or raw code', async () => {
       const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);

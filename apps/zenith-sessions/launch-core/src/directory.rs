@@ -35,12 +35,29 @@ pub struct Server {
     playing: u32,
     max_players: u32,
     ping: Option<u32>,
+    fps: Option<f64>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ServerOrder {
+    #[default]
+    LeastPlayers,
+    MostPlayers,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ServerFilters {
+    order: ServerOrder,
+    include_full: bool,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ServerPage {
     servers: Vec<Server>,
+    previous_cursor: Option<String>,
     next_cursor: Option<String>,
 }
 
@@ -91,21 +108,13 @@ impl Directory {
         parse_games(result).map_err(str::to_owned)
     }
 
-    pub fn servers(&self, place: u64, cursor: Option<&str>) -> Result<ServerPage, String> {
-        if cursor.is_some_and(|value| !valid_cursor(value)) {
-            return Err("The server page has expired. Browse again from the first page.".into());
-        }
-        let mut url = Url::parse(&format!(
-            "https://games.roblox.com/v1/games/{place}/servers/Public"
-        ))
-        .expect("fixed server endpoint with numeric place");
-        url.query_pairs_mut()
-            .append_pair("sortOrder", "Asc")
-            .append_pair("excludeFullGames", "true")
-            .append_pair("limit", &PAGE_SIZE.to_string());
-        if let Some(cursor) = cursor {
-            url.query_pairs_mut().append_pair("cursor", cursor);
-        }
+    pub fn servers(
+        &self,
+        place: u64,
+        cursor: Option<&str>,
+        filters: ServerFilters,
+    ) -> Result<ServerPage, String> {
+        let url = server_url(place, cursor, filters)?;
         let result = self.read(url, &self.server_cooldown)?;
         parse_servers(result, cursor).map_err(str::to_owned)
     }
@@ -288,6 +297,7 @@ fn parse_games(response: SearchResponse) -> Result<Vec<Game>, &'static str> {
 #[serde(rename_all = "camelCase")]
 struct ServerResponse {
     data: Vec<Server>,
+    previous_page_cursor: Option<String>,
     next_page_cursor: Option<String>,
 }
 
@@ -295,28 +305,68 @@ pub(crate) fn valid_cursor(cursor: &str) -> bool {
     !cursor.is_empty() && cursor.len() <= 4096 && cursor.bytes().all(|byte| byte.is_ascii_graphic())
 }
 
+fn server_url(
+    place: u64,
+    cursor: Option<&str>,
+    filters: ServerFilters,
+) -> Result<Url, &'static str> {
+    if cursor.is_some_and(|value| !valid_cursor(value)) {
+        return Err("The server page has expired. Browse again from the first page.");
+    }
+    let mut url = Url::parse(&format!(
+        "https://games.roblox.com/v1/games/{place}/servers/Public"
+    ))
+    .expect("fixed server endpoint with numeric place");
+    let order = match filters.order {
+        ServerOrder::LeastPlayers => "Asc",
+        ServerOrder::MostPlayers => "Desc",
+    };
+    url.query_pairs_mut()
+        .append_pair("sortOrder", order)
+        .append_pair(
+            "excludeFullGames",
+            if filters.include_full {
+                "false"
+            } else {
+                "true"
+            },
+        )
+        .append_pair("limit", &PAGE_SIZE.to_string());
+    if let Some(cursor) = cursor {
+        url.query_pairs_mut().append_pair("cursor", cursor);
+    }
+    Ok(url)
+}
+
 fn parse_servers(
     response: ServerResponse,
-    previous: Option<&str>,
+    requested_cursor: Option<&str>,
 ) -> Result<ServerPage, &'static str> {
+    let previous = response.previous_page_cursor.as_deref();
     let next = response.next_page_cursor.as_deref();
-    if next.is_some_and(|cursor| !valid_cursor(cursor) || Some(cursor) == previous)
-        || response.data.len() > PAGE_SIZE
+    if response.data.len() > PAGE_SIZE
+        || [previous, next]
+            .into_iter()
+            .flatten()
+            .any(|cursor| !valid_cursor(cursor) || Some(cursor) == requested_cursor)
+        || previous.is_some() && previous == next
     {
         return Err(INVALID_RESPONSE);
     }
     let mut seen = HashSet::new();
     let mut servers = Vec::new();
-    for server in response.data {
+    for mut server in response.data {
         if server.id.is_nil() || server.max_players == 0 || server.playing > server.max_players {
             return Err(INVALID_RESPONSE);
         }
         if seen.insert(server.id) {
+            server.fps = server.fps.filter(|fps| (0.0..=10_000.0).contains(fps));
             servers.push(server);
         }
     }
     Ok(ServerPage {
         servers,
+        previous_cursor: response.previous_page_cursor,
         next_cursor: response.next_page_cursor,
     })
 }
@@ -358,20 +408,50 @@ mod tests {
     }
 
     #[test]
+    fn server_filters_map_to_a_bounded_anonymous_query() {
+        let defaults = server_url(1818, None, ServerFilters::default()).unwrap();
+        assert_eq!(
+            defaults.as_str(),
+            "https://games.roblox.com/v1/games/1818/servers/Public?sortOrder=Asc&excludeFullGames=true&limit=25"
+        );
+        let filters =
+            serde_json::from_str(r#"{"order":"most_players","includeFull":true}"#).unwrap();
+        let filtered = server_url(1818, Some("back&sortOrder=Asc"), filters).unwrap();
+        assert_eq!(
+            filtered.query().unwrap(),
+            "sortOrder=Desc&excludeFullGames=false&limit=25&cursor=back%26sortOrder%3DAsc"
+        );
+        assert!(server_url(1818, Some("invalid cursor"), filters).is_err());
+        assert!(
+            serde_json::from_str::<ServerFilters>(r#"{"order":"fps","includeFull":false}"#)
+                .is_err()
+        );
+    }
+
+    #[test]
     fn server_pages_discard_unrequested_fields_and_reject_repeated_cursors() {
         let fixture = r#"{"data":[{"id":"00000000-0000-0000-0000-000000000001",
-            "playing":3,"maxPlayers":5,"ping":14,"playerTokens":["fixture-token"]}],
+            "playing":3,"maxPlayers":5,"ping":14,"fps":59.5,"playerTokens":["fixture-token"]}],
+            "previousPageCursor":"back+page/=",
             "nextPageCursor":"next+page/="}"#;
         let page = parse_servers(serde_json::from_str(fixture).unwrap(), None).unwrap();
         assert_eq!(page.servers[0].playing, 3);
+        assert_eq!(page.servers[0].fps, Some(59.5));
+        assert_eq!(page.previous_cursor.as_deref(), Some("back+page/="));
+        assert_eq!(page.next_cursor.as_deref(), Some("next+page/="));
         assert!(
             !serde_json::to_string(&page)
                 .unwrap()
                 .contains("fixture-token")
         );
-        assert!(
-            parse_servers(serde_json::from_str(fixture).unwrap(), Some("next+page/=")).is_err()
-        );
+        for cursor in ["back+page/=", "next+page/="] {
+            assert!(parse_servers(serde_json::from_str(fixture).unwrap(), Some(cursor)).is_err());
+        }
+        let same_cursor = fixture.replace("next+page/=", "back+page/=");
+        assert!(parse_servers(serde_json::from_str(&same_cursor).unwrap(), None).is_err());
+        let invalid_fps = fixture.replace("59.5", "-1");
+        let page = parse_servers(serde_json::from_str(&invalid_fps).unwrap(), None).unwrap();
+        assert_eq!(page.servers[0].fps, None);
         assert!(
             parse_servers(
                 serde_json::from_str(&fixture.replace("\"playing\":3", "\"playing\":6")).unwrap(),
@@ -384,10 +464,72 @@ mod tests {
     #[test]
     #[ignore = "Explicit anonymous Roblox endpoint smoke check"]
     fn live_public_anime_card_clash_directory() {
+        fn page(
+            directory: &Directory,
+            place: u64,
+            cursor: Option<&str>,
+            filters: ServerFilters,
+        ) -> ServerPage {
+            let result = directory.servers(place, cursor, filters);
+            if result.is_err() {
+                let until = *directory.server_cooldown.lock().unwrap();
+                if let Some(wait) =
+                    until.and_then(|until| until.checked_duration_since(Instant::now()))
+                    && wait <= Duration::from_secs(15)
+                {
+                    println!("Honoring Roblox's anonymous server cooldown before one retry.");
+                    std::thread::sleep(wait + Duration::from_millis(100));
+                    return directory.servers(place, cursor, filters).unwrap();
+                }
+            }
+            result.unwrap()
+        }
+
         let directory = Directory::new().unwrap();
         let games = directory.search("Anime Card Clash").unwrap();
         assert!(games.iter().any(|game| game.place_id == "110829983956014"));
-        let page = directory.servers(110829983956014, None).unwrap();
-        assert!(!page.servers.is_empty());
+        let place = 110829983956014;
+        let ascending = page(&directory, place, None, ServerFilters::default());
+        assert!(!ascending.servers.is_empty());
+        assert!(
+            ascending
+                .servers
+                .windows(2)
+                .all(|pair| pair[0].playing <= pair[1].playing)
+        );
+        let descending = ServerFilters {
+            order: ServerOrder::MostPlayers,
+            include_full: true,
+        };
+        std::thread::sleep(Duration::from_secs(6));
+        let first = page(&directory, place, None, descending);
+        assert!(!first.servers.is_empty());
+        assert!(
+            first
+                .servers
+                .windows(2)
+                .all(|pair| pair[0].playing >= pair[1].playing)
+        );
+        let next = first
+            .next_cursor
+            .as_deref()
+            .expect("first page returns a next cursor");
+        std::thread::sleep(Duration::from_secs(6));
+        let second = page(&directory, place, Some(next), descending);
+        let back = second
+            .previous_cursor
+            .as_deref()
+            .expect("second page returns a back cursor");
+        std::thread::sleep(Duration::from_secs(6));
+        let returned = page(&directory, place, Some(back), descending);
+        assert!(!returned.servers.is_empty());
+        let fps = first.servers.iter().filter(|row| row.fps.is_some()).count();
+        println!(
+            "Anonymous pages: {} ascending, {} descending, {} next, {} back. {fps} descending rows reported FPS.",
+            ascending.servers.len(),
+            first.servers.len(),
+            second.servers.len(),
+            returned.servers.len()
+        );
     }
 }
