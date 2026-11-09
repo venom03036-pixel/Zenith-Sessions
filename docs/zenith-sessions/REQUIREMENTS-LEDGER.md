@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust first-party sign-in checkpoint (1.02-native-signin)
+
+**VA-03-01, VA-04-03, VA-06-03, PROD-UI-01.** The preview opens Roblox's own login in an isolated private WebView and requires an explicit Save in the local workspace. The Rust backend checks the authenticated identity before writing a current-user DPAPI record. Synthetic renewal retained the profile ID and replaced its protected file. Navigation tests and the local-only capability check passed. The packaged host smoke check reached Roblox's official login page. Real login, browser credential capture, and two-account launch still require attended testing. See the [desktop preview guide](RUST-DESKTOP-PREVIEW.md).
+
 ## Rust desktop workspace checkpoint (1.01-desktopshell)
 
 **VA-04-03, VA-06-03, CAP-08-02, PROD-CORE-03, PROD-UI-01.** The Rust preview imports encrypted sign-in bundles into a separate library and connects the Make workspace to real account, place selection, admission and session state. Tests cover protected import/reopen, a damaged credential preserving its profile, and late preparation results after cancellation. Existing single-account live evidence applies to the probe. The desktop and two-account paths need attended trials. See the [preview guide](RUST-DESKTOP-PREVIEW.md).

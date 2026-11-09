@@ -16,7 +16,7 @@ type Admission = {
   physicalAvailable: number; physicalRequired: number;
   commitAvailable: number; commitRequired: number; canTryOne: boolean;
 };
-type Snapshot = { accounts: Account[]; session: Session | null; admission: Admission | null };
+type Snapshot = { accounts: Account[]; session: Session | null; admission: Admission | null; signInAttempt: string | null };
 type Page = 'Overview' | 'Accounts' | 'Sessions';
 
 const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'window']];
@@ -70,6 +70,7 @@ function App() {
   const [loadingError, setLoadingError] = useState(false);
   const [launching, setLaunching] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [signInBusy, setSignInBusy] = useState(false);
   const [remove, setRemove] = useState<Account | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -78,6 +79,7 @@ function App() {
   const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
   const session = snapshot?.session;
   const admission = snapshot?.admission;
+  const signInAttempt = snapshot?.signInAttempt;
   const busy = isBusy(session);
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeValid = /^[0-9]{1,19}$/.test(place.trim()) && !/^0+$/.test(place.trim());
@@ -152,6 +154,24 @@ function App() {
     finally { setLaunching(false); }
   }
 
+  async function beginSignIn() {
+    setSignInBusy(true);
+    try { await act('begin_sign_in', {}); }
+    finally { setSignInBusy(false); }
+  }
+
+  async function saveSignIn() {
+    if (!signInAttempt) return;
+    setSignInBusy(true);
+    setFailure('');
+    try {
+      const account = await invoke<Account>('finish_sign_in', { attempt: signInAttempt });
+      setSelected(account.profileId);
+    } catch (error) {
+      setFailure(typeof error === 'string' ? error : 'Could not save the Roblox sign-in.');
+    } finally { setSignInBusy(false); void refresh(); }
+  }
+
   function openLaunch(profile: Account) {
     setSelected(profile.profileId);
     setPage('Sessions');
@@ -183,11 +203,22 @@ function App() {
       </section>}
       <div className="page-heading">
         <div><h1>{page}</h1><p>{page === 'Accounts' ? 'Manage your saved Roblox sign-ins.' : page === 'Sessions' ? 'Choose a saved account and a Roblox place.' : 'Review your local workspace and launch capacity.'}</p></div>
-        {page === 'Accounts' && <div className="heading-actions"><button className="primary-button" disabled={importing} onClick={() => file.current?.click()}><Icon name="plus" size={16}/>{importing ? 'Importing…' : 'Import saved sign-in'}</button></div>}
+        {page === 'Accounts' && <div className="heading-actions">
+          <button className="secondary-button" disabled={importing} onClick={() => file.current?.click()}>{importing ? 'Importing…' : 'Import saved sign-in'}</button>
+          <button className="primary-button" disabled={signInBusy || !!signInAttempt} onClick={() => void beginSignIn()}><Icon name="plus" size={16}/> Add account</button>
+        </div>}
       </div>
       <input ref={file} type="file" accept=".dpapi" hidden onChange={event => void importFile(event.currentTarget)}/>
       {loadingError && <p role="alert" className="inline-alert">Zenith could not read the local workspace. Select Refresh to retry.</p>}
       {failure && <p role="alert" className="inline-alert">{failure}</p>}
+      {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
+        <h2>Roblox sign-in</h2>
+        <p>Finish signing in inside the Roblox window. Return here when Roblox shows your account, then save the sign-in.</p>
+        <div className="row-actions">
+          <button className="primary-button" disabled={signInBusy} onClick={() => void saveSignIn()}>{signInBusy ? 'Checking sign-in…' : 'Save sign-in'}</button>
+          <button className="secondary-button" onClick={() => void act('cancel_sign_in', { attempt: signInAttempt })}>Cancel sign-in</button>
+        </div>
+      </section>}
       {page === 'Overview' && <>
         <div className="metrics-grid preview-metrics">
           <article className="metric-card"><div className="metric-top">Saved accounts</div><strong>{accounts.length}</strong></article>
@@ -208,7 +239,7 @@ function App() {
               <button className="secondary-button" disabled={busy && item.profileId === session?.accountId} onClick={() => setRemove(item)}>Remove</button></div></td>
           </tr>)}</tbody>
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
-          <span>{accounts.length ? 'Try a different search.' : 'Import a protected bundle staged from the existing Zenith app.'}</span></div>}
+          <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>}
       {page === 'Sessions' && <>
         <section className="account-panel preview-panel">

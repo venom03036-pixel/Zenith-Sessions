@@ -2,6 +2,7 @@
 
 mod library;
 mod session;
+mod sign_in;
 
 use std::{
     path::PathBuf,
@@ -25,8 +26,20 @@ use zenith_session_launch::{
 struct Workspace {
     library: Mutex<Library>,
     owner: Mutex<SessionOwner>,
+    sign_in: Mutex<Option<sign_in::SignIn>>,
+    sign_in_directory: PathBuf,
     logs: PathBuf,
     exiting: AtomicBool,
+}
+
+impl Workspace {
+    fn clear_sign_in(&self, attempt: Uuid) {
+        if let Ok(mut active) = self.sign_in.lock()
+            && active.as_ref().is_some_and(|flow| flow.attempt == attempt)
+        {
+            *active = None;
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -35,6 +48,7 @@ struct Snapshot {
     accounts: Vec<SavedIdentity>,
     session: Option<Session>,
     admission: Option<Admission>,
+    sign_in_attempt: Option<Uuid>,
 }
 
 const STATE_ERROR: &str = "Zenith could not access the workspace state";
@@ -54,10 +68,17 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
         let admission = memory_sample()
             .ok()
             .map(|sample| sample.admission(Instant::now()));
+        let sign_in_attempt = state
+            .sign_in
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .as_ref()
+            .map(|flow| flow.attempt);
         Ok(Snapshot {
             accounts,
             session,
             admission,
+            sign_in_attempt,
         })
     })
     .await
@@ -158,12 +179,14 @@ fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), 
 fn main() {
     tauri::Builder::default()
         .setup(|app| {
-            let library = Library::open(app.path().app_local_data_dir()?.join("library"))
-                .map_err(std::io::Error::other)?;
+            let root = app.path().app_local_data_dir()?;
+            let library = Library::open(root.join("library")).map_err(std::io::Error::other)?;
             let logs = app.path().local_data_dir()?.join("Roblox").join("logs");
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
                 owner: Mutex::new(SessionOwner::default()),
+                sign_in: Mutex::new(None),
+                sign_in_directory: root.join("isolated-sign-in"),
                 logs,
                 exiting: AtomicBool::new(false),
             }));
@@ -171,6 +194,10 @@ fn main() {
         })
         .on_window_event(|window, event| {
             if window.label() != "main" {
+                if matches!(event, WindowEvent::Destroyed) {
+                    let state = window.state::<Arc<Workspace>>();
+                    sign_in::destroyed(state.inner(), window.label());
+                }
                 return;
             }
             if let WindowEvent::CloseRequested { api, .. } = event {
@@ -199,7 +226,10 @@ fn main() {
             remove_account,
             launch_account,
             stop_session,
-            focus_session
+            focus_session,
+            sign_in::begin_sign_in,
+            sign_in::finish_sign_in,
+            sign_in::cancel_sign_in
         ])
         .run(tauri::generate_context!())
         .expect("could not start Zenith Sessions");

@@ -9,7 +9,7 @@ use std::{
 use uuid::Uuid;
 use zenith_session_launch::{
     auth::Credential,
-    windows::{SavedIdentity, open_saved_bundle},
+    windows::{SavedIdentity, open_saved_bundle, seal_saved_bundle},
 };
 
 const MAX_BUNDLE: usize = 128 * 1024;
@@ -86,12 +86,48 @@ impl Library {
         {
             return Err("This Roblox identity already has a saved profile".into());
         }
+        self.insert(identity, &encrypted)
+    }
+
+    pub fn by_user_id(&self, user_id: u64) -> Option<SavedIdentity> {
+        self.accounts
+            .values()
+            .find(|value| value.user_id == user_id)
+            .cloned()
+    }
+
+    pub fn remember_sign_in(
+        &mut self,
+        user_id: u64,
+        username: String,
+        credential: Credential,
+        expires: u64,
+    ) -> Result<SavedIdentity, String> {
+        let previous = self.by_user_id(user_id);
+        let identity = previous.clone().unwrap_or_else(|| SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            user_id,
+            username,
+        });
+        let encrypted = seal_saved_bundle(&identity, &credential, expires)?;
+        if previous.is_some() {
+            atomic_write(&self.bundle_path(identity.profile_id), &encrypted)?;
+            return Ok(identity);
+        }
+        self.insert(identity, &encrypted)
+    }
+
+    fn insert(
+        &mut self,
+        identity: SavedIdentity,
+        encrypted: &[u8],
+    ) -> Result<SavedIdentity, String> {
         if self.accounts.len() >= MAX_ACCOUNTS {
             return Err("The library already has 128 accounts".into());
         }
 
         let file = self.bundle_path(identity.profile_id);
-        atomic_write(&file, &encrypted)?;
+        atomic_write(&file, encrypted)?;
         self.accounts.insert(identity.profile_id, identity.clone());
         if let Err(error) = self.save_index() {
             self.accounts.remove(&identity.profile_id);
@@ -179,6 +215,34 @@ fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_new_first_party_sign_in_and_renewal_keep_one_profile() {
+        use zeroize::Zeroizing;
+        let root = std::env::temp_dir().join(format!("zenith-library-fixture-{}", Uuid::new_v4()));
+        let mut library = Library::open(root.clone()).unwrap();
+        let expires = 4_102_444_800_u64;
+        let first = Credential::new(Zeroizing::new("local-test-first".into())).unwrap();
+        let first = library
+            .remember_sign_in(4242, "ZenithFixture".into(), first, expires)
+            .unwrap();
+        let initial_cipher = fs::read(library.bundle_path(first.profile_id)).unwrap();
+        let renewal = Credential::new(Zeroizing::new("local-test-renewal".into())).unwrap();
+        let renewed = library
+            .remember_sign_in(4242, "ZenithFixture".into(), renewal, expires)
+            .unwrap();
+        let replaced = fs::read(library.bundle_path(first.profile_id)).unwrap() != initial_cipher;
+        drop(library);
+        let mut reopened = Library::open(root.clone()).unwrap();
+        let retained =
+            reopened.accounts().len() == 1 && reopened.credential(first.profile_id).is_ok();
+        reopened.remove(first.profile_id).unwrap();
+        drop(reopened);
+        fs::remove_file(root.join("accounts.json")).unwrap();
+        fs::remove_file(root.join("library.lock")).unwrap();
+        fs::remove_dir(root).unwrap();
+        assert!(first == renewed && replaced && retained);
+    }
 
     #[test]
     fn a_damaged_sign_in_does_not_remove_its_saved_profile() {

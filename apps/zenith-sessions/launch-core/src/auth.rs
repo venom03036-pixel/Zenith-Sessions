@@ -40,6 +40,10 @@ impl Credential {
         header.set_sensitive(true);
         header
     }
+
+    pub(crate) fn value(&self) -> &str {
+        &self.0
+    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -92,6 +96,8 @@ pub struct RobloxAuth {
 #[derive(Deserialize)]
 struct Identity {
     id: u64,
+    #[serde(default)]
+    name: String,
 }
 
 impl RobloxAuth {
@@ -113,6 +119,29 @@ impl RobloxAuth {
     }
 
     pub fn verify(&self, credential: &mut Credential, user_id: u64) -> Result<(), Failure> {
+        let user = self.identity(credential)?;
+        if user.id != user_id || user_id == 0 {
+            return Err(Failure::IdentityChanged);
+        }
+        Ok(())
+    }
+
+    pub fn signed_in_user(&self, credential: &mut Credential) -> Result<(u64, String), Failure> {
+        let user = self.identity(credential)?;
+        if user.id == 0
+            || user.name.is_empty()
+            || user.name.len() > 20
+            || !user
+                .name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+        {
+            return Err(Failure::InvalidResponse("account validation"));
+        }
+        Ok((user.id, user.name))
+    }
+
+    fn identity(&self, credential: &mut Credential) -> Result<Identity, Failure> {
         const STAGE: &str = "account validation";
         let response = self.request(
             STAGE,
@@ -122,11 +151,7 @@ impl RobloxAuth {
             None,
             None,
         )?;
-        let user: Identity = read_json(accepted(STAGE, response)?, STAGE)?;
-        if user.id != user_id || user_id == 0 {
-            return Err(Failure::IdentityChanged);
-        }
-        Ok(())
+        read_json(accepted(STAGE, response)?, STAGE)
     }
 
     pub fn ticket(&self, credential: &mut Credential) -> Result<Zeroizing<String>, Failure> {

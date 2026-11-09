@@ -19,7 +19,7 @@ use ::windows::{
             CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE, HLOCAL, HWND, LPARAM, LocalFree,
         },
         Security::Cryptography::{
-            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
+            CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
         },
         Storage::FileSystem::FILE_SHARE_READ,
         System::{
@@ -36,7 +36,7 @@ use ::windows::{
             SW_RESTORE, SetForegroundWindow, ShowWindowAsync,
         },
     },
-    core::{BOOL, w},
+    core::{BOOL, PCWSTR, w},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -145,6 +145,72 @@ fn blob(bytes: &mut [u8]) -> CRYPT_INTEGER_BLOB {
     CRYPT_INTEGER_BLOB {
         cbData: bytes.len() as u32,
         pbData: bytes.as_mut_ptr(),
+    }
+}
+
+pub fn seal_saved_bundle(
+    identity: &SavedIdentity,
+    credential: &Credential,
+    expires: u64,
+) -> Result<Vec<u8>, String> {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "System clock is invalid")?
+        .as_secs();
+    if expires <= now
+        || identity.profile_id.is_nil()
+        || identity.user_id == 0
+        || identity.username.is_empty()
+        || identity.username.len() > 20
+        || !identity
+            .username
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+    {
+        return Err("The sign-in is expired or the account identity is invalid".into());
+    }
+    #[derive(Serialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Payload<'a> {
+        version: u8,
+        #[serde(flatten)]
+        identity: &'a SavedIdentity,
+        generation: u64,
+        expires_unix_seconds: u64,
+        cookie: &'a str,
+    }
+    let mut clear = Zeroizing::new(
+        serde_json::to_vec(&Payload {
+            version: 1,
+            identity,
+            generation: now.max(1),
+            expires_unix_seconds: expires,
+            cookie: credential.value(),
+        })
+        .map_err(|_| "Could not encode the saved sign-in")?,
+    );
+    let mut entropy = PROBE_ENTROPY.to_vec();
+    let input = blob(&mut clear);
+    let entropy = blob(&mut entropy);
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: the inputs remain alive during DPAPI and the successful output is released here.
+    unsafe {
+        CryptProtectData(
+            &input,
+            PCWSTR::null(),
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+        .map_err(|_| "Windows could not protect the saved sign-in")?;
+        if output.pbData.is_null() {
+            return Err("Windows returned an empty protected sign-in".into());
+        }
+        let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        LocalFree(Some(HLOCAL(output.pbData.cast())));
+        Ok(bytes)
     }
 }
 

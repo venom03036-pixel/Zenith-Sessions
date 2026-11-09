@@ -7,6 +7,9 @@ fn main() {
             "launch_account",
             "stop_session",
             "focus_session",
+            "begin_sign_in",
+            "finish_sign_in",
+            "cancel_sign_in",
         ]),
     ))
     .expect("could not build Zenith Tauri configuration");

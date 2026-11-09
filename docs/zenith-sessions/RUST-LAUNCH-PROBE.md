@@ -57,7 +57,7 @@ For rollback, close the diagnostics app and use the existing Zenith executable a
 
 ## Next gates
 
-The two-account probe is ready for an attended test. Both accounts must be designated by the owner and signed into legacy Zenith. Close legacy Zenith after sign-in, then stage each account with the procedure above. Use the rebuild branch's current debug probe. The archived `f780e15` binary is the preserved live-tested single-account build.
+The two-account probe is ready for an attended test. Both accounts must be designated by the owner. For sign-ins saved in legacy Zenith, close that app and stage each account with the procedure above. For sign-ins saved through the [desktop preview](RUST-DESKTOP-PREVIEW.md), close the preview, look up the designated profile ID in its `library\accounts.json`, and use that profile's `.dpapi` file as the protected input. Use the rebuild branch's current debug probe. The archived `f780e15` binary is the preserved live-tested single-account build.
 
 ```powershell
 $secondUsername = 'OWNER_APPROVED_USERNAME'
