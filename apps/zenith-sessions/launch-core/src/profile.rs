@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::{
     auth::{Credential, RobloxAuth},
-    directory::{Directory, Game, public_json, valid_cursor},
+    directory::{Directory, Game, public_image_url, public_json, valid_cursor},
 };
 
 const PAGE_SIZE: usize = 25;
@@ -283,17 +283,8 @@ fn verified_headshots(accounts: &[(Uuid, u64)], rows: Vec<Headshot>) -> HashMap<
                 return None;
             }
             let (profile_id, _) = accounts.iter().find(|(_, id)| *id == row.target_id)?;
-            let url = Url::parse(row.image_url.as_deref()?).ok()?;
-            (url.scheme() == "https"
-                && url
-                    .host_str()
-                    .is_some_and(|host| host.ends_with(".rbxcdn.com"))
-                && url.port().is_none()
-                && url.username().is_empty()
-                && url.password().is_none()
-                && url.query().is_none()
-                && url.fragment().is_none())
-            .then(|| (*profile_id, url.to_string()))
+            let url = public_image_url(row.image_url.as_deref()?)?;
+            Some((*profile_id, url))
         })
         .collect()
 }

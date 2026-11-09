@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
+import { PublicGameDetails } from './public-game-details';
 
 type Game = { placeId: string; name: string };
 type Server = { id: string; playing: number; maxPlayers: number; ping: number | null };
@@ -86,6 +87,7 @@ export function DestinationPicker({ destination, onChange, disabled }: {
       </button>
     </div>
     {destination.name && <p>Game selected · {destination.name}</p>}
+    {destination.place.trim() && <PublicGameDetails key={destination.place} place={destination.place} disabled={disabled}/>}
     {destination.job && <div className="row-actions directory-selection">
       <p>Selected server · <code>{destination.job}</code></p>
       <button className="secondary-button" disabled={disabled} onClick={() => onChange({ ...destination, job: null })}>Use any server</button>

@@ -37,6 +37,17 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .directory-results button[aria-pressed="true"] { color: var(--mint); border-color: var(--mint); background: var(--field); }
 .destination-picker button:focus-visible, .destination-picker input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .directory-selection { flex-wrap: wrap; }
+.public-game-details { display: grid; gap: .75rem; min-width: 0; }
+.public-game-heading { display: flex; align-items: center; gap: .65rem; overflow-wrap: anywhere; }
+.public-game-heading h3 { margin: 0 0 .2rem; color: var(--heading); }
+.public-game-icon { width: 3.25rem; height: 3.25rem; border-radius: .55rem; flex: 0 0 auto; object-fit: cover; }
+.public-game-details dl { display: grid; grid-template-columns: minmax(0, max-content) minmax(0, 1fr); gap: .35rem .9rem; margin: 0; }
+.public-game-details dd { margin: 0; overflow-wrap: anywhere; }
+.public-game-details dt, .public-game-note { color: var(--muted); }
+.public-game-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.public-game-gallery { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 10rem), 1fr)); gap: .5rem; }
+.public-game-gallery img, .public-game-gallery span { width: 100%; aspect-ratio: 16 / 9; border-radius: .55rem; object-fit: cover; background: var(--field); }
+.public-game-gallery span, span.public-game-icon { display: grid; place-items: center; color: var(--muted); text-align: center; }
 .pair-choice { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; color: var(--heading); }
 .pair-choice input { accent-color: var(--mint); }
 .accounts-workspace { display: grid; gap: 1rem; align-items: start; }

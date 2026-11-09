@@ -22,6 +22,16 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.20 public game details and artwork
+
+In **Sessions**, enter a public place ID or game link, or select a name search result. Choose **Load game details** to see the experience name, creator, description, population, listed server limit, visit count when available, and Roblox artwork. The panel separates the requested place from the experience's root place. It fetches the public icon and up to six public thumbnails after the text loads. Missing images and API errors leave the destination and server picker usable. [Roblox public game API](https://create.roblox.com/docs/cloud/reference/domains/games), [Roblox thumbnails API](https://create.roblox.com/docs/cloud/reference/domains/thumbnails)
+
+The lookup uses anonymous requests and changes no account, launch, or saved destination state. If the place changes during a lookup, old results are discarded. The numbers in the panel describe the public listing. Use **Browse public servers** for reported occupancy at the requested place.
+
+For a desktop check, open **Sessions** and use a public place ID such as `110829983956014`. Load details, browse and choose a server, then refresh the details. The chosen place and server should remain selected. Paste another place while a lookup is running to check that its response cannot replace the new selection. None of these steps requires an account or starts Roblox.
+
+The 1.20 executable has SHA-256 `F290D45AEB81700C092146A13BC7D51BF7D214338F7C2C2B97048EADD2350B0F`. The browser check failed on 1.19 and passed on 1.20, including the exact subplace and server passed to the synthetic launch command. Fifty-nine offline Rust tests, twelve Chromium checks, the anonymous Roblox game-details and artwork smoke test, formatting, Clippy with warnings denied, the frontend build, and the zero-warning Release build passed. Both packaged self-checks passed all six stages. The matching Personal editor is in the same preview folder.
+
 ## Preview 1.19 account details and sign-in
 
 The preview keeps the same account library. In **Accounts**, select a saved account's name or headshot to view its Roblox profile, public favorite games, friends, and Robux balance. Switching away and back shares an unfinished private lookup for that profile and sign-in revision. The headshot display retries a failed image with a new URL so a cached error does not leave the avatar on initials. Initials remain visible until an image loads. **Refresh** in the inspector retries details and headshots. [Roblox headshot API](https://create.roblox.com/docs/cloud/reference/features/avatars)

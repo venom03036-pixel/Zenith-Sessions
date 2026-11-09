@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust public game details and artwork (1.20)
+
+**CHAT-23, PROD-UI-03.** The Sessions picker loads public game metadata and bounded artwork on request without changing the exact place or job. Requested place, root place, and experience ID are displayed separately. The browser before/after fixture exercises late responses and a pinned server. Rust checks reject mismatched listings and media, restricted details, and unsafe image addresses. See [Preview 1.20](RUST-DESKTOP-PREVIEW.md#preview-120-public-game-details-and-artwork).
+
 ## Rust account switching and headshot recovery (1.19)
 
 **CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** Reopening an account inspector reuses the pending same-profile private lookup. Headshot retry bypasses a cached image error. The sign-in window dismissal follows protected persistence, with separate UI confirmation and dismissal failure. The browser fixture exercised six synthetic profiles and the anonymous CDN check returned a PNG. Actual private data and sign-in-window closure remain attended checks. See [Preview 1.19](RUST-DESKTOP-PREVIEW.md#preview-119-account-details-and-sign-in).

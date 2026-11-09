@@ -18,6 +18,8 @@ fn main() {
             "account_private_profile",
             "account_friends",
             "search_public_games",
+            "public_game_details",
+            "public_game_art",
             "browse_public_servers",
             "launch_account",
             "dismiss_recovered_launch",

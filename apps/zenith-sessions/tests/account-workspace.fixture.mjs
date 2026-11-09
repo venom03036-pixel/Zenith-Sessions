@@ -12,6 +12,7 @@ function exerciseWorkspace() {
   let savedSignIn = null;
   let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
   let launchedEpoch;
+  let launchedTarget;
   let catalogRequests = 0;
   const catalogCursor = { offset: 25, hostSessionId: 'fixture-session', catalogRevision: '9007199254740993', total: 26 };
   const selectionPage = { ...catalogCursor, offset: 0 };
@@ -29,13 +30,16 @@ function exerciseWorkspace() {
     unreadableLegacy: 0, rows: [{ target: assignmentTarget, name: 'Fixture6', editable: true, inherited: false, assignment }] });
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
+  let releaseGame;
+  let detailsRequested = false;
+  let detailsResolved = false;
   let pendingPrivateProfile = false;
   let repeatedPrivateProfile = false;
   let releasePrivateProfile;
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice, action, request } = {}) => {
+    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
@@ -98,7 +102,23 @@ function exerciseWorkspace() {
         case 'launch_account':
           if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale launch permit.');
           launchedEpoch = epoch;
+          launchedTarget = { placeId, job };
           return;
+        case 'browse_public_servers':
+          return { servers: [{ id: '11111111-0000-0000-0000-000000000001', playing: 4, maxPlayers: 8, ping: null }], nextCursor: null };
+        case 'public_game_details': {
+          if (place === '1818') {
+            detailsRequested = true;
+            await new Promise(resolve => { releaseGame = resolve; });
+            detailsResolved = true;
+          }
+          return { requestedPlaceId: place, rootPlaceId: '4000', universeId: place === '1818' ? '5000' : '5001',
+            name: place === '1818' ? 'Superseded game' : 'Fixture experience', creator: 'Fixture studio',
+            playing: '1234', visits: '9007199254740999', maxPlayers: 10, description: 'Fixture description.' };
+        }
+        case 'public_game_art':
+          if (universe !== '5001') throw new Error('Artwork was requested for a stale or wrong universe.');
+          return { icon: { Ok: '/headshot.svg?icon' }, thumbnails: { Ok: ['/headshot.svg?thumbnail'] } };
         case 'account_headshots':
           headshotRequests++;
           return Object.fromEntries(accounts.slice(0, headshotRequests === 1 ? 5 : 6)
@@ -203,6 +223,40 @@ function exerciseWorkspace() {
           && details().includes(`${id} friend`) && details().includes(index === 6 ? 'Robux73' : 'Robux0')
           && new URL(find('[aria-label="Account details"] img:not([hidden])')?.src ?? location.href).search.startsWith(`?${id}`),
         `account ${index} showed missing or mismatched details`);
+      }
+    });
+    await check('game details and artwork keep the exact requested destination', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => button('Load game details'), 'the Sessions picker does not offer public game details');
+        button('Load game details').click();
+        await until(() => detailsRequested, 'the initial place was not requested');
+        const destination = find('input[placeholder="Enter a place ID or game link"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(destination, '1819');
+        destination.dispatchEvent(new Event('input', { bubbles: true }));
+        await until(() => button('Load game details') && !button('Load game details').disabled, 'changing the place did not reset details');
+        button('Browse public servers').click();
+        await until(() => find('[aria-label="Public servers"] button'), 'the server list did not load');
+        find('[aria-label="Public servers"] button').click();
+        button('Load game details').click();
+        const panel = () => find('[aria-label="Public game details"]');
+        await until(() => panel()?.textContent.includes('Fixture experience') && panel()?.textContent.includes('Fixture studio')
+          && panel()?.querySelectorAll('img').length === 2 && [...panel().querySelectorAll('img')].every(image => image.naturalWidth > 0),
+          'the selected game metadata, icon or thumbnail did not load');
+        releaseGame();
+        await until(() => detailsResolved, 'the stale fixture request did not finish');
+        await new Promise(resolve => setTimeout(resolve, 100));
+        if (panel().textContent.includes('Superseded game') || !panel().textContent.includes('1819') || !panel().textContent.includes('4000')
+          || destination.value !== '1819' || !find('[aria-label="Public servers"] button[aria-pressed="true"]')) {
+          throw new Error('a stale lookup or the experience root replaced the exact launch destination');
+        }
+        button('Launch').click();
+        await until(() => launchedTarget?.placeId === '1819' && launchedTarget?.job === '11111111-0000-0000-0000-000000000001',
+          'Launch did not receive the exact requested subplace and pinned server');
+      } finally {
+        releaseGame?.();
+        find('button[aria-label="Accounts"]').click();
       }
     });
     await check('Panic holds launches across pages until cleanup and explicit resume', async () => {

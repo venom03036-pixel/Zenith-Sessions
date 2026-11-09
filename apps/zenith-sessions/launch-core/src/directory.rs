@@ -13,6 +13,9 @@ use reqwest::{
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use uuid::Uuid;
 
+mod game_details;
+pub use game_details::{GameArt, GameDetails};
+
 const SEARCH_URL: &str = "https://apis.roblox.com/search-api/omni-search";
 const PAGE_SIZE: usize = 25;
 const MAX_RESPONSE: u64 = 512 * 1024;
@@ -45,6 +48,8 @@ pub struct Directory {
     pub(crate) http: Client,
     search_cooldown: Mutex<Option<Instant>>,
     server_cooldown: Mutex<Option<Instant>>,
+    game_details_cooldown: Mutex<Option<Instant>>,
+    game_art_cooldown: Mutex<Option<Instant>>,
 }
 
 impl Directory {
@@ -61,6 +66,8 @@ impl Directory {
             http,
             search_cooldown: Mutex::new(None),
             server_cooldown: Mutex::new(None),
+            game_details_cooldown: Mutex::new(None),
+            game_art_cooldown: Mutex::new(None),
         })
     }
 
@@ -168,6 +175,23 @@ pub(crate) fn public_json<T: DeserializeOwned>(response: Response) -> Result<T, 
         return Err(INVALID_RESPONSE.into());
     }
     serde_json::from_slice(&bytes).map_err(|_| INVALID_RESPONSE.into())
+}
+
+pub(crate) fn public_image_url(value: &str) -> Option<String> {
+    if value.len() > 2048 {
+        return None;
+    }
+    let url = Url::parse(value).ok()?;
+    (url.scheme() == "https"
+        && url
+            .host_str()
+            .is_some_and(|host| host.ends_with(".rbxcdn.com"))
+        && url.port().is_none()
+        && url.username().is_empty()
+        && url.password().is_none()
+        && url.query().is_none()
+        && url.fragment().is_none())
+    .then(|| url.to_string())
 }
 
 pub fn public_place(input: &str) -> Result<u64, &'static str> {

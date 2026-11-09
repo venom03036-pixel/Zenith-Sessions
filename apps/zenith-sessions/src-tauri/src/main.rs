@@ -38,7 +38,7 @@ use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blockin
 use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
-    directory::{Directory, Game, ServerPage, public_place},
+    directory::{Directory, Game, GameArt, GameDetails, ServerPage, public_place},
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
     windows::{
@@ -474,6 +474,29 @@ async fn search_public_games(
 }
 
 #[tauri::command]
+async fn public_game_details(
+    state: State<'_, Arc<Workspace>>,
+    place: String,
+) -> Result<GameDetails, String> {
+    let place = public_place(&place)?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.directory.game_details(place))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn public_game_art(
+    state: State<'_, Arc<Workspace>>,
+    universe: String,
+) -> Result<GameArt, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.directory.game_art(&universe))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn browse_public_servers(
     state: State<'_, Arc<Workspace>>,
     place: String,
@@ -812,6 +835,8 @@ fn main() -> ExitCode {
             account_private_profile,
             account_friends,
             search_public_games,
+            public_game_details,
+            public_game_art,
             browse_public_servers,
             launch_account,
             dismiss_recovered_launch,
