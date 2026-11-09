@@ -6,6 +6,7 @@ mod session;
 mod sign_in;
 
 use std::{
+    collections::HashMap,
     path::PathBuf,
     process::ExitCode,
     sync::{
@@ -23,6 +24,7 @@ use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
     directory::{Directory, Game, ServerPage, public_place},
+    profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
     windows::{SavedIdentity, memory_sample},
 };
@@ -31,20 +33,10 @@ struct Workspace {
     library: Mutex<Library>,
     owner: Mutex<SessionOwner>,
     directory: Directory,
-    sign_in: Mutex<Option<sign_in::SignIn>>,
+    sign_in: Mutex<sign_in::SignInState>,
     sign_in_directory: PathBuf,
     logs: PathBuf,
     exiting: AtomicBool,
-}
-
-impl Workspace {
-    fn clear_sign_in(&self, attempt: Uuid) {
-        if let Ok(mut active) = self.sign_in.lock()
-            && active.as_ref().is_some_and(|flow| flow.attempt == attempt)
-        {
-            *active = None;
-        }
-    }
 }
 
 #[derive(Serialize)]
@@ -55,6 +47,8 @@ struct Snapshot {
     launch: LaunchState,
     admission: Option<Admission>,
     sign_in_attempt: Option<Uuid>,
+    sign_in_error: Option<String>,
+    saved_sign_in: Option<sign_in::SavedSignIn>,
 }
 
 const STATE_ERROR: &str = "Zenith could not access the workspace state";
@@ -74,18 +68,15 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
         let admission = memory_sample()
             .ok()
             .map(|sample| sample.admission(Instant::now()));
-        let sign_in_attempt = state
-            .sign_in
-            .lock()
-            .map_err(|_| STATE_ERROR)?
-            .as_ref()
-            .map(|flow| flow.attempt);
+        let sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
         Ok(Snapshot {
             accounts,
             sessions,
             launch,
             admission,
-            sign_in_attempt,
+            sign_in_attempt: sign_in.active.as_ref().map(|flow| flow.attempt),
+            sign_in_error: sign_in.active.as_ref().and_then(|flow| flow.error.clone()),
+            saved_sign_in: sign_in.saved.clone(),
         })
     })
     .await
@@ -118,6 +109,92 @@ async fn remove_account(state: State<'_, Arc<Workspace>>, id: Uuid) -> Result<()
             return Err("Stop this account's session before removing it".into());
         }
         state.library.lock().map_err(|_| STATE_ERROR)?.remove(id)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn account_headshots(
+    state: State<'_, Arc<Workspace>>,
+) -> Result<HashMap<Uuid, String>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let accounts = state.library.lock().map_err(|_| STATE_ERROR)?.accounts();
+        let ids: Vec<_> = accounts
+            .into_iter()
+            .map(|account| (account.profile_id, account.user_id))
+            .collect();
+        state.directory.headshots(&ids)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn account_profile(state: State<'_, Arc<Workspace>>, id: Uuid) -> Result<Profile, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let account = state.library.lock().map_err(|_| STATE_ERROR)?.account(id)?;
+        state.directory.public_profile(account.user_id)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn account_favorites(
+    state: State<'_, Arc<Workspace>>,
+    id: Uuid,
+    cursor: Option<String>,
+) -> Result<Page<Game>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let account = state.library.lock().map_err(|_| STATE_ERROR)?.account(id)?;
+        state
+            .directory
+            .favorites(account.user_id, cursor.as_deref())
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn account_private_profile(
+    state: State<'_, Arc<Workspace>>,
+    id: Uuid,
+) -> Result<PrivateProfile, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let (account, mut credential) = state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .credential(id)?;
+        state
+            .directory
+            .private_profile(account.user_id, &mut credential)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn account_friends(
+    state: State<'_, Arc<Workspace>>,
+    id: Uuid,
+    cursor: String,
+) -> Result<Page<Person>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let (account, mut credential) = state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .credential(id)?;
+        state
+            .directory
+            .friends(account.user_id, &mut credential, &cursor)
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -240,7 +317,7 @@ fn main() -> ExitCode {
                 library: Mutex::new(library),
                 owner: Mutex::new(SessionOwner::default()),
                 directory: Directory::new().map_err(std::io::Error::other)?,
-                sign_in: Mutex::new(None),
+                sign_in: Mutex::new(sign_in::SignInState::default()),
                 sign_in_directory: root.join("isolated-sign-in"),
                 logs,
                 exiting: AtomicBool::new(false),
@@ -279,6 +356,11 @@ fn main() -> ExitCode {
             workspace_snapshot,
             import_account,
             remove_account,
+            account_headshots,
+            account_profile,
+            account_favorites,
+            account_private_profile,
+            account_friends,
             search_public_games,
             browse_public_servers,
             launch_account,

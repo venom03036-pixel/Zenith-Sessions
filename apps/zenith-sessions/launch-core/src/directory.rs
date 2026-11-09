@@ -7,7 +7,7 @@ use std::{
 
 use reqwest::{
     StatusCode, Url,
-    blocking::Client,
+    blocking::{Client, Response},
     header::{ACCEPT, CONTENT_TYPE, RETRY_AFTER},
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -42,7 +42,7 @@ pub struct ServerPage {
 }
 
 pub struct Directory {
-    http: Client,
+    pub(crate) http: Client,
     search_cooldown: Mutex<Option<Instant>>,
     server_cooldown: Mutex<Option<Instant>>,
 }
@@ -137,33 +137,37 @@ impl Directory {
                 "Roblox rate-limited this directory. Retry in {seconds} seconds."
             ));
         }
-        if response.status() != StatusCode::OK {
-            return Err(format!(
-                "Roblox public directory is unavailable (HTTP {}).",
-                response.status().as_u16()
-            ));
-        }
-        if response
-            .content_length()
-            .is_some_and(|size| size > MAX_RESPONSE)
-            || response
-                .headers()
-                .get(CONTENT_TYPE)
-                .and_then(|value| value.to_str().ok())
-                .is_none_or(|value| value.split(';').next() != Some("application/json"))
-        {
-            return Err(INVALID_RESPONSE.into());
-        }
-        let mut bytes = Vec::new();
-        response
-            .take(MAX_RESPONSE + 1)
-            .read_to_end(&mut bytes)
-            .map_err(|_| "Could not read the Roblox public directory response.")?;
-        if bytes.len() as u64 > MAX_RESPONSE {
-            return Err(INVALID_RESPONSE.into());
-        }
-        serde_json::from_slice(&bytes).map_err(|_| INVALID_RESPONSE.into())
+        public_json(response)
     }
+}
+
+pub(crate) fn public_json<T: DeserializeOwned>(response: Response) -> Result<T, String> {
+    if response.status() != StatusCode::OK {
+        return Err(format!(
+            "Roblox public directory is unavailable (HTTP {}).",
+            response.status().as_u16()
+        ));
+    }
+    if response
+        .content_length()
+        .is_some_and(|size| size > MAX_RESPONSE)
+        || response
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .is_none_or(|value| value.split(';').next() != Some("application/json"))
+    {
+        return Err(INVALID_RESPONSE.into());
+    }
+    let mut bytes = Vec::new();
+    response
+        .take(MAX_RESPONSE + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "Could not read the Roblox public directory response.")?;
+    if bytes.len() as u64 > MAX_RESPONSE {
+        return Err(INVALID_RESPONSE.into());
+    }
+    serde_json::from_slice(&bytes).map_err(|_| INVALID_RESPONSE.into())
 }
 
 pub fn public_place(input: &str) -> Result<u64, &'static str> {
@@ -263,7 +267,7 @@ struct ServerResponse {
     next_page_cursor: Option<String>,
 }
 
-fn valid_cursor(cursor: &str) -> bool {
+pub(crate) fn valid_cursor(cursor: &str) -> bool {
     !cursor.is_empty() && cursor.len() <= 4096 && cursor.bytes().all(|byte| byte.is_ascii_graphic())
 }
 

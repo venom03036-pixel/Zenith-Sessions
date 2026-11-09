@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust account inspector and automatic sign-in (1.05)
+
+**CHAT-22, VA-04-02, VA-04-03, CAP-03-01.** The owner requested that completing official sign-in save and close automatically. The Rust preview verifies the first-party landing and authenticated Roblox identity, persists with DPAPI, then closes the attempt. The same protected profile is retained on renewal. The Accounts inspector adds verified-ID headshots, public profile and favorites, and selected-account Robux and paginated friends. Public transport and synthetic account/authentication checks passed. Real private reads and browser auto-save remain attended checks. See the [account details procedure](RUST-DESKTOP-PREVIEW.md#preview-105-account-details).
+
 ## Rust desktop pair and packaged check (1.04)
 
 **CAP-08-01, CAP-08-02, CAP-08-03, PROD-CORE-03, CAP-16-02, CAP-16-03.** The desktop keeps separate attempts per saved account and admits one start at a time. The opt-in pair trial waits for confirmed arrival, a 20-second stabilization interval, and fresh memory headroom. An active peer is checked again before dispatch. The PID-reuse regression failed first and passed after the exact Windows process-birth check. Twenty-two offline Rust tests passed, and two packaged self-check runs passed all five stages. Live coexistence, restart reconciliation, and scale remain unverified. See the [preview and attended procedure](RUST-DESKTOP-PREVIEW.md#preview-104-and-the-attended-two-account-trial).

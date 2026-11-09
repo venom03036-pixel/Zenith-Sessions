@@ -1,12 +1,12 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { AccountInspector, Avatar, type Account } from './account-inspector';
 import { DestinationPicker, type Destination } from './destination-picker';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
 import './workspace.css';
 
-type Account = { profileId: string; username: string; userId: number };
 type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'stopping' | 'stopped' | 'failed';
 type Session = {
   attemptId: string; accountId: string; username: string; placeId: string;
@@ -18,7 +18,11 @@ type Admission = {
   commitAvailable: number; commitRequired: number; canTryOne: boolean;
 };
 type LaunchState = { active: number; pairEnabled: boolean; hold: string | null };
-type Snapshot = { accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null; signInAttempt: string | null };
+type Snapshot = {
+  accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null;
+  signInAttempt: string | null; signInError: string | null;
+  savedSignIn: { attempt: string; profileId: string } | null;
+};
 type Page = 'Overview' | 'Accounts' | 'Sessions';
 
 const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'window']];
@@ -76,11 +80,16 @@ function App() {
   const [pairRequested, setPairRequested] = useState(false);
   const [importing, setImporting] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
+  const [avatars, setAvatars] = useState<Record<string, string>>({});
+  const [avatarRevision, setAvatarRevision] = useState(0);
   const [remove, setRemove] = useState<Account | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const reading = useRef(false);
+  const seenSignIn = useRef('');
   const accounts = snapshot?.accounts ?? [];
+  const accountKey = accounts.map(item => item.profileId).join(',');
+  const inspected = accounts.find(value => value.profileId === selected);
   const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
   const sessions = snapshot?.sessions ?? [];
   const launchState = snapshot?.launch;
@@ -89,6 +98,7 @@ function App() {
   const selectedSession = sessions.find(session => session.accountId === account?.profileId);
   const admission = snapshot?.admission;
   const signInAttempt = snapshot?.signInAttempt;
+  const savedSignIn = snapshot?.savedSignIn;
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = Boolean(destination.place.trim());
   const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || !launchState || !!launchState.hold;
@@ -121,6 +131,21 @@ function App() {
     return () => window.removeEventListener('keydown', listener);
   }, []);
   useEffect(() => localStorage.setItem('zenith-theme', theme), [theme]);
+  useEffect(() => {
+    if (!accountKey) return;
+    let current = true;
+    void invoke<Record<string, string>>('account_headshots').then(
+      images => { if (current) setAvatars(images); },
+      () => {},
+    );
+    return () => { current = false; };
+  }, [accountKey, avatarRevision]);
+  useEffect(() => {
+    if (savedSignIn && seenSignIn.current !== savedSignIn.attempt) {
+      seenSignIn.current = savedSignIn.attempt;
+      setSelected(savedSignIn.profileId);
+    }
+  }, [savedSignIn]);
 
   async function act(command: string, payload: Record<string, unknown>) {
     setFailure('');
@@ -204,7 +229,7 @@ function App() {
           className={page === label ? 'active' : ''} onClick={() => setPage(label)}><Icon name={icon} size={16}/><span>{label}</span></button>)}
       </nav>
       <div className="top-actions">
-        <button className="icon-button" aria-label="Refresh" onClick={() => void refresh()}><Icon name="refresh" size={16}/></button>
+        <button className="icon-button" aria-label="Refresh" onClick={() => { setAvatarRevision(value => value + 1); void refresh(); }}><Icon name="refresh" size={16}/></button>
         <button className="icon-button" aria-label="Appearance" aria-expanded={showAppearance} onClick={() => setShowAppearance(value => !value)}><Icon name="sun" size={16}/></button>
       </div>
     </header>
@@ -227,9 +252,10 @@ function App() {
       {failure && <p role="alert" className="inline-alert">{failure}</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
-        <p>Finish signing in inside the Roblox window. Return here when Roblox shows your account, then save the sign-in.</p>
+        <p>Finish signing in inside the Roblox window. Zenith will save the verified sign-in and close the window automatically.</p>
+        {snapshot?.signInError && <p role="status">{snapshot.signInError}</p>}
         <div className="row-actions">
-          <button className="primary-button" disabled={signInBusy} onClick={() => void saveSignIn()}>{signInBusy ? 'Checking sign-in…' : 'Save sign-in'}</button>
+          {snapshot?.signInError && <button className="primary-button" disabled={signInBusy} onClick={() => void saveSignIn()}>{signInBusy ? 'Checking sign-in…' : 'Retry save'}</button>}
           <button className="secondary-button" onClick={() => void act('cancel_sign_in', { attempt: signInAttempt })}>Cancel sign-in</button>
         </div>
       </section>}
@@ -241,22 +267,32 @@ function App() {
         </div>
         <Memory admission={admission}/>
       </>}
-      {page === 'Accounts' && <section className="account-panel">
+      {page === 'Accounts' && <div className={`accounts-workspace${inspected ? ' with-inspector' : ''}`}><section className="account-panel">
         <div className="panel-heading"><div><h2>Account library</h2><p>{filtered.length} of {accounts.length} accounts shown</p></div></div>
         <div className="toolbar"><label className="search-box"><Icon name="search" size={17}/><input ref={search} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search accounts…" aria-label="Search accounts"/><kbd>Ctrl K</kbd></label></div>
         {filtered.length ? <div className="table-wrap"><table>
           <thead><tr><th>Account</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>{filtered.map(item => {
             const session = sessions.find(session => session.accountId === item.profileId);
-            return <tr key={item.profileId} className={item.profileId === account?.profileId ? 'selected-row' : ''}>
-            <td><div className="account-cell"><span className="avatar preview-avatar">{item.username.slice(0, 2).toUpperCase()}</span><div><strong>{item.username}</strong><span>@{item.username}</span></div></div></td>
+            return <tr key={item.profileId} className={item.profileId === inspected?.profileId ? 'selected-row' : ''}>
+            <td><button className="account-cell account-select" type="button" aria-pressed={item.profileId === inspected?.profileId}
+              aria-label={`View details for ${item.username}`} onClick={() => setSelected(item.profileId)}>
+              <Avatar key={avatars[item.profileId] ?? item.profileId} username={item.username} image={avatars[item.profileId]}/>
+              <div><strong>{item.username}</strong><span>@{item.username}</span></div>
+            </button></td>
             <td><Status session={session}/></td>
             <td><div className="row-actions"><button className="launch-button" onClick={() => openLaunch(item)}><Icon name="play" size={14}/> Select for launch</button>
               <button className="secondary-button" disabled={isBusy(session)} onClick={() => setRemove(item)}>Remove</button></div></td>
           </tr>; })}</tbody>
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
-      </section>}
+      </section>
+      {inspected && <AccountInspector key={inspected.profileId} account={inspected} image={avatars[inspected.profileId]}
+        onFavorite={favorite => {
+          setDestination({ place: favorite.placeId, name: favorite.name, job: null });
+          openLaunch(inspected);
+        }}/>}
+      </div>}
       {page === 'Sessions' && <>
         <section className="account-panel preview-panel">
           <h2>Launch Roblox</h2>

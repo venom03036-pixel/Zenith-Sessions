@@ -1,5 +1,9 @@
-use std::sync::{Arc, atomic::Ordering};
+use std::{
+    sync::{Arc, atomic::Ordering},
+    time::{Duration, Instant},
+};
 
+use serde::Serialize;
 use tauri::{
     AppHandle, Manager, State, Url, WebviewUrl, WebviewWindowBuilder,
     async_runtime::spawn_blocking, webview::NewWindowResponse,
@@ -18,7 +22,33 @@ const HOME: &str = "https://www.roblox.com/";
 
 pub struct SignIn {
     pub attempt: Uuid,
+    pub error: Option<String>,
     saving: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedSignIn {
+    attempt: Uuid,
+    profile_id: Uuid,
+}
+
+#[derive(Default)]
+pub struct SignInState {
+    pub active: Option<SignIn>,
+    pub saved: Option<SavedSignIn>,
+}
+
+impl SignInState {
+    fn clear(&mut self, attempt: Uuid) {
+        if self
+            .active
+            .as_ref()
+            .is_some_and(|flow| flow.attempt == attempt)
+        {
+            self.active = None;
+        }
+    }
 }
 
 fn label(attempt: Uuid) -> String {
@@ -35,6 +65,17 @@ fn official_navigation(url: &Url) -> bool {
             .is_some_and(|host| host == "roblox.com" || host.ends_with(".roblox.com"))
 }
 
+fn signed_in_landing(url: &Url) -> bool {
+    official_navigation(url)
+        && url.host_str() == Some("www.roblox.com")
+        && matches!(url.path(), "/" | "/home" | "/home/")
+        && !url.query_pairs().any(|(name, _)| {
+            ["challenge", "returnurl", "login", "twoStepVerification"]
+                .iter()
+                .any(|key| key.eq_ignore_ascii_case(&name))
+        })
+}
+
 #[tauri::command]
 pub async fn begin_sign_in(
     app: AppHandle,
@@ -45,13 +86,14 @@ pub async fn begin_sign_in(
     }
     let attempt = Uuid::new_v4();
     {
-        let mut active = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
-        if active.is_some() {
+        let mut sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
+        if sign_in.active.is_some() {
             return Err("Finish or cancel the existing Roblox sign-in first".into());
         }
-        *active = Some(SignIn {
+        sign_in.active = Some(SignIn {
             attempt,
             saving: false,
+            error: None,
         });
     }
     let opened = WebviewWindowBuilder::new(
@@ -68,10 +110,50 @@ pub async fn begin_sign_in(
     .on_new_window(|_, _| NewWindowResponse::Deny)
     .build();
     if opened.is_err() {
-        state.clear_sign_in(attempt);
+        state
+            .sign_in
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .clear(attempt);
         return Err("Could not open the isolated Roblox sign-in window".into());
     }
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || monitor(&app, &state, attempt));
     Ok(attempt)
+}
+
+fn monitor(app: &AppHandle, state: &Workspace, attempt: Uuid) {
+    let deadline = Instant::now() + Duration::from_secs(15 * 60);
+    while Instant::now() < deadline {
+        if state.exiting.load(Ordering::Acquire)
+            || !state.sign_in.lock().is_ok_and(|sign_in| {
+                sign_in
+                    .active
+                    .as_ref()
+                    .is_some_and(|flow| flow.attempt == attempt)
+            })
+        {
+            return;
+        }
+        let Some(window) = app.get_webview_window(&label(attempt)) else {
+            return;
+        };
+        if window.url().is_ok_and(|url| signed_in_landing(&url))
+            && !matches!(try_save(app, state, attempt), Ok(None))
+        {
+            return;
+        }
+        std::thread::sleep(Duration::from_secs(1));
+    }
+    if let Ok(mut sign_in) = state.sign_in.lock()
+        && let Some(flow) = sign_in
+            .active
+            .as_mut()
+            .filter(|flow| flow.attempt == attempt)
+    {
+        flow.error =
+            Some("Automatic saving timed out. Finish signing in, then retry saving.".into());
+    }
 }
 
 #[tauri::command]
@@ -80,7 +162,11 @@ pub fn cancel_sign_in(
     state: State<'_, Arc<Workspace>>,
     attempt: Uuid,
 ) -> Result<(), String> {
-    state.clear_sign_in(attempt);
+    state
+        .sign_in
+        .lock()
+        .map_err(|_| STATE_ERROR)?
+        .clear(attempt);
     if let Some(window) = app.get_webview_window(&label(attempt)) {
         window
             .close()
@@ -96,9 +182,23 @@ pub async fn finish_sign_in(
     attempt: Uuid,
 ) -> Result<SavedIdentity, String> {
     let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        try_save(&app, &state, attempt)?
+            .ok_or_else(|| "Finish signing in in the Roblox window, then retry.".into())
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+fn try_save(
+    app: &AppHandle,
+    state: &Workspace,
+    attempt: Uuid,
+) -> Result<Option<SavedIdentity>, String> {
     {
-        let mut active = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
-        let flow = active
+        let mut sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
+        let flow = sign_in
+            .active
             .as_mut()
             .filter(|flow| flow.attempt == attempt)
             .ok_or("Open a Roblox sign-in window first")?;
@@ -107,16 +207,17 @@ pub async fn finish_sign_in(
         }
         flow.saving = true;
     }
-    let worker_state = Arc::clone(&state);
-    let result = spawn_blocking(move || capture_and_save(&app, &worker_state, attempt))
-        .await
-        .map_err(|_| STATE_ERROR.to_owned())
-        .and_then(|result| result);
-    if result.is_err()
-        && let Ok(mut active) = state.sign_in.lock()
-        && let Some(flow) = active.as_mut().filter(|flow| flow.attempt == attempt)
+    let result = capture_and_save(app, state, attempt);
+    if let Ok(mut sign_in) = state.sign_in.lock()
+        && let Some(flow) = sign_in
+            .active
+            .as_mut()
+            .filter(|flow| flow.attempt == attempt)
     {
         flow.saving = false;
+        if let Err(error) = &result {
+            flow.error = Some(error.clone());
+        }
     }
     result
 }
@@ -125,10 +226,13 @@ fn capture_and_save(
     app: &AppHandle,
     state: &Workspace,
     attempt: Uuid,
-) -> Result<SavedIdentity, String> {
+) -> Result<Option<SavedIdentity>, String> {
     let window = app
         .get_webview_window(&label(attempt))
         .ok_or("The Roblox sign-in window closed")?;
+    if !window.url().is_ok_and(|url| signed_in_landing(&url)) {
+        return Ok(None);
+    }
     let cookies = window
         .cookies_for_url(Url::parse(HOME).expect("fixed official URL"))
         .map_err(|_| "Could not read the isolated Roblox sign-in")?;
@@ -143,9 +247,9 @@ fn capture_and_save(
                 )
             })
     });
-    let cookie = matches
-        .next()
-        .ok_or("Finish signing in on Roblox, then select Save sign-in")?;
+    let Some(cookie) = matches.next() else {
+        return Ok(None);
+    };
     if matches.next().is_some() {
         return Err("Roblox returned ambiguous sign-ins. Close the window and try again.".into());
     }
@@ -160,10 +264,16 @@ fn capture_and_save(
         .map_err(|error| error.to_string())?
         .signed_in_user(&mut credential)
         .map_err(|error| error.to_string())?;
+    if !window.url().is_ok_and(|url| signed_in_landing(&url)) {
+        return Ok(None);
+    }
     let identity = {
-        let mut active = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
+        let mut sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
         if state.exiting.load(Ordering::Acquire)
-            || active.as_ref().is_none_or(|flow| flow.attempt != attempt)
+            || sign_in
+                .active
+                .as_ref()
+                .is_none_or(|flow| flow.attempt != attempt)
         {
             return Err("The Roblox sign-in was cancelled".into());
         }
@@ -176,19 +286,24 @@ fn capture_and_save(
             return Err("Stop this account's session before renewing its sign-in".into());
         }
         let identity = library.remember_sign_in(user_id, username, credential, expires)?;
-        *active = None;
+        sign_in.saved = Some(SavedSignIn {
+            attempt,
+            profile_id: identity.profile_id,
+        });
+        sign_in.clear(attempt);
         identity
     };
     let _ = window.close();
-    Ok(identity)
+    Ok(Some(identity))
 }
 
 pub fn destroyed(state: &Workspace, window_label: &str) {
     if let Some(id) = window_label
         .strip_prefix("roblox-sign-in-")
         .and_then(|suffix| Uuid::parse_str(suffix).ok())
+        && let Ok(mut sign_in) = state.sign_in.lock()
     {
-        state.clear_sign_in(id);
+        sign_in.clear(id);
     }
 }
 
@@ -212,5 +327,33 @@ mod tests {
         ] {
             assert!(!official_navigation(&Url::parse(url).unwrap()));
         }
+    }
+
+    #[test]
+    fn automatic_save_waits_for_a_completed_first_party_landing() {
+        assert!(signed_in_landing(
+            &Url::parse("https://www.roblox.com/home").unwrap()
+        ));
+        for url in [
+            LOGIN,
+            "https://www.roblox.com/home?challenge=fixture",
+            "https://www.roblox.com/login/two-step-verification",
+            "https://www.roblox.com/challenge",
+            "https://auth.roblox.com/home",
+            "https://www.roblox.com.evil.test/home",
+        ] {
+            assert!(!signed_in_landing(&Url::parse(url).unwrap()));
+        }
+        let mut sign_in = SignInState::default();
+        let current = Uuid::new_v4();
+        sign_in.active = Some(SignIn {
+            attempt: current,
+            saving: false,
+            error: None,
+        });
+        sign_in.clear(Uuid::new_v4());
+        assert_eq!(sign_in.active.as_ref().unwrap().attempt, current);
+        sign_in.clear(current);
+        assert!(sign_in.active.is_none());
     }
 }

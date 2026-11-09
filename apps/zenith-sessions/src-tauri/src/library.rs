@@ -67,6 +67,13 @@ impl Library {
         self.accounts.values().cloned().collect()
     }
 
+    pub fn account(&self, id: Uuid) -> Result<SavedIdentity, String> {
+        self.accounts
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "Select an account from the library".into())
+    }
+
     pub fn import(&mut self, mut encrypted: Vec<u8>) -> Result<SavedIdentity, String> {
         let (identity, credential) = open_saved_bundle(&mut encrypted)?;
         drop(credential);

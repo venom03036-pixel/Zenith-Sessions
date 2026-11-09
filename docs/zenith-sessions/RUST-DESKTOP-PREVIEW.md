@@ -5,7 +5,7 @@ The rebuild branch now has a Tauri desktop workspace with the exported Zenith co
 ## Using the preview
 
 1. Close any older Zenith preview window before opening the new executable.
-2. In **Accounts**, select **Add account**. Complete sign-in in Roblox's own window. Return to Zenith and select **Save sign-in**. Zenith verifies the authenticated account ID with Roblox and saves its credential using Windows encryption. To renew a saved profile, use **Add account** again and sign in as the same Roblox account.
+2. In **Accounts**, select **Add account** and complete sign-in in Roblox's own window. Once the window reaches Roblox's home page and identity verification succeeds, Zenith saves the sign-in with Windows encryption, selects the profile, and closes the sign-in window. If saving fails, Zenith displays the error and offers **Retry save**. To renew a saved profile, use **Add account** again and sign in as the same Roblox account.
 3. To bring over an existing saved sign-in, exit the existing Zenith app. From the repository root, stage that account with the command below. The [build and staging instructions](RUST-LAUNCH-PROBE.md) show how to build the existing vault helper first.
 
    ```powershell
@@ -21,6 +21,16 @@ The preview rechecks the signed standard Roblox player and verifies the saved ac
 Server browsing requests one public page at a time. Occupancy is reported by Roblox when the page loads, and seats are assigned when Roblox joins the server. Changing the destination clears the selected server. The initial game-name results are capped at 50. Public links with query parameters and private/share links are rejected by this preview.
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile. The isolated import path does not replace complete migration of groups, notes, settings, macro assignments, or password-protected records.
+
+## Preview 1.05 account details
+
+Select a username or headshot in **Accounts**. The inspector shows the Roblox display name, username, ID, join date, and profile description. It lists public favorite games and pages through the selected account's friends. Selecting a favorite opens Sessions with that account and game selected. Robux and friends use the selected profile's verified saved sign-in. If Roblox hides a listing or refuses a request, the affected section shows the response separately. A returned balance of zero is displayed as zero.
+
+The Accounts list and inspector use Roblox avatar headshots. Pending or unavailable images fall back to initials. The top-bar Refresh reloads the public headshots, and the inspector's Refresh reloads account details. Account switching clears the inspector's previous results. Updating from the previous preview uses the same protected library.
+
+For attended verification, open the preview and select each already saved account. Compare its headshot, public favorites, friends and Robux against the corresponding Roblox account. Switch quickly between two accounts while data is loading and check that only the selected account's details appear. Complete a new official sign-in and confirm the window closes after the profile appears. For cancellation, close a separate sign-in before reaching Roblox's home page and confirm that no profile was added.
+
+The 1.05 executable has SHA-256 `5B3E9E5FC838268B1D493C197FD9E4F2578A5978FBFE13A5B66867AFC70FF946`. Twenty-six offline Rust tests, an anonymous smoke test against Roblox's public profile, formatting, Clippy, the frontend type check and build, and the Release build passed. The packaged self-check passed all five stages twice. The checks did not use saved Roblox accounts.
 
 ## Build and validation
 

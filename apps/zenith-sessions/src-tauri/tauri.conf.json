@@ -12,7 +12,7 @@
   "app": {
     "windows": [{ "label": "main", "title": "Zenith Sessions Preview", "width": 1160, "height": 720, "minWidth": 740, "minHeight": 500 }],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'",
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' https://*.rbxcdn.com; connect-src ipc: http://ipc.localhost; object-src 'none'; base-uri 'none'; frame-src 'none'",
       "capabilities": ["diagnostics"]
     }
   },

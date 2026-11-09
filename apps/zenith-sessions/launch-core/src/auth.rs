@@ -101,6 +101,16 @@ struct Identity {
 }
 
 impl RobloxAuth {
+    pub(crate) fn read_profile<T: serde::de::DeserializeOwned>(
+        &self,
+        stage: &'static str,
+        credential: &mut Credential,
+        url: &str,
+    ) -> Result<T, Failure> {
+        let response = self.request(stage, credential, Method::GET, url, None, None)?;
+        read_json(accepted(stage, response)?, stage)
+    }
+
     pub fn new() -> Result<Self, Failure> {
         let http = Client::builder()
             .user_agent("ZenithSessions/0.1")
@@ -388,6 +398,36 @@ mod tests {
             ticket_url: format!("http://{address}/ticket"),
         };
         (auth, worker)
+    }
+
+    #[test]
+    fn authenticated_profile_read_uses_the_cookie_verified_for_this_account() {
+        let (auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=verified; Secure; HttpOnly\r\n",
+                body: r#"{"id":42,"name":"ZenithFixture"}"#,
+            },
+            Exchange {
+                request: "GET /balance HTTP/1.1",
+                cookie: "verified",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"robux":0}"#,
+            },
+        ]);
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        auth.verify(&mut credential, 42).unwrap();
+        let url = auth.identity_url.replace("/identity", "/balance");
+        let balance: Value = auth
+            .read_profile("Robux balance", &mut credential, &url)
+            .unwrap();
+        assert_eq!(balance["robux"], 0);
+        worker.join().unwrap();
     }
 
     #[test]
