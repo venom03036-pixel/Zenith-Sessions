@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust Personal macro catalog (1.12)
+
+**CAP-13-01, CAP-14-01, PROD-UI-01, PROD-QA-03.** Automation reads saved-macro display metadata through the existing Personal v1 pipe. The Rust client checks current Windows ownership, frame and request bounds, host revision and pagination. The page uses explicit refresh and clears stale rows. Assignment references remain in the protected archive. The production editor trial, assignment editing and playback remain pending. See [Preview 1.12](RUST-DESKTOP-PREVIEW.md#preview-112-saved-macro-catalog).
+
 ## Rust emergency stop (1.11)
 
 **CAP-13-04, CAP-08-02, CAP-11-03, PROD-QA-03.** The persistent header action and native Windows shortcut revoke old launch permits before waiting for the session owner. Preparation, ticket retries, final native dispatch and pending window actions check the current permit. Owned cleanup holds admission until an explicit, current Resume. Tests cover native registration and conflict, message routing, a late ticket, late preparation, stale Resume, and the rendered hold. Physical key delivery, real Roblox stop, graceful close, and macro-input integration remain pending. See [Preview 1.11](RUST-DESKTOP-PREVIEW.md#preview-111-emergency-stop).

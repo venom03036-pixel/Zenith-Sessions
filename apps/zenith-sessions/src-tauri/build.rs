@@ -2,6 +2,7 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "workspace_snapshot",
+            "saved_macro_catalog",
             "import_account",
             "import_legacy",
             "legacy_workspace",

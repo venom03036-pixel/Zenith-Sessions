@@ -12,12 +12,15 @@ function exerciseWorkspace() {
   let savedSignIn = null;
   let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
   let launchedEpoch;
+  let catalogRequests = 0;
+  const catalogCursor = { offset: 25, hostSessionId: 'fixture-session', catalogRevision: '9007199254740993', total: 26 };
+  const emptyCatalog = { state: 'Disconnected', items: [], total: 0, offset: 0, hostVersion: '', previous: null, next: null };
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch } = {}) => {
+    invoke: async (command, { id, epoch, cursor } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
@@ -27,6 +30,15 @@ function exerciseWorkspace() {
           signInAttempt: null, signInError: null, savedSignIn,
         };
         case 'legacy_workspace': return null;
+        case 'saved_macro_catalog':
+          catalogRequests++;
+          if (catalogRequests === 1) return emptyCatalog;
+          if (catalogRequests === 2) return { ...emptyCatalog, state: 'Ready', total: 26, hostVersion: 'Fixture 2',
+            next: catalogCursor, items: Array.from({ length: 25 }, (_, index) => ({ id: `macro-${index}`,
+              savedRevision: 'fixture', name: `Fixture macro ${index + 1}`, hotkey: '',
+              topLevelActions: 3, enabled: true, targetMode: 'Screen' })) };
+          if (JSON.stringify(cursor) !== JSON.stringify(catalogCursor)) throw new Error('Catalog cursor was not preserved.');
+          return { ...emptyCatalog, state: 'Changed' };
         case 'panic_stop':
           panic = { ...panic, epoch: '3', held: true };
           return;
@@ -111,6 +123,22 @@ function exerciseWorkspace() {
       await until(() => button('Launch')?.disabled === false, 'Explicit resume did not rearm launching');
       button('Launch').click();
       await until(() => launchedEpoch === '4', 'A fresh launch did not include the resumed permit');
+    });
+    await check('Automation reads explicitly and clears a changed catalog page', async () => {
+      const automation = find('button[aria-label="Automation"]');
+      if (!automation) throw new Error('Automation is missing from navigation');
+      automation.click();
+      const panel = () => find('[aria-labelledby="macro-catalog-heading"]');
+      const button = (label) => [...(panel()?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === label);
+      await until(() => button('Refresh catalog'), 'Saved macro catalog did not render');
+      if (catalogRequests !== 0) throw new Error('Opening Automation read the host without an explicit refresh');
+      button('Refresh catalog').click();
+      await until(() => panel()?.querySelector('[role="status"]')?.textContent.includes('Open the Personal editor'), 'The disconnected state was not explained');
+      button('Refresh catalog').click();
+      await until(() => button('Next page') && panel()?.textContent.includes('Fixture macro 1'), 'Saved descriptors did not render');
+      button('Next page').click();
+      await until(() => panel()?.textContent.includes('The catalog changed'), 'A changed revision was not surfaced');
+      if (panel()?.textContent.includes('Fixture macro 1') || button('Next page')) throw new Error('Stale rows survived the changed revision');
     });
     const result = document.createElement('output');
     result.id = 'account-fixture-result';

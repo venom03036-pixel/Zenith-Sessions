@@ -22,6 +22,20 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.12 saved macro catalog
+
+Open the **Zenith Macros Personal** editor, then choose **Automation → Refresh catalog** in the preview. The catalog shows saved macro names, target modes, hotkeys, top-level action counts and enabled status. Use **Next page** and **Previous page** to browse in groups of 25. If the editor restarts or its catalog changes during paging, the preview clears the old rows and asks for a refresh. A disconnected or unavailable host has its own status. Opening the page waits for a manual refresh.
+
+The Rust preview uses the Personal editor's existing v1 local named pipe with anonymous impersonation and compares its Windows owner SID to the current process user SID before writing the request. It accepts one framed metadata request at a time with a three-second total budget. Request IDs, the host session, exact catalog revision, page size and offsets are checked before showing results. The named pipe boundary separates Windows users. A same-user process can still claim the metadata endpoint, so displayed records carry no execution authority. [Windows named-pipe security](https://learn.microsoft.com/en-us/windows/win32/ipc/named-pipe-security-and-access-rights), [Tokio named-pipe security options](https://docs.rs/tokio/latest/tokio/net/windows/named_pipe/struct.ClientOptions.html#method.security_qos_flags)
+
+The catalog carries display metadata. Macro documents stay in the Personal editor. Assignment editing and playback remain pending. A migrated workspace still shows its preserved assignment-reference count. The existing editor and the preview library keep their current files and formats.
+
+The Chromium fixture first failed against 1.11 because Automation was missing. It passes on 1.12, including explicit refresh, disconnected status, and clearing a changed page. The Rust client also read the existing .NET 8 Personal catalog fixture and received the expected `Changed` response for a stale host session. Native pipe fixtures cover oversized frames and a stalled response. Codec checks cover duplicate or missing fields and the exact 64-bit catalog revision. Cross-user Windows testing was outside these fixtures.
+
+For an attended check, start the compatible Personal editor with a designated saved macro, then refresh Automation and compare its row with the editor. If the editor has over 25 saved macros, change one saved macro in the editor before selecting **Next page** in Zenith. Verify the changed-catalog message, then refresh and check the updated row. Close the editor and refresh again to check the disconnected state. Using the installed editor and its actual saved catalog remains an attended check.
+
+The 1.12 executable has SHA-256 `04367C0149F944962C7162F1B7D9DB876F97C10D42C134FE1B772E9D91CEA7C9`. Fifty-one offline Rust tests, the separately run .NET 8 fixture, five Chromium checks, formatting, desktop Clippy, the frontend build, and the zero-warning Release build passed. Both packaged self-checks passed all six stages.
+
 ## Preview 1.11 emergency stop
 
 **Panic stop** is available in the header on every page. **Ctrl+Shift+P** also invokes it through a native Windows shortcut worker, including when another app has focus. If Windows refuses registration, the workspace shows a shortcut notice and the button remains available. [Windows global shortcut registration](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)

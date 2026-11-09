@@ -14,6 +14,8 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .panic-button:focus-visible { outline: 2px solid var(--mint); outline-offset: 3px; }
 .panic-hold { display: flex; align-items: center; flex-wrap: wrap; justify-content: space-between; gap: .75rem; margin: .75rem 0; }
 .panic-hold p, .panic-shortcut-note { color: var(--muted); margin: .3rem 0; }
+.macro-catalog td:first-child { overflow-wrap: anywhere; }
+.macro-catalog .row-actions { margin-top: .75rem; }
 .session-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1rem; }
 .session-fields label, .destination-input label, .appearance-preview label { display: grid; gap: .5rem; color: var(--muted); }
 .destination-input input, .session-fields select, .appearance-preview select {

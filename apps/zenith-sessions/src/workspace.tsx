@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AccountInspector, Avatar, type Account } from './account-inspector';
 import { ClientPerformance } from './client-performance';
+import { MacroCatalogPanel } from './macro-catalog';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { DestinationPicker, type Destination } from './destination-picker';
@@ -29,19 +30,20 @@ type Snapshot = {
   signInAttempt: string | null; signInError: string | null;
   savedSignIn: { attempt: string; profileId: string } | null;
 };
-type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows' | 'Performance';
+type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows' | 'Automation' | 'Performance';
 type WindowPlacement = {
   attemptId: string;
   placement: 'placed' | 'changed' | 'rejected' | 'unconfirmed' | 'cancelled';
 };
 type MigrationReport = { profiles: number; added: number; signInsAdded: number; existingKept: number };
 
-const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window'], ['Performance', 'bolt']];
+const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window'], ['Automation', 'workflow'], ['Performance', 'bolt']];
 const pageDescription: Record<Page, string> = {
   Overview: 'Review your local workspace and launch capacity.',
   Accounts: 'Manage your saved Roblox sign-ins.',
   Sessions: 'Choose a saved account and a Roblox place.',
   Windows: 'Focus or arrange your confirmed Roblox client windows.',
+  Automation: 'Review the macros saved in your Personal editor.',
   Performance: 'Measure the clients Zenith owns and adjust their Windows priority.',
 };
 const placementLabel: Record<WindowPlacement['placement'], string> = {
@@ -483,6 +485,7 @@ function App() {
           })}
         </section>}
       </>}
+      {page === 'Automation' && <MacroCatalogPanel assignmentCount={legacyWorkspace?.assignmentCount}/>}
       {page === 'Performance' && <>
         <ClientPerformance/>
         <Memory admission={admission}/>

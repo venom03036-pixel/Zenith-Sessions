@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod library;
+mod macro_catalog;
 mod panic_hotkey;
 mod panic_stop;
 mod recovery;
@@ -20,6 +21,7 @@ use std::{
 };
 
 use library::{LegacyView, Library, MigrationReport, SavedCredential};
+use macro_catalog::{CatalogView, Cursor as CatalogCursor, MacroCatalog};
 use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
 use serde::Serialize;
@@ -39,6 +41,7 @@ use zenith_session_launch::{
 
 struct Workspace {
     library: Mutex<Library>,
+    macro_catalog: MacroCatalog,
     owner: Arc<Mutex<SessionOwner>>,
     panic: Arc<PanicStop>,
     hotkey: Option<PanicHotkey>,
@@ -47,6 +50,25 @@ struct Workspace {
     sign_in_directory: PathBuf,
     logs: PathBuf,
     exiting: AtomicBool,
+}
+
+#[tauri::command]
+async fn saved_macro_catalog(
+    state: State<'_, Arc<Workspace>>,
+    cursor: Option<CatalogCursor>,
+) -> Result<CatalogView, String> {
+    if state.exiting.load(Ordering::Acquire) {
+        return Err("Zenith is closing.".into());
+    }
+    let result = state
+        .macro_catalog
+        .page(cursor)
+        .await
+        .map_err(str::to_owned)?;
+    if state.exiting.load(Ordering::Acquire) {
+        return Err("Zenith is closing.".into());
+    }
+    Ok(result)
 }
 
 #[derive(Serialize)]
@@ -566,6 +588,7 @@ fn main() -> ExitCode {
             );
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
+                macro_catalog: MacroCatalog::default(),
                 owner,
                 panic,
                 hotkey,
@@ -607,6 +630,7 @@ fn main() -> ExitCode {
         })
         .invoke_handler(tauri::generate_handler![
             workspace_snapshot,
+            saved_macro_catalog,
             import_account,
             import_legacy,
             legacy_workspace,
