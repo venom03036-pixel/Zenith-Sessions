@@ -56,4 +56,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .account-inspector section > button { margin-top: .5rem; }
 .friends-list li { display: grid; gap: .1rem; padding: .4rem; }
 .friends-list li span { color: var(--muted); }
+.window-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .75rem; }
 @media (max-width: 950px) { .accounts-workspace.with-inspector { grid-template-columns: minmax(0, 1fr); } }

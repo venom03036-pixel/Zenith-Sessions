@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust desktop window tiling (1.06)
+
+**PROD-UI-05, PROD-CORE-08.** The Windows page focuses and tiles confirmed owned Roblox windows. The worker pins each selected attempt and native window identity, checks the work area and native minimum sizes, and records per-window placement readback. Native Windows fixture tests confirmed a remote custom minimum, two non-overlapping placements, and an unchanged unrelated window. Planner and controller tests cover odd dimensions, negative monitor coordinates, minimum-size rejection, and stale or duplicate attempts. Live Roblox, mixed-DPI placement, preview capture, and rendered interaction remain pending. See the [desktop Windows trial](RUST-DESKTOP-PREVIEW.md#preview-106-desktop-windows).
+
 ## Rust account inspector and automatic sign-in (1.05)
 
 **CHAT-22, VA-04-02, VA-04-03, CAP-03-01.** The owner requested that completing official sign-in save and close automatically. The Rust preview verifies the first-party landing and authenticated Roblox identity, persists with DPAPI, then closes the attempt. The same protected profile is retained on renewal. The Accounts inspector adds verified-ID headshots, public profile and favorites, and selected-account Robux and paginated friends. Public transport and synthetic account/authentication checks passed. Real private reads and browser auto-save remain attended checks. See the [account details procedure](RUST-DESKTOP-PREVIEW.md#preview-105-account-details).

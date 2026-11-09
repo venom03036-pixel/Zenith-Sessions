@@ -22,6 +22,14 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile. The isolated import path does not replace complete migration of groups, notes, settings, macro assignments, or password-protected records.
 
+## Preview 1.06 desktop windows
+
+Open **Windows** to see the active sessions. **Focus Roblox** brings forward a confirmed client's window when Windows permits it. **Tile confirmed windows** lays out the confirmed clients in launch order on the monitor containing Zenith. Zenith uses that monitor's work area, checks each window's minimum size, and reports placement only after reading back the requested bounds. Restore maximized or minimized windows and leave fullscreen before tiling. If the work area cannot fit the minimum sizes, the entire layout is refused. [Microsoft's work area guidance](https://learn.microsoft.com/en-us/windows/win32/gdi/positioning-objects-on-multiple-display-monitors), [minimum window size message](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-getminmaxinfo)
+
+For the attended trial, launch two designated clients and confirm both arrivals. Put each Roblox window in restored windowed mode. Place Zenith on the desired monitor, select **Tile confirmed windows**, and compare the two bounds and per-account results. Verify that an unrelated window stays where it was. Repeat with Zenith on a monitor at a different scale if available. Maximize one client and confirm the operation refuses the layout, then restore and retry. Use each Focus button to check that the corresponding account comes forward. Live Roblox window placement, mixed-DPI placement, and rendered interaction are pending.
+
+The 1.06 executable has SHA-256 `4542AF1B00C6D6F981CEB80B27B94671D8ECDD9B6880A1B7010B4BCEE84ACE1E`. Thirty-one offline Rust tests passed, including two native fixture processes and an unrelated fixture window. Formatting, Clippy with warnings denied, the frontend build, and the Release build passed. Both packaged self-check runs passed all five stages.
+
 ## Preview 1.05 account details
 
 Select a username or headshot in **Accounts**. The inspector shows the Roblox display name, username, ID, join date, and profile description. It lists public favorite games and pages through the selected account's friends. Selecting a favorite opens Sessions with that account and game selected. Robux and friends use the selected profile's verified saved sign-in. If Roblox hides a listing or refuses a request, the affected section shows the response separately. A returned balance of zero is displayed as zero.

@@ -15,6 +15,7 @@ fn main() {
             "stop_session",
             "stop_all_sessions",
             "focus_session",
+            "tile_windows",
             "begin_sign_in",
             "finish_sign_in",
             "cancel_sign_in",

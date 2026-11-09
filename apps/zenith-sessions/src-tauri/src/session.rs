@@ -10,8 +10,8 @@ use zenith_session_launch::{
     evidence::Observed,
     target::{Target, new_tracker, player_uri},
     windows::{
-        OwnedPlayer, PairLease, ProcessIdentity, SavedIdentity, VerifiedPlayer,
-        ensure_compatible_player_start, memory_sample,
+        OwnedPlayer, PairLease, Placement, ProcessIdentity, SavedIdentity, VerifiedPlayer,
+        ensure_compatible_player_start, memory_sample, tile_owned_players,
     },
 };
 
@@ -96,6 +96,13 @@ pub struct LaunchState {
     active: usize,
     pair_enabled: bool,
     hold: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WindowPlacement {
+    attempt_id: Uuid,
+    placement: Placement,
 }
 
 #[derive(Default)]
@@ -314,6 +321,48 @@ impl SessionOwner {
 
     pub fn focus(&self, id: Uuid) -> Result<(), String> {
         self.attempt(id)?.focus()
+    }
+
+    pub fn tile_windows(
+        &self,
+        ids: &[Uuid],
+        anchor: isize,
+        cancelled: impl Fn() -> bool,
+    ) -> Result<Vec<WindowPlacement>, String> {
+        if self.closing || cancelled() {
+            return Err("Zenith is closing.".into());
+        }
+        let targets: Vec<_> = self
+            .attempts
+            .iter()
+            .filter(|attempt| ids.contains(&attempt.row.attempt_id))
+            .collect();
+        if ids.is_empty() || targets.len() != ids.len() {
+            return Err("The selected sessions changed. Refresh and try again.".into());
+        }
+        let players: Option<Vec<_>> = targets
+            .iter()
+            .map(|attempt| {
+                if attempt.row.phase == Phase::Running {
+                    attempt.player.as_ref()
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let placements = tile_owned_players(
+            anchor,
+            &players.ok_or("Only confirmed owned Roblox windows can be tiled.")?,
+            cancelled,
+        )?;
+        Ok(targets
+            .into_iter()
+            .zip(placements)
+            .map(|(attempt, placement)| WindowPlacement {
+                attempt_id: attempt.row.attempt_id,
+                placement,
+            })
+            .collect())
     }
 
     pub fn uses(&self, id: Uuid) -> bool {
@@ -584,6 +633,30 @@ fn gib(bytes: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrangement_rejects_unknown_duplicate_and_unconfirmed_attempts() {
+        let mut owner = SessionOwner::default();
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            username: "Fixture".into(),
+            user_id: 42,
+        };
+        let mut attempt = Attempt::new(
+            &account,
+            &Target {
+                place: 1818,
+                job: None,
+            },
+            None,
+        );
+        attempt.row.phase = Phase::Unconfirmed;
+        let id = attempt.row.attempt_id;
+        owner.attempts.push(attempt);
+        assert!(owner.tile_windows(&[Uuid::new_v4()], 0, || false).is_err());
+        assert!(owner.tile_windows(&[id, id], 0, || false).is_err());
+        assert!(owner.tile_windows(&[id], 0, || false).is_err());
+    }
 
     #[test]
     fn a_different_server_at_the_same_place_cannot_confirm_arrival() {

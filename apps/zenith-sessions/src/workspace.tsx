@@ -23,9 +23,26 @@ type Snapshot = {
   signInAttempt: string | null; signInError: string | null;
   savedSignIn: { attempt: string; profileId: string } | null;
 };
-type Page = 'Overview' | 'Accounts' | 'Sessions';
+type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows';
+type WindowPlacement = {
+  attemptId: string;
+  placement: 'placed' | 'changed' | 'rejected' | 'unconfirmed' | 'cancelled';
+};
 
-const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'window']];
+const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window']];
+const pageDescription: Record<Page, string> = {
+  Overview: 'Review your local workspace and launch capacity.',
+  Accounts: 'Manage your saved Roblox sign-ins.',
+  Sessions: 'Choose a saved account and a Roblox place.',
+  Windows: 'Focus or arrange your confirmed Roblox client windows.',
+};
+const placementLabel: Record<WindowPlacement['placement'], string> = {
+  placed: 'Position confirmed',
+  changed: 'The window or monitor changed',
+  rejected: 'Windows rejected the move',
+  unconfirmed: 'The requested bounds could not be confirmed',
+  cancelled: 'Move cancelled',
+};
 const themes = [
   ['graphite-mint', 'Graphite Mint'], ['midnight', 'Midnight'], ['amber-night', 'Amber Night'],
   ['ocean-blue', 'Ocean Blue'], ['violet-dusk', 'Violet Dusk'], ['light', 'Light'], ['follow-windows', 'Follow Windows'],
@@ -80,6 +97,8 @@ function App() {
   const [pairRequested, setPairRequested] = useState(false);
   const [importing, setImporting] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
+  const [arranging, setArranging] = useState(false);
+  const [placements, setPlacements] = useState<WindowPlacement[]>([]);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [remove, setRemove] = useState<Account | null>(null);
@@ -92,6 +111,8 @@ function App() {
   const inspected = accounts.find(value => value.profileId === selected);
   const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
   const sessions = snapshot?.sessions ?? [];
+  const confirmedWindows = sessions.filter(session => session.phase === 'running');
+  const windowRows = sessions.filter(session => isBusy(session) || placements.some(result => result.attemptId === session.attemptId));
   const launchState = snapshot?.launch;
   const active = launchState?.active ?? 0;
   const pairEnabled = active > 0 ? launchState?.pairEnabled === true : pairRequested;
@@ -216,6 +237,23 @@ function App() {
     setPage('Sessions');
   }
 
+  async function tileWindows() {
+    if (!confirmedWindows.length || arranging) return;
+    setArranging(true);
+    setPlacements([]);
+    setFailure('');
+    try {
+      setPlacements(await invoke<WindowPlacement[]>('tile_windows', {
+        attempts: confirmedWindows.map(session => session.attemptId),
+      }));
+    } catch (error) {
+      setFailure(typeof error === 'string' ? error : 'Could not arrange the confirmed windows.');
+    } finally {
+      setArranging(false);
+      void refresh();
+    }
+  }
+
   return <main className="app-shell" data-theme={theme}>
     <header className="topbar">
       <div className="brand-zone">
@@ -241,7 +279,7 @@ function App() {
         }}>{themes.map(([id, label]) => <option key={id} value={id}>{label}</option>)}</select></label>
       </section>}
       <div className="page-heading">
-        <div><h1>{page}</h1><p>{page === 'Accounts' ? 'Manage your saved Roblox sign-ins.' : page === 'Sessions' ? 'Choose a saved account and a Roblox place.' : 'Review your local workspace and launch capacity.'}</p></div>
+        <div><h1>{page}</h1><p>{pageDescription[page]}</p></div>
         {page === 'Accounts' && <div className="heading-actions">
           <button className="secondary-button" disabled={importing} onClick={() => file.current?.click()}>{importing ? 'Importing…' : 'Import saved sign-in'}</button>
           <button className="primary-button" disabled={signInBusy || !!signInAttempt} onClick={() => void beginSignIn()}><Icon name="plus" size={16}/> Add account</button>
@@ -328,6 +366,28 @@ function App() {
           </div>}
         </section>)}
         <Memory admission={admission}/>
+      </>}
+      {page === 'Windows' && <>
+        <section className="account-panel preview-panel">
+          <h2>Desktop layout</h2>
+          <p>Tile confirmed windows on the monitor containing Zenith. Use restored, resizable Roblox windows.</p>
+          <button className="primary-button" disabled={arranging || !confirmedWindows.length} onClick={() => void tileWindows()}>
+            <Icon name="grid" size={16}/>{arranging ? 'Arranging…' : 'Tile confirmed windows'}
+          </button>
+          {!confirmedWindows.length && <p>No Roblox windows are confirmed yet.</p>}
+        </section>
+        {windowRows.length > 0 && <section className="window-cards" aria-label="Roblox windows">
+          {windowRows.map(session => {
+            const result = placements.find(value => value.attemptId === session.attemptId);
+            return <article key={session.attemptId} className="account-panel preview-panel session-status">
+              <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
+              {session.pid && <p>PID {session.pid} · Place {session.placeId}</p>}
+              {session.phase === 'running' && <button className="secondary-button" disabled={arranging}
+                onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
+              {result && <p role="status">{placementLabel[result.placement]}</p>}
+            </article>;
+          })}
+        </section>}
       </>}
     </section>
     {remove && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="remove-heading">

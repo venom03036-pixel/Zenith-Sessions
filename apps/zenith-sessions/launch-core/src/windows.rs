@@ -1,6 +1,8 @@
+mod arrange;
 mod pair_lease;
 mod publisher;
 
+pub use arrange::{Placement, tile_owned_players};
 pub use pair_lease::PairLease;
 
 use std::{
@@ -508,10 +510,15 @@ impl OwnedPlayer {
     }
 
     fn window(&self) -> Option<HWND> {
+        self.find_window(false)
+    }
+
+    fn find_window(&self, layout_only: bool) -> Option<HWND> {
         let identity = self.identity?;
         let mut search = WindowSearch {
             pid: identity.pid,
             found: None,
+            layout_only,
         };
         // SAFETY: enumeration is synchronous. The callback borrows this stack value only during the call.
         let _ = unsafe { EnumWindows(Some(window_callback), LPARAM((&raw mut search) as isize)) };
@@ -572,6 +579,7 @@ fn process_identity_from_handle(handle: HANDLE, pid: u32) -> Option<ProcessIdent
 struct WindowSearch {
     pid: u32,
     found: Option<HWND>,
+    layout_only: bool,
 }
 
 unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
@@ -583,9 +591,14 @@ unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
         if pid == search.pid
             && IsWindowVisible(window).as_bool()
             && GetWindow(window, GW_OWNER).is_err()
+            && (!search.layout_only || arrange::normal_window(window))
         {
+            if search.found.is_some() {
+                search.found = None;
+                return BOOL(0);
+            }
             search.found = Some(window);
         }
     }
-    BOOL::from(search.found.is_none())
+    BOOL::from(search.layout_only || search.found.is_none())
 }

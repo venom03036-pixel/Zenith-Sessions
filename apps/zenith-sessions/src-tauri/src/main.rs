@@ -18,8 +18,8 @@ use std::{
 
 use library::Library;
 use serde::Serialize;
-use session::{LaunchState, Session, SessionOwner};
-use tauri::{Manager, State, WindowEvent, async_runtime::spawn_blocking};
+use session::{LaunchState, Session, SessionOwner, WindowPlacement};
+use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
@@ -300,6 +300,33 @@ fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), 
     owner.focus(attempt)
 }
 
+#[tauri::command]
+async fn tile_windows(
+    app: AppHandle,
+    state: State<'_, Arc<Workspace>>,
+    attempts: Vec<Uuid>,
+) -> Result<Vec<WindowPlacement>, String> {
+    if attempts.is_empty() || attempts.len() > 16 {
+        return Err("Select between one and sixteen confirmed windows.".into());
+    }
+    let anchor = app
+        .get_webview_window("main")
+        .ok_or("The Zenith window is unavailable.")?
+        .hwnd()
+        .map_err(|_| "The Zenith window is unavailable.")?
+        .0 as isize;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .tile_windows(&attempts, anchor, || state.exiting.load(Ordering::Acquire))
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
 fn main() -> ExitCode {
     let context = tauri::generate_context!();
     if std::env::args_os()
@@ -367,6 +394,7 @@ fn main() -> ExitCode {
             stop_session,
             stop_all_sessions,
             focus_session,
+            tile_windows,
             sign_in::begin_sign_in,
             sign_in::finish_sign_in,
             sign_in::cancel_sign_in
