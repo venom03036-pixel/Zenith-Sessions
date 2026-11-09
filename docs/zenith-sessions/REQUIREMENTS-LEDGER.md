@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust normal close and exact force stop (1.27)
+
+**CAP-11-03, CAP-13-04, PROD-CORE-06, PROD-UI-05.** Sessions posts one identity-checked close request to the owned window and confirms process exit through the existing monitor. A five-second grace period restores the prior phase if the client is alive. Requesting close disarms automatic restart for that attempt. Separate per-client force confirmation binds the exact attempt. Native fixture, lifecycle and browser tests passed. Configurable and bulk normal-close policies and the Roblox leave-prompt trial remain open. [Preview 1.27](RUST-DESKTOP-PREVIEW.md#preview-127-normal-close-and-exact-force-stop)
+
 ## Rust per-client minimize and restore (1.26)
 
 **CAP-11-03, CAP-13-04, PROD-UI-05.** Windows exposes bounded minimize and restore on a confirmed owned client. The native path rechecks the exact process and window, requires observed state, and rejects revoked requests, ambiguous targets and stale attempts. The browser checks foreground-playback gating and readback feedback. The native cross-process fixture passed. Bulk visibility changes and the attended Roblox window trial remain open. [Preview 1.26](RUST-DESKTOP-PREVIEW.md#preview-126-minimize-and-restore-owned-windows)

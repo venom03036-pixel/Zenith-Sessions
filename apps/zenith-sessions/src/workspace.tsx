@@ -14,7 +14,7 @@ import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
 import './workspace.css';
 
-type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'retry_waiting' | 'stopping' | 'stopped' | 'failed';
+type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'retry_waiting' | 'closing' | 'stopping' | 'stopped' | 'failed';
 type Session = {
   attemptId: string; accountId: string; username: string; placeId: string;
   phase: Phase; pid: number | null; requestedServer: string | null; observedServer: string | null; detail: string | null;
@@ -67,11 +67,12 @@ const themes = [
 ] as const;
 const phaseLabel: Record<Phase, string> = {
   preparing: 'Preparing', starting: 'Starting Roblox', running: 'Arrival confirmed',
-  unconfirmed: 'Running · unconfirmed', retry_waiting: 'Restart waiting', stopping: 'Stopping', stopped: 'Stopped', failed: 'Launch failed',
+  unconfirmed: 'Running · unconfirmed', retry_waiting: 'Restart waiting', closing: 'Close requested',
+  stopping: 'Stopping', stopped: 'Stopped', failed: 'Launch failed',
 };
 const phaseTone: Record<Phase, string> = {
   preparing: 'launching', starting: 'launching', running: 'online',
-  unconfirmed: 'attention', retry_waiting: 'attention', stopping: 'launching', stopped: 'idle', failed: 'attention',
+  unconfirmed: 'attention', retry_waiting: 'attention', closing: 'launching', stopping: 'launching', stopped: 'idle', failed: 'attention',
 };
 const holds: Record<NonNullable<Admission['limitingResource']>, string> = {
   stale: 'The memory reading expired.', invalid: 'Windows reported an invalid memory reading.',
@@ -132,6 +133,8 @@ function App() {
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [headshotNotice, setHeadshotNotice] = useState('');
   const [remove, setRemove] = useState<Account | null>(null);
+  const [closePending, setClosePending] = useState(false);
+  const [forceStop, setForceStop] = useState<string | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
   const reading = useRef(false);
@@ -362,6 +365,13 @@ function App() {
     } finally { setChangingWindow(false); }
   }
 
+  async function closeClient(attempt: string) {
+    if (closePending || foregroundBusy || panic?.held) return;
+    setClosePending(true);
+    try { await act('close_session', { attempt }); }
+    finally { setClosePending(false); }
+  }
+
   return <main className="app-shell" data-theme={theme}>
     <header className="topbar">
       <div className="brand-zone">
@@ -510,7 +520,7 @@ function App() {
         </section>
         {active > 0 && <section className="account-panel preview-panel row-actions" aria-label="Session controls">
           <button className="secondary-button" onClick={() => void act('stop_all_sessions', {})}>
-            {sessions.some(session => session.phase === 'retry_waiting') ? 'Stop all and cancel restarts' : 'Stop all owned clients'}
+            {sessions.some(session => session.phase === 'retry_waiting') ? 'Force stop all and cancel restarts' : 'Force stop all owned clients'}
           </button>
         </section>}
         {sessions.map(session => <section key={session.attemptId} className="account-panel preview-panel session-status" aria-label={`${session.username} session`}>
@@ -519,14 +529,28 @@ function App() {
           {session.automaticRestart && <p>Automatic restart {session.automaticRestart} of 2</p>}
           {session.requestedServer && <p>Requested server {session.requestedServer}</p>}
           {session.privateServer && <p>Requested destination · Private invite</p>}
-          {session.detail && <p>{session.detail}</p>}
+          {session.detail && <p role="status">{session.detail}</p>}
           {session.observedServer && <p>{session.privateServer ? 'Observed server job' : 'Confirmed initial server'} {session.observedServer}</p>}
-          {isBusy(session) && <div className="row-actions">
-            {session.phase === 'running' && <button className="secondary-button" onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
-            <button className="secondary-button" disabled={session.phase === 'stopping'} onClick={() => void act('stop_session', { attempt: session.attemptId })}>
-              {session.phase === 'retry_waiting' ? 'Cancel restart' : session.phase === 'preparing' ? 'Cancel launch' : 'Stop Roblox'}
-            </button>
+          {isBusy(session) && session.phase !== 'stopping' && <div className="row-actions window-actions">
+            {(session.phase === 'running' || session.phase === 'closing') && <button className="secondary-button" disabled={panic?.held}
+              onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
+            {(session.phase === 'running' || session.phase === 'unconfirmed') && <button className="secondary-button"
+              disabled={closePending || foregroundBusy || panic?.held} onClick={() => void closeClient(session.attemptId)}>Close Roblox</button>}
+            {(session.phase === 'preparing' || session.phase === 'retry_waiting') &&
+              <button className="secondary-button" onClick={() => void act('stop_session', { attempt: session.attemptId })}>
+                {session.phase === 'retry_waiting' ? 'Cancel restart' : 'Cancel launch'}
+              </button>}
+            {session.pid && <button className="secondary-button" onClick={() => setForceStop(session.attemptId)}>Force stop Roblox</button>}
           </div>}
+          {isBusy(session) && session.pid && session.phase !== 'stopping' && forceStop === session.attemptId &&
+            <section className="inline-alert" role="dialog" aria-label={`Force stop ${session.username}`}
+              onKeyDown={event => { if (event.key === 'Escape') setForceStop(null); }}>
+              <p>Force stop {session.username}? This ends the Roblox process immediately.</p>
+              <div className="row-actions">
+                <button className="secondary-button" autoFocus onClick={() => setForceStop(null)}>Cancel</button>
+                <button className="primary-button" onClick={() => { setForceStop(null); void act('force_stop_session', { attempt: session.attemptId }); }}>Force stop</button>
+              </div>
+            </section>}
         </section>)}
         <Memory admission={admission}/>
       </>}

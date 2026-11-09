@@ -76,6 +76,16 @@ impl Attempt {
         self.observation = None;
         self.row.pid = None;
         self.exit_status = code;
+        if self.close_request.take().is_some() {
+            self.row.phase = Phase::Stopped;
+            self.row.detail = Some(match code {
+                Some(0) | None => "Roblox exited after the close request.".into(),
+                Some(code) => {
+                    format!("Roblox exited after the close request with status 0x{code:08X}.")
+                }
+            });
+            return;
+        }
         let arrived = self.row.phase == Phase::Running;
         self.row.phase = if self.row.phase == Phase::Starting {
             Phase::Failed
@@ -262,6 +272,60 @@ mod tests {
     }
 
     #[test]
+    fn a_normal_close_reports_exit_or_restores_the_previous_phase_without_restarting() {
+        let mut owner = SessionOwner::default();
+        let now = Instant::now();
+        let exited = owned_attempt(&mut owner, Phase::Running, true);
+        let attempt = owner.attempt_mut(exited).unwrap();
+        attempt.begin_close(now);
+        attempt.check_close_grace(now + Duration::from_secs(4));
+        assert!(attempt.row.phase == Phase::Closing);
+        assert!(attempt.active());
+        attempt.record_exit(Some(0), now);
+        assert!(attempt.row.phase == Phase::Stopped);
+        assert!(
+            attempt
+                .row
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("after the close request")
+        );
+        assert!(attempt.close_request.is_none());
+
+        let ignored = owned_attempt(&mut owner, Phase::Running, true);
+        let attempt = owner.attempt_mut(ignored).unwrap();
+        attempt.begin_close(now);
+        attempt.check_close_grace(now + Duration::from_secs(5));
+        assert!(attempt.row.phase == Phase::Running);
+        assert!(
+            attempt
+                .row
+                .detail
+                .as_deref()
+                .unwrap()
+                .contains("still running")
+        );
+        assert!(attempt.recovery.policy.is_none());
+        attempt.record_exit(Some(ACCESS_VIOLATION), now);
+        assert!(
+            owner
+                .retry_candidate(now + Duration::from_secs(60))
+                .is_none()
+        );
+
+        let unconfirmed = owned_attempt(&mut owner, Phase::Unconfirmed, false);
+        let attempt = owner.attempt_mut(unconfirmed).unwrap();
+        attempt.begin_close(now);
+        attempt.check_close_grace(now + Duration::from_secs(5));
+        assert!(attempt.row.phase == Phase::Unconfirmed);
+        attempt.begin_close(now);
+        owner.stop_all(false).unwrap();
+        let attempt = owner.attempt(unconfirmed).unwrap();
+        assert!(attempt.row.phase == Phase::Stopped && attempt.close_request.is_none());
+    }
+
+    #[test]
     fn backoff_doubles_then_the_breaker_requires_a_new_manual_launch() {
         let now = Instant::now();
         let mut owner = SessionOwner::default();
@@ -332,7 +396,9 @@ mod tests {
         attempt.preparing = true;
         attempt.recovery.policy = retry.policy.replacement(first);
         assert_eq!(owner.stop_target(first), replacement);
-        owner.stop(first).unwrap();
+        assert!(owner.force_stop(first).is_err());
+        assert!(owner.permits(replacement));
+        owner.cancel_pending(first).unwrap();
         assert!(!owner.permits(replacement));
         owner.attempts.clear();
         let manual = owned_attempt(&mut owner, Phase::Running, false);

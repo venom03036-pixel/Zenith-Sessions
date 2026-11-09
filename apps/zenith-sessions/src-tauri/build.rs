@@ -31,6 +31,8 @@ fn main() {
             "dismiss_recovered_launch",
             "archive_launch_journal",
             "stop_session",
+            "close_session",
+            "force_stop_session",
             "stop_all_sessions",
             "panic_stop",
             "resume_launches",

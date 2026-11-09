@@ -18,6 +18,8 @@ function exerciseWorkspace() {
   let launchedTarget;
   let sessionRows = [];
   let stoppedRecovery;
+  let closeRequests = 0;
+  let forcedAttempt;
   let reportAttempts = 0;
   let efficiencyChanges = 0;
   const windowChanges = [];
@@ -143,6 +145,16 @@ function exerciseWorkspace() {
           if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale launch permit.');
           launchedEpoch = epoch;
           launchedTarget = args;
+          return;
+        case 'close_session':
+          if (args.attempt !== 'close-fixture') throw new Error('Normal close targeted the wrong attempt.');
+          closeRequests++;
+          sessionRows = sessionRows.map(row => ({ ...row, phase: 'closing', detail: 'Close requested. Waiting for Roblox to exit.' }));
+          return;
+        case 'force_stop_session':
+          if (args.attempt !== 'close-fixture') throw new Error('Force stop targeted the wrong attempt.');
+          forcedAttempt = args.attempt;
+          sessionRows = [];
           return;
         case 'stop_session':
           stoppedRecovery = args.attempt;
@@ -467,6 +479,33 @@ function exerciseWorkspace() {
         await until(() => !button('Minimize Roblox') && !button('Restore Roblox'), 'an unconfirmed attempt offered window actions');
       } finally {
         macroPlayback = null;
+        sessionRows = [];
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('normal close waits for exit and force stop requires separate confirmation', async () => {
+      const card = () => find('[aria-label="Fixture6 session"]');
+      const button = (root, label) => [...(root()?.querySelectorAll('button') ?? [])].find(element => element.textContent.trim() === label);
+      const dialog = () => find('[role="dialog"]');
+      sessionRows = [{ attemptId: 'close-fixture', accountId: 'fixture-6', username: 'Fixture6', placeId: '1819',
+        phase: 'running', pid: 1778, requestedServer: null, observedServer: null, privateServer: false }];
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => card()?.textContent.includes('PID 1778') && button(card, 'Close Roblox')?.disabled === false,
+          'the owned session has no normal close action');
+        button(card, 'Close Roblox').click();
+        await until(() => card()?.textContent.includes('Waiting for Roblox to exit'), 'normal close was presented as an exit');
+        if (button(card, 'Close Roblox') || closeRequests !== 1 || forcedAttempt) throw new Error('normal close could force or repeat');
+        button(card, 'Force stop Roblox').click();
+        await until(() => dialog()?.textContent.includes('Fixture6'), 'force stop did not show its target for confirmation');
+        button(dialog, 'Cancel').click();
+        await until(() => !dialog(), 'cancel did not dismiss confirmation');
+        if (forcedAttempt) throw new Error('cancelled confirmation terminated the client');
+        button(card, 'Force stop Roblox').click();
+        await until(() => button(dialog, 'Force stop'), 'force stop confirmation was unavailable');
+        button(dialog, 'Force stop').click();
+        await until(() => forcedAttempt === 'close-fixture', 'force stop did not target the exact session');
+      } finally {
         sessionRows = [];
         find('button[aria-label="Accounts"]').click();
       }

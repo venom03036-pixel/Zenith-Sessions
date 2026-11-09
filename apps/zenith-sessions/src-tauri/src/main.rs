@@ -838,15 +838,45 @@ async fn archive_launch_journal(state: State<'_, Arc<Workspace>>) -> Result<(), 
 
 #[tauri::command]
 async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
-    state.macro_playback.cancel_for(Some(attempt));
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .cancel_pending(attempt)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn close_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
+    let epoch = state.panic.permit()?;
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        let target = owner.stop_target(attempt);
-        if target != attempt {
-            state.macro_playback.cancel_for(Some(target));
+        if state.macro_playback.is_active() {
+            return Err(
+                "Finish foreground macro playback before requesting a normal close.".into(),
+            );
         }
-        owner.stop(attempt)
+        owner.request_close(attempt, || state.can_dispatch(epoch))
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn force_stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
+    state.macro_playback.cancel_for(Some(attempt));
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .force_stop(attempt)
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -1129,6 +1159,8 @@ fn main() -> ExitCode {
             dismiss_recovered_launch,
             archive_launch_journal,
             stop_session,
+            close_session,
+            force_stop_session,
             stop_all_sessions,
             panic_stop,
             resume_launches,

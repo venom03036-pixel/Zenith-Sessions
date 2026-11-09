@@ -34,6 +34,7 @@ pub enum Phase {
     Running,
     Unconfirmed,
     RetryWaiting,
+    Closing,
     Stopping,
     Stopped,
     Failed,
@@ -456,11 +457,50 @@ impl SessionOwner {
     }
 
     pub fn stop(&mut self, id: Uuid) -> Result<(), String> {
+        self.stop_exact(self.stop_target(id))
+    }
+
+    pub fn cancel_pending(&mut self, id: Uuid) -> Result<(), String> {
         let target = self.stop_target(id);
-        let result = self.attempt_mut(target)?.stop();
+        if !matches!(
+            self.attempt(target)?.row.phase,
+            Phase::Preparing | Phase::RetryWaiting
+        ) {
+            return Err("This launch request changed. Refresh the session before acting.".into());
+        }
+        self.stop_exact(target)
+    }
+
+    pub fn force_stop(&mut self, id: Uuid) -> Result<(), String> {
+        let attempt = self.attempt(id)?;
+        if !attempt.active() || attempt.player.is_none() {
+            return Err("The selected client has already exited or changed.".into());
+        }
+        self.stop_exact(id)
+    }
+
+    fn stop_exact(&mut self, id: Uuid) -> Result<(), String> {
+        let result = self.attempt_mut(id)?.stop();
         self.release_idle_pair();
         let saved = self.sync_journal();
         result.and(saved)
+    }
+
+    pub fn request_close(&mut self, id: Uuid, permitted: impl Fn() -> bool) -> Result<(), String> {
+        if self.closing {
+            return Err("Zenith is closing.".into());
+        }
+        let attempt = self.attempt_mut(id)?;
+        if !matches!(attempt.row.phase, Phase::Running | Phase::Unconfirmed) {
+            return Err("The selected client is not ready for a normal close.".into());
+        }
+        attempt
+            .player
+            .as_ref()
+            .ok_or("The owned Roblox process is unavailable.")?
+            .request_window_close(permitted)?;
+        attempt.begin_close(Instant::now());
+        Ok(())
     }
 
     pub fn stop_all(&mut self, closing: bool) -> Result<(), String> {
@@ -744,8 +784,14 @@ struct Attempt {
     dispatching: bool,
     cancelled: bool,
     recovery: Recovery,
+    close_request: Option<CloseRequest>,
     failure_stage: Option<FailureStage>,
     exit_status: Option<u32>,
+}
+
+struct CloseRequest {
+    previous: Phase,
+    until: Instant,
 }
 
 impl Attempt {
@@ -800,6 +846,7 @@ impl Attempt {
             dispatching: false,
             cancelled: false,
             recovery: Recovery::default(),
+            close_request: None,
             failure_stage: None,
             exit_status: None,
         }
@@ -875,6 +922,10 @@ impl Attempt {
             }
             Ok(None) => (),
         }
+        if self.close_request.is_some() {
+            self.check_close_grace(now);
+            return;
+        }
         let Some((observation, facts)) = evidence.filter(|(observation, _)| {
             row.attempt_id == observation.attempt && row.phase == Phase::Starting
         }) else {
@@ -932,6 +983,7 @@ impl Attempt {
             return Ok(());
         }
         self.cancelled = true;
+        self.close_request = None;
         self.observation = None;
         self.recovery.clear_wait();
         let row = &mut self.row;
@@ -949,12 +1001,13 @@ impl Attempt {
         }
         self.player = None;
         row.phase = Phase::Stopped;
+        row.pid = None;
         row.detail = None;
         Ok(())
     }
 
     fn focus(&self) -> Result<(), String> {
-        if self.row.phase != Phase::Running {
+        if !matches!(self.row.phase, Phase::Running | Phase::Closing) {
             return Err("The account's Roblox window has not been confirmed".into());
         }
         self.player
@@ -962,6 +1015,29 @@ impl Attempt {
             .ok_or("The owned Roblox process is unavailable")?
             .focus()
             .map_err(str::to_owned)
+    }
+
+    fn begin_close(&mut self, now: Instant) {
+        self.close_request = Some(CloseRequest {
+            previous: self.row.phase,
+            until: now + Duration::from_secs(5),
+        });
+        self.observation = None;
+        self.recovery = Recovery::default();
+        self.row.phase = Phase::Closing;
+        self.row.detail = Some("Close requested. Waiting for Roblox to exit.".into());
+    }
+
+    fn check_close_grace(&mut self, now: Instant) {
+        if let Some(request) = &self.close_request
+            && now >= request.until
+        {
+            self.row.phase = request.previous;
+            self.close_request = None;
+            self.row.detail = Some(
+                "Roblox is still running. Confirm any leave prompt in Roblox, request close again, or choose Force stop Roblox. Automatic restart is off for this session.".into()
+            );
+        }
     }
 }
 

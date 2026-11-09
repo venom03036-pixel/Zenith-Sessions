@@ -22,6 +22,18 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.27 normal close and exact force stop
+
+In **Sessions**, choose **Close Roblox** for a running client Zenith owns. The action requires one visible top-level window and rechecks its handle, thread, process ID and process creation time before posting one normal Windows close request. The card shows **Close requested** until Zenith observes the owned process exit or five seconds elapse. A Roblox leave prompt is handled in Roblox. [Windows close message](https://learn.microsoft.com/en-us/windows/win32/winmsg/wm-close)
+
+If the process remains alive, the card returns to its previous running state and explains how to continue. Requesting close disarms automatic restart for that attempt, including if it exits after the grace period. **Force stop Roblox** asks for separate confirmation and uses the exact attempt displayed in the confirmation. An older confirmation cannot follow a recovery chain into a replacement client. Panic and bulk force stop remain immediate. Foreground macro playback must finish before requesting normal close.
+
+The browser regression covers the close request, waiting feedback, and both outcomes of force-stop confirmation. Native fixtures verify that one window exits normally, a different process stays alive, and a stalled process survives a normal close request. Controller tests cover grace expiry, restart suppression, stale force-stop confirmation and bulk cleanup.
+
+For an attended trial, start a designated client, arm fatal-exit recovery, and choose **Close Roblox**. If Roblox shows a leave prompt, let the grace period elapse once and check that the card still reports a running client. Confirm the prompt in Roblox and verify that the process exits without a replacement. In a separate run, cancel the **Force stop Roblox** confirmation, verify the client remains active, then repeat and confirm. If two clients are available, check that only the named client exits. Real Roblox close and leave-prompt behavior remain unverified.
+
+The 1.27 executable has SHA-256 `866F399CF97BF176193D2A39B13564329A1A7FFBB98110F09CE65DCD71C55F0A`. Eighty offline Rust tests, twenty browser checks against the Release assets, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both runs of the staged executable passed all seven self-check stages.
+
 ## Preview 1.26 minimize and restore owned windows
 
 After a client reaches **Arrival confirmed**, open **Windows** and use **Minimize Roblox** or **Restore Roblox** on that client's card. The preview finds one visible top-level window for the owned process and checks the window handle, thread, process ID, and process creation time. It sends the standard window command with a 300 ms timeout on a worker. Confirmation requires a Windows readback of the same window. Foreground macro playback and Panic hold these controls. Restore brings a minimized window back according to Windows' placement rules. [Windows system commands](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-syscommand), [Windows readback](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic)
@@ -177,7 +189,7 @@ The 1.12 executable has SHA-256 `04367C0149F944962C7162F1B7D9DB876F97C10D42C134F
 
 Panic immediately revokes old launch permits and holds new starts. It cancels preparation, discards late launch authentication results, prevents further launch authentication requests and retries, and asks the current owner to stop its client processes. A delayed Launch click still carries the previous state and is refused after Resume. An HTTP request already sent can finish within its existing timeout. If Windows has already entered process creation, Zenith stops the resulting owned process when it has the handle. Recovered and externally started clients stay outside that process-control boundary.
 
-**Resume launches** appears after the owned work finishes and cleanup succeeds. A newer Panic invalidates an older Resume action. If cleanup fails, the hold remains and the header button retries it. Resume permits a fresh launch selection. It does not replay an interrupted request. The Panic hold belongs to the current app run. The existing recovery journal governs unresolved starts after restart. The normal **Stop all owned clients** action remains available in Sessions.
+**Resume launches** appears after the owned work finishes and cleanup succeeds. A newer Panic invalidates an older Resume action. If cleanup fails, the hold remains and the header button retries it. Resume permits a fresh launch selection. It does not replay an interrupted request. The Panic hold belongs to the current app run. The existing recovery journal governs unresolved starts after restart. **Force stop all owned clients** remains available in Sessions.
 
 The Chromium fixture reproduced the missing header control in 1.10 and verified the hold and explicit resume in 1.11. Native tests register an alternate Windows shortcut, post a fixture message to its own native queue, verify the Panic fence and registration conflict, and verify release on shutdown. Separate fixtures check late preparation, stale Resume, and cancellation before a CSRF retry. No Roblox client or account was used in those checks.
 
@@ -279,12 +291,12 @@ The 1.03 executable has SHA-256 `6948202D1CF5F01CBC8FE31ED7F782F8C8DFF5E21D75EFE
 
 ## Preview 1.04 and the attended two-account trial
 
-The desktop has a two-account trial mode with per-account status, separate launch attempt IDs, confirmed-window Focus, per-session Stop, and Stop all owned clients. It admits one start at a time. Starting a second requires a different saved Roblox identity, a still-confirmed client, 20 seconds since the latest start, and standard memory headroom. The physical-memory override applies to the first start only. Unconfirmed clients hold admission. A pre-existing Roblox client, installer, or conflicting manager can prevent the trial from starting.
+The desktop has a two-account trial mode with per-account status, separate launch attempt IDs, confirmed-window Focus, and per-session close and force-stop controls. It admits one start at a time. Starting a second requires a different saved Roblox identity, a still-confirmed client, 20 seconds since the latest start, and standard memory headroom. The physical-memory override applies to the first start only. Unconfirmed clients hold admission. A pre-existing Roblox client, installer, or conflicting manager can prevent the trial from starting.
 
 1. Save both designated sign-ins through the official Roblox window or import the protected bundles. Close the older preview and any other Roblox clients and launchers.
 2. In **Sessions**, select **Enable two-account trial** before starting the first client. Select the first account and Anime Card Clash, place `110829983956014`. Start it and verify that Zenith reports **Arrival confirmed**.
 3. Once the stabilization message clears, select the second account and launch it. Record both confirmation results, distinct process IDs, time to arrival, and memory readings. Use each **Focus Roblox** control to verify that it brings forward the corresponding window.
-4. Stop one client and confirm the other remains in its session. Relaunch the stopped account when the gate clears. In another batch, cancel the second account during preparation and verify that only the first client remains. Use **Stop all owned clients** at the end.
+4. Close one client and confirm the other remains in its session. Relaunch the closed account when the gate clears. In another batch, cancel the second account during preparation and verify that only the first client remains. Use **Force stop all owned clients** at the end.
 5. Record five attended batches and note every failure. Manager restart with surviving clients requires a separate reconciliation implementation and trial.
 
 For a packaged check, run the 1.04 executable in PowerShell as follows. The process exits after checking its embedded frontend assets, WebView2, synthetic DPAPI round trip, Windows memory sampling, and the installed standard player's signature. It uses a synthetic profile in memory.

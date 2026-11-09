@@ -13,11 +13,11 @@ use windows::Win32::{
         },
         WindowsAndMessaging::{
             GA_ROOT, GW_OWNER, GWL_STYLE, GetAncestor, GetWindow, GetWindowLongW, GetWindowRect,
-            GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, MINMAXINFO, SC_MINIMIZE,
-            SC_RESTORE, SM_CXMINTRACK, SM_CYMINTRACK, SMTO_ABORTIFHUNG, SMTO_BLOCK,
-            SMTO_ERRORONEXIT, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-            SendMessageTimeoutW, SetWindowPos, WM_GETMINMAXINFO, WM_SYSCOMMAND, WS_POPUP,
-            WS_THICKFRAME,
+            GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, MINMAXINFO,
+            PostMessageW, SC_MINIMIZE, SC_RESTORE, SM_CXMINTRACK, SM_CYMINTRACK, SMTO_ABORTIFHUNG,
+            SMTO_BLOCK, SMTO_ERRORONEXIT, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER,
+            SWP_NOZORDER, SendMessageTimeoutW, SetWindowPos, WM_CLOSE, WM_GETMINMAXINFO,
+            WM_SYSCOMMAND, WS_POPUP, WS_THICKFRAME,
         },
     },
 };
@@ -43,6 +43,34 @@ pub enum WindowVisibility {
 }
 
 impl OwnedPlayer {
+    fn pinned_visible_window(&self) -> Result<PinnedWindow, &'static str> {
+        let handle = self
+            .find_matching_window(false, true)
+            .ok_or("This client needs one visible Roblox window.")?;
+        let process = self
+            .identity()
+            .ok_or("The owned Roblox process is unavailable.")?;
+        PinnedWindow::new(handle, process).ok_or("The owned Roblox window changed.")
+    }
+
+    pub fn request_window_close(&self, permitted: impl Fn() -> bool) -> Result<(), &'static str> {
+        const CANCELLED: &str = "Zenith stopped this close request.";
+        if !permitted() {
+            return Err(CANCELLED);
+        }
+        let target = self.pinned_visible_window()?;
+        if !target.visible() {
+            return Err("The owned Roblox window changed.");
+        }
+        if !permitted() {
+            return Err(CANCELLED);
+        }
+        // SAFETY: the HWND was revalidated against the owned process and window thread.
+        // WM_CLOSE carries no pointers. Posting it leaves confirmation to the client.
+        unsafe { PostMessageW(Some(target.handle), WM_CLOSE, WPARAM(0), LPARAM(0)) }
+            .map_err(|_| "Windows declined the Roblox close request.")
+    }
+
     pub fn set_window_visibility(
         &self,
         visibility: WindowVisibility,
@@ -53,10 +81,7 @@ impl OwnedPlayer {
         if !permitted() {
             return Err(CANCELLED);
         }
-        let handle = self
-            .find_matching_window(false, true)
-            .ok_or("This client needs one visible Roblox window.")?;
-        let target = PinnedWindow::new(handle, self.identity().ok_or(CHANGED)?).ok_or(CHANGED)?;
+        let target = self.pinned_visible_window()?;
         let minimize = matches!(visibility, WindowVisibility::Minimize);
         if target.minimized().ok_or(CHANGED)? == minimize {
             return permitted().then_some(()).ok_or(CANCELLED);
@@ -69,7 +94,7 @@ impl OwnedPlayer {
         // message with scalar arguments, sent from a worker with a bounded wait.
         let sent = unsafe {
             SendMessageTimeoutW(
-                handle,
+                target.handle,
                 WM_SYSCOMMAND,
                 WPARAM(command as usize),
                 LPARAM(0),
@@ -172,10 +197,14 @@ impl PinnedWindow {
     }
 
     fn minimized(self) -> Option<bool> {
-        (self.matches_process() && visible_top_level(self.handle)).then(|| {
+        self.visible().then(|| {
             // SAFETY: the HWND belongs to the expected top-level window.
             unsafe { IsIconic(self.handle) }.as_bool()
         })
+    }
+
+    fn visible(self) -> bool {
+        self.matches_process() && visible_top_level(self.handle)
     }
 
     fn minimum(self, destination_dpi: u32) -> Option<(i32, i32)> {
@@ -376,8 +405,8 @@ mod tests {
             Foundation::LRESULT,
             UI::WindowsAndMessaging::{
                 CreateWindowExW, DefWindowProcW, DestroyWindow, DispatchMessageW, GWLP_WNDPROC,
-                MSG, PM_REMOVE, PeekMessageW, SW_SHOWNOACTIVATE, SetWindowLongPtrW, ShowWindow,
-                WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
+                IsWindow, MSG, PM_REMOVE, PeekMessageW, SW_SHOWNOACTIVATE, SetWindowLongPtrW,
+                ShowWindow, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_OVERLAPPEDWINDOW,
             },
         },
         core::w,
@@ -472,8 +501,7 @@ mod tests {
             std::thread::spawn(move || {
                 for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     if line == "zenith-layout-ready" {
-                        let _ = ready.send(());
-                        break;
+                        let _ = ready.try_send(());
                     }
                 }
             });
@@ -506,6 +534,9 @@ mod tests {
                 // SAFETY: pump only this test thread's fixture window.
                 while unsafe { PeekMessageW(&mut message, None, 0, 0, PM_REMOVE) }.as_bool() {
                     unsafe { DispatchMessageW(&message) };
+                }
+                if count == "close" && !unsafe { IsWindow(Some(anchor.0)) }.as_bool() {
+                    return;
                 }
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -601,5 +632,30 @@ mod tests {
                 .set_window_visibility(WindowVisibility::Minimize, || true)
                 .is_err()
         );
+    }
+
+    #[test]
+    fn native_close_requests_only_the_exact_window_and_leaves_unresponsive_clients_alive() {
+        let mut target = FixturePlayer::with_mode("close");
+        let mut other = FixturePlayer::with_mode("close");
+        let mut stalled = FixturePlayer::with_mode("stalled");
+        let ambiguous = FixturePlayer::start(2);
+        assert!(ambiguous.0.request_window_close(|| true).is_err());
+        assert!(target.0.request_window_close(|| false).is_err());
+        assert!(!target.0.exited().unwrap());
+        stalled.0.request_window_close(|| true).unwrap();
+        target.0.request_window_close(|| true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(3);
+        while !target.0.exited().unwrap() {
+            assert!(
+                Instant::now() < deadline,
+                "the fixture did not handle WM_CLOSE"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(target.0.exit_status().unwrap().unwrap().success());
+        assert!(!other.0.exited().unwrap());
+        assert!(!stalled.0.exited().unwrap());
+        assert!(target.0.request_window_close(|| true).is_err());
     }
 }
