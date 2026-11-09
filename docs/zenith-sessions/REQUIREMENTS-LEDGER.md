@@ -1,6 +1,11 @@
 # Zenith Sessions requirements and acceptance ledger
 
 
+## WPF regression isolation checkpoint (0.82-wpfisolation)
+
+**PROD-QA-03.** Repeated full-run UI timeouts exposed missing shared-resource isolation: five WPF resource fixture classes now join the existing production-resource collection, which runs without overlapping other collections. All test cases, assertions, deadlines and explicit concurrency within tests are retained. The affected run passed 209 checks (`artifacts/launch-click-fix/wpf-isolation-final/wpf-isolation-final.trx`). The interrupted repeat remains non-passing evidence. See [repair record](LAUNCH-CLICK-AND-THEME-REPAIR.md); the exact competing resource call was not captured.
+
+
 ## No-transport scheduling correction (0.82-transportguard)
 
 **CAP-13-05.** The full launch-repair regression run reproduced an existing late-tick defect: user-idle deferral armed a timer before checking whether any input transport existed. The tick now applies the same sample/transport guard as initial scheduling, before deferral. No input capability was enabled and no test changed. The existing failing integration case and 79 related launch/queue/theme/Keep Awake checks pass in `artifacts/launch-click-fix/transport-and-launch/transport-and-launch.trx`. See [repair evidence](LAUNCH-CLICK-AND-THEME-REPAIR.md).

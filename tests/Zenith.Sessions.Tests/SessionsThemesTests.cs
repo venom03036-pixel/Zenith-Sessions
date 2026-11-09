@@ -18,6 +18,7 @@ namespace Zenith.Sessions.Tests;
 /// Light, Follow Windows and Windows High Contrast. Windows itself is never read or changed here: each test passes the app mode and
 /// High Contrast colours that Windows would report, so the result does not depend on this computer's settings.
 /// </summary>
+[Collection(WpfProductionResourceCollection.Name)]
 public sealed class SessionsThemesTests : IDisposable
 {
     private readonly string _root = Path.Combine(Path.GetTempPath(), "zenith-sessions-themes-" + Guid.NewGuid().ToString("N"));

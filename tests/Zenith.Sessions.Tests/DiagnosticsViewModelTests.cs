@@ -9,6 +9,7 @@ using static Zenith.Sessions.Tests.DiagnosticsWriterProbe;
 
 namespace Zenith.Sessions.Tests;
 
+[Collection(WpfProductionResourceCollection.Name)]
 public sealed class DiagnosticsViewModelTests : IDisposable
 {
     private readonly string _root=Path.Combine(Path.GetTempPath(),"zenith-diagnostic-ui-tests-"+Guid.NewGuid().ToString("N"));

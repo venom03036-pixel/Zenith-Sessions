@@ -11,6 +11,7 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.Tests;
 
+[Collection(WpfProductionResourceCollection.Name)]
 public sealed class ProfileDialogLayoutTests
 {
     [Theory]

@@ -8,6 +8,7 @@ namespace Zenith.Sessions.Tests;
 
 // The seam under the packaged composition stage. It never constructs a WPF Application:
 // the test host may hold only one, and the shipped check owns it.
+[Collection(WpfProductionResourceCollection.Name)]
 public sealed class PackagedLayoutCheckTests
 {
     [Fact]

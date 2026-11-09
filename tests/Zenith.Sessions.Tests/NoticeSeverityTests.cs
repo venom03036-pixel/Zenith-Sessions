@@ -19,6 +19,7 @@ namespace Zenith.Sessions.Tests;
 
 // Footer notices carry severity: a failure is an error that stays visible until it is dismissed, a later notice replaces
 // only the status line, and screen readers are told about both (the error assertively, the status politely).
+[Collection(WpfProductionResourceCollection.Name)]
 public sealed class NoticeSeverityTests : IDisposable
 {
     private const string Secret = "PRIVATE-FIXTURE-TOKEN-https://example.invalid/share?code=SECRET123";
