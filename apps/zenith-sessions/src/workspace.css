@@ -30,3 +30,5 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .directory-results button[aria-pressed="true"] { color: var(--mint); border-color: var(--mint); background: var(--field); }
 .destination-picker button:focus-visible, .destination-picker input:focus-visible { outline: 2px solid var(--mint); outline-offset: 2px; }
 .directory-selection { flex-wrap: wrap; }
+.pair-choice { display: flex; align-items: center; gap: .5rem; margin-bottom: .75rem; color: var(--heading); }
+.pair-choice input { accent-color: var(--mint); }

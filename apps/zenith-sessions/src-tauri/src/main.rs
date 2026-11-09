@@ -1,11 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod library;
+mod self_check;
 mod session;
 mod sign_in;
 
 use std::{
     path::PathBuf,
+    process::ExitCode,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -15,7 +17,7 @@ use std::{
 
 use library::Library;
 use serde::Serialize;
-use session::{Session, SessionOwner};
+use session::{LaunchState, Session, SessionOwner};
 use tauri::{Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
 use zenith_session_launch::{
@@ -49,7 +51,8 @@ impl Workspace {
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
     accounts: Vec<SavedIdentity>,
-    session: Option<Session>,
+    sessions: Vec<Session>,
+    launch: LaunchState,
     admission: Option<Admission>,
     sign_in_attempt: Option<Uuid>,
 }
@@ -62,10 +65,10 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
     spawn_blocking(move || {
         let observation = state.owner.lock().map_err(|_| STATE_ERROR)?.observation();
         let evidence = observation.map(|sample| (sample, sample.read(&state.logs)));
-        let session = {
+        let (sessions, launch) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             owner.reconcile(evidence);
-            owner.row()
+            (owner.rows(), owner.launch_state())
         };
         let accounts = state.library.lock().map_err(|_| STATE_ERROR)?.accounts();
         let admission = memory_sample()
@@ -79,7 +82,8 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             .map(|flow| flow.attempt);
         Ok(Snapshot {
             accounts,
-            session,
+            sessions,
+            launch,
             admission,
             sign_in_attempt,
         })
@@ -150,6 +154,7 @@ async fn launch_account(
     place_id: String,
     job: Option<Uuid>,
     try_one: bool,
+    allow_pair: bool,
 ) -> Result<(), String> {
     let place = public_place(&place_id)?;
     if job.is_some_and(|job| job.is_nil()) {
@@ -160,19 +165,27 @@ async fn launch_account(
     spawn_blocking(move || {
         let (identity, credential, attempt) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+            if state.exiting.load(Ordering::Acquire) {
+                return Err("Zenith is closing.".into());
+            }
             let (identity, credential) = state
                 .library
                 .lock()
                 .map_err(|_| STATE_ERROR)?
                 .credential(id)?;
-            let attempt = owner.reserve(&identity, &target)?;
+            let attempt = owner.reserve(&identity, &target, allow_pair, try_one)?;
             (identity, credential, attempt)
         };
         let prepared = session::prepare(identity, credential, target, try_one, || {
-            state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
+            !state.exiting.load(Ordering::Acquire)
+                && state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
         });
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        let result = prepared.and_then(|prepared| owner.dispatch(prepared, attempt, try_one));
+        let result = prepared.and_then(|prepared| {
+            owner.dispatch(prepared, attempt, try_one, || {
+                !state.exiting.load(Ordering::Acquire)
+            })
+        });
         if let Err(error) = &result {
             owner.fail_preparation(attempt, error.clone());
         }
@@ -187,11 +200,18 @@ async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        owner.require_attempt(attempt)?;
-        owner.stop(false)
+        owner.stop(attempt)
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn stop_all_sessions(state: State<'_, Arc<Workspace>>) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.owner.lock().map_err(|_| STATE_ERROR)?.stop_all(false))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
 }
 
 #[tauri::command]
@@ -200,11 +220,17 @@ fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), 
         .owner
         .try_lock()
         .map_err(|_| "Zenith is updating the session. Try again.")?;
-    owner.require_attempt(attempt)?;
-    owner.focus()
+    owner.focus(attempt)
 }
 
-fn main() {
+fn main() -> ExitCode {
+    let context = tauri::generate_context!();
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|arg| arg == "--self-check")
+    {
+        return self_check::run(&context);
+    }
     tauri::Builder::default()
         .setup(|app| {
             let root = app.path().app_local_data_dir()?;
@@ -240,7 +266,7 @@ fn main() {
                     let stopped = state
                         .owner
                         .lock()
-                        .is_ok_and(|mut owner| owner.stop(true).is_ok());
+                        .is_ok_and(|mut owner| owner.stop_all(true).is_ok());
                     if stopped {
                         app.exit(0);
                     } else {
@@ -257,11 +283,13 @@ fn main() {
             browse_public_servers,
             launch_account,
             stop_session,
+            stop_all_sessions,
             focus_session,
             sign_in::begin_sign_in,
             sign_in::finish_sign_in,
             sign_in::cancel_sign_in
         ])
-        .run(tauri::generate_context!())
+        .run(context)
         .expect("could not start Zenith Sessions");
+    ExitCode::SUCCESS
 }

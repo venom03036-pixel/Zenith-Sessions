@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust desktop pair and packaged check (1.04)
+
+**CAP-08-01, CAP-08-02, CAP-08-03, PROD-CORE-03, CAP-16-02, CAP-16-03.** The desktop keeps separate attempts per saved account and admits one start at a time. The opt-in pair trial waits for confirmed arrival, a 20-second stabilization interval, and fresh memory headroom. An active peer is checked again before dispatch. The PID-reuse regression failed first and passed after the exact Windows process-birth check. Twenty-two offline Rust tests passed, and two packaged self-check runs passed all five stages. Live coexistence, restart reconciliation, and scale remain unverified. See the [preview and attended procedure](RUST-DESKTOP-PREVIEW.md#preview-104-and-the-attended-two-account-trial).
+
 ## Rust first-party sign-in checkpoint (1.02-native-signin)
 
 **VA-03-01, VA-04-03, VA-06-03, PROD-UI-01.** The preview opens Roblox's own login in an isolated private WebView and requires an explicit Save in the local workspace. The Rust backend checks the authenticated identity before writing a current-user DPAPI record. Synthetic renewal retained the profile ID and replaced its protected file. Navigation tests and the local-only capability check passed. The packaged host smoke check reached Roblox's official login page. Real login, browser credential capture, and two-account launch still require attended testing. See the [desktop preview guide](RUST-DESKTOP-PREVIEW.md).

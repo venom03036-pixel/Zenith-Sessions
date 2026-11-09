@@ -30,7 +30,10 @@ mod probe {
         auth::{Credential, RobloxAuth},
         evidence::Observed,
         target::{Target, new_tracker, player_uri},
-        windows::{OwnedPlayer, PairLease, VerifiedPlayer, memory_sample, read_probe_credential},
+        windows::{
+            OwnedPlayer, PairLease, ProcessIdentity, VerifiedPlayer,
+            ensure_compatible_player_start, memory_sample, read_probe_credential,
+        },
     };
 
     struct Account<'a> {
@@ -145,7 +148,7 @@ mod probe {
         check_memory(try_one)?;
         let player = select_player(executable)?;
         let account = Account::load(bundle, username)?;
-        launch(account, place, &player, Path::new(logs), try_one)?.stop()
+        launch(account, place, &player, Path::new(logs), try_one, &[])?.stop()
     }
 
     fn parse_place(place: &OsStr) -> Result<u64, String> {
@@ -163,13 +166,18 @@ mod probe {
         logs: &Path,
     ) -> Result<(), String> {
         check_memory(false)?;
+        ensure_compatible_player_start(&[])?;
         let player = select_player(executable)?;
         let _lease = PairLease::acquire()?;
-        let mut trials = Vec::with_capacity(accounts.len());
+        let mut trials: Vec<Trial> = Vec::with_capacity(accounts.len());
         let result = (|| {
             for account in accounts {
                 // One member reaches confirmed arrival before the next member is admitted.
-                trials.push(launch(account, place, &player, logs, false)?);
+                let owned: Vec<_> = trials
+                    .iter()
+                    .filter_map(|trial| trial.player.identity())
+                    .collect();
+                trials.push(launch(account, place, &player, logs, false, &owned)?);
             }
             let overlap_until = Instant::now() + Duration::from_secs(3);
             while Instant::now() < overlap_until {
@@ -215,11 +223,13 @@ mod probe {
         player: &VerifiedPlayer,
         logs: &Path,
         try_one: bool,
+        owned: &[ProcessIdentity],
     ) -> Result<Trial, String> {
         let started = Instant::now();
         let attempt = Uuid::new_v4();
         println!("Attempt {attempt} for {}, place {place}", account.username);
         check_memory(try_one)?;
+        ensure_compatible_player_start(owned)?;
         println!("Selected player {}", player.path().display());
         let auth = RobloxAuth::new().map_err(|error| error.to_string())?;
         auth.verify(&mut account.credential, account.user_id)
@@ -238,6 +248,7 @@ mod probe {
             started.elapsed().as_millis()
         );
         check_memory(try_one)?;
+        ensure_compatible_player_start(owned)?;
         let tracker = new_tracker();
         println!("Launch tracker {tracker}");
         let launch_time = SystemTime::now();

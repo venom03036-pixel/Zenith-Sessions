@@ -29,7 +29,7 @@ use ::windows::{
             },
             Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
             SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
-            Threading::GetProcessTimes,
+            Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
         },
         UI::WindowsAndMessaging::{
             EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
@@ -231,7 +231,7 @@ pub fn memory_sample() -> Result<MemorySample, String> {
     })
 }
 
-pub fn ensure_isolated_player_start() -> Result<(), String> {
+pub fn ensure_compatible_player_start(owned: &[ProcessIdentity]) -> Result<(), String> {
     // SAFETY: the snapshot is owned here and closed after enumeration on every result path.
     let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
         .map_err(|_| "Could not check for existing Roblox clients")?;
@@ -252,15 +252,23 @@ pub fn ensure_isolated_player_start() -> Result<(), String> {
             if [
                 "RobloxPlayerBeta.exe",
                 "RobloxPlayerInstaller.exe",
+                "RobloxPlayerLauncher.exe",
                 "RoALT.exe",
                 "Zenith.Sessions.App.exe",
             ]
             .iter()
             .any(|name| name.eq_ignore_ascii_case(&executable))
             {
-                return Err(format!(
-                    "Close {executable} before starting this single-account session"
-                ));
+                let pid = entry.th32ProcessID;
+                let owned_player = executable.eq_ignore_ascii_case("RobloxPlayerBeta.exe")
+                    && owned.iter().any(|identity| identity.pid == pid)
+                    && current_process_identity(pid)
+                        .is_some_and(|identity| is_owned_player(identity, owned));
+                if !owned_player {
+                    return Err(format!(
+                        "Close the other {executable} before launching from Zenith"
+                    ));
+                }
             }
             match unsafe { Process32NextW(snapshot, &mut entry) } {
                 Ok(()) => (),
@@ -271,6 +279,10 @@ pub fn ensure_isolated_player_start() -> Result<(), String> {
     })();
     let _ = unsafe { CloseHandle(snapshot) };
     result
+}
+
+fn is_owned_player(candidate: ProcessIdentity, owned: &[ProcessIdentity]) -> bool {
+    owned.contains(&candidate)
 }
 
 pub struct VerifiedPlayer {
@@ -381,6 +393,21 @@ mod tests {
     use super::*;
 
     #[test]
+    fn coexistence_accepts_exact_process_birth_and_rejects_reused_pid() {
+        let owned = ProcessIdentity {
+            pid: 77,
+            started_filetime: 11,
+        };
+        let reused = ProcessIdentity {
+            pid: 77,
+            started_filetime: 12,
+        };
+        assert!(is_owned_player(owned, &[owned]));
+        assert!(!is_owned_player(reused, &[owned]));
+        assert!(!is_owned_player(owned, &[]));
+    }
+
+    #[test]
     fn the_registered_player_is_a_path_and_never_a_command_line() {
         let path = r"C:\Roblox\Versions\version-test\RobloxPlayerBeta.exe";
         let quoted: Vec<_> = format!("\"{path}\"\0").encode_utf16().collect();
@@ -431,7 +458,7 @@ mod tests {
     }
 }
 
-#[derive(Clone, Copy, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProcessIdentity {
     pub pid: u32,
@@ -467,7 +494,7 @@ impl OwnedPlayer {
         unsafe {
             let mut pid = 0;
             GetWindowThreadProcessId(window, Some(&mut pid));
-            if pid != self.pid() {
+            if pid != self.pid() || !self.owns_current_pid() {
                 return Err("The Roblox window changed");
             }
             if IsIconic(window).as_bool() {
@@ -488,7 +515,12 @@ impl OwnedPlayer {
         };
         // SAFETY: enumeration is synchronous. The callback borrows this stack value only during the call.
         let _ = unsafe { EnumWindows(Some(window_callback), LPARAM((&raw mut search) as isize)) };
-        search.found
+        search.found.filter(|_| self.owns_current_pid())
+    }
+
+    fn owns_current_pid(&self) -> bool {
+        self.identity
+            .is_some_and(|identity| current_process_identity(identity.pid) == Some(identity))
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
@@ -512,24 +544,27 @@ impl OwnedPlayer {
 }
 
 fn process_identity(child: &std::process::Child) -> Option<ProcessIdentity> {
+    process_identity_from_handle(HANDLE(child.as_raw_handle()), child.id())
+}
+
+fn current_process_identity(pid: u32) -> Option<ProcessIdentity> {
+    // SAFETY: this opens a read-only process handle. The handle is released before returning.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }.ok()?;
+    let identity = process_identity_from_handle(handle, pid);
+    let _ = unsafe { CloseHandle(handle) };
+    identity
+}
+
+fn process_identity_from_handle(handle: HANDLE, pid: u32) -> Option<ProcessIdentity> {
     let mut creation = FILETIME::default();
     let mut exit = FILETIME::default();
     let mut kernel = FILETIME::default();
     let mut user = FILETIME::default();
-    // SAFETY: the owned child keeps its exact process handle alive and all outputs are writable.
-    unsafe {
-        GetProcessTimes(
-            HANDLE(child.as_raw_handle()),
-            &mut creation,
-            &mut exit,
-            &mut kernel,
-            &mut user,
-        )
-    }
-    .ok()?;
+    // SAFETY: the caller keeps its process handle alive and all outputs are writable.
+    unsafe { GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user) }.ok()?;
     let time = (u64::from(creation.dwHighDateTime) << 32) | u64::from(creation.dwLowDateTime);
     (time != 0).then_some(ProcessIdentity {
-        pid: child.id(),
+        pid,
         started_filetime: time,
     })
 }

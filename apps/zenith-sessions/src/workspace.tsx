@@ -17,7 +17,8 @@ type Admission = {
   physicalAvailable: number; physicalRequired: number;
   commitAvailable: number; commitRequired: number; canTryOne: boolean;
 };
-type Snapshot = { accounts: Account[]; session: Session | null; admission: Admission | null; signInAttempt: string | null };
+type LaunchState = { active: number; pairEnabled: boolean; hold: string | null };
+type Snapshot = { accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null; signInAttempt: string | null };
 type Page = 'Overview' | 'Accounts' | 'Sessions';
 
 const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'window']];
@@ -72,6 +73,7 @@ function App() {
   const [failure, setFailure] = useState('');
   const [loadingError, setLoadingError] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [pairRequested, setPairRequested] = useState(false);
   const [importing, setImporting] = useState(false);
   const [signInBusy, setSignInBusy] = useState(false);
   const [remove, setRemove] = useState<Account | null>(null);
@@ -80,12 +82,16 @@ function App() {
   const reading = useRef(false);
   const accounts = snapshot?.accounts ?? [];
   const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
-  const session = snapshot?.session;
+  const sessions = snapshot?.sessions ?? [];
+  const launchState = snapshot?.launch;
+  const active = launchState?.active ?? 0;
+  const pairEnabled = active > 0 ? launchState?.pairEnabled === true : pairRequested;
+  const selectedSession = sessions.find(session => session.accountId === account?.profileId);
   const admission = snapshot?.admission;
   const signInAttempt = snapshot?.signInAttempt;
-  const busy = isBusy(session);
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = Boolean(destination.place.trim());
+  const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || !launchState || !!launchState.hold;
 
   async function refresh() {
     if (reading.current) return;
@@ -150,10 +156,12 @@ function App() {
   }
 
   async function launch(tryOne: boolean) {
-    if (!account || !placeEntered) return;
+    if (cannotLaunch || !account || (tryOne && active > 0)) return;
     setLaunching(true);
     try {
-      if (await act('launch_account', { id: account.profileId, placeId: destination.place, job: destination.job, tryOne })) {
+      if (await act('launch_account', {
+        id: account.profileId, placeId: destination.place, job: destination.job, tryOne, allowPair: pairEnabled,
+      })) {
         localStorage.setItem('zenith-preview-place', destination.place.trim());
       }
     }
@@ -228,7 +236,7 @@ function App() {
       {page === 'Overview' && <>
         <div className="metrics-grid preview-metrics">
           <article className="metric-card"><div className="metric-top">Saved accounts</div><strong>{accounts.length}</strong></article>
-          <article className="metric-card"><div className="metric-top">Owned session</div><Status session={session}/></article>
+          <article className="metric-card"><div className="metric-top">Active sessions</div><strong>{active}</strong></article>
           <article className="metric-card"><div className="metric-top">Available memory</div><strong>{admission ? gib(admission.physicalAvailable) : 'Unavailable'}</strong></article>
         </div>
         <Memory admission={admission}/>
@@ -238,12 +246,14 @@ function App() {
         <div className="toolbar"><label className="search-box"><Icon name="search" size={17}/><input ref={search} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search accounts…" aria-label="Search accounts"/><kbd>Ctrl K</kbd></label></div>
         {filtered.length ? <div className="table-wrap"><table>
           <thead><tr><th>Account</th><th>Status</th><th>Actions</th></tr></thead>
-          <tbody>{filtered.map(item => <tr key={item.profileId} className={item.profileId === account?.profileId ? 'selected-row' : ''}>
+          <tbody>{filtered.map(item => {
+            const session = sessions.find(session => session.accountId === item.profileId);
+            return <tr key={item.profileId} className={item.profileId === account?.profileId ? 'selected-row' : ''}>
             <td><div className="account-cell"><span className="avatar preview-avatar">{item.username.slice(0, 2).toUpperCase()}</span><div><strong>{item.username}</strong><span>@{item.username}</span></div></div></td>
-            <td><Status session={item.profileId === session?.accountId ? session : null}/></td>
+            <td><Status session={session}/></td>
             <td><div className="row-actions"><button className="launch-button" onClick={() => openLaunch(item)}><Icon name="play" size={14}/> Select for launch</button>
-              <button className="secondary-button" disabled={busy && item.profileId === session?.accountId} onClick={() => setRemove(item)}>Remove</button></div></td>
-          </tr>)}</tbody>
+              <button className="secondary-button" disabled={isBusy(session)} onClick={() => setRemove(item)}>Remove</button></div></td>
+          </tr>; })}</tbody>
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>}
@@ -251,26 +261,36 @@ function App() {
         <section className="account-panel preview-panel">
           <h2>Launch Roblox</h2>
           <div className="session-fields">
-            <label>Account <select value={account?.profileId ?? ''} disabled={busy || launching} onChange={event => setSelected(event.target.value)}>
+            <label>Account <select value={account?.profileId ?? ''} disabled={launching} onChange={event => setSelected(event.target.value)}>
               <option value="" disabled>Choose an account</option>{accounts.map(item => <option key={item.profileId} value={item.profileId}>{item.username}</option>)}
             </select></label>
           </div>
-          <DestinationPicker destination={destination} onChange={setDestination} disabled={busy || launching}/>
-          <div className="row-actions"><button className="primary-button" disabled={!account || !placeEntered || busy || launching || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> Launch</button>
-            {admission?.canTryOne && <button className="secondary-button" disabled={!account || !placeEntered || busy || launching} onClick={() => void launch(true)}>Try one account anyway</button>}
+          <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}/>
+          <label className="pair-choice">
+            <input type="checkbox" checked={pairEnabled} disabled={active > 0 || launching} onChange={event => setPairRequested(event.target.checked)}/>
+            Enable two-account trial
+          </label>
+          {pairEnabled && <p>Start with other Roblox clients closed. Launch one account, then choose a different account when the first is confirmed and ready.</p>}
+          {launchState?.hold && <p role="status">{launchState.hold}</p>}
+          {isBusy(selectedSession) && <p>This account already has an active session.</p>}
+          <div className="row-actions"><button className="primary-button" disabled={cannotLaunch || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> Launch</button>
+            {admission?.canTryOne && active === 0 && <button className="secondary-button" disabled={cannotLaunch} onClick={() => void launch(true)}>Try one account anyway</button>}
           </div>
         </section>
-        {session && <section className="account-panel preview-panel session-status" aria-label="Current session">
+        {active > 0 && <section className="account-panel preview-panel row-actions" aria-label="Session controls">
+          <button className="secondary-button" onClick={() => void act('stop_all_sessions', {})}>Stop all owned clients</button>
+        </section>}
+        {sessions.map(session => <section key={session.attemptId} className="account-panel preview-panel session-status" aria-label={`${session.username} session`}>
           <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
           <p>Place {session.placeId}{session.pid ? ` · PID ${session.pid}` : ''}</p>
           {session.requestedServer && <p>Requested server {session.requestedServer}</p>}
           {session.detail && <p>{session.detail}</p>}
           {session.observedServer && <p>Confirmed initial server {session.observedServer}</p>}
-          {busy && <div className="row-actions">
+          {isBusy(session) && <div className="row-actions">
             {session.phase === 'running' && <button className="secondary-button" onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
             <button className="secondary-button" disabled={session.phase === 'stopping'} onClick={() => void act('stop_session', { attempt: session.attemptId })}>{session.phase === 'preparing' ? 'Cancel launch' : 'Stop Roblox'}</button>
           </div>}
-        </section>}
+        </section>)}
         <Memory admission={admission}/>
       </>}
     </section>

@@ -1,14 +1,18 @@
+use std::os::windows::io::{FromRawHandle, OwnedHandle};
+
 use ::windows::{
     Win32::{
-        Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE},
+        Foundation::{ERROR_ALREADY_EXISTS, GetLastError},
         System::Threading::CreateMutexW,
     },
     core::{PCWSTR, w},
 };
 
-/// Holds the compatibility name for the duration of a clean, explicitly requested pair trial.
+/// Holds the compatibility name for a clean, explicitly requested pair.
 /// The lease never opens another process or displaces an existing object.
-pub struct PairLease(HANDLE);
+pub struct PairLease {
+    _handle: OwnedHandle,
+}
 
 impl PairLease {
     pub fn acquire() -> Result<Self, &'static str> {
@@ -20,10 +24,15 @@ impl PairLease {
         // including a handle for an existing mutex, is closed by PairLease.
         let (lease, existed) = unsafe {
             let handle = CreateMutexW(None, false, name).map_err(|_| {
-                "Could not reserve the Roblox compatibility name. Close existing Roblox clients before the pair trial."
+                "Could not reserve the Roblox compatibility name. Close other Roblox clients and launchers first."
             })?;
             let existed = GetLastError() == ERROR_ALREADY_EXISTS;
-            (Self(handle), existed)
+            (
+                Self {
+                    _handle: OwnedHandle::from_raw_handle(handle.0),
+                },
+                existed,
+            )
         };
         if existed {
             return Err(
@@ -34,17 +43,13 @@ impl PairLease {
     }
 }
 
-impl Drop for PairLease {
-    fn drop(&mut self) {
-        // SAFETY: this instance owns exactly one Windows handle.
-        let _ = unsafe { CloseHandle(self.0) };
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ::windows::{Win32::System::Threading::CreateEventW, core::HSTRING};
+    use ::windows::{
+        Win32::{Foundation::CloseHandle, System::Threading::CreateEventW},
+        core::HSTRING,
+    };
 
     #[test]
     fn an_existing_named_object_is_never_adopted_and_the_lease_is_reusable() {
