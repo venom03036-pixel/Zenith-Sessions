@@ -10,12 +10,17 @@ function exerciseWorkspace() {
     profileId: `fixture-${index + 1}`, username: `Fixture${index + 1}`,
   }));
   let savedSignIn = null;
+  let signInAttempt = null;
+  let signInClosing = null;
+  let manualSaveCalls = 0;
   let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
   let launchedEpoch;
   let launchedTarget;
   let sessionRows = [];
   let stoppedRecovery;
   let reportAttempts = 0;
+  let efficiencyChanges = 0;
+  let efficiency = { policy: 'system_managed', canRequest: true, canRestore: false };
   let savedInvites = [];
   const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
   let catalogRequests = 0;
@@ -47,6 +52,19 @@ function exerciseWorkspace() {
     invoke: async (command, args = {}) => {
       const { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = args;
       switch (command) {
+        case 'client_performance': return [{
+          attemptId: 'owned-efficiency', username: 'Fixture6', pid: 1777,
+          metrics: { cpuPercent: 4, readBytesPerSecond: null, writeBytesPerSecond: null, workingSet: null,
+            privateWorkingSet: null, privateCommit: null, uptimeSeconds: 30, priority: null, efficiency },
+        }];
+        case 'set_client_efficiency':
+          if (args.attempt !== 'owned-efficiency') throw new Error('The efficiency action targeted another attempt.');
+          if (efficiencyChanges++ === 0 && args.action === 'request') {
+            efficiency = { policy: 'efficiency_requested', canRequest: false, canRestore: true };
+          } else if (efficiencyChanges === 2 && args.action === 'restore') {
+            efficiency = { policy: 'system_managed', canRequest: true, canRestore: false };
+          } else throw new Error('Unexpected efficiency action.');
+          return efficiency;
         case 'export_support_report':
           if (Object.keys(args).length !== 0) throw new Error('The report export accepted a renderer-supplied path or data.');
           if (++reportAttempts === 1) throw 'Could not save the support report.';
@@ -56,8 +74,14 @@ function exerciseWorkspace() {
           admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
             commitAvailable: 1, commitRequired: 1, canTryOne: false },
           recovery: { issue: null, attempts: [] }, panic,
-          signInAttempt: null, signInError: null, savedSignIn, macroPlayback,
+          signInAttempt, signInClosing, signInError: null, savedSignIn, macroPlayback,
         };
+        case 'begin_sign_in':
+          signInAttempt = 'fixture-sign-in';
+          return signInAttempt;
+        case 'finish_sign_in':
+          manualSaveCalls++;
+          throw new Error('Automatic saving must not require a renderer save command.');
         case 'legacy_workspace': return null;
         case 'macro_assignments': return assignmentView();
         case 'edit_macro_assignment':
@@ -205,6 +229,14 @@ function exerciseWorkspace() {
       await until(() => row(1)?.getAttribute('aria-pressed') === 'true' && details().includes('fixture-1 favorite'),
         'opening Accounts left the inspector empty');
     });
+    await check('the full account cell is a readable selection target', async () => {
+      const button = row(1);
+      const bounds = button.getBoundingClientRect();
+      const cell = button.closest('td').getBoundingClientRect();
+      if (bounds.height < 44 || cell.right - bounds.right > 24) {
+        throw new Error('only the small account label is clickable');
+      }
+    });
     await check('pending headshot is retried and rendered', async () => {
       await until(() => row(6)?.querySelector('img:not([hidden])')?.naturalWidth > 0,
         'sixth headshot stayed on initials');
@@ -231,8 +263,10 @@ function exerciseWorkspace() {
         throw new Error('a successful save did not identify the account that was saved');
       }
       savedSignIn = { ...savedSignIn, closeFailed: true };
+      signInClosing = savedSignIn.attempt;
       await until(() => find('.sign-in-saved')?.textContent.includes('You can close it manually'),
         'a saved sign-in with a close failure did not show the separate close warning');
+      signInClosing = null;
     });
     await check('returning to an account reuses its unfinished private lookup', async () => {
       row(3).click();
@@ -257,6 +291,24 @@ function exerciseWorkspace() {
           && new URL(find('[aria-label="Account details"] img:not([hidden])')?.src ?? location.href).search.startsWith(`?${id}`),
         `account ${index} showed missing or mismatched details`);
       }
+    });
+    await check('automatic save selects the saved account and waits for the sign-in window to close', async () => {
+      const add = [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Add account');
+      await until(() => add && !add.disabled, 'the previous sign-in did not finish closing');
+      row(4).click();
+      add.click();
+      await until(() => find('[aria-label="Roblox sign-in"]') && add.disabled, 'the sign-in flow did not start');
+      signInClosing = signInAttempt;
+      signInAttempt = null;
+      savedSignIn = { profileId: 'fixture-6', attempt: 'fixture-sign-in', closeFailed: false };
+      await until(() => !find('[aria-label="Roblox sign-in"]') && find('.sign-in-saved')?.textContent.includes('Closing'),
+        'the UI did not show that the sign-in was saved and the window was closing');
+      if (!add.disabled || manualSaveCalls || row(6).getAttribute('aria-pressed') !== 'true') {
+        throw new Error('automatic save did not lock the next sign-in or select the saved profile');
+      }
+      signInClosing = null;
+      await until(() => !add.disabled && !find('.sign-in-saved')?.textContent.includes('Closing'),
+        'the next account could not sign in after window closure');
     });
     await check('game details and artwork keep the exact requested destination', async () => {
       const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
@@ -367,6 +419,20 @@ function exerciseWorkspace() {
         await until(() => panel()?.querySelector('input[aria-label="Saved support report path"]')?.value.endsWith('zenith-report.json'),
           'the saved report path was missing');
         if (reportAttempts !== 2) throw new Error('The support export ran more than once per click.');
+      } finally {
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('the Performance page requests and restores efficiency on the exact attempt', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      find('button[aria-label="Performance"]').click();
+      try {
+        await until(() => button('Request Windows efficiency'), 'the confirmed client has no efficiency control');
+        button('Request Windows efficiency').click();
+        await until(() => button('Restore system-managed efficiency'), 'readback did not expose the restore control');
+        button('Restore system-managed efficiency').click();
+        await until(() => button('Request Windows efficiency'), 'restoring did not clear the managed efficiency request');
+        if (efficiencyChanges !== 2) throw new Error('Efficiency actions did not run exactly once.');
       } finally {
         find('button[aria-label="Accounts"]').click();
       }

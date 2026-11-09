@@ -49,7 +49,8 @@ use zenith_session_launch::{
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
     windows::{
-        MAX_LEGACY_MIGRATION_BYTES, PriorityAction, PriorityState, SavedIdentity, memory_sample,
+        EfficiencyAction, EfficiencyState, MAX_LEGACY_MIGRATION_BYTES, PriorityAction,
+        PriorityState, SavedIdentity, memory_sample,
     },
 };
 use zeroize::Zeroizing;
@@ -247,6 +248,7 @@ struct Snapshot {
     panic: PanicView,
     admission: Option<Admission>,
     sign_in_attempt: Option<Uuid>,
+    sign_in_closing: Option<Uuid>,
     sign_in_error: Option<String>,
     saved_sign_in: Option<sign_in::SavedSignIn>,
 }
@@ -309,6 +311,7 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             panic,
             admission,
             sign_in_attempt: sign_in.active.as_ref().map(|flow| flow.attempt),
+            sign_in_closing: sign_in.closing,
             sign_in_error: sign_in.active.as_ref().and_then(|flow| flow.error.clone()),
             saved_sign_in: sign_in.saved.clone(),
         })
@@ -933,6 +936,25 @@ async fn set_client_priority(
 }
 
 #[tauri::command]
+async fn set_client_efficiency(
+    state: State<'_, Arc<Workspace>>,
+    attempt: Uuid,
+    action: EfficiencyAction,
+) -> Result<EfficiencyState, String> {
+    let epoch = state.panic.permit()?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        if !state.can_dispatch(epoch) {
+            return Err("Zenith stopped this efficiency action.".into());
+        }
+        owner.set_client_efficiency(attempt, action, || state.can_dispatch(epoch))
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn tile_windows(
     app: AppHandle,
     state: State<'_, Arc<Workspace>>,
@@ -1091,6 +1113,7 @@ fn main() -> ExitCode {
             focus_session,
             client_performance,
             set_client_priority,
+            set_client_efficiency,
             tile_windows,
             sign_in::begin_sign_in,
             sign_in::finish_sign_in,

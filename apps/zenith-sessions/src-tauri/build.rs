@@ -37,6 +37,7 @@ fn main() {
             "focus_session",
             "client_performance",
             "set_client_priority",
+            "set_client_efficiency",
             "tile_windows",
             "begin_sign_in",
             "finish_sign_in",

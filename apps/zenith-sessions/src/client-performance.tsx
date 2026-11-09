@@ -6,10 +6,17 @@ const priorityLabels = {
   above_normal: 'Above normal', high: 'High', realtime: 'Realtime',
 };
 type Priority = { class: keyof typeof priorityLabels; canLower: boolean; canRestore: boolean };
+const efficiencyLabels = {
+  system_managed: 'System-managed',
+  efficiency_requested: 'Efficiency requested',
+  performance_requested: 'Performance requested',
+};
+type Efficiency = { policy: keyof typeof efficiencyLabels; canRequest: boolean; canRestore: boolean };
 type Metrics = {
   cpuPercent: number | null; readBytesPerSecond: number | null; writeBytesPerSecond: number | null;
   workingSet: number | null; privateWorkingSet: number | null; privateCommit: number | null;
   uptimeSeconds: number | null; priority: Priority | null;
+  efficiency: Efficiency | null;
 };
 type Client = { attemptId: string; username: string; pid: number | null; metrics: Metrics | null };
 
@@ -73,6 +80,7 @@ function ClientMeasurements({ client }: { client: Client }) {
   const [notice, setNotice] = useState('');
   const metrics = client.metrics;
   const priority = metrics?.priority;
+  const efficiency = metrics?.efficiency;
 
   async function change(action: 'lower' | 'restore') {
     setChanging(true);
@@ -81,6 +89,16 @@ function ClientMeasurements({ client }: { client: Client }) {
       const result = await invoke<Priority>('set_client_priority', { attempt: client.attemptId, action });
       setNotice(`Windows confirmed ${priorityLabels[result.class]} priority.`);
     } catch (error) { setNotice(typeof error === 'string' ? error : 'Could not change client priority.'); }
+    finally { setChanging(false); }
+  }
+
+  async function changeEfficiency(action: 'request' | 'restore') {
+    setChanging(true);
+    setNotice('');
+    try {
+      const result = await invoke<Efficiency>('set_client_efficiency', { attempt: client.attemptId, action });
+      setNotice(`Windows confirmed the efficiency policy. ${efficiencyLabels[result.policy]}.`);
+    } catch (error) { setNotice(typeof error === 'string' ? error : 'Could not change client efficiency.'); }
     finally { setChanging(false); }
   }
 
@@ -96,9 +114,14 @@ function ClientMeasurements({ client }: { client: Client }) {
       <dt>I/O writes</dt><dd>{units(metrics?.writeBytesPerSecond, 1024, 'KiB/s')}</dd>
       <dt>Uptime</dt><dd>{metrics?.uptimeSeconds == null ? 'Unavailable' : `${metrics.uptimeSeconds.toLocaleString()} s`}</dd>
       <dt>Windows priority</dt><dd>{priority ? priorityLabels[priority.class] : 'Unavailable'}</dd>
+      <dt>Windows efficiency</dt><dd>{efficiency ? efficiencyLabels[efficiency.policy] : 'Unavailable'}</dd>
     </dl>
-    {priority?.canLower && <button className="secondary-button" disabled={changing} onClick={() => void change('lower')}>Set Below normal</button>}
-    {priority?.canRestore && <button className="secondary-button" disabled={changing} onClick={() => void change('restore')}>Restore original priority</button>}
+    <div className="row-actions">
+      {priority?.canLower && <button className="secondary-button" disabled={changing} onClick={() => void change('lower')}>Set Below normal</button>}
+      {priority?.canRestore && <button className="secondary-button" disabled={changing} onClick={() => void change('restore')}>Restore original priority</button>}
+      {efficiency?.canRequest && <button className="secondary-button" disabled={changing} onClick={() => void changeEfficiency('request')}>Request Windows efficiency</button>}
+      {efficiency?.canRestore && <button className="secondary-button" disabled={changing} onClick={() => void changeEfficiency('restore')}>Restore system-managed efficiency</button>}
+    </div>
     {notice && <p role="status">{notice}</p>}
   </article>;
 }

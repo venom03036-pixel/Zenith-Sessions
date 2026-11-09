@@ -75,9 +75,22 @@ pub struct SavedSignIn {
 pub struct SignInState {
     pub active: Option<SignIn>,
     pub saved: Option<SavedSignIn>,
+    pub closing: Option<Uuid>,
 }
 
 impl SignInState {
+    fn start(&mut self, attempt: Uuid) -> Result<(), String> {
+        if self.active.is_some() || self.closing.is_some() {
+            return Err("Finish or close the existing Roblox sign-in window first".into());
+        }
+        self.active = Some(SignIn {
+            attempt,
+            saving: false,
+            error: None,
+        });
+        Ok(())
+    }
+
     fn clear(&mut self, attempt: Uuid) {
         if self
             .active
@@ -85,6 +98,26 @@ impl SignInState {
             .is_some_and(|flow| flow.attempt == attempt)
         {
             self.active = None;
+        }
+    }
+
+    fn close(&mut self, attempt: Uuid) -> bool {
+        if self
+            .active
+            .as_ref()
+            .is_none_or(|flow| flow.attempt != attempt)
+        {
+            return false;
+        }
+        self.active = None;
+        self.closing = Some(attempt);
+        true
+    }
+
+    fn window_destroyed(&mut self, attempt: Uuid) {
+        self.clear(attempt);
+        if self.closing == Some(attempt) {
+            self.closing = None;
         }
     }
 }
@@ -123,17 +156,11 @@ pub async fn begin_sign_in(
         return Err("Zenith is closing".into());
     }
     let attempt = Uuid::new_v4();
-    {
-        let mut sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
-        if sign_in.active.is_some() {
-            return Err("Finish or cancel the existing Roblox sign-in first".into());
-        }
-        sign_in.active = Some(SignIn {
-            attempt,
-            saving: false,
-            error: None,
-        });
-    }
+    state
+        .sign_in
+        .lock()
+        .map_err(|_| STATE_ERROR)?
+        .start(attempt)?;
     let opened = WebviewWindowBuilder::new(
         &app,
         label(attempt),
@@ -207,15 +234,17 @@ pub fn cancel_sign_in(
     state: State<'_, Arc<Workspace>>,
     attempt: Uuid,
 ) -> Result<(), String> {
-    state
-        .sign_in
-        .lock()
-        .map_err(|_| STATE_ERROR)?
-        .clear(attempt);
     if let Some(window) = app.get_webview_window(&label(attempt)) {
-        window
-            .close()
-            .map_err(|_| "Close the Roblox sign-in window manually")?;
+        let closing = state
+            .sign_in
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .close(attempt);
+        if closing {
+            window
+                .destroy()
+                .map_err(|_| "Close the Roblox sign-in window manually")?;
+        }
     }
     Ok(())
 }
@@ -351,7 +380,7 @@ fn capture_and_save(
             profile_id: identity.profile_id,
             close_failed: false,
         });
-        sign_in.clear(attempt);
+        sign_in.close(attempt);
         identity
     };
     if window.destroy().is_err()
@@ -373,7 +402,7 @@ pub fn destroyed(state: &Workspace, window_label: &str) {
         .and_then(|suffix| Uuid::parse_str(suffix).ok())
         && let Ok(mut sign_in) = state.sign_in.lock()
     {
-        sign_in.clear(id);
+        sign_in.window_destroyed(id);
     }
 }
 
@@ -448,5 +477,22 @@ mod tests {
         ] {
             assert_eq!(failure.retry_delay(0), None);
         }
+    }
+    #[test]
+    fn a_saved_or_cancelled_window_must_close_before_another_sign_in() {
+        let mut sign_in = SignInState::default();
+        let first = Uuid::new_v4();
+        let next = Uuid::new_v4();
+        sign_in.start(first).unwrap();
+        assert!(!sign_in.close(next));
+        assert!(sign_in.close(first));
+        assert!(sign_in.active.is_none());
+        assert!(sign_in.start(next).is_err());
+        sign_in.window_destroyed(next);
+        assert!(sign_in.start(next).is_err());
+        sign_in.window_destroyed(first);
+        sign_in.start(next).unwrap();
+        sign_in.window_destroyed(first);
+        assert_eq!(sign_in.active.as_ref().unwrap().attempt, next);
     }
 }

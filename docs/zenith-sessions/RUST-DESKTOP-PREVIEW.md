@@ -22,6 +22,24 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.25 account selection and sign-in closure
+
+Open **Accounts** and select an account's name or portrait. The inspector shows that account's Roblox headshot, display name, join date, public favorites, friends and Robux balance. Selecting a favorite fills the Sessions destination for that account. The account cell is a full-width selection target. Refreshing checks the selected account's details and the library's headshots. Initials appear while Roblox prepares an image or when the image is unavailable. [Roblox headshots](https://create.roblox.com/docs/cloud/reference/features/thumbnails)
+
+After a completed Roblox sign-in, Zenith verifies the identity, saves the protected session and selects the profile. It waits for the isolated window to close before accepting another sign-in. A late close event for a previous window cannot cancel a newer attempt. The preview uses the existing Rust library directory, so accounts already saved in it are available after upgrading.
+
+The browser fixture reproduced the narrow selection target and missing close state on the preceding build. It then checked all six synthetic accounts individually and verified selection and save feedback. The native regression covers the close gate and stale window events. The anonymous public Roblox contract check passed for public user ID 1. For an attended check, select each saved account and compare its headshot and details with Roblox. Then finish one Roblox sign-in and confirm that Zenith selects it, closes the window, and retains the profile after restart. Actual private details and the real WebView sign-in closure remain unverified on 1.25.
+
+The 1.25 executable has SHA-256 `BE9A7DDD6196EE23EC0E39540FD1A77179333FB160CFAD690C6DEF079901D1C8`. Seventy-six offline Rust tests, eighteen browser checks, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both runs of the staged executable passed all seven self-check stages. The package includes the Windows efficiency controls below.
+
+## Preview 1.24 Windows efficiency for an owned client
+
+After a client reaches **Arrival confirmed**, open **Performance** and select **Request Windows efficiency** on that client's card. Zenith requests the Windows execution-speed efficiency policy and reads it back through the same owned process handle. Windows can use that request to favor efficient scheduling. The controls for process priority and the timer-resolution policy remain separate. [Windows process power throttling](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setprocessinformation)
+
+Use **Restore system-managed efficiency** to clear the execution-speed request on that same process. Zenith offers restore only while it owns the change, preserves the timer policy observed at restore time, and respects an explicit execution policy set elsewhere. If Windows cannot report a supported state, the card shows **Unavailable**. A revoked enable request is rolled back when the exact applied state can still be read. Changes apply to the current process and are not carried into later launches. If Zenith closes unexpectedly while the client stays alive, Windows may retain the request until that process closes.
+
+For an attended check, record a baseline with a designated client in a reproducible workload, then request the policy and verify **Efficiency requested**. Compare CPU readings under the same workload and foreground conditions, and record responsiveness or in-game FPS if the client exposes it. Restore the policy and check for **System-managed**. Repeat with a second owned client to verify that its readback stays separate. Native tests confirm Windows state and ownership on disposable processes. Real Roblox responsiveness and power savings remain unmeasured.
+
 ## Preview 1.23 local support report
 
 Open **Overview** and select **Save support report**. Zenith writes a JSON file under `com.zenith.sessions.preview\support-reports` in Windows local application data. Copy the path shown in Zenith into File Explorer to find the report. The export is local and on demand. The report command is available to the local Zenith window. [Tauri capability scopes](https://v2.tauri.app/security/capabilities/)

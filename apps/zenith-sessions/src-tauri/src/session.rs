@@ -19,9 +19,9 @@ use zenith_session_launch::{
     evidence::Observed,
     target::{Target, new_tracker, player_uri},
     windows::{
-        OwnedPlayer, PairLease, Placement, PriorityAction, PriorityState, ProcessIdentity,
-        ProcessMetrics, ProcessSample, SavedIdentity, VerifiedPlayer,
-        ensure_compatible_player_start, memory_sample, tile_owned_players,
+        EfficiencyAction, EfficiencyState, OwnedPlayer, PairLease, Placement, PriorityAction,
+        PriorityState, ProcessIdentity, ProcessMetrics, ProcessSample, SavedIdentity,
+        VerifiedPlayer, ensure_compatible_player_start, memory_sample, tile_owned_players,
     },
 };
 
@@ -515,19 +515,44 @@ impl SessionOwner {
         id: Uuid,
         action: PriorityAction,
     ) -> Result<PriorityState, String> {
+        self.performance_player(
+            id,
+            "Confirm this client's arrival before changing priority.",
+        )?
+        .change_priority(action)
+        .map_err(str::to_owned)
+    }
+
+    pub fn set_client_efficiency(
+        &mut self,
+        id: Uuid,
+        action: EfficiencyAction,
+        permitted: impl Fn() -> bool,
+    ) -> Result<EfficiencyState, String> {
+        self.performance_player(
+            id,
+            "Confirm this client's arrival before changing efficiency.",
+        )?
+        .change_efficiency(action, permitted)
+        .map_err(str::to_owned)
+    }
+
+    fn performance_player(
+        &mut self,
+        id: Uuid,
+        unconfirmed: &'static str,
+    ) -> Result<&mut OwnedPlayer, String> {
         if self.closing {
             return Err("Zenith is closing.".into());
         }
         let attempt = self.attempt_mut(id)?;
         if attempt.row.phase != Phase::Running {
-            return Err("Confirm this client's arrival before changing priority.".into());
+            return Err(unconfirmed.into());
         }
         attempt
             .player
             .as_mut()
-            .ok_or("The owned Roblox process is unavailable.")?
-            .change_priority(action)
-            .map_err(str::to_owned)
+            .ok_or_else(|| "The owned Roblox process is unavailable.".into())
     }
 
     pub fn tile_windows(
@@ -1095,11 +1120,21 @@ mod tests {
                 .set_client_priority(id, PriorityAction::Lower)
                 .is_err()
         );
+        assert!(
+            owner
+                .set_client_efficiency(id, EfficiencyAction::Request, || true)
+                .is_err()
+        );
         owner.attempts[0].row.phase = Phase::Running;
         assert!(owner.client_performance().is_empty());
         assert!(
             owner
                 .set_client_priority(id, PriorityAction::Lower)
+                .is_err()
+        );
+        assert!(
+            owner
+                .set_client_efficiency(id, EfficiencyAction::Request, || true)
                 .is_err()
         );
         assert!(

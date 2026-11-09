@@ -1,9 +1,11 @@
 mod arrange;
+mod efficiency;
 mod pair_lease;
 mod publisher;
 mod telemetry;
 
 pub use arrange::{Placement, tile_owned_players};
+pub use efficiency::{EfficiencyAction, EfficiencyPolicy, EfficiencyState};
 pub use pair_lease::PairLease;
 pub use telemetry::{PriorityAction, PriorityState, ProcessMetrics, ProcessSample};
 
@@ -434,6 +436,7 @@ impl VerifiedPlayer {
             identity: process_identity(&child),
             child,
             managed_priority: false,
+            managed_efficiency: false,
         })
     }
 }
@@ -486,7 +489,7 @@ mod tests {
         assert!(registered_path(&command_line).is_err());
     }
 
-    fn fixture_player() -> OwnedPlayer {
+    pub(super) fn fixture_player() -> OwnedPlayer {
         use ::windows::Win32::System::Threading::NORMAL_PRIORITY_CLASS;
         let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
         let child = Command::new(windows.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
@@ -506,6 +509,7 @@ mod tests {
             identity: process_identity(&child),
             child,
             managed_priority: false,
+            managed_efficiency: false,
         }
     }
 
@@ -549,6 +553,7 @@ mod tests {
             identity: None,
             child,
             managed_priority: false,
+            managed_efficiency: false,
         };
         assert_eq!(
             owned
@@ -650,6 +655,7 @@ pub struct OwnedPlayer {
     identity: Option<ProcessIdentity>,
     child: std::process::Child,
     managed_priority: bool,
+    managed_efficiency: bool,
 }
 
 impl OwnedPlayer {

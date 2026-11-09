@@ -1,5 +1,13 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust account selection and sign-in closure (1.25)
+
+**VA-04-03, VA-07-03, CHAT-20.** Each saved account has a full-width inspection target and its own Roblox headshot and details. After a verified save, Zenith selects that profile and prevents a second sign-in until the first window is destroyed. Synthetic account and native lifecycle tests cover separate account data, auto-save feedback and stale close events. Real private profile reads and actual sign-in-window closure remain attended checks. [Preview 1.25](RUST-DESKTOP-PREVIEW.md#preview-125-account-selection-and-sign-in-closure)
+
+## Rust per-client Windows efficiency (1.24)
+
+**CAP-10-04, CAP-10-05, PROD-PERF-06.** Performance exposes an explicit Windows efficiency request for the confirmed owned process and a matching restore action. The backend verifies policy readback, preserves timer-resolution settings, fences stale process identities and revoked permission, and leaves separate priority controls intact. Windows child tests exercised the real API. Roblox workload benefit, CPU caps, and adaptive scheduling remain open. See [Preview 1.24](RUST-DESKTOP-PREVIEW.md#preview-124-windows-efficiency-for-an-owned-client).
+
 ## Rust local support report (1.23)
 
 **CAP-04-06, VA-10-03, PROD-UI-16.** Overview exports a local versioned JSON snapshot with typed admission, launch, recovery, and Panic evidence. The exporter projects an allowlist from the session owner and never serializes account profiles or free-form error text. Native tests cover redaction, collision refusal, and failed-write cleanup. The package self-check writes and reopens a synthetic report. Long-term event history and a full secret-absence audit remain separate. See [Preview 1.23](RUST-DESKTOP-PREVIEW.md#preview-123-local-support-report).

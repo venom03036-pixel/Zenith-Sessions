@@ -48,7 +48,8 @@ export function Avatar({ username, image, imageRevision, large = false }: {
     url.searchParams.set('zenith-refresh', `${imageRevision}-${Number(retried)}`);
     source = url.href;
   }
-  return <span aria-hidden="true" className={`avatar preview-avatar${large ? ' inspector-avatar' : ''}`}>
+  return <span aria-hidden="true" title={failed && retried ? 'Roblox headshot unavailable' : undefined}
+    className={`avatar preview-avatar${large ? ' inspector-avatar' : ''}`}>
     {!visible && <span>{username.slice(0, 2).toUpperCase()}</span>}
     {source && !failed && <img key={String(retried)} src={source} alt="" referrerPolicy="no-referrer" hidden={!visible}
       onLoad={() => setVisible(true)} onError={() => { setVisible(false); setFailed(true); }}/>}
@@ -66,22 +67,7 @@ function dateLabel(date: string) {
   return Number.isNaN(value.valueOf()) ? 'Unavailable' : value.toLocaleDateString();
 }
 
-export function AccountInspector({ account, credentialRevision, image, imageRevision, onFavorite, onRefreshHeadshots, legacyDetails }: {
-  account: Account;
-  credentialRevision: string;
-  image?: string;
-  imageRevision: number;
-  onFavorite: (favorite: Favorite) => void;
-  onRefreshHeadshots: () => void;
-  legacyDetails?: ReactNode;
-}) {
-  const [revision, setRevision] = useState(0);
-  return <AccountDetails key={revision} account={account} credentialRevision={credentialRevision}
-    image={image} imageRevision={imageRevision} onFavorite={onFavorite} legacyDetails={legacyDetails}
-    onRefresh={() => { setRevision(value => value + 1); onRefreshHeadshots(); }}/>;
-}
-
-function AccountDetails({ account, credentialRevision, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {
+export function AccountInspector({ account, credentialRevision, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {
   account: Account;
   credentialRevision: string;
   image?: string;

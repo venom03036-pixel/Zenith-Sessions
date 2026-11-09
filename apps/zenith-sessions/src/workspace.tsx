@@ -34,6 +34,7 @@ type Snapshot = {
   recovery: Recovery;
   panic: PanicState;
   signInAttempt: string | null; signInError: string | null;
+  signInClosing: string | null;
   savedSignIn: { attempt: string; profileId: string; closeFailed: boolean } | null;
 };
 type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows' | 'Automation' | 'Performance';
@@ -150,8 +151,10 @@ function App() {
   const selectedSession = sessions.find(session => session.accountId === account?.profileId);
   const admission = snapshot?.admission;
   const signInAttempt = snapshot?.signInAttempt;
+  const signInClosing = snapshot?.signInClosing;
   const savedSignIn = snapshot?.savedSignIn;
   const savedAccount = accounts.find(value => value.profileId === savedSignIn?.profileId);
+  const closingSavedSignIn = !!savedSignIn && signInClosing === savedSignIn.attempt;
   const inspectedSignIn = savedSignIn && savedSignIn.profileId === inspected?.profileId ? savedSignIn.attempt : '';
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = privateMode ? !!privateServer : Boolean(destination.place.trim());
@@ -382,7 +385,7 @@ function App() {
         <div><h1>{page}</h1><p>{pageDescription[page]}</p></div>
         {page === 'Accounts' && <div className="heading-actions">
           <button className="secondary-button" disabled={importing} onClick={() => file.current?.click()}>{importing ? 'Importing…' : 'Import protected file'}</button>
-          <button className="primary-button" disabled={signInBusy || !!signInAttempt} onClick={() => void beginSignIn()}><Icon name="plus" size={16}/> Add account</button>
+          <button className="primary-button" disabled={signInBusy || !!signInAttempt || !!signInClosing} onClick={() => void beginSignIn()}><Icon name="plus" size={16}/> Add account</button>
         </div>}
       </div>
       <input ref={file} type="file" accept=".dpapi,.zenith-migration" hidden onChange={event => void importFile(event.currentTarget)}/>
@@ -395,7 +398,8 @@ function App() {
       {page === 'Accounts' && legacyNotice && <p role="status" className="inline-alert">{legacyNotice}</p>}
       {page === 'Accounts' && !signInAttempt && savedAccount &&
         <p role="status" className="inline-alert sign-in-saved">Saved Roblox sign-in for @{savedAccount.username}.
-          {savedSignIn?.closeFailed && ' Zenith could not close the sign-in window. You can close it manually.'}</p>}
+          {closingSavedSignIn && (savedSignIn.closeFailed ? ' Zenith could not close the sign-in window. You can close it manually.'
+            : ' Closing the Roblox sign-in window…')}</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
         <p>Finish signing in inside the Roblox window. Zenith will save the verified sign-in and close the window automatically.</p>
@@ -436,9 +440,9 @@ function App() {
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>
-      {inspected && <AccountInspector key={`${inspected.profileId}:${inspectedSignIn}`}
+      {inspected && <AccountInspector key={`${inspected.profileId}:${inspectedSignIn}:${avatarRevision}`}
         account={inspected} credentialRevision={inspectedSignIn} image={avatars[inspected.profileId]} imageRevision={avatarRevision}
-        onRefreshHeadshots={() => setAvatarRevision(value => value + 1)}
+        onRefresh={() => setAvatarRevision(value => value + 1)}
         legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
           setPrivateServer(null);

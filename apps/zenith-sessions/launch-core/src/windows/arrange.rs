@@ -390,6 +390,7 @@ mod tests {
                 identity: process_identity(&child),
                 child,
                 managed_priority: false,
+                managed_efficiency: false,
             });
             let (ready, wait) = mpsc::sync_channel(1);
             std::thread::spawn(move || {

@@ -19,7 +19,7 @@ use windows::Win32::{
     },
 };
 
-use super::{OwnedPlayer, ProcessIdentity, process_identity_from_handle};
+use super::{EfficiencyState, OwnedPlayer, ProcessIdentity, process_identity_from_handle};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -64,6 +64,7 @@ pub struct ProcessSample {
     memory: Option<ProcessMemory>,
     uptime_seconds: Option<u64>,
     priority: Option<PriorityState>,
+    efficiency: Option<EfficiencyState>,
 }
 
 #[derive(Serialize)]
@@ -77,6 +78,7 @@ pub struct ProcessMetrics {
     pub private_commit: Option<u64>,
     pub uptime_seconds: Option<u64>,
     pub priority: Option<PriorityState>,
+    pub efficiency: Option<EfficiencyState>,
 }
 
 impl ProcessSample {
@@ -114,12 +116,13 @@ impl ProcessSample {
             private_commit: self.memory.as_ref().map(|memory| memory.private_commit),
             uptime_seconds: self.uptime_seconds,
             priority: self.priority,
+            efficiency: self.efficiency,
         }
     }
 }
 
 impl OwnedPlayer {
-    fn performance_handle(&self) -> Option<HANDLE> {
+    pub(super) fn performance_handle(&self) -> Option<HANDLE> {
         let identity = self.identity?;
         let handle = HANDLE(self.child.as_raw_handle());
         // SAFETY: Child owns this exact handle for the lifetime of the borrow.
@@ -143,6 +146,7 @@ impl OwnedPlayer {
         };
         let memory = memory(handle);
         let priority = read_priority(handle).map(|class| self.priority_state(class));
+        let efficiency = self.sample_efficiency(handle);
         // If the client exited mid-sample, leave a gap instead of publishing its final counters.
         self.performance_handle()?;
         let uptime_seconds = (identity.started_filetime / 10_000_000)
@@ -164,6 +168,7 @@ impl OwnedPlayer {
             memory,
             uptime_seconds,
             priority,
+            efficiency,
         })
     }
 
@@ -285,6 +290,7 @@ mod tests {
             memory: None,
             uptime_seconds: None,
             priority: None,
+            efficiency: None,
         };
         let next = ProcessSample {
             at: at + Duration::from_secs(1),
