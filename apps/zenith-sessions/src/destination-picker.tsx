@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { PublicGameDetails } from './public-game-details';
+import { RecentServers, type ServerHistory } from './recent-servers';
 
 type Game = { placeId: string; name: string };
 type Server = { id: string; playing: number; maxPlayers: number; ping: number | null; fps: number | null };
@@ -13,12 +14,14 @@ const MAX_CACHED_SERVER_PAGES = 8;
 
 export type Destination = { place: string; name: string; job: string | null };
 
-export function DestinationPicker({ destination, onChange, disabled, autoShowDetails, onAutoShowDetailsChange }: {
+export function DestinationPicker({ destination, onChange, disabled, autoShowDetails, onAutoShowDetailsChange, serverHistory, onClearServerHistory }: {
   destination: Destination;
   onChange: (destination: Destination) => void;
   disabled: boolean;
   autoShowDetails: boolean;
   onAutoShowDetailsChange: (enabled: boolean) => void;
+  serverHistory?: ServerHistory;
+  onClearServerHistory: () => Promise<boolean>;
 }) {
   const [query, setQuery] = useState('');
   const [games, setGames] = useState<Game[] | null>(null);
@@ -37,11 +40,11 @@ export function DestinationPicker({ destination, onChange, disabled, autoShowDet
 
   useEffect(() => () => { searches.current++; pages.current++; pendingPage.current = null; }, []);
 
-  function changePlace(place: string, name = '') {
+  function changePlace(place: string, name = '', job: string | null = null) {
     pages.current++;
     setServerView(null);
     setServerError('');
-    onChange({ place, name, job: null });
+    onChange({ place, name, job });
   }
 
   async function search() {
@@ -106,6 +109,8 @@ export function DestinationPicker({ destination, onChange, disabled, autoShowDet
   }
 
   return <div className="destination-picker">
+    <RecentServers history={serverHistory} disabled={disabled} onClear={onClearServerHistory}
+      onSelect={visit => { setEditingPlace(false); changePlace(visit.placeId, '', visit.serverId); }}/>
     <form className="destination-input" onSubmit={event => { event.preventDefault(); void search(); }}>
       <label>Find a game by name <input value={query} onChange={event => {
         searches.current++;

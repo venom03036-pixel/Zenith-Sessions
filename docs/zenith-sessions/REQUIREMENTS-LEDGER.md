@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust confirmed public server history (1.30)
+
+**CAP-04-05, CAP-12-02, CAP-14-01, PROD-UI-04.** Sessions saves up to 24 distinct public places and server IDs from confirmed initial arrivals. The history stores confirmation times, restores from a bounded versioned file, and isolates storage errors from launch control. Selecting a visit pins the exact destination. Clearing requires confirmation and leaves the active destination selected. The native, browser, and packaged fixtures cover persistence, the ownership and identity boundaries, and exact selection. Live recording and later in-session teleports remain separate. [Preview 1.30](RUST-DESKTOP-PREVIEW.md#preview-130-recently-joined-public-servers)
+
 ## Rust automatic game details preference (1.29)
 
 **CAP-12-04, PROD-UI-03.** Sessions saves an automatic-details setting that defaults on. A selected search result or committed place loads the existing public metadata and art. Manual mode retains the explicit load button. A superseded lookup cannot publish its results or alter the selected server. The browser fixture checks the setting, destination edits, late completion, and both load modes. [Preview 1.29](RUST-DESKTOP-PREVIEW.md#preview-129-automatic-game-details)

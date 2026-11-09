@@ -25,6 +25,8 @@ function exerciseWorkspace() {
   const windowChanges = [];
   let efficiency = { policy: 'system_managed', canRequest: true, canRestore: false };
   let savedInvites = [];
+  let serverHistory = { visits: [], issue: null };
+  let clearHistoryCalls = 0;
   const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
   let catalogRequests = 0;
   const catalogCursor = { offset: 25, hostSessionId: 'fixture-session', catalogRevision: '9007199254740993', total: 26 };
@@ -89,7 +91,7 @@ function exerciseWorkspace() {
           accounts, sessions: sessionRows, launch: { active: sessionRows.length, pairEnabled: false, hold: null },
           admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
             commitAvailable: 1, commitRequired: 1, canTryOne: false },
-          recovery: { issue: null, attempts: [] }, panic,
+          recovery: { issue: null, attempts: [] }, panic, serverHistory,
           signInAttempt, signInClosing, signInError: null, savedSignIn, macroPlayback,
         };
         case 'begin_sign_in':
@@ -99,6 +101,11 @@ function exerciseWorkspace() {
           manualSaveCalls++;
           throw new Error('Automatic saving must not require a renderer save command.');
         case 'legacy_workspace': return null;
+        case 'clear_public_server_history':
+          if (Object.keys(args).length) throw new Error('Clearing history accepted an unexpected target.');
+          clearHistoryCalls++;
+          serverHistory = { visits: [], issue: null };
+          return;
         case 'macro_assignments': return assignmentView();
         case 'edit_macro_assignment':
           if (stamp !== assignmentStamp || target.id !== assignmentTarget.id || target.kind !== 'Account') throw new Error('Wrong assignment target or stamp.');
@@ -534,6 +541,44 @@ function exerciseWorkspace() {
         setPlace.call(field, '1819');
         field.dispatchEvent(new Event('input', { bubbles: true }));
       } finally { find('button[aria-label="Accounts"]').click(); }
+    });
+    await check('confirmed server history selects the exact destination and clears only after confirmation', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      const panel = () => find('[aria-label="Recently joined public servers"]');
+      const placeId = '9007199254740993';
+      const serverId = '44444444-0000-0000-0000-000000000001';
+      const observedAt = 1794214464;
+      serverHistory = { visits: [{ placeId, serverId, observedAt }], issue: null };
+      const previousLaunch = launchedTarget;
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => panel()?.querySelector('summary'), 'there is no confirmed-server history panel');
+        panel().querySelector('summary').click();
+        const row = () => panel().querySelector('[aria-label="Recent server visits"] button');
+        await until(() => row()?.textContent.includes(serverId), 'the observed server did not appear');
+        if (!row().textContent.includes(new Date(observedAt * 1000).toLocaleString())) throw new Error('visit time was not displayed');
+        row().click();
+        const field = find('input[placeholder="Enter a place ID or game link"]');
+        await until(() => field.value === placeId && find('.directory-selection')?.textContent.includes(serverId), 'the exact visit was not pinned');
+        if (launchedTarget !== previousLaunch) throw new Error('choosing a visit launched Roblox without confirmation');
+        button('Clear recent servers').click();
+        await until(() => button('Cancel clear'), 'clearing did not ask for confirmation');
+        button('Cancel clear').click();
+        await until(() => button('Clear recent servers'), 'cancel did not dismiss clear confirmation');
+        if (clearHistoryCalls || !row()) throw new Error('cancelled clear removed history');
+        button('Clear recent servers').click();
+        await until(() => button('Clear history'), 'clear confirmation did not reopen');
+        button('Clear history').click();
+        await until(() => panel()?.textContent.includes('No confirmed public server visits yet.'), 'cleared history stayed visible');
+        if (clearHistoryCalls !== 1 || !find('.directory-selection')?.textContent.includes(serverId)) {
+          throw new Error('clearing history changed the active destination or ran more than once');
+        }
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field, '1819');
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      } finally {
+        serverHistory = { visits: [], issue: null };
+        find('button[aria-label="Accounts"]').click();
+      }
     });
     await check('a protected invite launches by reference without a public target or raw code', async () => {
       const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);

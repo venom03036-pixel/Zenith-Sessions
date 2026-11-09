@@ -41,8 +41,12 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .server-options { flex-wrap: wrap; align-items: end; }
 .server-options label:first-child { display: grid; gap: .35rem; color: var(--muted); }
 .server-options .pair-choice { margin: 0; min-height: 2.5rem; }
-.private-servers { margin-bottom: .8rem; border: 1px solid var(--border); border-radius: .55rem; padding: .7rem; }
-.private-servers summary { cursor: pointer; color: var(--heading); }
+.private-servers { margin-bottom: .8rem; }
+.private-servers, .recent-servers { border: 1px solid var(--border); border-radius: .55rem; padding: .7rem; }
+.private-servers summary, .recent-servers summary { cursor: pointer; color: var(--heading); }
+.recent-servers-content { display: grid; gap: .65rem; margin-top: .65rem; justify-items: start; }
+.recent-servers-content .directory-results { width: 100%; }
+.recent-servers-content .row-actions { margin-top: .5rem; }
 .private-invite-content, .private-invite-form { display: grid; gap: .65rem; margin-top: .65rem; }
 .private-invite-form { grid-template-columns: repeat(auto-fit, minmax(min(100%, 11rem), 1fr)); align-items: end; }
 .private-invite-form label { display: grid; gap: .35rem; color: var(--muted); }

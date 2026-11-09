@@ -9,6 +9,7 @@ import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from
 import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { SupportReportPanel } from './support-report';
 import { DestinationPicker, type Destination } from './destination-picker';
+import type { ServerHistory } from './recent-servers';
 import { PrivateServers, privateReference, type PrivateServer } from './private-servers';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
@@ -31,6 +32,7 @@ type PanicState = { epoch: string; held: boolean; canResume: boolean; shortcutAv
 type Snapshot = {
   macroPlayback: MacroRunView | null;
   accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null;
+  serverHistory: ServerHistory;
   recovery: Recovery;
   panic: PanicState;
   signInAttempt: string | null; signInError: string | null;
@@ -503,7 +505,8 @@ function App() {
               : <p role="status">The selected invite was removed. Choose another invite to launch privately.</p>}
             <button className="secondary-button" disabled={launching} onClick={() => setPrivateServer(null)}>Use a public game</button>
           </div> : <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}
-            autoShowDetails={autoShowDetails} onAutoShowDetailsChange={setAutoShowDetails}/>}
+            autoShowDetails={autoShowDetails} onAutoShowDetailsChange={setAutoShowDetails}
+            serverHistory={snapshot?.serverHistory} onClearServerHistory={() => act('clear_public_server_history', {})}/>}
           {!privateMode && <label className="pair-choice">
             <input type="checkbox" checked={pairEnabled} disabled={active > 0 || launching} onChange={event => setPairRequested(event.target.checked)}/>
             Enable two-account trial

@@ -7,6 +7,7 @@ mod panic_hotkey;
 mod panic_stop;
 mod recovery;
 mod self_check;
+mod server_history;
 mod session;
 mod session_monitor;
 mod sign_in;
@@ -243,6 +244,7 @@ struct Snapshot {
     macro_playback: Option<MacroRunView>,
     accounts: Vec<SavedIdentity>,
     sessions: Vec<Session>,
+    server_history: server_history::ServerHistoryView,
     launch: LaunchState,
     recovery: recovery::RecoveryView,
     panic: PanicView,
@@ -287,11 +289,12 @@ impl Workspace {
 async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot, String> {
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let (sessions, launch, recovery, panic) = {
+        let (sessions, server_history, launch, recovery, panic) = {
             let owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             let shortcut = state.hotkey.as_ref().is_some_and(PanicHotkey::is_running);
             (
                 owner.rows(),
+                owner.server_history(),
                 owner.launch_state(),
                 owner.recovery(),
                 state.panic.view(&owner, shortcut),
@@ -306,6 +309,7 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             macro_playback: state.macro_playback.view(),
             accounts,
             sessions,
+            server_history,
             launch,
             recovery,
             panic,
@@ -315,6 +319,20 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             sign_in_error: sign_in.active.as_ref().and_then(|flow| flow.error.clone()),
             saved_sign_in: sign_in.saved.clone(),
         })
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn clear_public_server_history(state: State<'_, Arc<Workspace>>) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .clear_public_server_history()
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -1131,6 +1149,7 @@ fn main() -> ExitCode {
         })
         .invoke_handler(tauri::generate_handler![
             workspace_snapshot,
+            clear_public_server_history,
             support_report::export_support_report,
             saved_macro_catalog,
             macro_assignments,

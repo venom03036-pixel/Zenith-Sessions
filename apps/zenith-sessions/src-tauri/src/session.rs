@@ -4,6 +4,7 @@ use std::{
 };
 
 use crate::recovery::{Checkpoint, Journal, MAX_ENTRIES, Record, RecoveryView, ReviewState};
+use crate::server_history::{ServerHistory, ServerHistoryView};
 
 mod diagnostics;
 mod retry;
@@ -73,12 +74,13 @@ impl Observation {
         Observed::for_attempt(logs, self.tracker, self.launched)
     }
 
-    fn confirms(self, facts: &Observed) -> bool {
-        !self.private_server
-            && self.matches_account_and_place(facts)
-            && facts
-                .job_id
-                .is_some_and(|job| self.expected_job.is_none_or(|expected| expected == job))
+    fn confirmed_public_server(self, facts: &Observed) -> Option<Uuid> {
+        if self.private_server || !self.matches_account_and_place(facts) {
+            return None;
+        }
+        facts.job_id.filter(|job| {
+            !job.is_nil() && self.expected_job.is_none_or(|expected| expected == *job)
+        })
     }
 
     fn matches_account_and_place(self, facts: &Observed) -> bool {
@@ -161,18 +163,29 @@ pub struct SessionOwner {
     closing: bool,
     last_start: Option<Instant>,
     journal: Journal,
+    server_history: ServerHistory,
     recovered: Vec<Record>,
     last_reservation_failure: Option<FailureStage>,
 }
 
 impl SessionOwner {
     pub fn open(path: PathBuf) -> Self {
+        let server_history = ServerHistory::open(path.with_file_name("public-server-history.json"));
         let (journal, recovered) = Journal::open(path);
         Self {
             journal,
+            server_history,
             recovered,
             ..Self::default()
         }
+    }
+
+    pub fn server_history(&self) -> ServerHistoryView {
+        self.server_history.view()
+    }
+
+    pub fn clear_public_server_history(&mut self) -> Result<(), String> {
+        self.server_history.clear()
     }
 
     pub fn rows(&self) -> Vec<Session> {
@@ -450,7 +463,9 @@ impl SessionOwner {
             } else {
                 None
             };
-            attempt.reconcile(sample, now);
+            if let Some((place, server)) = attempt.reconcile(sample, now) {
+                self.server_history.record(place, server, SystemTime::now());
+            }
         }
         self.release_idle_pair();
         let _ = self.sync_journal();
@@ -906,31 +921,31 @@ impl Attempt {
         Ok(())
     }
 
-    fn reconcile(&mut self, evidence: Option<(Observation, Option<Observed>)>, now: Instant) {
-        let Some(player) = self.player.as_mut() else {
-            return;
-        };
+    fn reconcile(
+        &mut self,
+        evidence: Option<(Observation, Option<Observed>)>,
+        now: Instant,
+    ) -> Option<(u64, Uuid)> {
+        let player = self.player.as_mut()?;
         let row = &mut self.row;
         match player.exit_status() {
             Ok(Some(exit)) => {
                 self.record_exit(exit.code().map(|code| code as u32), now);
-                return;
+                return None;
             }
             Err(_) => {
                 row.detail = Some("Could not query the owned Roblox process".into());
-                return;
+                return None;
             }
             Ok(None) => (),
         }
         if self.close_request.is_some() {
             self.check_close_grace(now);
-            return;
+            return None;
         }
-        let Some((observation, facts)) = evidence.filter(|(observation, _)| {
+        let (observation, facts) = evidence.filter(|(observation, _)| {
             row.attempt_id == observation.attempt && row.phase == Phase::Starting
-        }) else {
-            return;
-        };
+        })?;
         if let Some(facts) = facts {
             if let Some(mismatch) = observation.mismatch(&facts) {
                 self.failure_stage = Some(FailureStage::ArrivalEvidence);
@@ -947,14 +962,16 @@ impl Attempt {
                         "Roblox reported {mismatch} and the process could not be stopped."
                     ));
                 }
-                return;
+                return None;
             }
-            if observation.confirms(&facts) && player.has_window() {
+            if let Some(server) = observation.confirmed_public_server(&facts)
+                && player.has_window()
+            {
                 self.observation = None;
                 row.phase = Phase::Running;
-                row.observed_server = facts.job_id;
+                row.observed_server = Some(server);
                 row.detail = Some("Account and initial destination confirmed".into());
-                return;
+                return Some((observation.expected_place, server));
             }
             if observation.private_server
                 && observation.matches_account_and_place(&facts)
@@ -965,7 +982,7 @@ impl Attempt {
                 row.observed_server = facts.job_id;
                 row.detail =
                     Some("Account and place confirmed. Check the private server in Roblox.".into());
-                return;
+                return None;
             }
         }
         if observation.started.elapsed() >= Duration::from_secs(65) {
@@ -976,6 +993,7 @@ impl Attempt {
                 "Roblox started, but Zenith could not confirm the account and destination".into(),
             );
         }
+        None
     }
 
     fn stop(&mut self) -> Result<(), String> {
@@ -1296,18 +1314,59 @@ mod tests {
             job_id: Some(Uuid::from_u128(2)),
             connected: true,
         };
-        assert!(!launch.confirms(&facts));
+        assert_eq!(launch.confirmed_public_server(&facts), None);
         assert_eq!(launch.mismatch(&facts), Some("a different server"));
         facts.job_id = launch.expected_job;
-        assert!(launch.confirms(&facts));
+        assert_eq!(launch.confirmed_public_server(&facts), launch.expected_job);
         facts.connected = false;
-        assert!(!launch.confirms(&facts));
+        assert_eq!(launch.confirmed_public_server(&facts), None);
         facts.connected = true;
         launch.expected_job = None;
-        assert!(launch.confirms(&facts));
+        assert_eq!(launch.confirmed_public_server(&facts), facts.job_id);
+        facts.user_id = Some(43);
+        assert_eq!(launch.confirmed_public_server(&facts), None);
+        facts.user_id = Some(42);
+        let server = facts.job_id;
+        facts.job_id = Some(Uuid::nil());
+        assert_eq!(launch.confirmed_public_server(&facts), None);
+        facts.job_id = server;
         launch.private_server = true;
         assert!(launch.matches_account_and_place(&facts));
-        assert!(!launch.confirms(&facts));
+        assert_eq!(launch.confirmed_public_server(&facts), None);
+    }
+
+    #[test]
+    fn matching_log_facts_without_an_owned_process_cannot_record_a_visit() {
+        let mut owner = SessionOwner::default();
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            username: "Fixture".into(),
+            user_id: 42,
+        };
+        let mut attempt = Attempt::new(&account, &Target::public(1818, None), None);
+        attempt.row.phase = Phase::Starting;
+        let observation = Observation {
+            attempt: attempt.row.attempt_id,
+            tracker: 42,
+            launched: SystemTime::now(),
+            started: Instant::now(),
+            expected_user: 42,
+            expected_place: 1818,
+            expected_job: None,
+            private_server: false,
+        };
+        owner.attempts.push(attempt);
+        owner.reconcile(Some((
+            observation,
+            Some(Observed {
+                user_id: Some(42),
+                place_id: Some(1818),
+                job_id: Some(Uuid::from_u128(1)),
+                connected: true,
+            }),
+        )));
+        let view = serde_json::to_value(owner.server_history()).unwrap();
+        assert_eq!(view["visits"], serde_json::json!([]));
     }
 
     #[test]

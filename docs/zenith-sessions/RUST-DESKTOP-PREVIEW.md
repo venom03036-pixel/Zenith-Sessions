@@ -22,6 +22,16 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.30 recently joined public servers
+
+Open **Recently joined public servers** in **Sessions** to see up to 24 distinct place and server pairs, with the most recent confirmed initial arrival first. Zenith saves the exact place ID, server ID, and confirmation time in the local preview library. A revisit moves that pair to the top. History carries no account identity, private invite data, or sign-in material.
+
+Selecting a visit fills its exact place and server for a new launch. It also resets the public browser page so a response from the previous place cannot replace the list. Roblox assigns seats at join time. **Clear recent servers** asks for confirmation and preserves the destination already selected. If the saved history cannot be read or written, the panel explains the issue and current-run visits remain visible.
+
+For an attended check, launch a designated account to a public place and wait for **Arrival confirmed**. Compare the initial server shown on the session with the entry in **Recently joined public servers**. Close the client and reopen Zenith, then select that entry and compare the pinned place and server before choosing Launch. Check that an unconfirmed or private attempt does not create a public history entry. The browser and Rust fixtures use synthetic evidence. A recorded history entry from a live Roblox arrival still needs this trial.
+
+The 1.30 executable has SHA-256 `09671115ABE6ADF40361D450D432D761F9638142EC6DA23D2D15C46AC2BAE550`. The new browser check failed against 1.29 and passed against 1.30. Eighty-five offline Rust tests, twenty-four browser checks against the Release assets, formatting, Clippy with warnings denied, and a zero-warning Release build passed. The staged executable passed all eight self-check stages twice.
+
 ## Preview 1.29 automatic game details
 
 In **Sessions**, the **Automatically show game details** setting is on by default and saved on this PC. Choose a search result or finish entering a public place ID or game link by pressing **Enter** or leaving the field. Zenith loads the experience details and artwork in the picker. With the setting off, **Load game details** is available whenever a public destination is entered.
