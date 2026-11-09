@@ -13,11 +13,12 @@ import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
 import './workspace.css';
 
-type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'stopping' | 'stopped' | 'failed';
+type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'retry_waiting' | 'stopping' | 'stopped' | 'failed';
 type Session = {
   attemptId: string; accountId: string; username: string; placeId: string;
   phase: Phase; pid: number | null; requestedServer: string | null; observedServer: string | null; detail: string | null;
   privateServer: boolean;
+  automaticRestart: number | null;
 };
 type Admission = {
   limitingResource: 'stale' | 'invalid' | 'commit' | 'physical_memory' | null;
@@ -63,11 +64,11 @@ const themes = [
 ] as const;
 const phaseLabel: Record<Phase, string> = {
   preparing: 'Preparing', starting: 'Starting Roblox', running: 'Arrival confirmed',
-  unconfirmed: 'Running · unconfirmed', stopping: 'Stopping', stopped: 'Stopped', failed: 'Launch failed',
+  unconfirmed: 'Running · unconfirmed', retry_waiting: 'Restart waiting', stopping: 'Stopping', stopped: 'Stopped', failed: 'Launch failed',
 };
 const phaseTone: Record<Phase, string> = {
   preparing: 'launching', starting: 'launching', running: 'online',
-  unconfirmed: 'attention', stopping: 'launching', stopped: 'idle', failed: 'attention',
+  unconfirmed: 'attention', retry_waiting: 'attention', stopping: 'launching', stopped: 'idle', failed: 'attention',
 };
 const holds: Record<NonNullable<Admission['limitingResource']>, string> = {
   stale: 'The memory reading expired.', invalid: 'Windows reported an invalid memory reading.',
@@ -113,6 +114,7 @@ function App() {
   const [launching, setLaunching] = useState(false);
   const [panicBusy, setPanicBusy] = useState(false);
   const [pairRequested, setPairRequested] = useState(false);
+  const [recoveryRequested, setRecoveryRequested] = useState(false);
   const [importing, setImporting] = useState(false);
   const [legacyWorkspace, setLegacyWorkspace] = useState<LegacyWorkspace | null>(null);
   const [legacyOffset, setLegacyOffset] = useState(0);
@@ -289,10 +291,12 @@ function App() {
           id: account.profileId, reference: privateReference(privateServer), tryOne, epoch: panic.epoch,
         });
       } else if (await act('launch_account', {
-        id: account.profileId, placeId: destination.place, job: destination.job, tryOne, allowPair: pairEnabled,
+        id: account.profileId, placeId: destination.place, job: destination.job, tryOne,
+        options: { allowPair: pairEnabled, recover: recoveryRequested },
         epoch: panic.epoch,
       })) {
         localStorage.setItem('zenith-preview-place', destination.place.trim());
+        setRecoveryRequested(false);
       }
     }
     finally { setLaunching(false); }
@@ -470,6 +474,11 @@ function App() {
             Enable two-account trial
           </label>}
           {!privateMode && pairEnabled && <p>Start with other Roblox clients closed. Launch one account, then choose a different account when the first is confirmed and ready.</p>}
+          {!privateMode && <label className="pair-choice">
+            <input type="checkbox" checked={recoveryRequested} disabled={launching}
+              onChange={event => setRecoveryRequested(event.target.checked)}/>
+            Restart after a fatal exit for this launch
+          </label>}
           {privateServer && active > 0 && <p>Stop the current session before launching a private invite.</p>}
           {launchState?.hold && <p role="status">{launchState.hold}</p>}
           {isBusy(selectedSession) && <p>This account already has an active session.</p>}
@@ -478,18 +487,23 @@ function App() {
           </div>
         </section>
         {active > 0 && <section className="account-panel preview-panel row-actions" aria-label="Session controls">
-          <button className="secondary-button" onClick={() => void act('stop_all_sessions', {})}>Stop all owned clients</button>
+          <button className="secondary-button" onClick={() => void act('stop_all_sessions', {})}>
+            {sessions.some(session => session.phase === 'retry_waiting') ? 'Stop all and cancel restarts' : 'Stop all owned clients'}
+          </button>
         </section>}
         {sessions.map(session => <section key={session.attemptId} className="account-panel preview-panel session-status" aria-label={`${session.username} session`}>
           <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
           <p>Place {session.placeId}{session.pid ? ` · PID ${session.pid}` : ''}</p>
+          {session.automaticRestart && <p>Automatic restart {session.automaticRestart} of 2</p>}
           {session.requestedServer && <p>Requested server {session.requestedServer}</p>}
           {session.privateServer && <p>Requested destination · Private invite</p>}
           {session.detail && <p>{session.detail}</p>}
           {session.observedServer && <p>{session.privateServer ? 'Observed server job' : 'Confirmed initial server'} {session.observedServer}</p>}
           {isBusy(session) && <div className="row-actions">
             {session.phase === 'running' && <button className="secondary-button" onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
-            <button className="secondary-button" disabled={session.phase === 'stopping'} onClick={() => void act('stop_session', { attempt: session.attemptId })}>{session.phase === 'preparing' ? 'Cancel launch' : 'Stop Roblox'}</button>
+            <button className="secondary-button" disabled={session.phase === 'stopping'} onClick={() => void act('stop_session', { attempt: session.attemptId })}>
+              {session.phase === 'retry_waiting' ? 'Cancel restart' : session.phase === 'preparing' ? 'Cancel launch' : 'Stop Roblox'}
+            </button>
           </div>}
         </section>)}
         <Memory admission={admission}/>

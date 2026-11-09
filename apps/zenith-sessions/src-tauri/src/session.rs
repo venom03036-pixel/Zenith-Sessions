@@ -5,6 +5,10 @@ use std::{
 
 use crate::recovery::{Checkpoint, Journal, MAX_ENTRIES, Record, RecoveryView, ReviewState};
 
+mod retry;
+use retry::Recovery;
+pub use retry::RetryRequest;
+
 use serde::Serialize;
 use uuid::Uuid;
 use zenith_session_launch::{
@@ -26,6 +30,7 @@ pub enum Phase {
     Starting,
     Running,
     Unconfirmed,
+    RetryWaiting,
     Stopping,
     Stopped,
     Failed,
@@ -42,6 +47,7 @@ pub struct Session {
     pid: Option<u32>,
     requested_server: Option<Uuid>,
     private_server: bool,
+    automatic_restart: Option<usize>,
     observed_server: Option<Uuid>,
     detail: Option<String>,
 }
@@ -248,7 +254,10 @@ impl SessionOwner {
                 "Review the interrupted launch in Sessions before starting Roblox.".into(),
             );
         }
-        let active: Vec<_> = self.active().collect();
+        let active: Vec<_> = self
+            .active()
+            .filter(|attempt| attempt.row.phase != Phase::RetryWaiting)
+            .collect();
         if self.recovered.len() + active.len() >= MAX_ENTRIES {
             return Some(
                 "Dismiss a reviewed recovery entry before starting another launch.".into(),
@@ -412,6 +421,7 @@ impl SessionOwner {
     }
 
     pub fn reconcile(&mut self, mut evidence: Option<(Observation, Option<Observed>)>) {
+        let now = Instant::now();
         for attempt in &mut self.attempts {
             let sample = if evidence
                 .as_ref()
@@ -421,14 +431,15 @@ impl SessionOwner {
             } else {
                 None
             };
-            attempt.reconcile(sample);
+            attempt.reconcile(sample, now);
         }
         self.release_idle_pair();
         let _ = self.sync_journal();
     }
 
     pub fn stop(&mut self, id: Uuid) -> Result<(), String> {
-        let result = self.attempt_mut(id)?.stop();
+        let target = self.stop_target(id);
+        let result = self.attempt_mut(target)?.stop();
         self.release_idle_pair();
         let saved = self.sync_journal();
         result.and(saved)
@@ -668,6 +679,7 @@ struct Attempt {
     preparing: bool,
     dispatching: bool,
     cancelled: bool,
+    recovery: Recovery,
 }
 
 impl Attempt {
@@ -676,7 +688,10 @@ impl Attempt {
     }
 
     fn recovery_record(&self) -> Option<Record> {
-        if !self.active() || self.preparing && self.cancelled {
+        if !self.active()
+            || self.row.phase == Phase::RetryWaiting
+            || self.preparing && self.cancelled
+        {
             return None;
         }
         let checkpoint = match self.player.as_ref().and_then(OwnedPlayer::identity) {
@@ -706,6 +721,7 @@ impl Attempt {
                 pid: None,
                 requested_server: target.job(),
                 private_server: target.is_private(),
+                automatic_restart: None,
                 observed_server: None,
                 detail: None,
             },
@@ -717,6 +733,7 @@ impl Attempt {
             preparing: true,
             dispatching: false,
             cancelled: false,
+            recovery: Recovery::default(),
         }
     }
 
@@ -774,28 +791,21 @@ impl Attempt {
         Ok(())
     }
 
-    fn reconcile(&mut self, evidence: Option<(Observation, Option<Observed>)>) {
+    fn reconcile(&mut self, evidence: Option<(Observation, Option<Observed>)>, now: Instant) {
         let Some(player) = self.player.as_mut() else {
             return;
         };
         let row = &mut self.row;
-        match player.exited() {
-            Ok(true) => {
-                self.player = None;
-                self.observation = None;
-                row.phase = if row.phase == Phase::Starting {
-                    Phase::Failed
-                } else {
-                    Phase::Stopped
-                };
-                row.detail = Some("The Roblox process exited".into());
+        match player.exit_status() {
+            Ok(Some(exit)) => {
+                self.record_exit(exit.code().map(|code| code as u32), now);
                 return;
             }
             Err(_) => {
                 row.detail = Some("Could not query the owned Roblox process".into());
                 return;
             }
-            Ok(false) => (),
+            Ok(None) => (),
         }
         let Some((observation, facts)) = evidence.filter(|(observation, _)| {
             row.attempt_id == observation.attempt && row.phase == Phase::Starting
@@ -853,6 +863,7 @@ impl Attempt {
         }
         self.cancelled = true;
         self.observation = None;
+        self.recovery.clear_wait();
         let row = &mut self.row;
         if self.preparing {
             row.phase = Phase::Stopping;

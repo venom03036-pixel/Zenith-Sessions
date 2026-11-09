@@ -8,6 +8,7 @@ mod panic_stop;
 mod recovery;
 mod self_check;
 mod session;
+mod session_monitor;
 mod sign_in;
 
 use std::{
@@ -31,8 +32,10 @@ use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
 use serde::{Deserialize, Serialize};
 use session::{
-    ClientPerformance, LaunchState, PlaybackTarget, Session, SessionOwner, WindowPlacement,
+    ClientPerformance, LaunchState, PlaybackTarget, RetryRequest, Session, SessionOwner,
+    WindowPlacement,
 };
+use session_monitor::SessionMonitor;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
@@ -61,6 +64,7 @@ struct Workspace {
     sign_in_directory: PathBuf,
     logs: PathBuf,
     exiting: AtomicBool,
+    monitor: Mutex<Option<SessionMonitor>>,
 }
 
 #[tauri::command]
@@ -278,11 +282,8 @@ impl Workspace {
 async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot, String> {
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let observation = state.owner.lock().map_err(|_| STATE_ERROR)?.observation();
-        let evidence = observation.map(|sample| (sample, sample.read(&state.logs)));
         let (sessions, launch, recovery, panic) = {
-            let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-            owner.reconcile(evidence);
+            let owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             let shortcut = state.hotkey.as_ref().is_some_and(PanicHotkey::is_running);
             (
                 owner.rows(),
@@ -600,6 +601,20 @@ async fn remove_private_server(
 enum LaunchSource {
     Public(Target),
     Private(PrivateServerReference),
+    Recovery(RetryRequest),
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct LaunchPreferences {
+    allow_pair: bool,
+    recover: bool,
+}
+
+struct LaunchOptions {
+    epoch: u64,
+    try_one: bool,
+    preferences: LaunchPreferences,
 }
 
 #[tauri::command]
@@ -609,7 +624,7 @@ async fn launch_account(
     place_id: String,
     job: Option<Uuid>,
     try_one: bool,
-    allow_pair: bool,
+    options: LaunchPreferences,
     epoch: String,
 ) -> Result<(), String> {
     let place = public_place(&place_id)?;
@@ -621,7 +636,7 @@ async fn launch_account(
         id,
         LaunchSource::Public(Target::public(place, job)),
         try_one,
-        allow_pair,
+        options,
         epoch,
     )
     .await
@@ -640,7 +655,10 @@ async fn launch_private_server(
         id,
         LaunchSource::Private(reference),
         try_one,
-        false,
+        LaunchPreferences {
+            allow_pair: false,
+            recover: false,
+        },
         epoch,
     )
     .await
@@ -651,75 +669,112 @@ async fn launch_target(
     id: Uuid,
     source: LaunchSource,
     try_one: bool,
-    allow_pair: bool,
+    preferences: LaunchPreferences,
     epoch: String,
 ) -> Result<(), String> {
     let epoch = epoch
         .parse()
         .map_err(|_| "Refresh the launch state before starting Roblox.")?;
-    if !state.can_dispatch(epoch) {
-        return Err("The launch state changed. Review it and choose Launch again.".into());
-    }
     spawn_blocking(move || {
-        let (mut saved, attempt, target, reference) = {
-            let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-            if !state.can_dispatch(epoch) {
-                return Err("Zenith stopped this launch request.".into());
-            }
-            let library = state.library.lock().map_err(|_| STATE_ERROR)?;
-            let (target, reference) = match source {
-                LaunchSource::Public(target) => (target, None),
-                LaunchSource::Private(reference) => {
-                    (library.private_target(reference)?, Some(reference))
-                }
-            };
-            let saved = library.credential(id)?;
-            if !state.can_dispatch(epoch) {
-                return Err("Zenith stopped this launch request.".into());
-            }
-            let attempt = owner.reserve(&saved.identity, &target, allow_pair, try_one)?;
-            (saved, attempt, target, reference)
-        };
-        let launch_state = Arc::clone(&state);
-        let prepared = session::prepare(
-            &saved.identity,
-            &mut saved.credential,
-            target,
-            &state.directory,
-            try_one,
-            move || {
-                launch_state.can_dispatch(epoch)
-                    && launch_state.owner.lock().is_ok_and(|owner| {
-                        launch_state.can_dispatch(epoch) && owner.permits(attempt)
-                    })
+        run_launch(
+            &state,
+            id,
+            source,
+            LaunchOptions {
+                epoch,
+                try_one,
+                preferences,
             },
-        );
-        let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        let result = (|| {
-            if !owner.permits(attempt) || !state.can_dispatch(epoch) {
-                return Err("The launch was cancelled or the first client stopped.".into());
-            }
-            let library = state.library.lock().map_err(|_| STATE_ERROR)?;
-            if !state.can_dispatch(epoch) {
-                return Err("Zenith stopped this launch request.".into());
-            }
-            library.finish_credential(&saved)?;
-            if let Some(reference) = reference {
-                // Hold the library lease through process creation so removal or rename cannot overtake dispatch.
-                library.private_target(reference)?;
-            } else {
-                drop(library);
-            }
-            let prepared = prepared?;
-            owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
-        })();
-        if let Err(error) = &result {
-            owner.fail_preparation(attempt, error.clone(), !state.can_dispatch(epoch));
-        }
-        result
+        )
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+fn run_launch(
+    state: &Arc<Workspace>,
+    id: Uuid,
+    source: LaunchSource,
+    options: LaunchOptions,
+) -> Result<(), String> {
+    let LaunchOptions {
+        epoch,
+        try_one,
+        preferences,
+    } = options;
+    if !state.can_dispatch(epoch) {
+        return Err("The launch state changed. Review it and choose Launch again.".into());
+    }
+    let (mut saved, attempt, target, reference) = {
+        let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        if !state.can_dispatch(epoch) {
+            return Err("Zenith stopped this launch request.".into());
+        }
+        let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+        let (target, reference, retry) = match source {
+            LaunchSource::Public(target) => (target, None, None),
+            LaunchSource::Private(reference) => {
+                (library.private_target(reference)?, Some(reference), None)
+            }
+            LaunchSource::Recovery(retry) => {
+                (Target::public(retry.place, retry.job), None, Some(retry))
+            }
+        };
+        let saved = library.credential(id)?;
+        if !state.can_dispatch(epoch) {
+            return Err("Zenith stopped this launch request.".into());
+        }
+        let attempt = match retry {
+            Some(retry) => owner.reserve_retry(retry, &saved.identity, &target, Instant::now())?,
+            None => {
+                let attempt =
+                    owner.reserve(&saved.identity, &target, preferences.allow_pair, try_one)?;
+                if preferences.recover {
+                    owner.arm_recovery(attempt, epoch, preferences.allow_pair)?;
+                }
+                attempt
+            }
+        };
+        (saved, attempt, target, reference)
+    };
+    let launch_state = Arc::clone(state);
+    let prepared = session::prepare(
+        &saved.identity,
+        &mut saved.credential,
+        target,
+        &state.directory,
+        try_one,
+        move || {
+            launch_state.can_dispatch(epoch)
+                && launch_state
+                    .owner
+                    .lock()
+                    .is_ok_and(|owner| launch_state.can_dispatch(epoch) && owner.permits(attempt))
+        },
+    );
+    let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+    let result = (|| {
+        if !owner.permits(attempt) || !state.can_dispatch(epoch) {
+            return Err("The launch was cancelled or the first client stopped.".into());
+        }
+        let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+        if !state.can_dispatch(epoch) {
+            return Err("Zenith stopped this launch request.".into());
+        }
+        library.finish_credential(&saved)?;
+        if let Some(reference) = reference {
+            // Hold the library lease through process creation so removal or rename cannot overtake dispatch.
+            library.private_target(reference)?;
+        } else {
+            drop(library);
+        }
+        let prepared = prepared?;
+        owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
+    })();
+    if let Err(error) = &result {
+        owner.fail_preparation(attempt, error.clone(), !state.can_dispatch(epoch));
+    }
+    result
 }
 
 #[tauri::command]
@@ -759,6 +814,10 @@ async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        let target = owner.stop_target(attempt);
+        if target != attempt {
+            state.macro_playback.cancel_for(Some(target));
+        }
         owner.stop(attempt)
     })
     .await
@@ -905,7 +964,7 @@ fn main() -> ExitCode {
                     }
                 },
             );
-            app.manage(Arc::new(Workspace {
+            let state = Arc::new(Workspace {
                 library: Mutex::new(library),
                 macro_catalog: MacroCatalog::default(),
                 macro_playback: MacroPlayback::default(),
@@ -917,7 +976,14 @@ fn main() -> ExitCode {
                 sign_in_directory: root.join("isolated-sign-in"),
                 logs,
                 exiting: AtomicBool::new(false),
-            }));
+                monitor: Mutex::new(None),
+            });
+            *state
+                .monitor
+                .lock()
+                .map_err(|_| std::io::Error::other(STATE_ERROR))? =
+                Some(SessionMonitor::start(&state));
+            app.manage(state);
             Ok(())
         })
         .on_window_event(|window, event| {
@@ -947,6 +1013,14 @@ fn main() -> ExitCode {
                     .await
                     .unwrap_or(false);
                     if stopped {
+                        let monitor = state
+                            .monitor
+                            .lock()
+                            .ok()
+                            .and_then(|mut monitor| monitor.take());
+                        if let Some(monitor) = monitor {
+                            monitor.shutdown().await;
+                        }
                         app.exit(0);
                     } else {
                         state.exiting.store(false, Ordering::Release);

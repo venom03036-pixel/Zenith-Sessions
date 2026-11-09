@@ -537,6 +537,31 @@ mod tests {
     }
 
     #[test]
+    fn reads_full_native_exit_status_from_a_test_child() {
+        let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let mut child = Command::new(windows.join(r"System32\cmd.exe"))
+            .args(["/d", "/c", "exit", "/b", "-1073741819"])
+            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        let mut owned = OwnedPlayer {
+            identity: None,
+            child,
+            managed_priority: false,
+        };
+        assert_eq!(
+            owned
+                .exit_status()
+                .unwrap()
+                .unwrap()
+                .code()
+                .map(|code| code as u32),
+            Some(0xC000_0005)
+        );
+    }
+
+    #[test]
     fn reads_native_metrics_and_restores_only_its_own_priority_change() {
         use telemetry::PriorityClass::{BelowNormal, Normal};
 
@@ -636,7 +661,11 @@ impl OwnedPlayer {
     }
 
     pub fn exited(&mut self) -> io::Result<bool> {
-        self.child.try_wait().map(|exit| exit.is_some())
+        self.exit_status().map(|exit| exit.is_some())
+    }
+
+    pub fn exit_status(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
+        self.child.try_wait()
     }
 
     pub fn has_window(&self) -> bool {

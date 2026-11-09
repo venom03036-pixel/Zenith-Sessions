@@ -13,6 +13,8 @@ function exerciseWorkspace() {
   let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
   let launchedEpoch;
   let launchedTarget;
+  let sessionRows = [];
+  let stoppedRecovery;
   let savedInvites = [];
   const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
   let catalogRequests = 0;
@@ -45,7 +47,7 @@ function exerciseWorkspace() {
       const { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = args;
       switch (command) {
         case 'workspace_snapshot': return {
-          accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
+          accounts, sessions: sessionRows, launch: { active: sessionRows.length, pairEnabled: false, hold: null },
           admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
             commitAvailable: 1, commitRequired: 1, canTryOne: false },
           recovery: { issue: null, attempts: [] }, panic,
@@ -106,6 +108,10 @@ function exerciseWorkspace() {
           if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale launch permit.');
           launchedEpoch = epoch;
           launchedTarget = args;
+          return;
+        case 'stop_session':
+          stoppedRecovery = args.attempt;
+          sessionRows = [];
           return;
         case 'private_servers': return savedInvites;
         case 'save_private_server':
@@ -319,6 +325,29 @@ function exerciseWorkspace() {
       } finally {
         button('Use a public game')?.click();
         find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('fatal-exit recovery is explicitly armed and its wait can be cancelled', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      find('button[aria-label="Sessions"]').click();
+      try {
+        const checkbox = () => [...document.querySelectorAll('label')].find(label => label.textContent.includes('Restart after a fatal exit'))?.querySelector('input');
+        await until(() => checkbox(), 'no fatal-exit opt-in in Sessions');
+        if (checkbox().checked) throw new Error('recovery was enabled by default');
+        checkbox().click();
+        button('Launch').click();
+        await until(() => launchedTarget?.options?.recover === true, 'Launch did not carry the explicit recovery choice');
+        sessionRows = [{
+          attemptId: 'waiting-recovery', accountId: 'fixture-6', username: 'Fixture6', placeId: '1819',
+          phase: 'retry_waiting', pid: null, requestedServer: null, observedServer: null, privateServer: false,
+          detail: 'Windows reported a fatal exit. Automatic restart is waiting.',
+        }];
+        await until(() => button('Cancel restart'), 'the pending recovery had no cancel control');
+        button('Cancel restart').click();
+        await until(() => stoppedRecovery === 'waiting-recovery', 'Cancel did not target the waiting attempt');
+      } finally {
+        find('button[aria-label="Sessions"]').getAttribute('aria-current') === 'page'
+          && find('button[aria-label="Accounts"]').click();
       }
     });
     await check('Panic holds launches across pages until cleanup and explicit resume', async () => {

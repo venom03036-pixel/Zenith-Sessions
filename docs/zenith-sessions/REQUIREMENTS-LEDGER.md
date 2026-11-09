@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust fatal-exit recovery and breaker (1.22)
+
+**CAP-08-06, CAP-14-03, PROD-CORE-03.** The desktop can arm a public launch for two automatic replacements after a recognized fatal exit from a confirmed owned client. It preserves the exact requested place and job, rechecks the saved account, uses normal admission, and binds authority to the current Panic generation and the retry chain. Waiting permission is memory-only. Browser, Windows child, and controlled scheduler tests cover their documented scope. Live fatal-exit recovery, disconnect rejoin, and hang recovery remain open. See [Preview 1.22](RUST-DESKTOP-PREVIEW.md#preview-122-fatal-exit-recovery).
+
 ## Rust protected private-server invites (1.21)
 
 **CHAT-23, VA-06-03, PROD-CORE-03.** Sessions saves direct and Server share invitations in a separate current-user protected list. The UI uses record IDs and revisions for selection, local renaming, removal, and launch. The authenticated share resolver refuses expired, ambiguous or nonprivate destinations. Private dispatch rechecks the exact record, uses its own request envelope, and never grants confirmed-window authority based on place evidence alone. Loopback, DPAPI, recovery, and browser fixtures cover their documented scope. Live private access and arrival remain attended checks. See [Preview 1.21](RUST-DESKTOP-PREVIEW.md#preview-121-protected-private-server-invites).
