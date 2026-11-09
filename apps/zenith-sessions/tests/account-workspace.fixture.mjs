@@ -19,6 +19,9 @@ function exerciseWorkspace() {
   const assignmentTarget = { kind: 'Account', id: 'fixture-6' };
   let assignment = null;
   let assignmentStamp = 'initial-stamp';
+  let reviewCalls = 0;
+  let releaseReview;
+  const lateReview = new Promise(resolve => { releaseReview = resolve; });
   const assignmentView = () => ({ stamp: assignmentStamp, total: 1, offset: 0, previous: null, next: null,
     unreadableLegacy: 0, rows: [{ target: assignmentTarget, name: 'Fixture6', editable: true, inherited: false, assignment }] });
   localStorage.setItem('zenith-preview-place', '1818');
@@ -26,7 +29,7 @@ function exerciseWorkspace() {
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch, cursor, stamp, target, edit } = {}) => {
+    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
@@ -46,6 +49,17 @@ function exerciseWorkspace() {
           else throw new Error('The edit must be explicit.');
           assignmentStamp += 'x';
           return assignmentView();
+        case 'review_macro_targets':
+          if (epoch !== panic.epoch || panic.held || stamp !== assignmentStamp
+            || target.id !== assignmentTarget.id || target.kind !== 'Account'
+            || JSON.stringify(choice.page) !== JSON.stringify(selectionPage)
+            || choice.macroId !== 'macro-0' || choice.savedRevision !== 'fixture') {
+            throw new Error('The review did not bind the exact assignment, macro revision and Panic epoch.');
+          }
+          reviewCalls++;
+          if (reviewCalls === 2) await lateReview;
+          return { targetName: 'Fixture6', macroName: 'Fixture macro 1',
+            recipients: [{ name: 'Fixture6', session: { status: 'noSession' } }] };
         case 'saved_macro_catalog':
           catalogRequests++;
           if (catalogRequests === 1) return emptyCatalog;
@@ -56,7 +70,7 @@ function exerciseWorkspace() {
           if (JSON.stringify(cursor) !== JSON.stringify(catalogCursor)) throw new Error('Catalog cursor was not preserved.');
           return { ...emptyCatalog, state: 'Changed' };
         case 'panic_stop':
-          panic = { ...panic, epoch: '3', held: true };
+          panic = { ...panic, epoch: String((BigInt(panic.epoch) | 1n) + 2n), held: true };
           return;
         case 'resume_launches':
           if (epoch !== '3' || !panic.canResume) throw new Error('The fixture requires confirmed cleanup.');
@@ -178,7 +192,7 @@ function exerciseWorkspace() {
       await until(() => panel()?.textContent.includes('The catalog changed'), 'A changed revision was not surfaced');
       if (panel()?.textContent.includes('Fixture macro 1') || button('Next page')) throw new Error('Stale rows survived the changed revision');
     });
-    await check('Automation saves a pinned macro and explicitly removes its assignment', async () => {
+    await check('Automation saves a pinned macro assignment', async () => {
       const assignments = () => find('[aria-labelledby="macro-assignments-heading"]');
       const button = (scope, label) => [...(scope?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === label);
       if (!assignments()) throw new Error('Macro assignments are missing from Automation');
@@ -189,8 +203,30 @@ function exerciseWorkspace() {
       await until(() => button(assignments(), 'Assign selected macro')?.disabled === false, 'Assignment stayed disabled');
       button(assignments(), 'Assign selected macro').click();
       await until(() => assignments()?.textContent.includes('Assignment saved.') && button(assignments(), 'Remove assignment'), 'Saved assignment did not render');
-      button(assignments(), 'Remove assignment').click();
-      await until(() => assignments()?.textContent.includes('Unassigned') && !button(assignments(), 'Remove assignment'), 'Removed assignment stayed visible');
+    });
+    await check('Automation reviews the exact assignment and discards evidence from before Panic', async () => {
+      const assignments = () => find('[aria-labelledby="macro-assignments-heading"]');
+      const button = (label) => [...(assignments()?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === label);
+      const review = button('Review playback targets');
+      if (!review || review.disabled) throw new Error('The saved assignment has no available target review');
+      review.click();
+      await until(() => assignments()?.textContent.includes('No active session') && reviewCalls === 1,
+        'The exact recipient status did not render');
+      if ([...assignments().querySelectorAll('button')].some(button => /^(run|play|start)$/i.test(button.textContent.trim()))) {
+        throw new Error('Target review unexpectedly enabled macro execution');
+      }
+      review.click();
+      await until(() => reviewCalls === 2, 'The second review did not start');
+      [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Panic stop').click();
+      await until(() => find('[aria-label="Panic stop status"]'), 'The newer Panic hold did not appear');
+      releaseReview();
+      await until(() => !assignments()?.textContent.includes('Checking playback targets'), 'The review did not finish');
+      if (assignments().textContent.includes('No active session') || !review.disabled) {
+        throw new Error('Evidence from before Panic survived the hold');
+      }
+      button('Remove assignment').click();
+      await until(() => assignments()?.textContent.includes('Unassigned') && !button('Remove assignment')
+        && !assignments()?.textContent.includes('No active session'), 'Removed assignment or review stayed visible');
     });
     const result = document.createElement('output');
     result.id = 'account-fixture-result';

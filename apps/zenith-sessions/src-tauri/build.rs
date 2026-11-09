@@ -5,6 +5,7 @@ fn main() {
             "saved_macro_catalog",
             "macro_assignments",
             "edit_macro_assignment",
+            "review_macro_targets",
             "import_account",
             "import_legacy",
             "legacy_workspace",

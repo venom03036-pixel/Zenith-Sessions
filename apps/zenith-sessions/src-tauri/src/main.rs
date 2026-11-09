@@ -21,13 +21,16 @@ use std::{
 };
 
 use library::{
-    AssignmentTarget, AssignmentView, LegacyView, Library, MigrationReport, SavedCredential,
+    AssignmentRecipient, AssignmentTarget, AssignmentView, LegacyView, Library, MigrationReport,
+    SavedCredential,
 };
 use macro_catalog::{CatalogView, Choice as MacroChoice, Cursor as CatalogCursor, MacroCatalog};
 use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
 use serde::{Deserialize, Serialize};
-use session::{ClientPerformance, LaunchState, Session, SessionOwner, WindowPlacement};
+use session::{
+    ClientPerformance, LaunchState, PlaybackTarget, Session, SessionOwner, WindowPlacement,
+};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
@@ -119,6 +122,73 @@ async fn edit_macro_assignment(
             return Err("Zenith is closing.".into());
         }
         library.edit_assignment(&stamp, target, selected, offset)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct MacroTargetReview {
+    target_name: String,
+    macro_name: String,
+    recipients: Vec<MacroRecipientReview>,
+}
+
+#[derive(Serialize)]
+struct MacroRecipientReview {
+    name: String,
+    session: Option<PlaybackTarget>,
+}
+
+#[tauri::command]
+async fn review_macro_targets(
+    state: State<'_, Arc<Workspace>>,
+    target: AssignmentTarget,
+    stamp: String,
+    choice: MacroChoice,
+    epoch: String,
+) -> Result<MacroTargetReview, String> {
+    const STALE: &str =
+        "The workspace stopped or changed. Review playback targets again after resuming.";
+    let epoch = epoch.parse().map_err(|_| STALE)?;
+    if !state.can_dispatch(epoch) {
+        return Err(STALE.into());
+    }
+    let selected = state.macro_catalog.verify_choice(choice).await?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        if !state.can_dispatch(epoch) {
+            return Err(STALE.into());
+        }
+        let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+        let scope = library.review_assignment(&stamp, target, &selected)?;
+        let recipients = scope
+            .members
+            .into_iter()
+            .map(|member| match member {
+                AssignmentRecipient::Saved(account) => {
+                    let session = owner.playback_target(&account);
+                    MacroRecipientReview {
+                        name: account.username,
+                        session: Some(session),
+                    }
+                }
+                AssignmentRecipient::Unlinked(name) => MacroRecipientReview {
+                    name,
+                    session: None,
+                },
+            })
+            .collect();
+        if !state.can_dispatch(epoch) {
+            return Err(STALE.into());
+        }
+        Ok(MacroTargetReview {
+            target_name: scope.target_name,
+            macro_name: selected.name,
+            recipients,
+        })
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -686,6 +756,7 @@ fn main() -> ExitCode {
             saved_macro_catalog,
             macro_assignments,
             edit_macro_assignment,
+            review_macro_targets,
             import_account,
             import_legacy,
             legacy_workspace,

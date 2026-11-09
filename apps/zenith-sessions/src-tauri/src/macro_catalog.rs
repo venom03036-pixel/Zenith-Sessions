@@ -76,6 +76,7 @@ pub struct VerifiedMacro {
     pub(crate) id: Uuid,
     pub(crate) name: String,
     pub(crate) revision: Uuid,
+    pub(crate) enabled: bool,
 }
 
 #[derive(Serialize)]
@@ -334,6 +335,7 @@ impl MacroCatalog {
             id: item.id,
             name: item.name,
             revision: item.saved_revision,
+            enabled: item.enabled,
         })
     }
 

@@ -52,9 +52,9 @@ pub(super) struct Catalog {
 #[serde(rename_all = "camelCase")]
 pub(super) struct LegacyProfile {
     pub(super) id: Uuid,
-    label: String,
+    pub(super) label: String,
     username: String,
-    groups: Vec<String>,
+    pub(super) groups: Vec<String>,
     priority: u8,
     preferred_place_id: Option<String>,
     legacy_user_id: Option<String>,

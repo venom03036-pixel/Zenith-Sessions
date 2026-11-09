@@ -490,7 +490,8 @@ function App() {
           })}
         </section>}
       </>}
-      {page === 'Automation' && <MacroCatalogPanel assignmentCount={legacyWorkspace?.assignmentCount}/>}
+      {page === 'Automation' && <MacroCatalogPanel assignmentCount={legacyWorkspace?.assignmentCount}
+        epoch={panic && !panic.held && !panicBusy ? panic.epoch : null}/>}
       {page === 'Performance' && <>
         <ClientPerformance/>
         <Memory admission={admission}/>

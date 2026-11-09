@@ -628,6 +628,22 @@ impl OwnedPlayer {
         self.window().is_some()
     }
 
+    pub fn has_unique_visible_window(&self) -> bool {
+        let Some(window) = self.find_matching_window(false, true) else {
+            return false;
+        };
+        // SAFETY: recheck the candidate against the held process and current window state.
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(window, Some(&mut pid)) != 0
+                && pid == self.pid()
+                && IsWindowVisible(window).as_bool()
+                && !IsIconic(window).as_bool()
+                && GetWindow(window, GW_OWNER).is_err()
+                && self.owns_current_pid()
+        }
+    }
+
     pub fn focus(&self) -> Result<(), &'static str> {
         let window = self
             .window()
@@ -654,14 +670,23 @@ impl OwnedPlayer {
     }
 
     fn find_window(&self, layout_only: bool) -> Option<HWND> {
+        self.find_matching_window(layout_only, layout_only)
+    }
+
+    fn find_matching_window(&self, layout_only: bool, require_unique: bool) -> Option<HWND> {
         let identity = self.identity?;
         let mut search = WindowSearch {
             pid: identity.pid,
             found: None,
             layout_only,
+            require_unique,
         };
         // SAFETY: enumeration is synchronous. The callback borrows this stack value only during the call.
-        let _ = unsafe { EnumWindows(Some(window_callback), LPARAM((&raw mut search) as isize)) };
+        let enumeration =
+            unsafe { EnumWindows(Some(window_callback), LPARAM((&raw mut search) as isize)) };
+        if require_unique && enumeration.is_err() {
+            return None;
+        }
         search.found.filter(|_| self.owns_current_pid())
     }
 
@@ -720,6 +745,7 @@ struct WindowSearch {
     pid: u32,
     found: Option<HWND>,
     layout_only: bool,
+    require_unique: bool,
 }
 
 unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
@@ -740,5 +766,5 @@ unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
             search.found = Some(window);
         }
     }
-    BOOL::from(search.layout_only || search.found.is_none())
+    BOOL::from(search.require_unique || search.found.is_none())
 }

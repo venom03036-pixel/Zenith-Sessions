@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust playback target review (1.15)
+
+**CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** Automation rechecks a selected protected assignment and the editor's exact enabled saved revision. It resolves explicit account, imported group, and ordered imported bundle scopes, preserving missing or unlinked members in review. It reports initial arrival and current owned-window evidence, and Panic fences late review results. The Windows fixture exercises unique and ambiguous owned windows. This does not establish live Roblox review or macro execution. See [Preview 1.15](RUST-DESKTOP-PREVIEW.md#preview-115-playback-target-review).
+
 ## Rust account inspection and sign-in recovery (1.14)
 
 **CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** Accounts opens with an inspector, can switch between each of six synthetic profiles, retries a failed headshot image, and identifies the latest successful sign-in. Automatic verification retries temporary failures before showing a manual retry. The first-party landing and save-before-close gates still apply. Browser before/after, Windows and Rust tests, and anonymous public endpoint checks passed for their documented scope. Actual private profile reads and automatic closure remain attended checks. See [Preview 1.14](RUST-DESKTOP-PREVIEW.md#preview-114-account-details-and-sign-in).

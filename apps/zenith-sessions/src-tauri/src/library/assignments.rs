@@ -6,17 +6,19 @@ use std::{
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
+use windows::Win32::Globalization::{CSTR_EQUAL, CompareStringOrdinal};
 use zenith_session_launch::windows::{
-    MAX_ASSIGNMENT_BYTES, open_assignment_metadata, seal_assignment_metadata,
+    MAX_ASSIGNMENT_BYTES, SavedIdentity, open_assignment_metadata, seal_assignment_metadata,
 };
 use zeroize::Zeroizing;
 
-use super::{Library, atomic_write, read_limit};
+use super::{Library, atomic_write, migration::LegacyProfile, read_limit};
 use crate::macro_catalog::VerifiedMacro;
 
 const FILE: &str = "macro-assignments.dpapi";
 const MAX_CHANGES: usize = 10_000;
 const PAGE: usize = 25;
+const MAX_RECIPIENTS: usize = 32;
 const STALE: &str = "Assignments or targets changed. Refresh before editing again.";
 const DAMAGED: &str = "The saved assignment file is unreadable. The existing file was preserved.";
 
@@ -106,10 +108,22 @@ pub struct AssignmentView {
     rows: Vec<Row>,
 }
 
+pub struct AssignmentRecipients {
+    pub target_name: String,
+    pub members: Vec<AssignmentRecipient>,
+}
+
+pub enum AssignmentRecipient {
+    Saved(SavedIdentity),
+    Unlinked(String),
+}
+
 struct Context {
     stamp: String,
     source: Sha256,
     targets: BTreeMap<AssignmentTarget, String>,
+    profiles: Vec<LegacyProfile>,
+    bundles: HashMap<Uuid, Vec<Uuid>>,
     inherited: BTreeMap<AssignmentTarget, MacroRef>,
     archived: Vec<Row>,
     changes: BTreeMap<AssignmentTarget, Option<MacroRef>>,
@@ -131,6 +145,58 @@ fn revision(source: &Sha256, ciphertext: &[u8]) -> String {
 }
 
 impl Context {
+    fn assigned(&self, target: AssignmentTarget) -> Option<&MacroRef> {
+        self.changes
+            .get(&target)
+            .map_or_else(|| self.inherited.get(&target), Option::as_ref)
+    }
+
+    fn legacy_members(
+        &self,
+        target: AssignmentTarget,
+        name: &str,
+    ) -> Result<Vec<Option<&LegacyProfile>>, String> {
+        let members = match target.kind {
+            TargetKind::Group => {
+                let name: Vec<u16> = name.encode_utf16().collect();
+                if self.targets.iter().any(|(other, label)| {
+                    other.kind == TargetKind::Group && *other != target && same_group(&name, label)
+                }) {
+                    return Err("Multiple imported groups have this name.".into());
+                }
+                self.profiles
+                    .iter()
+                    .filter(|profile| profile.groups.iter().any(|group| same_group(&name, group)))
+                    .take(MAX_RECIPIENTS + 1)
+                    .map(Some)
+                    .collect::<Vec<_>>()
+            }
+            TargetKind::Bundle => {
+                let ids = self
+                    .bundles
+                    .get(&target.id)
+                    .ok_or("Imported bundle membership is unavailable.")?;
+                if ids.len() > MAX_RECIPIENTS {
+                    return Err("Review supports up to 32 recipients.".into());
+                }
+                let mut seen = BTreeSet::new();
+                if ids.iter().any(|id| id.is_nil() || !seen.insert(*id)) {
+                    return Err("Imported bundle membership is invalid.".into());
+                }
+                ids.iter()
+                    .map(|id| self.profiles.iter().find(|profile| profile.id == *id))
+                    .collect()
+            }
+            TargetKind::Account => {
+                return Err("This target is not an imported group or bundle.".into());
+            }
+        };
+        if members.len() > MAX_RECIPIENTS {
+            return Err("Review supports up to 32 recipients.".into());
+        }
+        Ok(members)
+    }
+
     fn view(self, offset: usize) -> AssignmentView {
         let mut rows = self.archived;
         for (target, name) in self.targets {
@@ -165,6 +231,13 @@ impl Context {
             rows: rows.into_iter().skip(offset).take(PAGE).collect(),
         }
     }
+}
+
+fn same_group(name: &[u16], candidate: &str) -> bool {
+    let candidate: Vec<_> = candidate.encode_utf16().take(name.len() + 1).collect();
+    // SAFETY: both slices are live, bounded UTF-16 buffers passed with their lengths.
+    name.len() == candidate.len()
+        && unsafe { CompareStringOrdinal(name, &candidate, true) == CSTR_EQUAL }
 }
 
 impl Library {
@@ -212,6 +285,8 @@ impl Library {
             })
             .collect();
         let mut inherited = BTreeMap::new();
+        let mut profiles = Vec::new();
+        let mut bundles = HashMap::new();
         let mut archived = Vec::new();
         let mut unreadable_legacy = 0;
         if let Some((archive, fingerprint)) = self.legacy_catalog()? {
@@ -221,7 +296,7 @@ impl Library {
                 (TargetKind::Bundle, archive.bundles),
             ] {
                 for entry in entries {
-                    let Ok(target) = serde_json::from_value::<NamedTarget>(entry) else {
+                    let Ok(target) = NamedTarget::deserialize(&entry) else {
                         continue;
                     };
                     if !target.id.is_nil() && label(&target.name) {
@@ -232,6 +307,12 @@ impl Library {
                         if targets.insert(key, target.name).is_some() {
                             return Err("Imported assignment targets conflict.".into());
                         }
+                        if kind == TargetKind::Bundle
+                            && let Some(value) = entry.get("profileIds")
+                            && let Ok(ids) = Vec::<Uuid>::deserialize(value)
+                        {
+                            bundles.insert(key.id, ids);
+                        }
                     }
                 }
             }
@@ -240,9 +321,9 @@ impl Library {
                 .values()
                 .map(|account| (account.user_id, account.profile_id))
                 .collect();
-            let by_legacy: HashMap<_, _> = archive
-                .profiles
-                .into_iter()
+            profiles = archive.profiles;
+            let by_legacy: HashMap<_, _> = profiles
+                .iter()
                 .filter_map(|profile| Some((profile.id, *active.get(&profile.verified_user_id?)?)))
                 .collect();
             let mut legacy_keys = BTreeSet::new();
@@ -316,6 +397,8 @@ impl Library {
             stamp: format!("{:x}", stamp.finalize()),
             source,
             targets,
+            profiles,
+            bundles,
             inherited,
             archived,
             changes,
@@ -328,6 +411,60 @@ impl Library {
             return Err("Select a valid assignment page.".into());
         }
         Ok(self.assignment_context()?.view(offset))
+    }
+
+    pub fn review_assignment(
+        &self,
+        expected: &str,
+        target: AssignmentTarget,
+        selected: &VerifiedMacro,
+    ) -> Result<AssignmentRecipients, String> {
+        let context = self.assignment_context()?;
+        if context.stamp != expected {
+            return Err(
+                "Assignments or targets changed. Refresh assignments before reviewing.".into(),
+            );
+        }
+        let name = context
+            .targets
+            .get(&target)
+            .ok_or("This assignment target is unavailable.")?;
+        let assignment = context
+            .assigned(target)
+            .ok_or("Assign a saved macro before reviewing.")?;
+        if assignment.id != selected.id || assignment.saved_revision != Some(selected.revision) {
+            return Err(
+                "Save this exact macro revision as the assignment before reviewing.".into(),
+            );
+        }
+        if !selected.enabled {
+            return Err("This saved macro is disabled in the Personal editor.".into());
+        }
+        let members = if target.kind == TargetKind::Account {
+            vec![AssignmentRecipient::Saved(self.account(target.id)?)]
+        } else {
+            context
+                .legacy_members(target, name)?
+                .into_iter()
+                .map(|profile| {
+                    if let Some(profile) = profile {
+                        if let Some(account) =
+                            profile.verified_user_id.and_then(|id| self.by_user_id(id))
+                        {
+                            return AssignmentRecipient::Saved(account);
+                        }
+                        if label(&profile.label) {
+                            return AssignmentRecipient::Unlinked(profile.label.clone());
+                        }
+                    }
+                    AssignmentRecipient::Unlinked("Unavailable imported profile".into())
+                })
+                .collect()
+        };
+        Ok(AssignmentRecipients {
+            target_name: name.clone(),
+            members,
+        })
     }
 
     pub fn edit_assignment(
@@ -355,10 +492,7 @@ impl Library {
         if next.as_ref().is_some_and(|item| !item.valid()) {
             return Err("The saved macro name is unsuitable for assignment.".into());
         }
-        let current = context
-            .changes
-            .get(&target)
-            .map_or_else(|| context.inherited.get(&target), Option::as_ref);
+        let current = context.assigned(target);
         if current == next.as_ref() {
             return Ok(context.view(offset));
         }
@@ -445,6 +579,7 @@ mod tests {
                     id: macro_id,
                     revision,
                     name: "Fixture catalog title".into(),
+                    enabled: true,
                 }),
                 0,
             )
@@ -486,10 +621,12 @@ mod tests {
         let archived = Uuid::new_v4();
         let group = Uuid::new_v4();
         let bundle = Uuid::new_v4();
+        let malformed_bundle = Uuid::new_v4();
+        let missing = Uuid::new_v4();
         let macro_id = Uuid::new_v4();
         let profile = |id: Uuid, verified: Option<u64>| {
             json!({ "id": id, "label": "Legacy account", "username": "OldUsername",
-            "groups": [], "priority": 10, "preferredPlaceId": null, "legacyUserId": "42", "verifiedUserId": verified,
+            "groups": ["fIXTURE äLTS"], "priority": 10, "preferredPlaceId": null, "legacyUserId": "42", "verifiedUserId": verified,
             "notes": "", "isFavorite": false, "updatedUtc": "2026-11-01T00:00:00Z", "revision": 1 })
         };
         let reference = |id: Uuid, kind: u8| {
@@ -498,7 +635,9 @@ mod tests {
         };
         let migration = json!({ "version": 1, "signIns": [], "workspace": {
             "protection": "windows", "profiles": [profile(legacy, Some(42)), profile(archived, None)],
-            "groups": [{ "id": group, "name": "Fixture group" }], "bundles": [{ "id": bundle, "name": "Fixture bundle" }],
+            "groups": [{ "id": group, "name": "Fixture Älts" }],
+            "bundles": [{ "id": bundle, "name": "Fixture bundle", "profileIds": [archived, missing, legacy] },
+                { "id": malformed_bundle, "name": "Invalid bundle", "profileIds": [legacy, legacy] }],
             "assignments": [reference(legacy, 1), reference(archived, 1), reference(group, 2), reference(bundle, 3)],
             "favorites": [], "preferences": {} } });
         let protected = seal_legacy_metadata(&mut serde_json::to_vec(&migration).unwrap()).unwrap();
@@ -526,6 +665,72 @@ mod tests {
         };
         assert!(row(group).editable && row(group).inherited);
         assert!(row(bundle).editable && row(bundle).inherited);
+
+        let revision = Uuid::new_v4();
+        let macro_choice = || VerifiedMacro {
+            id: macro_id,
+            name: "Current saved macro".into(),
+            revision,
+            enabled: true,
+        };
+        assert!(
+            library
+                .review_assignment(&view.stamp, group, &macro_choice())
+                .is_err()
+        );
+        let invalid = AssignmentTarget {
+            kind: TargetKind::Bundle,
+            id: malformed_bundle,
+        };
+        let original_stamp = view.stamp.clone();
+        let mut view = view;
+        for target in [linked, group, bundle, invalid] {
+            view = library
+                .edit_assignment(&view.stamp, target, Some(macro_choice()), 0)
+                .unwrap();
+        }
+        assert!(
+            library
+                .review_assignment(&original_stamp, group, &macro_choice())
+                .is_err()
+        );
+        assert!(
+            library
+                .review_assignment(&view.stamp, invalid, &macro_choice())
+                .is_err()
+        );
+        let mut changed = macro_choice();
+        changed.revision = Uuid::new_v4();
+        assert!(
+            library
+                .review_assignment(&view.stamp, group, &changed)
+                .is_err()
+        );
+        let mut disabled = macro_choice();
+        disabled.enabled = false;
+        assert!(
+            library
+                .review_assignment(&view.stamp, group, &disabled)
+                .is_err()
+        );
+        let linked_scope = library
+            .review_assignment(&view.stamp, linked, &macro_choice())
+            .unwrap();
+        assert!(matches!(linked_scope.members.as_slice(),
+            [AssignmentRecipient::Saved(account)] if account.profile_id == linked.id));
+        let group_scope = library
+            .review_assignment(&view.stamp, group, &macro_choice())
+            .unwrap();
+        assert_eq!(group_scope.target_name, "Fixture Älts");
+        assert!(matches!(group_scope.members.as_slice(),
+            [AssignmentRecipient::Saved(account), AssignmentRecipient::Unlinked(_)] if account.profile_id == linked.id));
+        let bundle_scope = library
+            .review_assignment(&view.stamp, bundle, &macro_choice())
+            .unwrap();
+        assert!(matches!(bundle_scope.members.as_slice(),
+            [AssignmentRecipient::Unlinked(unlinked), AssignmentRecipient::Unlinked(missing), AssignmentRecipient::Saved(account)]
+            if unlinked == "Legacy account" && missing == "Unavailable imported profile" && account.profile_id == linked.id));
+
         let view = library
             .edit_assignment(&view.stamp, group, None, 0)
             .unwrap();

@@ -377,10 +377,10 @@ mod tests {
     struct FixturePlayer(OwnedPlayer);
 
     impl FixturePlayer {
-        fn start() -> Self {
+        fn start(windows: u8) -> Self {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST_NAME, "--nocapture"])
-                .env(FIXTURE_ENV, "1")
+                .env(FIXTURE_ENV, windows.to_string())
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .stdout(Stdio::piped())
                 .spawn()
@@ -416,7 +416,8 @@ mod tests {
     fn native_layout_moves_owned_windows_only() {
         let _dpi = PhysicalDpi::enter().unwrap();
         let anchor = FixtureWindow::open();
-        if std::env::var_os(FIXTURE_ENV).is_some() {
+        if let Ok(count) = std::env::var(FIXTURE_ENV) {
+            let _second = (count == "2").then(FixtureWindow::open);
             println!("zenith-layout-ready");
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut message = MSG::default();
@@ -430,8 +431,13 @@ mod tests {
             return;
         }
 
-        let first = FixturePlayer::start();
-        let second = FixturePlayer::start();
+        let first = FixturePlayer::start(1);
+        let second = FixturePlayer::start(1);
+        let ambiguous = FixturePlayer::start(2);
+        assert!(first.0.has_unique_visible_window());
+        assert!(second.0.has_unique_visible_window());
+        assert!(ambiguous.0.has_window());
+        assert!(!ambiguous.0.has_unique_visible_window());
         let players = [&first.0, &second.0];
         let anchor_before = observed_bounds(anchor.0).unwrap();
         let first_window = first.0.find_window(true).unwrap();

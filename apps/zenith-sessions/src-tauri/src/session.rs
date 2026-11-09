@@ -117,6 +117,19 @@ pub struct ClientPerformance {
     metrics: Option<ProcessMetrics>,
 }
 
+#[derive(Serialize, Debug, PartialEq, Eq)]
+#[serde(
+    tag = "status",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
+pub enum PlaybackTarget {
+    NoSession,
+    ArrivalUnconfirmed,
+    WindowUnavailable,
+    Ready { attempt_id: Uuid, pid: u32 },
+}
+
 #[derive(Default)]
 pub struct SessionOwner {
     attempts: Vec<Attempt>,
@@ -522,6 +535,36 @@ impl SessionOwner {
                 .any(|record| record.account_id == id && record.review().holds())
     }
 
+    pub fn playback_target(&mut self, account: &SavedIdentity) -> PlaybackTarget {
+        let mut active = self
+            .attempts
+            .iter_mut()
+            .filter(|attempt| attempt.active() && attempt.row.account_id == account.profile_id);
+        let Some(attempt) = active.next() else {
+            return PlaybackTarget::NoSession;
+        };
+        if active.next().is_some()
+            || attempt.user_id != account.user_id
+            || attempt.cancelled
+            || attempt.row.phase == Phase::Stopping
+        {
+            return PlaybackTarget::WindowUnavailable;
+        }
+        if attempt.row.phase != Phase::Running {
+            return PlaybackTarget::ArrivalUnconfirmed;
+        }
+        let Some(player) = attempt.player.as_mut() else {
+            return PlaybackTarget::WindowUnavailable;
+        };
+        if !player.exited().is_ok_and(|exited| !exited) || !player.has_unique_visible_window() {
+            return PlaybackTarget::WindowUnavailable;
+        }
+        PlaybackTarget::Ready {
+            attempt_id: attempt.row.attempt_id,
+            pid: player.pid(),
+        }
+    }
+
     fn attempt(&self, id: Uuid) -> Result<&Attempt, String> {
         self.attempts
             .iter()
@@ -812,6 +855,51 @@ fn gib(bytes: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn playback_targets_require_the_exact_account_and_a_confirmed_owned_window() {
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            username: "Fixture".into(),
+            user_id: 42,
+        };
+        let target = Target {
+            place: 1818,
+            job: None,
+        };
+        let mut owner = SessionOwner::default();
+        assert_eq!(owner.playback_target(&account), PlaybackTarget::NoSession);
+        owner.attempts.push(Attempt::new(&account, &target, None));
+        for phase in [Phase::Preparing, Phase::Starting, Phase::Unconfirmed] {
+            owner.attempts[0].row.phase = phase;
+            assert_eq!(
+                owner.playback_target(&account),
+                PlaybackTarget::ArrivalUnconfirmed
+            );
+        }
+        owner.attempts[0].row.phase = Phase::Running;
+        assert_eq!(
+            owner.playback_target(&account),
+            PlaybackTarget::WindowUnavailable
+        );
+        let foreign = SavedIdentity {
+            user_id: 43,
+            ..account.clone()
+        };
+        owner.attempts[0].row.phase = Phase::Unconfirmed;
+        assert_eq!(
+            owner.playback_target(&foreign),
+            PlaybackTarget::WindowUnavailable
+        );
+        owner.attempts.push(Attempt::new(&account, &target, None));
+        assert_eq!(
+            owner.playback_target(&account),
+            PlaybackTarget::WindowUnavailable
+        );
+        owner.attempts[0].row.phase = Phase::Stopped;
+        owner.attempts[1].row.phase = Phase::Failed;
+        assert_eq!(owner.playback_target(&account), PlaybackTarget::NoSession);
+    }
 
     #[test]
     fn panic_holds_resume_until_the_cancelled_preparation_reports_completion() {
