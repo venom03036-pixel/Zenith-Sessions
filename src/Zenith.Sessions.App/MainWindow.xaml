@@ -565,7 +565,7 @@
                       <TextBlock Grid.Row="1" Text="Preferred game" Style="{StaticResource KeyText}" Margin="0,10,12,0" />
                       <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedAccount.Destination}" ToolTip="{Binding SelectedAccount.Destination}" Style="{StaticResource ValueText}" Margin="0,10,0,0" />
                     </Grid>
-                    <Button Content="Launch selected account" Command="{Binding AccountPower}" CommandParameter="{Binding SelectedAccount}" IsEnabled="{Binding QueueReady}" Style="{StaticResource PrimaryButton}" ToolTip="Launch the preferred game, or choose a game and complete this installation's launch test first." MinHeight="36" Margin="0,14,0,0" />
+                    <Button Content="{Binding SelectedAccount.PowerLabel}" Command="{Binding AccountPower}" CommandParameter="{Binding SelectedAccount}" IsEnabled="{Binding QueueReady}" Style="{StaticResource PrimaryButton}" ToolTip="{Binding SelectedAccount.PowerExplanation}" MinHeight="36" Margin="0,14,0,0" />
                     <Button Content="Choose server…" Command="{Binding OpenJoinGameForSelectedAccount}" IsEnabled="{Binding HasSelection}" MinHeight="36" Margin="0,8,0,0" />
                     <Border Style="{StaticResource Divider}" />
                     <DockPanel>

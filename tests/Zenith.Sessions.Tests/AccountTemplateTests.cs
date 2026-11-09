@@ -13,6 +13,27 @@ namespace Zenith.Sessions.Tests;
 [Collection(WpfProductionResourceCollection.Name)]
 public sealed class AccountTemplateTests
 {
+    [Fact]
+    public Task InspectorAccountActionNamesCancellationAndReviewInsteadOfPromisingAnotherLaunch()=>PackagedLayoutCheck.RunOnStaAsync(()=>new object(),_=>
+    {
+        using var input=typeof(AccountTemplateTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
+        var source=XDocument.Load(input);XNamespace ui="http://schemas.microsoft.com/winfx/2006/xaml/presentation",x="http://schemas.microsoft.com/winfx/2006/xaml";
+        var inspector=source.Descendants().Single(e=>(string?)e.Attribute(x+"Name")=="AccountInspectorScroll");
+        var element=new XElement(inspector.Descendants(ui+"Button").Single(e=>(string?)e.Attribute("Command")=="{Binding AccountPower}"));
+        element.Attribute("Style")!.Remove();var button=(Button)XamlReader.Parse(element.ToString());
+        var profile=AccountProfile.Create("Synthetic inspector");var row=new AccountRow(profile);
+        object? actedOn=null;var command=new Command(parameter=>actedOn=parameter);
+        button.DataContext=new {SelectedAccount=row,QueueReady=true,AccountPower=command};
+        foreach(var state in new[]{LaunchState.Queued,LaunchState.Stabilizing,LaunchState.ReviewRequired,LaunchState.Blocked})
+        {
+            row.SetLaunchStatus(new(new LaunchIntent(Guid.NewGuid(),profile.Id,profile.Revision,123,42,0,DateTimeOffset.UtcNow,7),state,LaunchProblem.Interrupted,DateTimeOffset.UtcNow));
+            button.Measure(new Size(300,60));button.Arrange(new Rect(0,0,300,60));Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.DataBind);
+            Assert.Equal(row.PowerLabel,button.Content);Assert.Equal(row.PowerExplanation,button.ToolTip);
+            button.Command.Execute(button.CommandParameter);Assert.Same(row,actedOn);
+        }
+        button.DataContext=null;return Task.CompletedTask;
+    },_=>{},CancellationToken.None);
+
     [Theory]
     [InlineData("AccountRow")]
     [InlineData("DenseAccountRow")]

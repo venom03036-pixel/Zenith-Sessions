@@ -1,6 +1,6 @@
 # Zenith Sessions — round-4 quality status
 
-Latest correction: [account selection and launch setup (0.80)](LAUNCH-FLOW-REPAIR.md) fixes the empty review picker and routes unqualified or game-less account launches to setup. Four intended red regression cases and focused passing results are recorded there. The owner will perform the next live trial; the current account displayed a saved sign-in and the stale blocked request was cancelled. The earlier native-handoff failure is still unqualified. Full gate evidence for this descendant must be read from its own two clean-commit records, not inherited from `9ba1e2d`.
+Latest correction: [account selection and launch setup (0.80)](LAUNCH-FLOW-REPAIR.md) fixes the empty review picker and routes unqualified or game-less account launches to setup. Five intended red regression cases and focused passing results are recorded there. The owner will perform the next live trial; the current account displayed a saved sign-in and the stale blocked request was cancelled. The earlier native-handoff failure is still unqualified. Full gate evidence for this descendant must be read from its own two clean-commit records, not inherited from `9ba1e2d`.
 
 This is the current completion record for the Windows Personal companion. The older quality narrative is preserved in [round4/history/QUALITY_STATUS.md](round4/history/QUALITY_STATUS.md) as historical evidence only.
 

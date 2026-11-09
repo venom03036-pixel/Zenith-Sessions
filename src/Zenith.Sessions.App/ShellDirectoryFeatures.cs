@@ -33,7 +33,7 @@ public sealed partial class AccountRow
         "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?_launchDetail:SignInStatusBusy?
         "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
         "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
-        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game. For a chosen server link, use Queue checked accounts in Sessions → Join a game. Unsupported providers report a blocked result.";
+        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game, or choose a game and complete this installation's launch test first. For a chosen server link, use Sessions → Join a game.";
     public void SetPublicPresentation(PublicAccountData value)
     {
         if(value.UserId!=KnownUserId) return;
