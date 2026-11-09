@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import type { MacroChoice } from './macro-catalog';
 
 type Target = { kind: 'Account' | 'Group' | 'Bundle'; id: string };
@@ -15,8 +15,12 @@ type Edit = { action: 'Save'; choice: MacroChoice['binding'] } | { action: 'Remo
 type Session =
   | { status: 'noSession' | 'arrivalUnconfirmed' | 'windowUnavailable' }
   | { status: 'ready'; attemptId: string; pid: number };
-type TargetReview = { targetName: string; macroName: string; recipients: { name: string; session: Session | null }[] };
-type Review = { choice: MacroChoice; stamp: string; epoch: string } & ({ value: TargetReview } | { error: string });
+type TargetReview = { targetName: string; macroName: string; playbackReview: string | null; recipients: { name: string; session: Session | null }[] };
+type Review = { choice: MacroChoice; stamp: string; epoch: string; target: Target } & ({ value: TargetReview } | { error: string });
+export type MacroRunView = {
+  id: string; name: string; account: string; detail: string;
+  phase: 'connecting' | 'preparing' | 'running' | 'paused' | 'stopping' | 'finished' | 'disconnected';
+};
 const statusLabel = {
   noSession: 'No active session',
   arrivalUnconfirmed: 'Initial arrival unconfirmed',
@@ -24,14 +28,21 @@ const statusLabel = {
   ready: 'Owned window available',
 };
 
-export function MacroAssignmentsPanel({ choice, epoch }: { choice: MacroChoice | null; epoch: string | null }) {
+export function MacroAssignmentsPanel({ choice, epoch, run }: { choice: MacroChoice | null; epoch: string | null; run: MacroRunView | null }) {
   const [view, setView] = useState<View | null>(null);
   const [busy, setBusy] = useState(true);
   const [notice, setNotice] = useState('');
   const [reviewing, setReviewing] = useState(false);
   const [review, setReview] = useState<Review | null>(null);
+  const [starting, setStarting] = useState(false);
+  const [controlling, setControlling] = useState(false);
+  const codeInput = useRef<HTMLInputElement>(null);
   const currentReview = review && review.choice === choice && review.stamp === view?.stamp && review.epoch === epoch
     ? review : null;
+  const recipient = currentReview && 'value' in currentReview && currentReview.value.recipients.length === 1
+    ? currentReview.value.recipients[0].session : null;
+  const reviewId = currentReview && 'value' in currentReview ? currentReview.value.playbackReview : null;
+  const active = run && run.phase !== 'finished' && run.phase !== 'disconnected';
 
   async function read(offset: number) {
     setBusy(true);
@@ -61,7 +72,7 @@ export function MacroAssignmentsPanel({ choice, epoch }: { choice: MacroChoice |
   async function reviewTargets(target: Target) {
     if (!view || !choice || epoch === null || busy || reviewing) return;
     const { stamp } = view;
-    const context = { choice, stamp, epoch };
+    const context = { choice, stamp, epoch, target };
     setReview(null);
     setReviewing(true);
     try {
@@ -72,13 +83,46 @@ export function MacroAssignmentsPanel({ choice, epoch }: { choice: MacroChoice |
     } finally { setReviewing(false); }
   }
 
+  async function start() {
+    if (!currentReview || !reviewId || recipient?.status !== 'ready' || active || starting || !codeInput.current) return;
+    const code = codeInput.current.value;
+    codeInput.current.value = '';
+    setNotice('');
+    setStarting(true);
+    try {
+      await invoke('start_macro_playback', { request: {
+        target: currentReview.target, stamp: currentReview.stamp, choice: currentReview.choice.binding,
+        epoch: currentReview.epoch, attempt: recipient.attemptId, reviewId, code,
+      } });
+      setReview(null);
+    } catch (error) { setNotice(typeof error === 'string' ? error : 'Could not start macro playback.'); }
+    finally { setStarting(false); }
+  }
+
+  async function control(action: 'pause' | 'resume' | 'stop') {
+    if (!run || controlling) return;
+    setControlling(true);
+    setNotice('');
+    try { await invoke('control_macro_playback', { id: run.id, action }); }
+    catch (error) { setNotice(typeof error === 'string' ? error : 'Could not send the macro control.'); }
+    finally { setControlling(false); }
+  }
+
   return <section className="account-panel preview-panel macro-catalog" aria-labelledby="macro-assignments-heading">
     <h2 id="macro-assignments-heading">Macro assignments</h2>
     <p>{choice ? <>Selected macro <strong>{choice.name}</strong></> : 'Select a saved macro from the catalog to assign it.'}</p>
-    <p>Select the assigned macro in the catalog to review its recipients. Playback is unavailable in this preview.</p>
+    <p>Select the assigned macro in the catalog to review its recipients. Foreground playback uses one confirmed Roblox window.</p>
     <button className="secondary-button" disabled={busy || reviewing} onClick={() => void read(0)}>Refresh assignments</button>
     {busy && <p role="status">Updating assignments…</p>}
     {notice && <p role="status">{notice}</p>}
+    {run && <div className="inline-alert">
+      <p role="status"><strong>{run.name}</strong> · {run.account} · {run.detail}</p>
+      {active && <div className="row-actions">
+        {run.phase === 'running' && <button className="secondary-button" disabled={controlling} onClick={() => void control('pause')}>Pause macro</button>}
+        {run.phase === 'paused' && <button className="secondary-button" disabled={controlling} onClick={() => void control('resume')}>Resume macro</button>}
+        {run.phase !== 'stopping' && <button className="secondary-button" disabled={controlling} onClick={() => void control('stop')}>Stop macro</button>}
+      </div>}
+    </div>}
     {view?.unreadableLegacy ? <p>{view.unreadableLegacy} unreadable references are preserved in the original archive.</p> : null}
     {view?.total === 0 && <p>Add a saved account or import a legacy workspace to see assignment targets.</p>}
     {view && view.rows.length > 0 && <>
@@ -118,5 +162,14 @@ export function MacroAssignmentsPanel({ choice, epoch }: { choice: MacroChoice |
           </li>)}
         </ul> : <p>This assignment has no recipients.</p>}
       </div>)}
+    {reviewId && recipient?.status === 'ready' && !active && <form onSubmit={event => { event.preventDefault(); void start(); }}>
+      <p>Use Pair Sessions in the matching Personal editor. Starting focuses the reviewed Roblox window.</p>
+      <div className="destination-input">
+        <label>Personal pairing code
+          <input ref={codeInput} type="password" autoComplete="off" spellCheck={false} required pattern="[0-9A-Fa-f]{32}" maxLength={32}/>
+        </label>
+        <button className="primary-button" disabled={starting}>{starting ? 'Connecting…' : 'Start macro'}</button>
+      </div>
+    </form>}
   </section>;
 }

@@ -4,6 +4,7 @@ import { createRoot } from 'react-dom/client';
 import { AccountInspector, Avatar, type Account } from './account-inspector';
 import { ClientPerformance } from './client-performance';
 import { MacroCatalogPanel } from './macro-catalog';
+import type { MacroRunView } from './macro-assignments';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { DestinationPicker, type Destination } from './destination-picker';
@@ -24,11 +25,12 @@ type Admission = {
 type LaunchState = { active: number; pairEnabled: boolean; hold: string | null };
 type PanicState = { epoch: string; held: boolean; canResume: boolean; shortcutAvailable: boolean; error: string | null };
 type Snapshot = {
+  macroPlayback: MacroRunView | null;
   accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null;
   recovery: Recovery;
   panic: PanicState;
   signInAttempt: string | null; signInError: string | null;
-  savedSignIn: { attempt: string; profileId: string } | null;
+  savedSignIn: { attempt: string; profileId: string; closeFailed: boolean } | null;
 };
 type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows' | 'Automation' | 'Performance';
 type WindowPlacement = {
@@ -142,6 +144,7 @@ function App() {
   const signInAttempt = snapshot?.signInAttempt;
   const savedSignIn = snapshot?.savedSignIn;
   const savedAccount = accounts.find(value => value.profileId === savedSignIn?.profileId);
+  const inspectedSignIn = savedSignIn && savedSignIn.profileId === inspected?.profileId ? savedSignIn.attempt : '';
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = Boolean(destination.place.trim());
   const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || panicBusy || !panic || panic.held || !launchState || !!launchState.hold;
@@ -376,7 +379,8 @@ function App() {
       </div>}
       {page === 'Accounts' && legacyNotice && <p role="status" className="inline-alert">{legacyNotice}</p>}
       {page === 'Accounts' && !signInAttempt && savedAccount &&
-        <p role="status" className="inline-alert sign-in-saved">Saved Roblox sign-in for @{savedAccount.username}.</p>}
+        <p role="status" className="inline-alert sign-in-saved">Saved Roblox sign-in for @{savedAccount.username}.
+          {savedSignIn?.closeFailed && ' Zenith could not close the sign-in window. You can close it manually.'}</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
         <p>Finish signing in inside the Roblox window. Zenith will save the verified sign-in and close the window automatically.</p>
@@ -405,7 +409,8 @@ function App() {
             return <tr key={item.profileId} className={item.profileId === inspected?.profileId ? 'selected-row' : ''}>
             <td><button className="account-cell account-select" type="button" aria-pressed={item.profileId === inspected?.profileId}
               aria-label={`View details for ${item.username}`} onClick={() => setSelected(item.profileId)}>
-              <Avatar key={`${avatarRevision}:${avatars[item.profileId] ?? item.profileId}`} username={item.username} image={avatars[item.profileId]}/>
+              <Avatar key={`${avatarRevision}:${avatars[item.profileId] ?? item.profileId}`}
+                username={item.username} image={avatars[item.profileId]} imageRevision={avatarRevision}/>
               <div><strong>{item.username}</strong><span>@{item.username}</span></div>
             </button></td>
             <td><Status session={session}/></td>
@@ -415,8 +420,8 @@ function App() {
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>
-      {inspected && <AccountInspector key={`${inspected.profileId}:${savedSignIn?.profileId === inspected.profileId ? savedSignIn.attempt : ''}`}
-        account={inspected} image={avatars[inspected.profileId]} imageRevision={avatarRevision}
+      {inspected && <AccountInspector key={`${inspected.profileId}:${inspectedSignIn}`}
+        account={inspected} credentialRevision={inspectedSignIn} image={avatars[inspected.profileId]} imageRevision={avatarRevision}
         onRefreshHeadshots={() => setAvatarRevision(value => value + 1)}
         legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
@@ -491,7 +496,7 @@ function App() {
         </section>}
       </>}
       {page === 'Automation' && <MacroCatalogPanel assignmentCount={legacyWorkspace?.assignmentCount}
-        epoch={panic && !panic.held && !panicBusy ? panic.epoch : null}/>}
+        epoch={panic && !panic.held && !panicBusy ? panic.epoch : null} run={snapshot?.macroPlayback ?? null}/>}
       {page === 'Performance' && <>
         <ClientPerformance/>
         <Memory admission={admission}/>

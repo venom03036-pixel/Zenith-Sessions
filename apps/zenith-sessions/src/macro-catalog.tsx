@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useState } from 'react';
-import { MacroAssignmentsPanel } from './macro-assignments';
+import { MacroAssignmentsPanel, type MacroRunView } from './macro-assignments';
 
 type Cursor = { offset: number; hostSessionId: string; catalogRevision: string; total: number };
 export type MacroChoice = { name: string; binding: { page: Cursor; macroId: string; savedRevision: string } };
@@ -26,7 +26,7 @@ type Page = {
   selectionPage: Cursor | null;
 };
 
-export function MacroCatalogPanel({ assignmentCount, epoch }: { assignmentCount?: number; epoch: string | null }) {
+export function MacroCatalogPanel({ assignmentCount, epoch, run }: { assignmentCount?: number; epoch: string | null; run: MacroRunView | null }) {
   const [page, setPage] = useState<Page | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
@@ -67,5 +67,5 @@ export function MacroCatalogPanel({ assignmentCount, epoch }: { assignmentCount?
         {page.next && <button className="secondary-button" onClick={() => void read(page.next)}>Next page</button>}
       </div>
     </>}
-  </section><MacroAssignmentsPanel choice={choice} epoch={epoch}/></>;
+  </section><MacroAssignmentsPanel choice={choice} epoch={epoch} run={run}/></>;
 }

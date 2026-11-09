@@ -18,6 +18,19 @@ namespace MacroSuite.App;
 
 public partial class MainWindow : Window
 {
+    internal Func<Task>? PairSessions { get; private set; }
+    internal void EnableSessionsPairing(Func<Task> pair)
+    {
+        PairSessions = pair;
+        SessionsPairButton.Visibility = Visibility.Visible;
+    }
+    private async void PairSessions_Click(object sender, RoutedEventArgs e)
+    {
+        if (PairSessions is not { } pair) return;
+        SessionsPairButton.IsEnabled = false;
+        try { await pair(); }
+        finally { SessionsPairButton.IsEnabled = true; }
+    }
     private GlobalHotkeyService? _hotkeyService;
     private SystemTrayService? _trayService;
     private RuntimeThemeIconService? _themeIcons;

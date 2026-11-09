@@ -1,5 +1,13 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust account switching and headshot recovery (1.19)
+
+**CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** Reopening an account inspector reuses the pending same-profile private lookup. Headshot retry bypasses a cached image error. The sign-in window dismissal follows protected persistence, with separate UI confirmation and dismissal failure. The browser fixture exercised six synthetic profiles and the anonymous CDN check returned a PNG. Actual private data and sign-in-window closure remain attended checks. See [Preview 1.19](RUST-DESKTOP-PREVIEW.md#preview-119-account-details-and-sign-in).
+
+## Paired desktop foreground playback (1.18)
+
+**CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** The matching Personal and Sessions builds expose explicit one-time pairing and Start, Pause, Resume, and Stop for one reviewed foreground client. Personal checks the exact Sessions executable hash, child lineage, creation time, and window. Rust consumes an opaque review bound to the exact saved revision and native window, maintains the pipe heartbeat, and disconnects on Panic or session shutdown. Browser before/after, Windows native ownership, and cross-runtime fixtures passed. Live Roblox playback and wider macro scopes remain to be verified. See [Preview 1.18](RUST-DESKTOP-PREVIEW.md#preview-118-paired-foreground-playback).
+
 ## Rust–Personal foreground control protocol
 
 **CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** The one-run connection has mutual pairing proofs, bounded authenticated messages, exact saved and window identity fields, peer checks, and tracked Stop on disconnect or heartbeat expiry. The host binds its captured Stop generation and requires an independent ownership authorizer. Cross-runtime tests exercised Rust against the .NET listener. Desktop pairing and owned-client authorization wiring, visible run controls, and live Roblox input remain pending. See [the protocol and integration boundary](FOREGROUND-CONTROL-PIPE.md).

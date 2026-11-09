@@ -68,6 +68,7 @@ pub struct SignIn {
 pub struct SavedSignIn {
     attempt: Uuid,
     profile_id: Uuid,
+    close_failed: bool,
 }
 
 #[derive(Default)]
@@ -348,11 +349,21 @@ fn capture_and_save(
         sign_in.saved = Some(SavedSignIn {
             attempt,
             profile_id: identity.profile_id,
+            close_failed: false,
         });
         sign_in.clear(attempt);
         identity
     };
-    let _ = window.close();
+    if window.destroy().is_err()
+        && app.get_webview_window(&label(attempt)).is_some()
+        && let Ok(mut sign_in) = state.sign_in.lock()
+        && let Some(saved) = sign_in
+            .saved
+            .as_mut()
+            .filter(|saved| saved.attempt == attempt)
+    {
+        saved.close_failed = true;
+    }
     Ok(Some(identity))
 }
 

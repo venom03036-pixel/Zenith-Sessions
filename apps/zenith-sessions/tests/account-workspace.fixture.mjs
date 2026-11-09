@@ -20,23 +20,29 @@ function exerciseWorkspace() {
   let assignment = null;
   let assignmentStamp = 'initial-stamp';
   let reviewCalls = 0;
+  let readyWindow = false;
+  let macroPlayback = null;
+  const pairingCode = '00112233445566778899aabbccddeeff';
   let releaseReview;
   const lateReview = new Promise(resolve => { releaseReview = resolve; });
   const assignmentView = () => ({ stamp: assignmentStamp, total: 1, offset: 0, previous: null, next: null,
     unreadableLegacy: 0, rows: [{ target: assignmentTarget, name: 'Fixture6', editable: true, inherited: false, assignment }] });
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
+  let pendingPrivateProfile = false;
+  let repeatedPrivateProfile = false;
+  let releasePrivateProfile;
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice } = {}) => {
+    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice, action, request } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
           admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
             commitAvailable: 1, commitRequired: 1, canTryOne: false },
           recovery: { issue: null, attempts: [] }, panic,
-          signInAttempt: null, signInError: null, savedSignIn,
+          signInAttempt: null, signInError: null, savedSignIn, macroPlayback,
         };
         case 'legacy_workspace': return null;
         case 'macro_assignments': return assignmentView();
@@ -57,9 +63,22 @@ function exerciseWorkspace() {
             throw new Error('The review did not bind the exact assignment, macro revision and Panic epoch.');
           }
           reviewCalls++;
-          if (reviewCalls === 2) await lateReview;
-          return { targetName: 'Fixture6', macroName: 'Fixture macro 1',
-            recipients: [{ name: 'Fixture6', session: { status: 'noSession' } }] };
+          if (reviewCalls === 3) await lateReview;
+          return { targetName: 'Fixture6', macroName: 'Fixture macro 1', playbackReview: readyWindow ? 'fixture-review' : null,
+            recipients: [{ name: 'Fixture6', session: readyWindow
+              ? { status: 'ready', attemptId: 'fixture-attempt', pid: 4321 } : { status: 'noSession' } }] };
+        case 'start_macro_playback':
+          if (request.epoch !== panic.epoch || panic.held || request.stamp !== assignmentStamp || request.target.id !== assignmentTarget.id
+            || request.attempt !== 'fixture-attempt' || request.reviewId !== 'fixture-review' || request.code !== pairingCode || request.choice.savedRevision !== 'fixture') {
+            throw new Error('Start did not bind the reviewed assignment and attempt.');
+          }
+          macroPlayback = { id: 'fixture-operation', name: 'Fixture macro 1', account: 'Fixture6', phase: 'running', detail: 'Foreground playback is running.' };
+          return macroPlayback.id;
+        case 'control_macro_playback':
+          if (id !== macroPlayback?.id) throw new Error('Control did not use the current operation ID.');
+          macroPlayback = { ...macroPlayback, phase: { pause: 'paused', resume: 'running', stop: 'finished' }[action],
+            detail: { pause: 'Paused.', resume: 'Foreground playback is running.', stop: 'Macro stopped and cleanup finished.' }[action] };
+          return;
         case 'saved_macro_catalog':
           catalogRequests++;
           if (catalogRequests === 1) return emptyCatalog;
@@ -89,10 +108,23 @@ function exerciseWorkspace() {
           return { userId: id, displayName: `${id} display name`, created: '2020-01-01', description: '' };
         }
         case 'account_favorites': return { items: [{ placeId: '12345', name: `${id} favorite` }], nextCursor: null };
-        case 'account_private_profile': return {
-          balance: { Ok: savedSignIn?.profileId === id ? '73' : '0' },
-          friends: { Ok: { items: [{ id: '42', name: '', displayName: `${id} friend` }], nextCursor: null } },
-        };
+        case 'account_private_profile': {
+          if (id === 'fixture-3') {
+            if (pendingPrivateProfile) {
+              repeatedPrivateProfile = true;
+              throw 'Another operation is checking this account. Retry shortly.';
+            }
+            if (!releasePrivateProfile) {
+              pendingPrivateProfile = true;
+              await new Promise(resolve => { releasePrivateProfile = resolve; });
+              pendingPrivateProfile = false;
+            }
+          }
+          return {
+            balance: { Ok: savedSignIn?.profileId === id ? '73' : '0' },
+            friends: { Ok: { items: [{ id: '42', name: '', displayName: `${id} friend` }], nextCursor: null } },
+          };
+        }
         default: throw new Error(`Unexpected fixture command: ${command}`);
       }
     },
@@ -140,11 +172,27 @@ function exerciseWorkspace() {
       if (details().includes('fixture-1')) throw new Error('previous account results leaked into current details');
     });
     await check('renewal refreshes the already selected account', async () => {
-      savedSignIn = { profileId: 'fixture-6', attempt: 'renewed-fixture' };
+      savedSignIn = { profileId: 'fixture-6', attempt: 'renewed-fixture', closeFailed: false };
       await until(() => /Robux73/.test(details()), 'renewed account still showed the old balance');
       if (!document.querySelector('.sign-in-saved')?.textContent.includes('@Fixture6')) {
         throw new Error('a successful save did not identify the account that was saved');
       }
+      savedSignIn = { ...savedSignIn, closeFailed: true };
+      await until(() => find('.sign-in-saved')?.textContent.includes('You can close it manually'),
+        'a saved sign-in with a close failure did not show the separate close warning');
+    });
+    await check('returning to an account reuses its unfinished private lookup', async () => {
+      row(3).click();
+      await until(() => pendingPrivateProfile, 'the original lookup did not start');
+      try {
+        row(4).click();
+        await until(() => details().includes('fixture-4 friend'), 'the other account did not load');
+        row(3).click();
+        await until(() => details().includes('fixture-3 favorite'), 'the account did not reopen');
+        await new Promise(resolve => setTimeout(resolve, 200));
+        if (repeatedPrivateProfile) throw new Error('the return lookup collided with the original lookup');
+      } finally { releasePrivateProfile(); }
+      await until(() => details().includes('fixture-3 friend'), 'the returning inspector did not receive the original result');
     });
     await check('all six saved accounts show their own headshot and details', async () => {
       for (let index = 1; index <= accounts.length; index++) {
@@ -153,7 +201,7 @@ function exerciseWorkspace() {
         await until(() => row(index).getAttribute('aria-pressed') === 'true'
           && details().includes(`${id} display name`) && details().includes(`${id} favorite`)
           && details().includes(`${id} friend`) && details().includes(index === 6 ? 'Robux73' : 'Robux0')
-          && find('[aria-label="Account details"] img:not([hidden])')?.src.endsWith(`?${id}`),
+          && new URL(find('[aria-label="Account details"] img:not([hidden])')?.src ?? location.href).search.startsWith(`?${id}`),
         `account ${index} showed missing or mismatched details`);
       }
     });
@@ -215,13 +263,26 @@ function exerciseWorkspace() {
       if ([...assignments().querySelectorAll('button')].some(button => /^(run|play|start)$/i.test(button.textContent.trim()))) {
         throw new Error('Target review unexpectedly enabled macro execution');
       }
+      readyWindow = true;
       review.click();
-      await until(() => reviewCalls === 2, 'The second review did not start');
+      await until(() => button('Start macro'), 'An eligible owned window did not expose paired playback');
+      const code = assignments().querySelector('input[type="password"]');
+      code.value = pairingCode;
+      button('Start macro').click();
+      await until(() => button('Pause macro'), 'Started operation did not appear');
+      button('Pause macro').click();
+      await until(() => button('Resume macro'), 'Paused operation did not appear');
+      button('Resume macro').click();
+      await until(() => button('Pause macro'), 'Resumed operation did not appear');
+      button('Stop macro').click();
+      await until(() => assignments().textContent.includes('cleanup finished') && !button('Stop macro'), 'Stop outcome did not appear');
+      review.click();
+      await until(() => reviewCalls === 3, 'The pending review did not start');
       [...document.querySelectorAll('button')].find(button => button.textContent.trim() === 'Panic stop').click();
       await until(() => find('[aria-label="Panic stop status"]'), 'The newer Panic hold did not appear');
       releaseReview();
       await until(() => !assignments()?.textContent.includes('Checking playback targets'), 'The review did not finish');
-      if (assignments().textContent.includes('No active session') || !review.disabled) {
+      if (assignments().textContent.includes('Owned window available') || button('Start macro') || !review.disabled) {
         throw new Error('Evidence from before Panic survived the hold');
       }
       button('Remove assignment').click();
@@ -242,7 +303,6 @@ const scratchParent = await realpath(tmpdir());
 const prefix = 'zenith-account-fixture-';
 const profile = await mkdtemp(join(scratchParent, prefix));
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };
-let failSecondHeadshot = true;
 const server = createServer(async (request, response) => {
   try {
     const { pathname, search } = new URL(request.url, 'http://127.0.0.1');
@@ -250,9 +310,8 @@ const server = createServer(async (request, response) => {
       response.writeHead(200, { 'Content-Type': 'text/javascript' });
       response.end(`(${exerciseWorkspace.toString()})()`);
     } else if (pathname === '/headshot.svg') {
-      if (search === '?fixture-2' && failSecondHeadshot) {
-        failSecondHeadshot = false;
-        response.writeHead(404, { 'Cache-Control': 'no-store' }).end();
+      if (search === '?fixture-2') {
+        response.writeHead(404, { 'Cache-Control': 'public, max-age=600' }).end();
         return;
       }
       response.writeHead(200, { 'Content-Type': 'image/svg+xml' });

@@ -2,6 +2,8 @@ using Zenith.MacroHost.Contracts;
 using Zenith.MacroHost.Windows;
 
 // Isolated cross-runtime fixture only. It cannot serve the production endpoint or read a user library.
+if (args is ["--ownership-window-fixture"]) return OwnershipWindowFixture.Run();
+
 if (args is ["--foreground-pipe", var foregroundName]
     && foregroundName.StartsWith(ForegroundControlProtocol.PipeName + ".fixture-", StringComparison.Ordinal)
     && foregroundName.Length <= 150)

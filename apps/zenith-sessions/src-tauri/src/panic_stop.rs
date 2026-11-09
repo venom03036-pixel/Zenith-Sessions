@@ -4,6 +4,7 @@ use std::sync::{
 };
 
 use serde::Serialize;
+use tokio::sync::Notify;
 
 use crate::session::SessionOwner;
 
@@ -11,6 +12,7 @@ use crate::session::SessionOwner;
 pub struct PanicStop {
     epoch: AtomicU64,
     outcome: Mutex<Option<(u64, Result<(), String>)>>,
+    revoked: Notify,
 }
 
 #[derive(Serialize)]
@@ -46,7 +48,17 @@ impl PanicStop {
                 Some(next(epoch))
             })
             .expect("the panic epoch update always supplies a value");
+        self.revoked.notify_waiters();
         next(previous)
+    }
+
+    pub async fn wait_revoked(&self, epoch: u64) {
+        let notice = self.revoked.notified();
+        tokio::pin!(notice);
+        notice.as_mut().enable();
+        if self.permits(epoch) {
+            notice.await;
+        }
     }
 
     pub fn drain(&self, epoch: u64, owner: &Mutex<SessionOwner>) -> Result<(), String> {

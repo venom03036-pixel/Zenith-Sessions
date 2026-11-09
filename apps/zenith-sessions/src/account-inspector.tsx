@@ -9,12 +9,28 @@ type Page<T> = { items: T[]; nextCursor: string | null };
 type Remote<T> = { value?: T; error?: string };
 type Outcome<T> = { Ok: T } | { Err: string };
 type PrivateProfile = { balance: Outcome<string>; friends: Outcome<Page<Friend>> };
+const pendingPrivateProfiles = new Map<string, Promise<PrivateProfile>>();
+
+function loadPrivateProfile(id: string, credentialRevision: string) {
+  const key = `${id}:${credentialRevision}`;
+  const pending = pendingPrivateProfiles.get(key);
+  if (pending) return pending;
+  const request = invoke<PrivateProfile>('account_private_profile', { id })
+    .finally(() => pendingPrivateProfiles.delete(key));
+  pendingPrivateProfiles.set(key, request);
+  return request;
+}
 
 function errorMessage(error: unknown) {
   return typeof error === 'string' ? error : 'Roblox data is unavailable.';
 }
 
-export function Avatar({ username, image, large = false }: { username: string; image?: string; large?: boolean }) {
+export function Avatar({ username, image, imageRevision, large = false }: {
+  username: string;
+  image?: string;
+  imageRevision: number;
+  large?: boolean;
+}) {
   const [visible, setVisible] = useState(false);
   const [failed, setFailed] = useState(false);
   const [retried, setRetried] = useState(false);
@@ -26,9 +42,15 @@ export function Avatar({ username, image, large = false }: { username: string; i
     }, 1500);
     return () => window.clearTimeout(timer);
   }, [failed, retried]);
+  let source = image;
+  if (source && (imageRevision || retried)) {
+    const url = new URL(source, document.baseURI);
+    url.searchParams.set('zenith-refresh', `${imageRevision}-${Number(retried)}`);
+    source = url.href;
+  }
   return <span aria-hidden="true" className={`avatar preview-avatar${large ? ' inspector-avatar' : ''}`}>
     {!visible && <span>{username.slice(0, 2).toUpperCase()}</span>}
-    {image && !failed && <img key={String(retried)} src={image} alt="" referrerPolicy="no-referrer" hidden={!visible}
+    {source && !failed && <img key={String(retried)} src={source} alt="" referrerPolicy="no-referrer" hidden={!visible}
       onLoad={() => setVisible(true)} onError={() => { setVisible(false); setFailed(true); }}/>}
   </span>;
 }
@@ -44,8 +66,9 @@ function dateLabel(date: string) {
   return Number.isNaN(value.valueOf()) ? 'Unavailable' : value.toLocaleDateString();
 }
 
-export function AccountInspector({ account, image, imageRevision, onFavorite, onRefreshHeadshots, legacyDetails }: {
+export function AccountInspector({ account, credentialRevision, image, imageRevision, onFavorite, onRefreshHeadshots, legacyDetails }: {
   account: Account;
+  credentialRevision: string;
   image?: string;
   imageRevision: number;
   onFavorite: (favorite: Favorite) => void;
@@ -53,12 +76,14 @@ export function AccountInspector({ account, image, imageRevision, onFavorite, on
   legacyDetails?: ReactNode;
 }) {
   const [revision, setRevision] = useState(0);
-  return <AccountDetails key={revision} account={account} image={image} imageRevision={imageRevision} onFavorite={onFavorite} legacyDetails={legacyDetails}
+  return <AccountDetails key={revision} account={account} credentialRevision={credentialRevision}
+    image={image} imageRevision={imageRevision} onFavorite={onFavorite} legacyDetails={legacyDetails}
     onRefresh={() => { setRevision(value => value + 1); onRefreshHeadshots(); }}/>;
 }
 
-function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {
+function AccountDetails({ account, credentialRevision, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {
   account: Account;
+  credentialRevision: string;
   image?: string;
   imageRevision: number;
   onFavorite: (favorite: Favorite) => void;
@@ -84,7 +109,7 @@ function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, 
         value => { if (current) setFavorites({ value }); },
         error => { if (current) setFavorites({ error: errorMessage(error) }); },
       );
-      void invoke<PrivateProfile>('account_private_profile', { id }).then(
+      void loadPrivateProfile(id, credentialRevision).then(
         value => {
           if (!current) return;
           setBalance('Ok' in value.balance ? { value: value.balance.Ok } : { error: value.balance.Err });
@@ -98,7 +123,7 @@ function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, 
       );
     }, 150);
     return () => { current = false; window.clearTimeout(timer); };
-  }, [id]);
+  }, [id, credentialRevision]);
 
   async function loadMoreFavorites() {
     const page = favorites.value;
@@ -124,7 +149,7 @@ function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, 
 
   return <aside className="account-panel account-inspector" aria-label="Account details">
     <div className="inspector-top">
-      <Avatar key={`${imageRevision}:${image ?? id}`} username={account.username} image={image} large/>
+      <Avatar key={`${imageRevision}:${image ?? id}`} username={account.username} image={image} imageRevision={imageRevision} large/>
       <div><h2>{profile.value?.displayName ?? account.username}</h2><p>@{account.username}</p></div>
       <button className="secondary-button" onClick={onRefresh} aria-label="Refresh account details">Refresh</button>
     </div>

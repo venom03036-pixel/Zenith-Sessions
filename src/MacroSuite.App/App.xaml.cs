@@ -276,6 +276,9 @@ public partial class App : Application
 
             // 5. Launch Main Window
             var mainWindow = new MainWindow(mainVM);
+#if DEVELOPER_MODE
+            EnableSessionsPairing(mainWindow, editorVM);
+#endif
             mainWindow.CreateMacroAuthoringViewModel = () => new AIMacroAuthoringViewModel(
                 new AIMacroAuthoringService(_visionRouter, _captureService,
                     new MacroSuite.Infrastructure.OpenCV.OpenCvImageEncoder(), _usageTracker, _featureGate), (macro, ct) =>
@@ -321,6 +324,7 @@ public partial class App : Application
     {
         _inputOperations?.Close();
 #if DEVELOPER_MODE
+        CloseSessionsPairing();
         // The source is a standalone metadata publisher, so joining never waits on the UI dispatcher.
         try
         {

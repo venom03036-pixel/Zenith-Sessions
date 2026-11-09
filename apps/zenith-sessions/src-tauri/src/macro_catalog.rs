@@ -72,6 +72,12 @@ pub struct Choice {
     saved_revision: Uuid,
 }
 
+impl Choice {
+    pub fn host_session(&self) -> Uuid {
+        self.page.host_session_id
+    }
+}
+
 pub struct VerifiedMacro {
     pub(crate) id: Uuid,
     pub(crate) name: String,

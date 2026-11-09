@@ -22,6 +22,29 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.19 account details and sign-in
+
+The preview keeps the same account library. In **Accounts**, select a saved account's name or headshot to view its Roblox profile, public favorite games, friends, and Robux balance. Switching away and back shares an unfinished private lookup for that profile and sign-in revision. The headshot display retries a failed image with a new URL so a cached error does not leave the avatar on initials. Initials remain visible until an image loads. **Refresh** in the inspector retries details and headshots. [Roblox headshot API](https://create.roblox.com/docs/cloud/reference/features/avatars)
+
+After the official Roblox page reaches Home, Zenith verifies the account, writes the protected sign-in, and dismisses the isolated window. If the dismissal request fails after the save, the confirmation names the account and tells the user to close that window. A failed save keeps the existing **Retry save** action.
+
+The browser regression reproduced a stuck headshot and duplicate private request before the fix. The updated fixture covers six synthetic profiles, switching back during a private lookup, and the saved-sign-in notice with a separate window warning. An anonymous request using Roblox's public user ID 1 returned a PNG with the cache-refresh parameter. Actual private data and automatic window closure remain to be checked with a designated account.
+
+The 1.19 executable has SHA-256 `8355F0CB2E965710B1FDF74C97577F3A3D7604E7458741003386F5D184A3130A`. Thirty desktop Rust tests, eleven Chromium checks, formatting, Clippy with warnings denied, the frontend build, and the zero-warning Release build passed. The staged executable passed all six self-check stages twice. The matching Personal editor is in the same preview folder.
+
+## Preview 1.18 paired foreground playback
+
+The preview directory contains `Zenith.Sessions.Preview.exe` and the matching `Personal\MacroSuite.App.exe`. Keep Personal's files together. The Personal preview requires the .NET 8 Desktop Runtime and an active Personal license. Close older instances before opening the matching pair. The Sessions preview continues to use its existing preview library. The paired Personal executable uses the normal Personal macro library.
+
+1. In the matching Personal editor, save an enabled **Active external window** macro with ordinary letter, digit, arrow, or space actions and finite delays. Leave the macro saved and keep Personal open.
+2. In Sessions, launch one designated account using the standard Roblox player and wait for **Arrival confirmed**. Open **Automation**, refresh the saved catalog, select the macro, and assign it to that account. Select **Review playback targets**.
+3. In Personal, select **Pair Sessions** and copy the one-time code. Close the pairing dialog. Paste the code into **Automation** in Sessions and select **Start macro** within two minutes. The control focuses the exact reviewed window before asking Personal to start.
+4. Check the intended input in Roblox. Switch focus away while the macro is running and confirm it pauses. Use **Resume macro** to focus the same window and resume. Select **Stop macro** and look for the completed cleanup result. Review and pair again for another run. For Panic, start a fresh trial and press the Sessions shortcut while it runs. Verify release in Personal and the Sessions hold. A closed connection asks Personal to stop and join, while a disconnected Sessions view cannot report a terminal acknowledgement.
+
+Personal binds the control peer to the exact packaged Sessions SHA-256 and checks the direct Roblox child, Windows process creation time, and native window. The Rust path requires a confirmed session and consumes a review token tied to that exact HWND, attempt, macro revision, protected assignment snapshot, and Panic generation. The launch provider applies the standard player signature gate. [Windows process snapshot identities](https://learn.microsoft.com/en-us/windows/win32/api/tlhelp32/ns-tlhelp32-processentry32w), [Control protocol](FOREGROUND-CONTROL-PIPE.md)
+
+The browser fixture fails on the previous frontend and passes on 1.18 with Start, Pause, Resume, Stop, and late review after Panic. The native ownership fixture used a disposable process and window, checked wrong peer hash, replaced process time or HWND, and then verified rejection after exit. Controlled cross-runtime fixtures passed. A live Roblox input trial and direct interaction with the paired Personal window remain pending.
+
 ## Preview 1.15 playback target review
 
 Open **Automation**, refresh the Personal catalog, and select the assigned macro. Use **Review playback targets** on the account, imported group, or imported bundle you want to check. For an inherited reference, save the exact current macro revision to that row first. If the macro changes or is disabled in the editor, Zenith explains why the review cannot proceed.

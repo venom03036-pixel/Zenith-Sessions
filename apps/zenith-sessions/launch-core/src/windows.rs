@@ -629,18 +629,21 @@ impl OwnedPlayer {
     }
 
     pub fn has_unique_visible_window(&self) -> bool {
-        let Some(window) = self.find_matching_window(false, true) else {
-            return false;
-        };
+        self.unique_visible_window_handle().is_some()
+    }
+
+    pub fn unique_visible_window_handle(&self) -> Option<isize> {
+        let window = self.find_matching_window(false, true)?;
         // SAFETY: recheck the candidate against the held process and current window state.
         unsafe {
             let mut pid = 0;
-            GetWindowThreadProcessId(window, Some(&mut pid)) != 0
+            (GetWindowThreadProcessId(window, Some(&mut pid)) != 0
                 && pid == self.pid()
                 && IsWindowVisible(window).as_bool()
                 && !IsIconic(window).as_bool()
                 && GetWindow(window, GW_OWNER).is_err()
-                && self.owns_current_pid()
+                && self.owns_current_pid())
+            .then_some(window.0 as isize)
         }
     }
 
@@ -648,6 +651,17 @@ impl OwnedPlayer {
         let window = self
             .window()
             .ok_or("The owned Roblox window is unavailable")?;
+        self.focus_window(window)
+    }
+
+    pub fn focus_macro_window(&self, expected: isize) -> Result<(), &'static str> {
+        if self.unique_visible_window_handle() != Some(expected) {
+            return Err("The reviewed Roblox window changed");
+        }
+        self.focus_window(HWND(expected as *mut _))
+    }
+
+    fn focus_window(&self, window: HWND) -> Result<(), &'static str> {
         // SAFETY: the window was found for the exact process still held by this OwnedPlayer.
         unsafe {
             let mut pid = 0;

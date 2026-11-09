@@ -6,6 +6,8 @@ fn main() {
             "macro_assignments",
             "edit_macro_assignment",
             "review_macro_targets",
+            "start_macro_playback",
+            "control_macro_playback",
             "import_account",
             "import_legacy",
             "legacy_workspace",

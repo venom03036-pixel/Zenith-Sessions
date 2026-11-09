@@ -21,6 +21,13 @@
     <DefineConstants>$(DefineConstants);DEVELOPER_MODE</DefineConstants>
   </PropertyGroup>
 
+  <ItemGroup Condition="'$(DeveloperMode)' == 'true' and '$(ZenithSessionsPeerSha256)' != ''">
+    <AssemblyAttribute Include="System.Reflection.AssemblyMetadataAttribute">
+      <_Parameter1>ZenithSessionsPeerSha256</_Parameter1>
+      <_Parameter2>$(ZenithSessionsPeerSha256)</_Parameter2>
+    </AssemblyAttribute>
+  </ItemGroup>
+
   <ItemGroup>
     <ProjectReference Include="..\..\src\MacroSuite.Core\MacroSuite.Core.csproj" />
     <ProjectReference Include="..\..\src\MacroSuite.Infrastructure\MacroSuite.Infrastructure.csproj" />

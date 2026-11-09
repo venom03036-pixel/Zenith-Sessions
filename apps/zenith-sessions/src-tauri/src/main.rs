@@ -2,6 +2,7 @@
 
 mod library;
 mod macro_catalog;
+mod macro_playback;
 mod panic_hotkey;
 mod panic_stop;
 mod recovery;
@@ -25,6 +26,7 @@ use library::{
     SavedCredential,
 };
 use macro_catalog::{CatalogView, Choice as MacroChoice, Cursor as CatalogCursor, MacroCatalog};
+use macro_playback::{MacroPlayback, MacroRunView, ReviewKey};
 use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
 use serde::{Deserialize, Serialize};
@@ -47,6 +49,7 @@ use zenith_session_launch::{
 struct Workspace {
     library: Mutex<Library>,
     macro_catalog: MacroCatalog,
+    macro_playback: MacroPlayback,
     owner: Arc<Mutex<SessionOwner>>,
     panic: Arc<PanicStop>,
     hotkey: Option<PanicHotkey>,
@@ -133,6 +136,7 @@ struct MacroTargetReview {
     target_name: String,
     macro_name: String,
     recipients: Vec<MacroRecipientReview>,
+    playback_review: Option<Uuid>,
 }
 
 #[derive(Serialize)]
@@ -155,6 +159,7 @@ async fn review_macro_targets(
     if !state.can_dispatch(epoch) {
         return Err(STALE.into());
     }
+    let host = choice.host_session();
     let selected = state.macro_catalog.verify_choice(choice).await?;
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
@@ -164,19 +169,19 @@ async fn review_macro_targets(
         }
         let library = state.library.lock().map_err(|_| STATE_ERROR)?;
         let scope = library.review_assignment(&stamp, target, &selected)?;
-        let recipients = scope
+        let recipients: Vec<_> = scope
             .members
-            .into_iter()
+            .iter()
             .map(|member| match member {
                 AssignmentRecipient::Saved(account) => {
-                    let session = owner.playback_target(&account);
+                    let session = owner.playback_target(account);
                     MacroRecipientReview {
-                        name: account.username,
+                        name: account.username.clone(),
                         session: Some(session),
                     }
                 }
                 AssignmentRecipient::Unlinked(name) => MacroRecipientReview {
-                    name,
+                    name: name.clone(),
                     session: None,
                 },
             })
@@ -184,10 +189,37 @@ async fn review_macro_targets(
         if !state.can_dispatch(epoch) {
             return Err(STALE.into());
         }
+        let pin = match (recipients.as_slice(), scope.members.as_slice()) {
+            (
+                [
+                    MacroRecipientReview {
+                        session: Some(PlaybackTarget::Ready { attempt_id, .. }),
+                        ..
+                    },
+                ],
+                [AssignmentRecipient::Saved(account)],
+            ) => owner.macro_window(account, *attempt_id).ok().map(|window| {
+                (
+                    ReviewKey {
+                        target,
+                        stamp,
+                        host,
+                        macro_id: selected.id,
+                        revision: selected.revision,
+                        epoch,
+                        attempt: *attempt_id,
+                    },
+                    window,
+                )
+            }),
+            _ => None,
+        };
+        let playback_review = state.macro_playback.publish_review(pin)?;
         Ok(MacroTargetReview {
             target_name: scope.target_name,
             macro_name: selected.name,
             recipients,
+            playback_review,
         })
     })
     .await
@@ -197,6 +229,7 @@ async fn review_macro_targets(
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Snapshot {
+    macro_playback: Option<MacroRunView>,
     accounts: Vec<SavedIdentity>,
     sessions: Vec<Session>,
     launch: LaunchState,
@@ -261,6 +294,7 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             .map(|sample| sample.admission(Instant::now()));
         let sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
         Ok(Snapshot {
+            macro_playback: state.macro_playback.view(),
             accounts,
             sessions,
             launch,
@@ -561,6 +595,7 @@ async fn archive_launch_journal(state: State<'_, Arc<Workspace>>) -> Result<(), 
 
 #[tauri::command]
 async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
+    state.macro_playback.cancel_for(Some(attempt));
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
@@ -572,6 +607,7 @@ async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result
 
 #[tauri::command]
 async fn stop_all_sessions(state: State<'_, Arc<Workspace>>) -> Result<(), String> {
+    state.macro_playback.cancel_for(None);
     let state = Arc::clone(state.inner());
     spawn_blocking(move || state.owner.lock().map_err(|_| STATE_ERROR)?.stop_all(false))
         .await
@@ -712,6 +748,7 @@ fn main() -> ExitCode {
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
                 macro_catalog: MacroCatalog::default(),
+                macro_playback: MacroPlayback::default(),
                 owner,
                 panic,
                 hotkey,
@@ -738,11 +775,17 @@ fn main() -> ExitCode {
                     return;
                 }
                 let app = window.app_handle().clone();
-                spawn_blocking(move || {
-                    let stopped = state
-                        .owner
-                        .lock()
-                        .is_ok_and(|mut owner| owner.stop_all(true).is_ok());
+                state.macro_playback.cancel_for(None);
+                tauri::async_runtime::spawn(async move {
+                    state.macro_playback.join().await;
+                    let owner = Arc::clone(&state.owner);
+                    let stopped = spawn_blocking(move || {
+                        owner
+                            .lock()
+                            .is_ok_and(|mut owner| owner.stop_all(true).is_ok())
+                    })
+                    .await
+                    .unwrap_or(false);
                     if stopped {
                         app.exit(0);
                     } else {
@@ -757,6 +800,8 @@ fn main() -> ExitCode {
             macro_assignments,
             edit_macro_assignment,
             review_macro_targets,
+            macro_playback::start_macro_playback,
+            macro_playback::control_macro_playback,
             import_account,
             import_legacy,
             legacy_workspace,

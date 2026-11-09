@@ -130,6 +130,12 @@ pub enum PlaybackTarget {
     Ready { attempt_id: Uuid, pid: u32 },
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct MacroWindow {
+    pub handle: isize,
+    pub process: ProcessIdentity,
+}
+
 #[derive(Default)]
 pub struct SessionOwner {
     attempts: Vec<Attempt>,
@@ -563,6 +569,61 @@ impl SessionOwner {
             attempt_id: attempt.row.attempt_id,
             pid: player.pid(),
         }
+    }
+
+    pub fn macro_window(
+        &mut self,
+        account: &SavedIdentity,
+        attempt: Uuid,
+    ) -> Result<MacroWindow, String> {
+        if !matches!(self.playback_target(account), PlaybackTarget::Ready { attempt_id, .. } if attempt_id == attempt)
+        {
+            return Err(
+                "The reviewed Roblox session is no longer eligible. Review playback targets again."
+                    .into(),
+            );
+        }
+        let player = self
+            .attempt(attempt)?
+            .player
+            .as_ref()
+            .ok_or("The Roblox process exited.")?;
+        Ok(MacroWindow {
+            handle: player
+                .unique_visible_window_handle()
+                .ok_or("The reviewed Roblox window changed.")?,
+            process: player
+                .identity()
+                .ok_or("The reviewed Roblox process changed.")?,
+        })
+    }
+
+    pub fn focus_macro_window(
+        &mut self,
+        account: &SavedIdentity,
+        attempt: Uuid,
+        expected: MacroWindow,
+    ) -> Result<(), String> {
+        if self.macro_window(account, attempt)? != expected {
+            return Err("The reviewed Roblox window changed.".into());
+        }
+        self.attempt(attempt)?
+            .player
+            .as_ref()
+            .ok_or("The Roblox process exited.")?
+            .focus_macro_window(expected.handle)
+            .map_err(str::to_owned)
+    }
+
+    pub fn macro_process_is_live(&mut self, attempt: Uuid, expected: ProcessIdentity) -> bool {
+        self.attempt_mut(attempt).is_ok_and(|row| {
+            row.row.phase == Phase::Running
+                && !row.cancelled
+                && row.player.as_mut().is_some_and(|player| {
+                    player.identity() == Some(expected)
+                        && player.exited().is_ok_and(|exited| !exited)
+                })
+        })
     }
 
     fn attempt(&self, id: Uuid) -> Result<&Attempt, String> {

@@ -29,6 +29,6 @@ The final run passed 138 focused .NET checks, 29 Rust desktop checks, and two cr
 
 Formatting, Clippy, the frontend build, and the zero-warning Tauri Release build passed. The packaged desktop self-check passed all six stages twice. The build-check executable SHA-256 is `0A0C4D4F525157EA5DDE93E589DE6087748BCEBD3480E16A661E67CFD5CEF6B7`.
 
-## Desktop integration still required
+## Desktop integration
 
-The source includes the pipe, host binding, and Rust client. The Personal editor does not open this endpoint, and the Sessions interface does not send production control requests. The desktop needs an explicit Personal pairing action, exact owned-player authorization for the pipe peer, Rust session and Panic integration, and an Automation control surface. The endpoint must remain separate from the catalog and unavailable to remote WebView content. The attended trial follows that integration and requires a designated Roblox account.
+Preview 1.18 composes the pipe behind the Personal pairing button and drives it from the local Automation page. The paired Personal build embeds the exact Sessions executable SHA-256 at build time. Personal checks that hash against the local pipe peer's image and independently checks the direct child process, creation time, and native window. Sessions revalidates the protected assignment and a short-lived review of the exact live window before dispatch. The Rust worker maintains the heartbeat and closes its connection on Panic, session stop, or workspace exit. See [the paired preview and attended steps](RUST-DESKTOP-PREVIEW.md#preview-118-paired-foreground-playback).
