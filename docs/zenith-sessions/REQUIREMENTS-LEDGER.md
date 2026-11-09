@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust launch probe checkpoint (1.00-rustprobe)
+
+**VA-04-03, VA-06-03, CAP-08-02, PROD-CORE-03, PROD-UI-01.** The approved Rust and Tauri rebuild starts with an independent launch probe. The signed-player check, protected synthetic migration bundle, ticket contract fixtures, and packaged memory diagnostics have executed evidence. An authorized first launch exposed a Roblox update handoff without a verified process receipt for the replacement. On the updated registered player, ten consecutive launches confirmed the selected user and destination and stopped the owned process. These results apply to the single-account Rust probe. They do not reclassify the existing round-4 items or establish coexistence. See the [build, evidence, and live procedure](RUST-LAUNCH-PROBE.md).
+
 
 ## WPF regression isolation checkpoint (0.82-wpfisolation)
 

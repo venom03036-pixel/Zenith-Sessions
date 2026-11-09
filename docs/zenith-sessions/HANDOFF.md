@@ -1,5 +1,7 @@
 # Zenith Sessions — round-4 engineering handoff
 
+For the separate Rust and Tauri rebuild, start with the [single-account launch evidence and procedure](RUST-LAUNCH-PROBE.md) and the [RoALT 1.1 feature inventory](ROALT-1.1-FEATURE-INVENTORY.md). The historical instructions below govern the round-4 .NET candidate. Live testing of the Rust rebuild requires the owner's authorization for the designated accounts.
+
 Latest follow-up: [0.82 launch-click and theme repair](LAUNCH-CLICK-AND-THEME-REPAIR.md). Quick join, Launch checked accounts and preferred-game Launch now start a fresh selection without a separate Resume. List selection uses Zenith colors. Pause/Panic and unrelated paused work remain protected. This supersedes 0.81's enqueue-only button behavior; saved-session/ticket handling is unchanged. Offline evidence and remaining live acceptance are separate.
 
 Latest owner decision and repair: [0.81 saved-account direct launch](DIRECT-LAUNCH-REPAIR.md) supersedes the manual trial prerequisite for Direct ticket. Normal launches now use encrypted saved sessions immediately, with current account/publisher checks and corrected cookie rotation. The owner performs the next live test. The 1,737 affected offline checks passed; whole-build/package evidence is recorded separately for the exact candidate commit. Earlier failure records below remain historical evidence.

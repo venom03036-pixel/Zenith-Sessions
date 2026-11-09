@@ -1,0 +1,13 @@
+:root { color-scheme: dark; font-family: system-ui, sans-serif; background: #16181a; color: #eff3f6; }
+body { margin: 0; }
+main { max-width: 47rem; margin: 3rem auto; padding: 0 1.5rem; }
+.eyebrow { color: #87d8c4; font-size: .875rem; font-weight: 650; }
+h1 { margin: .5rem 0 1.5rem; }
+h2 { margin-top: 0; font-size: 1.125rem; }
+section { border: 1px solid #393e44; border-radius: .75rem; background: #1c1f22; padding: 1.5rem; }
+dl { display: grid; grid-template-columns: minmax(7rem, 1fr) 2fr; gap: .65rem; }
+dd { margin: 0; color: #aeb9c5; }
+button { border: 1px solid #84d7c2; border-radius: .4rem; padding: .625rem .875rem; background: #84d7c2; color: #10241e; font: inherit; font-weight: 650; }
+button:hover:not(:disabled) { background: #a9e5d6; }
+button:focus-visible { outline: 2px solid #aff8e8; outline-offset: 4px; }
+button:disabled { border-color: #49535d; background: #2a3036; color: #aeb9c5; }

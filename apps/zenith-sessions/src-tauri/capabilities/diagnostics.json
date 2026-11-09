@@ -1,0 +1,7 @@
+{
+  "identifier": "diagnostics",
+  "description": "Local diagnostics window can read Windows launch memory admission.",
+  "windows": ["main"],
+  "local": true,
+  "permissions": ["allow-read-admission"]
+}
