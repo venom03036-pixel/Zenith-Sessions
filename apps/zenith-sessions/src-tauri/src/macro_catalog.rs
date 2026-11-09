@@ -64,6 +64,20 @@ pub struct Cursor {
     total: usize,
 }
 
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Choice {
+    page: Cursor,
+    macro_id: Uuid,
+    saved_revision: Uuid,
+}
+
+pub struct VerifiedMacro {
+    pub(crate) id: Uuid,
+    pub(crate) name: String,
+    pub(crate) revision: Uuid,
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "PascalCase")]
 struct Query {
@@ -180,6 +194,7 @@ pub struct CatalogView {
     offset: usize,
     previous: Option<Cursor>,
     next: Option<Cursor>,
+    selection_page: Option<Cursor>,
 }
 
 impl CatalogView {
@@ -192,6 +207,7 @@ impl CatalogView {
             offset: 0,
             previous: None,
             next: None,
+            selection_page: None,
         }
     }
 }
@@ -280,6 +296,7 @@ fn decode(bytes: &[u8], request_id: Uuid, query: &Query) -> Result<CatalogView, 
         offset: query.offset,
         previous: query.offset.checked_sub(query.limit).map(cursor),
         next: next_offset.map(cursor),
+        selection_page: (end > query.offset).then(|| cursor(query.offset)),
     })
 }
 
@@ -292,6 +309,32 @@ impl MacroCatalog {
     pub async fn page(&self, cursor: Option<Cursor>) -> Result<CatalogView, &'static str> {
         let query = Query::from_cursor(cursor)?;
         Ok(self.read(PIPE, &query).await)
+    }
+
+    pub async fn verify_choice(&self, choice: Choice) -> Result<VerifiedMacro, &'static str> {
+        self.verify_choice_at(PIPE, choice).await
+    }
+
+    async fn verify_choice_at(
+        &self,
+        path: &str,
+        choice: Choice,
+    ) -> Result<VerifiedMacro, &'static str> {
+        let query = Query::from_cursor(Some(choice.page))?;
+        let page = self.read(path, &query).await;
+        if page.state != Status::Ready {
+            return Err(page.state.explanation());
+        }
+        let item = page
+            .items
+            .into_iter()
+            .find(|item| item.id == choice.macro_id && item.saved_revision == choice.saved_revision)
+            .ok_or("The selected macro changed. Refresh the catalog and select it again.")?;
+        Ok(VerifiedMacro {
+            id: item.id,
+            name: item.name,
+            revision: item.saved_revision,
+        })
     }
 
     async fn read(&self, path: &str, query: &Query) -> CatalogView {
@@ -520,6 +563,20 @@ mod tests {
             assert_eq!(page.state, Status::Ready);
             assert_eq!(page.host_version, "2.5.12-fixture");
             assert_eq!(page.items[0].name, "Cross-runtime fixture");
+            let reviewed = Choice {
+                page: page.selection_page.clone().unwrap(),
+                macro_id: page.items[0].id,
+                saved_revision: page.items[0].saved_revision,
+            };
+            let verified = client.verify_choice_at(&path, reviewed).await.unwrap();
+            assert_eq!(verified.id, page.items[0].id);
+            assert_eq!(verified.revision, page.items[0].saved_revision);
+            let changed = Choice {
+                page: page.selection_page.unwrap(),
+                macro_id: verified.id,
+                saved_revision: Uuid::new_v4(),
+            };
+            assert!(client.verify_choice_at(&path, changed).await.is_err());
             let stale = Cursor {
                 offset: 0,
                 host_session_id: Uuid::new_v4(),

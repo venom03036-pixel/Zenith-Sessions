@@ -38,27 +38,27 @@ struct SignIn {
 }
 
 #[derive(Deserialize, Serialize)]
-struct Catalog {
+pub(super) struct Catalog {
     protection: String,
-    profiles: Vec<LegacyProfile>,
-    groups: Vec<Value>,
-    bundles: Vec<Value>,
-    assignments: Vec<Value>,
+    pub(super) profiles: Vec<LegacyProfile>,
+    pub(super) groups: Vec<Value>,
+    pub(super) bundles: Vec<Value>,
+    pub(super) assignments: Vec<Value>,
     favorites: Vec<LegacyFavorite>,
     preferences: Value,
 }
 
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct LegacyProfile {
-    id: Uuid,
+pub(super) struct LegacyProfile {
+    pub(super) id: Uuid,
     label: String,
     username: String,
     groups: Vec<String>,
     priority: u8,
     preferred_place_id: Option<String>,
     legacy_user_id: Option<String>,
-    verified_user_id: Option<u64>,
+    pub(super) verified_user_id: Option<u64>,
     notes: String,
     is_favorite: bool,
     updated_utc: String,
@@ -276,17 +276,24 @@ impl Library {
         Ok(report)
     }
 
-    pub fn legacy_view(&self, offset: usize) -> Result<Option<LegacyView>, String> {
+    pub(super) fn legacy_catalog(&self) -> Result<Option<(Catalog, [u8; 32])>, String> {
         let mut encrypted = match read_limit(&self.root.join(ARCHIVE), MAX_LEGACY_MIGRATION_BYTES) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(None),
             Err(_) => return Err("Could not read the imported legacy workspace.".into()),
         };
+        let fingerprint = Sha256::digest(&encrypted).into();
         let migration = Migration::open(&mut encrypted)?;
         if !migration.sign_ins.is_empty() {
             return Err("The installed archive is not a metadata-only workspace.".into());
         }
-        let catalog = migration.workspace;
+        Ok(Some((migration.workspace, fingerprint)))
+    }
+
+    pub fn legacy_view(&self, offset: usize) -> Result<Option<LegacyView>, String> {
+        let Some((catalog, _)) = self.legacy_catalog()? else {
+            return Ok(None);
+        };
         let mut view = LegacyView {
             protection: catalog.protection,
             profile_count: catalog.profiles.len(),
@@ -400,6 +407,16 @@ mod tests {
         assert_eq!(view.archived_count, 1);
         assert_eq!(view.favorites[0].name, "Fixture game");
         assert_eq!(view.assignment_count, 1);
+        let assignment_view = serde_json::to_value(fresh.assignments(0).unwrap()).unwrap();
+        assert!(
+            assignment_view["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["editable"] == true
+                    && row["target"]["id"] == id.to_string()
+                    && row["assignment"].is_object())
+        );
         fresh.remove(id).unwrap();
         assert!(fresh.import_legacy(clear_fixture.clone()).is_err());
         assert!(fresh.by_user_id(4242).is_none());
@@ -432,5 +449,13 @@ mod tests {
         assert_eq!(view.protection, "password-protected");
         assert_eq!(view.archived_count, 3);
         assert_eq!(view.assignment_count, 1);
+        let assignment_view = serde_json::to_value(protected.assignments(0).unwrap()).unwrap();
+        assert!(
+            assignment_view["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["editable"] == false && row["assignment"].is_object())
+        );
     }
 }

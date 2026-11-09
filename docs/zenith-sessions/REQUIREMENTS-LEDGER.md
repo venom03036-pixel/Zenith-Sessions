@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust macro assignments (1.13)
+
+**CAP-13-01, CAP-14-01, CAP-16-02, PROD-UI-01.** Automation can save, replace and remove a preview-local reference for an account or an imported group or bundle. Save rechecks the editor page and saved revision. A current target and assignment snapshot are checked before an atomic DPAPI update. Verified identity binds imported account references, and the original archive remains intact. Browser, protected storage, cross-runtime catalog, and C# migration fixtures passed. Playback and installed-editor verification remain pending. See [Preview 1.13](RUST-DESKTOP-PREVIEW.md#preview-113-macro-assignments).
+
 ## Rust Personal macro catalog (1.12)
 
 **CAP-13-01, CAP-14-01, PROD-UI-01, PROD-QA-03.** Automation reads saved-macro display metadata through the existing Personal v1 pipe. The Rust client checks current Windows ownership, frame and request bounds, host revision and pagination. The page uses explicit refresh and clears stale rows. Assignment references remain in the protected archive. The production editor trial, assignment editing and playback remain pending. See [Preview 1.12](RUST-DESKTOP-PREVIEW.md#preview-112-saved-macro-catalog).

@@ -14,13 +14,19 @@ function exerciseWorkspace() {
   let launchedEpoch;
   let catalogRequests = 0;
   const catalogCursor = { offset: 25, hostSessionId: 'fixture-session', catalogRevision: '9007199254740993', total: 26 };
+  const selectionPage = { ...catalogCursor, offset: 0 };
   const emptyCatalog = { state: 'Disconnected', items: [], total: 0, offset: 0, hostVersion: '', previous: null, next: null };
+  const assignmentTarget = { kind: 'Account', id: 'fixture-6' };
+  let assignment = null;
+  let assignmentStamp = 'initial-stamp';
+  const assignmentView = () => ({ stamp: assignmentStamp, total: 1, offset: 0, previous: null, next: null,
+    unreadableLegacy: 0, rows: [{ target: assignmentTarget, name: 'Fixture6', editable: true, inherited: false, assignment }] });
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch, cursor } = {}) => {
+    invoke: async (command, { id, epoch, cursor, stamp, target, edit } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
@@ -30,10 +36,20 @@ function exerciseWorkspace() {
           signInAttempt: null, signInError: null, savedSignIn,
         };
         case 'legacy_workspace': return null;
+        case 'macro_assignments': return assignmentView();
+        case 'edit_macro_assignment':
+          if (stamp !== assignmentStamp || target.id !== assignmentTarget.id || target.kind !== 'Account') throw new Error('Wrong assignment target or stamp.');
+          if (edit.action === 'Save') {
+            if (JSON.stringify(edit.choice.page) !== JSON.stringify(selectionPage) || edit.choice.macroId !== 'macro-0' || edit.choice.savedRevision !== 'fixture') throw new Error('The selected macro was not pinned.');
+            assignment = { id: 'macro-0', name: 'Fixture macro 1', savedRevision: 'fixture' };
+          } else if (edit.action === 'Remove') assignment = null;
+          else throw new Error('The edit must be explicit.');
+          assignmentStamp += 'x';
+          return assignmentView();
         case 'saved_macro_catalog':
           catalogRequests++;
           if (catalogRequests === 1) return emptyCatalog;
-          if (catalogRequests === 2) return { ...emptyCatalog, state: 'Ready', total: 26, hostVersion: 'Fixture 2',
+          if (catalogRequests === 2 || catalogRequests === 4) return { ...emptyCatalog, state: 'Ready', total: 26, hostVersion: 'Fixture 2', selectionPage,
             next: catalogCursor, items: Array.from({ length: 25 }, (_, index) => ({ id: `macro-${index}`,
               savedRevision: 'fixture', name: `Fixture macro ${index + 1}`, hotkey: '',
               topLevelActions: 3, enabled: true, targetMode: 'Screen' })) };
@@ -139,6 +155,20 @@ function exerciseWorkspace() {
       button('Next page').click();
       await until(() => panel()?.textContent.includes('The catalog changed'), 'A changed revision was not surfaced');
       if (panel()?.textContent.includes('Fixture macro 1') || button('Next page')) throw new Error('Stale rows survived the changed revision');
+    });
+    await check('Automation saves a pinned macro and explicitly removes its assignment', async () => {
+      const assignments = () => find('[aria-labelledby="macro-assignments-heading"]');
+      const button = (scope, label) => [...(scope?.querySelectorAll('button') ?? [])].find(button => button.textContent.trim() === label);
+      if (!assignments()) throw new Error('Macro assignments are missing from Automation');
+      const catalog = find('[aria-labelledby="macro-catalog-heading"]');
+      button(catalog, 'Refresh catalog').click();
+      await until(() => button(catalog, 'Select macro'), 'No saved macro could be selected');
+      button(catalog, 'Select macro').click();
+      await until(() => button(assignments(), 'Assign selected macro')?.disabled === false, 'Assignment stayed disabled');
+      button(assignments(), 'Assign selected macro').click();
+      await until(() => assignments()?.textContent.includes('Assignment saved.') && button(assignments(), 'Remove assignment'), 'Saved assignment did not render');
+      button(assignments(), 'Remove assignment').click();
+      await until(() => assignments()?.textContent.includes('Unassigned') && !button(assignments(), 'Remove assignment'), 'Removed assignment stayed visible');
     });
     const result = document.createElement('output');
     result.id = 'account-fixture-result';

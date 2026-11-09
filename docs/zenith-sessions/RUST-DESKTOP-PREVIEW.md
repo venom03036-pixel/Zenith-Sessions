@@ -22,6 +22,20 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.13 macro assignments
+
+Open **Automation**, refresh the Personal catalog, and choose **Select macro**. Under **Macro assignments**, select **Assign selected macro** or **Replace assignment** on a saved account, imported group, or imported bundle. **Remove assignment** clears the preview's effective reference and works while the editor is closed. The preview pages through targets in groups of 25.
+
+A save rechecks the selected macro ID, saved revision, and exact editor catalog page. A changed or closed editor requires a refresh before saving a new selection. The local edit also checks the assignment and target snapshot before committing. Assignments carry a saved macro reference and a display label. Saving one grants no playback authority.
+
+Preview edits are stored separately in a current-user encrypted `library\macro-assignments.dpapi` file. Imported references remain in the protected migration archive. An imported account reference attaches to a current account only when its verified Roblox identity matches. Other references with missing or unverified targets appear as archived. Group and bundle references use their imported IDs. Changes in this preview do not update the original Personal or Sessions data. The 1.12 executable can still read the original archive and account library. The 1.13 assignment overlay is used only by previews that support it.
+
+The browser fixture reproduced the missing assignment controls in 1.12 and exercised selecting, saving, and removing a reference in 1.13. Native storage fixtures covered stale edits, restart, invalid files, verified legacy-account mapping, and preserving the original archive. The .NET catalog fixture accepted the exact saved macro and rejected a mismatched revision. The C# migration fixture verified both a linked account reference and an archived password-protected reference.
+
+For the attended check, open a compatible Personal editor and choose a designated saved macro. Assign it to an account in Automation, reopen Zenith and check that the row still shows the same reference. Refresh the catalog, select a macro, then save a changed revision in the editor before clicking **Replace assignment**. Verify the preview asks for a catalog refresh and leaves the old assignment in place. Close the editor and remove the assignment. For a migrated workspace, repeat on an imported group or bundle and compare the original legacy reference. Installed-editor interaction, assignment precedence for playback, and execution through the existing macro engine remain pending.
+
+The 1.13 executable has SHA-256 `DFA6C1C080E69F5C4843987437BBCF445D8FB75261B698A9DA4893954E5A774D`. Fifty-three offline Rust tests, the .NET catalog and C# migration fixtures, six Chromium checks, formatting, Clippy, the frontend build, and the zero-warning Release build passed. Both packaged self-checks passed all six stages.
+
 ## Preview 1.12 saved macro catalog
 
 Open the **Zenith Macros Personal** editor, then choose **Automation → Refresh catalog** in the preview. The catalog shows saved macro names, target modes, hotkeys, top-level action counts and enabled status. Use **Next page** and **Previous page** to browse in groups of 25. If the editor restarts or its catalog changes during paging, the preview clears the old rows and asks for a refresh. A disconnected or unavailable host has its own status. Opening the page waits for a manual refresh.

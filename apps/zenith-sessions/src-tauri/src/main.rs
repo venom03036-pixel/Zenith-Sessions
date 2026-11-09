@@ -20,11 +20,13 @@ use std::{
     time::Instant,
 };
 
-use library::{LegacyView, Library, MigrationReport, SavedCredential};
-use macro_catalog::{CatalogView, Cursor as CatalogCursor, MacroCatalog};
+use library::{
+    AssignmentTarget, AssignmentView, LegacyView, Library, MigrationReport, SavedCredential,
+};
+use macro_catalog::{CatalogView, Choice as MacroChoice, Cursor as CatalogCursor, MacroCatalog};
 use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use session::{ClientPerformance, LaunchState, Session, SessionOwner, WindowPlacement};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
@@ -69,6 +71,57 @@ async fn saved_macro_catalog(
         return Err("Zenith is closing.".into());
     }
     Ok(result)
+}
+
+#[tauri::command]
+async fn macro_assignments(
+    state: State<'_, Arc<Workspace>>,
+    offset: usize,
+) -> Result<AssignmentView, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .assignments(offset)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[derive(Deserialize)]
+#[serde(tag = "action", deny_unknown_fields)]
+enum AssignmentEdit {
+    Save { choice: MacroChoice },
+    Remove,
+}
+
+#[tauri::command]
+async fn edit_macro_assignment(
+    state: State<'_, Arc<Workspace>>,
+    target: AssignmentTarget,
+    stamp: String,
+    offset: usize,
+    edit: AssignmentEdit,
+) -> Result<AssignmentView, String> {
+    if state.exiting.load(Ordering::Acquire) {
+        return Err("Zenith is closing.".into());
+    }
+    let selected = match edit {
+        AssignmentEdit::Save { choice } => Some(state.macro_catalog.verify_choice(choice).await?),
+        AssignmentEdit::Remove => None,
+    };
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+        if state.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        library.edit_assignment(&stamp, target, selected, offset)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
 }
 
 #[derive(Serialize)]
@@ -631,6 +684,8 @@ fn main() -> ExitCode {
         .invoke_handler(tauri::generate_handler![
             workspace_snapshot,
             saved_macro_catalog,
+            macro_assignments,
+            edit_macro_assignment,
             import_account,
             import_legacy,
             legacy_workspace,

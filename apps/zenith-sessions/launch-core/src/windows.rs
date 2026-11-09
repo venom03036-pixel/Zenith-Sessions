@@ -135,6 +135,17 @@ pub fn seal_legacy_metadata(clear: &mut [u8]) -> Result<Vec<u8>, String> {
     seal_current_user(clear, LEGACY_MIGRATION_ENTROPY, MAX_LEGACY_MIGRATION_BYTES)
 }
 
+pub const MAX_ASSIGNMENT_BYTES: usize = 8 * 1024 * 1024;
+const ASSIGNMENT_ENTROPY: &[u8] = b"ZenithSessions/Rust/MacroAssignments/v1";
+
+pub fn open_assignment_metadata(encrypted: &mut [u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    unseal_current_user(encrypted, ASSIGNMENT_ENTROPY, MAX_ASSIGNMENT_BYTES as u64)
+}
+
+pub fn seal_assignment_metadata(clear: &mut [u8]) -> Result<Vec<u8>, String> {
+    seal_current_user(clear, ASSIGNMENT_ENTROPY, MAX_ASSIGNMENT_BYTES)
+}
+
 fn unseal_current_user(
     encrypted: &mut [u8],
     entropy: &[u8],

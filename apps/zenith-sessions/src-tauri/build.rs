@@ -3,6 +3,8 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "workspace_snapshot",
             "saved_macro_catalog",
+            "macro_assignments",
+            "edit_macro_assignment",
             "import_account",
             "import_legacy",
             "legacy_workspace",

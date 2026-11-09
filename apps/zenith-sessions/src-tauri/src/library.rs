@@ -13,7 +13,9 @@ use zenith_session_launch::{
     windows::{SavedIdentity, open_saved_bundle, seal_saved_bundle},
 };
 
+mod assignments;
 mod migration;
+pub use assignments::{AssignmentTarget, AssignmentView};
 pub use migration::{LegacyView, MigrationReport};
 
 const MAX_BUNDLE: usize = 128 * 1024;
