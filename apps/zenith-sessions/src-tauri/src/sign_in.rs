@@ -259,6 +259,7 @@ fn capture_and_save(
         .unwrap_or(253_402_300_799);
     let mut credential = Credential::new(Zeroizing::new(cookie.value().to_owned()))
         .map_err(|error| error.to_string())?;
+    credential.limit_expiry(expires);
     drop(cookies);
     let (user_id, username) = RobloxAuth::new()
         .map_err(|error| error.to_string())?

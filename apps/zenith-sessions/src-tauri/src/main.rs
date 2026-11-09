@@ -17,7 +17,7 @@ use std::{
     time::Instant,
 };
 
-use library::{LegacyView, Library, MigrationReport};
+use library::{LegacyView, Library, MigrationReport, SavedCredential};
 use serde::Serialize;
 use session::{ClientPerformance, LaunchState, Session, SessionOwner, WindowPlacement};
 use tauri::ipc::{InvokeBody, Request};
@@ -57,6 +57,30 @@ struct Snapshot {
 }
 
 const STATE_ERROR: &str = "Zenith could not access the workspace state";
+
+impl Workspace {
+    fn read_saved_account<T>(
+        &self,
+        id: Uuid,
+        read: impl FnOnce(&mut SavedCredential) -> Result<T, String>,
+    ) -> Result<T, String> {
+        if self.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        let mut saved = self
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .credential(id)?;
+        let result = read(&mut saved);
+        let library = self.library.lock().map_err(|_| STATE_ERROR)?;
+        if self.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        library.finish_credential(&saved)?;
+        result
+    }
+}
 
 #[tauri::command]
 async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot, String> {
@@ -213,14 +237,11 @@ async fn account_private_profile(
 ) -> Result<PrivateProfile, String> {
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let (account, mut credential) = state
-            .library
-            .lock()
-            .map_err(|_| STATE_ERROR)?
-            .credential(id)?;
-        state
-            .directory
-            .private_profile(account.user_id, &mut credential)
+        state.read_saved_account(id, |saved| {
+            state
+                .directory
+                .private_profile(saved.identity.user_id, &mut saved.credential)
+        })
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -234,14 +255,11 @@ async fn account_friends(
 ) -> Result<Page<Person>, String> {
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let (account, mut credential) = state
-            .library
-            .lock()
-            .map_err(|_| STATE_ERROR)?
-            .credential(id)?;
-        state
-            .directory
-            .friends(account.user_id, &mut credential, &cursor)
+        state.read_saved_account(id, |saved| {
+            state
+                .directory
+                .friends(saved.identity.user_id, &mut saved.credential, &cursor)
+        })
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -287,29 +305,44 @@ async fn launch_account(
     let target = Target { place, job };
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let (identity, credential, attempt) = {
+        let (mut saved, attempt) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             if state.exiting.load(Ordering::Acquire) {
                 return Err("Zenith is closing.".into());
             }
-            let (identity, credential) = state
+            let saved = state
                 .library
                 .lock()
                 .map_err(|_| STATE_ERROR)?
                 .credential(id)?;
-            let attempt = owner.reserve(&identity, &target, allow_pair, try_one)?;
-            (identity, credential, attempt)
+            let attempt = owner.reserve(&saved.identity, &target, allow_pair, try_one)?;
+            (saved, attempt)
         };
-        let prepared = session::prepare(identity, credential, target, try_one, || {
-            !state.exiting.load(Ordering::Acquire)
-                && state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
-        });
+        let prepared = session::prepare(
+            &saved.identity,
+            &mut saved.credential,
+            target,
+            try_one,
+            || {
+                !state.exiting.load(Ordering::Acquire)
+                    && state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
+            },
+        );
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        let result = prepared.and_then(|prepared| {
+        let result = (|| {
+            if !owner.permits(attempt) || state.exiting.load(Ordering::Acquire) {
+                return Err("The launch was cancelled or the first client stopped.".into());
+            }
+            state
+                .library
+                .lock()
+                .map_err(|_| STATE_ERROR)?
+                .finish_credential(&saved)?;
+            let prepared = prepared?;
             owner.dispatch(prepared, attempt, try_one, || {
                 !state.exiting.load(Ordering::Acquire)
             })
-        });
+        })();
         if let Err(error) = &result {
             owner.fail_preparation(attempt, error.clone());
         }

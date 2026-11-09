@@ -1,5 +1,10 @@
-use std::{fmt, io::Read, time::Duration};
+use std::{
+    fmt,
+    io::Read,
+    time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
+use cookie::Cookie;
 use reqwest::{
     Method, StatusCode,
     blocking::{Client, Response},
@@ -16,7 +21,12 @@ const COOKIE_NAME: &str = ".ROBLOSECURITY";
 const CSRF: &str = "x-csrf-token";
 const MAX_JSON: u64 = 64 * 1024;
 
-pub struct Credential(Zeroizing<String>);
+pub struct Credential {
+    value: Zeroizing<String>,
+    verified_user: Option<u64>,
+    updated: bool,
+    expires: Option<u64>,
+}
 
 impl Credential {
     pub fn new(value: Zeroizing<String>) -> Result<Self, Failure> {
@@ -28,21 +38,40 @@ impl Credential {
         {
             return Err(Failure::SignInRequired("saved sign-in"));
         }
-        Ok(Self(value))
+        Ok(Self {
+            value,
+            verified_user: None,
+            updated: false,
+            expires: None,
+        })
     }
 
     fn header(&self) -> HeaderValue {
-        let mut raw = Zeroizing::new(String::with_capacity(COOKIE_NAME.len() + 1 + self.0.len()));
+        let mut raw = Zeroizing::new(String::with_capacity(
+            COOKIE_NAME.len() + 1 + self.value.len(),
+        ));
         raw.push_str(COOKIE_NAME);
         raw.push('=');
-        raw.push_str(&self.0);
+        raw.push_str(&self.value);
         let mut header = HeaderValue::from_str(&raw).expect("credential character set checked");
         header.set_sensitive(true);
         header
     }
 
     pub(crate) fn value(&self) -> &str {
-        &self.0
+        &self.value
+    }
+
+    pub fn expires_at(&self) -> Option<u64> {
+        self.expires
+    }
+
+    pub fn limit_expiry(&mut self, expires: u64) {
+        self.expires = Some(self.expires.map_or(expires, |current| current.min(expires)));
+    }
+
+    pub fn has_verified_update(&self, user_id: u64) -> bool {
+        self.updated && self.verified_user == Some(user_id)
     }
 }
 
@@ -52,6 +81,7 @@ pub enum Failure {
     Timeout(&'static str),
     SignInRequired(&'static str),
     IdentityChanged,
+    UnstableSignIn,
     Challenge(&'static str),
     RateLimited(&'static str, Option<u64>),
     Refused(&'static str, u16),
@@ -67,6 +97,7 @@ impl fmt::Display for Failure {
             Self::IdentityChanged => {
                 f.write_str("saved sign-in resolved to a different Roblox account")
             }
+            Self::UnstableSignIn => f.write_str("Roblox replaced the sign-in again during verification. Sign in to this account again."),
             Self::Challenge(stage) => write!(f, "{stage}: Roblox requires an account check"),
             Self::RateLimited(stage, Some(seconds)) => write!(
                 f,
@@ -129,15 +160,17 @@ impl RobloxAuth {
     }
 
     pub fn verify(&self, credential: &mut Credential, user_id: u64) -> Result<(), Failure> {
-        let user = self.identity(credential)?;
+        credential.verified_user = None;
+        let (user, rotation) = self.identity(credential)?;
         if user.id != user_id || user_id == 0 {
             return Err(Failure::IdentityChanged);
         }
-        Ok(())
+        self.verify_replacement(credential, user.id, rotation)
     }
 
     pub fn signed_in_user(&self, credential: &mut Credential) -> Result<(u64, String), Failure> {
-        let user = self.identity(credential)?;
+        credential.verified_user = None;
+        let (user, rotation) = self.identity(credential)?;
         if user.id == 0
             || user.name.is_empty()
             || user.name.len() > 20
@@ -148,20 +181,51 @@ impl RobloxAuth {
         {
             return Err(Failure::InvalidResponse("account validation"));
         }
+        self.verify_replacement(credential, user.id, rotation)?;
         Ok((user.id, user.name))
     }
 
-    fn identity(&self, credential: &mut Credential) -> Result<Identity, Failure> {
+    fn identity(&self, credential: &Credential) -> Result<(Identity, Option<Credential>), Failure> {
         const STAGE: &str = "account validation";
-        let response = self.request(
+        let response = accepted(
             STAGE,
-            credential,
-            Method::GET,
-            &self.identity_url,
-            None,
-            None,
+            self.send(
+                STAGE,
+                credential,
+                Method::GET,
+                &self.identity_url,
+                None,
+                None,
+            )?,
         )?;
-        read_json(accepted(STAGE, response)?, STAGE)
+        let rotation = replacement(&response, credential, STAGE)?;
+        Ok((read_json(response, STAGE)?, rotation))
+    }
+
+    fn verify_replacement(
+        &self,
+        credential: &mut Credential,
+        user_id: u64,
+        rotation: Option<Credential>,
+    ) -> Result<(), Failure> {
+        if let Some(mut candidate) = rotation {
+            if candidate.value != credential.value {
+                let (confirmed, successor) = self.identity(&candidate)?;
+                if confirmed.id != user_id {
+                    return Err(Failure::IdentityChanged);
+                }
+                if let Some(successor) = successor {
+                    if successor.value != candidate.value {
+                        return Err(Failure::UnstableSignIn);
+                    }
+                    candidate = successor;
+                }
+            }
+            candidate.updated = true;
+            *credential = candidate;
+        }
+        credential.verified_user = Some(user_id);
+        Ok(())
     }
 
     pub fn ticket(&self, credential: &mut Credential) -> Result<Zeroizing<String>, Failure> {
@@ -226,6 +290,45 @@ impl RobloxAuth {
         body: Option<&Value>,
         csrf: Option<HeaderValue>,
     ) -> Result<Response, Failure> {
+        let user_id = credential
+            .verified_user
+            .ok_or(Failure::SignInRequired(stage))?;
+        let response = self.send(stage, credential, method, url, body, csrf)?;
+        if response.status() == StatusCode::UNAUTHORIZED {
+            credential.verified_user = None;
+        }
+        let can_rotate = response.status().is_success()
+            || (stage == "launch ticket"
+                && response.status() == StatusCode::FORBIDDEN
+                && response
+                    .headers()
+                    .get(CSRF)
+                    .is_some_and(|value| !value.is_empty()));
+        if can_rotate && !response.headers().contains_key("rblx-challenge-id") {
+            let update = replacement(&response, credential, stage)
+                .and_then(|rotation| self.verify_replacement(credential, user_id, rotation));
+            if update.is_err() {
+                credential.verified_user = None;
+            }
+            update?;
+        }
+        Ok(response)
+    }
+
+    fn send(
+        &self,
+        stage: &'static str,
+        credential: &Credential,
+        method: Method,
+        url: &str,
+        body: Option<&Value>,
+        csrf: Option<HeaderValue>,
+    ) -> Result<Response, Failure> {
+        if let Some(expires) = credential.expires
+            && expires <= unix_seconds(stage)?
+        {
+            return Err(Failure::SignInRequired(stage));
+        }
         let mut request = self
             .http
             .request(method, url)
@@ -239,38 +342,74 @@ impl RobloxAuth {
         if let Some(csrf) = csrf {
             request = request.header(CSRF, csrf);
         }
-        let response = request.send().map_err(|error| {
+        request.send().map_err(|error| {
             if error.is_timeout() {
                 Failure::Timeout(stage)
             } else {
                 Failure::Network(stage)
             }
-        })?;
-        for header in response.headers().get_all(SET_COOKIE) {
-            let Some((name, value, attributes)) = cookie_parts(header) else {
-                continue;
-            };
-            if !name.eq_ignore_ascii_case(COOKIE_NAME) {
-                continue;
-            }
-            if attributes
-                .split(';')
-                .any(|attribute| attribute.trim().eq_ignore_ascii_case("Max-Age=0"))
-            {
-                return Err(Failure::SignInRequired(stage));
-            }
-            *credential = Credential::new(Zeroizing::new(value.to_owned()))
-                .map_err(|_| Failure::SignInRequired(stage))?;
-        }
-        Ok(response)
+        })
     }
 }
 
-fn cookie_parts(header: &HeaderValue) -> Option<(&str, &str, &str)> {
-    let header = header.to_str().ok()?;
-    let (pair, attributes) = header.split_once(';').unwrap_or((header, ""));
-    let (name, value) = pair.trim().split_once('=')?;
-    Some((name, value, attributes))
+fn unix_seconds(stage: &'static str) -> Result<u64, Failure> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs())
+        .map_err(|_| Failure::InvalidResponse(stage))
+}
+
+fn replacement(
+    response: &Response,
+    credential: &Credential,
+    stage: &'static str,
+) -> Result<Option<Credential>, Failure> {
+    let mut headers = response
+        .headers()
+        .get_all(SET_COOKIE)
+        .iter()
+        .filter_map(|header| header.to_str().ok())
+        .filter(|header| {
+            header
+                .split_once('=')
+                .is_some_and(|(name, _)| name.trim().eq_ignore_ascii_case(COOKIE_NAME))
+        });
+    let Some(header) = headers.next() else {
+        return Ok(None);
+    };
+    if headers.next().is_some() {
+        return Err(Failure::InvalidResponse(stage));
+    }
+    let cookie = Cookie::parse(header).map_err(|_| Failure::InvalidResponse(stage))?;
+    if cookie.domain().is_some_and(|domain| {
+        !domain.eq_ignore_ascii_case("roblox.com")
+            && !response
+                .url()
+                .host_str()
+                .is_some_and(|host| host.eq_ignore_ascii_case(domain))
+    }) {
+        return Err(Failure::InvalidResponse(stage));
+    }
+    let now = unix_seconds(stage)?;
+    let expiry = match cookie.max_age() {
+        Some(age) => Some(now.saturating_add(u64::try_from(age.whole_seconds()).unwrap_or(0))),
+        None => cookie
+            .expires_datetime()
+            .map(|date| u64::try_from(date.unix_timestamp()).unwrap_or(0)),
+    };
+    if expiry.is_some_and(|expires| expires <= now) {
+        return Err(Failure::SignInRequired(stage));
+    }
+    let mut candidate = Credential::new(Zeroizing::new(cookie.value_trimmed().to_owned()))
+        .map_err(|_| Failure::SignInRequired(stage))?;
+    candidate.expires = credential.expires;
+    if let Some(expiry) = expiry {
+        candidate.limit_expiry(expiry);
+    }
+    Ok(
+        (candidate.value != credential.value || candidate.expires != credential.expires)
+            .then_some(candidate),
+    )
 }
 
 fn accepted(stage: &'static str, response: Response) -> Result<Response, Failure> {
@@ -402,6 +541,101 @@ mod tests {
     }
 
     #[test]
+    fn identity_response_cannot_install_a_replacement_for_another_account() {
+        let (auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=foreign; Secure; HttpOnly\r\n",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "foreign",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":43}"#,
+            },
+        ]);
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        assert_eq!(
+            auth.verify(&mut credential, 42),
+            Err(Failure::IdentityChanged)
+        );
+        assert!(credential.value() == "original");
+        assert!(!credential.has_verified_update(42));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn a_second_distinct_replacement_during_confirmation_is_rejected() {
+        let (auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=first\r\n",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "first",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=second\r\n",
+                body: r#"{"id":42}"#,
+            },
+        ]);
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        assert_eq!(
+            auth.verify(&mut credential, 42),
+            Err(Failure::UnstableSignIn)
+        );
+        assert!(credential.value() == "original" && !credential.has_verified_update(42));
+        worker.join().unwrap();
+    }
+
+    #[test]
+    fn expiry_only_update_can_shorten_a_verified_sign_in_and_revocation_cannot_replace_it() {
+        let (auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=original; Max-Age=3600; Expires=Wed, 01 Jan 2042 00:00:00 GMT\r\n",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
+                request: "GET /balance HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "Set-Cookie: .ROBLOSECURITY=revoked; Max-Age=-1\r\n",
+                body: r#"{"robux":100}"#,
+            },
+        ]);
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        let now = unix_seconds("fixture").unwrap();
+        credential.limit_expiry(now + 7200);
+        auth.verify(&mut credential, 42).unwrap();
+        assert!(credential.has_verified_update(42));
+        assert!((now + 3600..=now + 3610).contains(&credential.expires_at().unwrap()));
+        let url = auth.identity_url.replace("/identity", "/balance");
+        assert_eq!(
+            auth.read_profile::<Value>("Robux balance", &mut credential, &url),
+            Err(Failure::SignInRequired("Robux balance"))
+        );
+        assert!(credential.value() == "original");
+        assert!(!credential.has_verified_update(42));
+        worker.join().unwrap();
+    }
+
+    #[test]
     fn authenticated_profile_read_uses_the_cookie_verified_for_this_account() {
         let (auth, worker) = server(vec![
             Exchange {
@@ -410,6 +644,14 @@ mod tests {
                 csrf: None,
                 status: "200 OK",
                 headers: "Set-Cookie: .ROBLOSECURITY=verified; Secure; HttpOnly\r\n",
+                body: r#"{"id":42,"name":"ZenithFixture"}"#,
+            },
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "verified",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
                 body: r#"{"id":42,"name":"ZenithFixture"}"#,
             },
             Exchange {
@@ -443,6 +685,14 @@ mod tests {
                 body: r#"{"id":42}"#,
             },
             Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "identity-rotation",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
                 request: "GET /assertion HTTP/1.1",
                 cookie: "identity-rotation",
                 csrf: None,
@@ -451,12 +701,28 @@ mod tests {
                 body: r#"{"clientAssertion":"fixture"}"#,
             },
             Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "assertion-rotation",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
                 request: "POST /ticket HTTP/1.1",
                 cookie: "assertion-rotation",
                 csrf: None,
                 status: "403 Forbidden",
                 headers: "x-csrf-token: csrf-retry\r\nSet-Cookie: .ROBLOSECURITY=csrf-rotation; Path=/\r\n",
                 body: "{}",
+            },
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "csrf-rotation",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42}"#,
             },
             Exchange {
                 request: "POST /ticket HTTP/1.1",
@@ -473,7 +739,27 @@ mod tests {
             auth.ticket(&mut credential).unwrap().as_str(),
             "short-lived-fixture"
         );
+        assert!(credential.has_verified_update(42));
         worker.join().unwrap();
+
+        #[cfg(windows)]
+        {
+            use crate::windows::{SavedIdentity, open_saved_bundle, seal_saved_bundle};
+            let identity = SavedIdentity {
+                profile_id: uuid::Uuid::new_v4(),
+                user_id: 42,
+                username: "ZenithFixture".into(),
+            };
+            let expires = unix_seconds("fixture").unwrap() + 60 * 60;
+            credential.limit_expiry(expires);
+            let mut protected =
+                seal_saved_bundle(&identity, &credential, expires + 60 * 60).unwrap();
+            let (reopened_identity, reopened) = open_saved_bundle(&mut protected).unwrap();
+            assert!(reopened_identity == identity);
+            assert!(reopened.value() == "csrf-rotation");
+            assert_eq!(reopened.expires_at(), Some(expires));
+            assert!(!reopened.has_verified_update(42));
+        }
     }
 
     #[test]
@@ -486,6 +772,14 @@ mod tests {
                 status: "200 OK",
                 headers: "",
                 body: r#"{"id":43}"#,
+            },
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "fixture",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42}"#,
             },
             Exchange {
                 request: "GET /assertion HTTP/1.1",
@@ -501,6 +795,11 @@ mod tests {
             auth.verify(&mut credential, 42),
             Err(Failure::IdentityChanged)
         );
+        assert_eq!(
+            auth.ticket(&mut credential),
+            Err(Failure::SignInRequired("client assertion"))
+        );
+        auth.verify(&mut credential, 42).unwrap();
         assert!(matches!(
             auth.ticket(&mut credential),
             Err(Failure::Challenge("client assertion"))

@@ -108,13 +108,15 @@ pub fn open_saved_bundle(encrypted: &mut [u8]) -> Result<(SavedIdentity, Credent
     {
         return Err("saved sign-in is expired or does not match the requested account".into());
     }
+    let mut credential = Credential::new(bundle.cookie).map_err(|error| error.to_string())?;
+    credential.limit_expiry(bundle.expires_unix_seconds);
     Ok((
         SavedIdentity {
             profile_id: bundle.profile_id,
             username: bundle.username,
             user_id: bundle.user_id,
         },
-        Credential::new(bundle.cookie).map_err(|error| error.to_string())?,
+        credential,
     ))
 }
 
@@ -180,6 +182,9 @@ pub fn seal_saved_bundle(
     credential: &Credential,
     expires: u64,
 ) -> Result<Vec<u8>, String> {
+    let expires = credential
+        .expires_at()
+        .map_or(expires, |limit| expires.min(limit));
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "System clock is invalid")?

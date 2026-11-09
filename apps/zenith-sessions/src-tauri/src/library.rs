@@ -1,9 +1,10 @@
 use std::{
-    collections::BTreeMap,
+    collections::{BTreeMap, HashSet},
     fs::{self, File, OpenOptions},
     io::{Read, Write},
     os::windows::fs::OpenOptionsExt,
     path::{Path, PathBuf},
+    sync::{Arc, Mutex},
 };
 
 use uuid::Uuid;
@@ -21,7 +22,29 @@ const MAX_ACCOUNTS: usize = 128;
 pub struct Library {
     root: PathBuf,
     accounts: BTreeMap<Uuid, SavedIdentity>,
+    credential_uses: Arc<Mutex<HashSet<Uuid>>>,
     _lease: File,
+}
+
+pub struct SavedCredential {
+    pub identity: SavedIdentity,
+    pub credential: Credential,
+    original: Vec<u8>,
+    _claim: CredentialClaim,
+}
+
+struct CredentialClaim {
+    id: Uuid,
+    uses: Arc<Mutex<HashSet<Uuid>>>,
+}
+
+impl Drop for CredentialClaim {
+    fn drop(&mut self) {
+        self.uses
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&self.id);
+    }
 }
 
 impl Library {
@@ -62,6 +85,7 @@ impl Library {
         Ok(Self {
             root,
             accounts,
+            credential_uses: Arc::default(),
             _lease: lease,
         })
     }
@@ -147,18 +171,54 @@ impl Library {
         Ok(identity)
     }
 
-    pub fn credential(&self, id: Uuid) -> Result<(SavedIdentity, Credential), String> {
+    pub fn credential(&self, id: Uuid) -> Result<SavedCredential, String> {
         let expected = self
             .accounts
             .get(&id)
             .ok_or("Select an account from the library")?;
+        if !self
+            .credential_uses
+            .lock()
+            .map_err(|_| "Could not claim this saved sign-in")?
+            .insert(id)
+        {
+            return Err("Another operation is checking this account. Retry shortly.".into());
+        }
+        let claim = CredentialClaim {
+            id,
+            uses: Arc::clone(&self.credential_uses),
+        };
         let mut bytes = read_limit(&self.bundle_path(id), MAX_BUNDLE)
             .map_err(|_| "The saved sign-in needs renewal")?;
         let (actual, credential) = open_saved_bundle(&mut bytes)?;
         if &actual != expected {
             return Err("The saved sign-in does not match this profile".into());
         }
-        Ok((actual, credential))
+        Ok(SavedCredential {
+            identity: actual,
+            credential,
+            original: bytes,
+            _claim: claim,
+        })
+    }
+
+    pub fn finish_credential(&self, saved: &SavedCredential) -> Result<(), String> {
+        let id = saved.identity.profile_id;
+        let path = self.bundle_path(id);
+        if self.accounts.get(&id) != Some(&saved.identity)
+            || !read_limit(&path, MAX_BUNDLE).is_ok_and(|current| current == saved.original)
+        {
+            return Err("The saved sign-in changed while Roblox was responding. Retry with the current account.".into());
+        }
+        if saved.credential.has_verified_update(saved.identity.user_id) {
+            let expires = saved
+                .credential
+                .expires_at()
+                .ok_or("The saved sign-in expiry is missing")?;
+            let encrypted = seal_saved_bundle(&saved.identity, &saved.credential, expires)?;
+            atomic_write(&path, &encrypted)?;
+        }
+        Ok(())
     }
 
     pub fn remove(&mut self, id: Uuid) -> Result<(), String> {
@@ -229,6 +289,53 @@ pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claim_is_per_account_and_late_reads_cannot_overwrite_renewal_or_removal() {
+        use zeroize::Zeroizing;
+        let root = std::env::temp_dir().join(format!("zenith-library-fixture-{}", Uuid::new_v4()));
+        let mut library = Library::open(root.clone()).unwrap();
+        let fixture = |value: &str| Credential::new(Zeroizing::new(value.into())).unwrap();
+        let first = library
+            .remember_sign_in(42, "FixtureOne".into(), fixture("initial"), 4_102_444_800)
+            .unwrap();
+        let other = library
+            .remember_sign_in(43, "FixtureTwo".into(), fixture("other"), 4_102_444_800)
+            .unwrap();
+
+        let mut active = library.credential(first.profile_id).unwrap();
+        assert!(library.credential(first.profile_id).is_err());
+        assert!(library.credential(other.profile_id).is_ok());
+        active.credential = fixture("unverified");
+        library.finish_credential(&active).unwrap();
+        assert!(
+            read_limit(&library.bundle_path(first.profile_id), MAX_BUNDLE).unwrap()
+                == active.original
+        );
+        library
+            .remember_sign_in(
+                42,
+                "FixtureOne".into(),
+                fixture("explicit-renewal"),
+                4_102_444_800,
+            )
+            .unwrap();
+        let renewed = read_limit(&library.bundle_path(first.profile_id), MAX_BUNDLE).unwrap();
+        assert_ne!(renewed, active.original);
+        assert!(library.finish_credential(&active).is_err());
+        drop(active);
+        let active = library.credential(first.profile_id).unwrap();
+        assert!(active.original == renewed);
+        library.remove(first.profile_id).unwrap();
+        assert!(library.finish_credential(&active).is_err());
+        assert!(!library.bundle_path(first.profile_id).exists());
+        drop(active);
+        library.remove(other.profile_id).unwrap();
+        drop(library);
+        fs::remove_file(root.join("accounts.json")).unwrap();
+        fs::remove_file(root.join("library.lock")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn a_new_first_party_sign_in_and_renewal_keep_one_profile() {
@@ -340,7 +447,7 @@ mod tests {
         let refused_duplicate = library.import(protected).is_err();
         drop(library);
         let mut library = Library::open(root.clone()).unwrap();
-        let (reopened, _) = library.credential(id).unwrap();
+        let reopened = library.credential(id).unwrap().identity;
         library.remove(id).unwrap();
         let removed = library.accounts().is_empty() && library.credential(id).is_err();
         drop(library);

@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust protected sign-in rotation (1.10)
+
+**VA-03-01, VA-04-03, VA-06-03, VA-08-04, CAP-14-01.** The Rust preview confirms each distinct replacement against the exact Roblox user before using it and replaces the same protected file only while its original receipt still matches. A per-account claim serializes reads and launch preparation. Explicit renewal, removal and launch cancellation fence stale results. Controlled HTTP and Windows DPAPI fixtures cover foreign and repeated replacements, bounded expiry, the ticket retry path, reopen, and cross-language migration. Actual provider rotation and a post-rotation live launch remain attended. See [Preview 1.10](RUST-DESKTOP-PREVIEW.md#preview-110-saved-sign-in-rotation).
+
 ## Rust account refresh and client performance (1.09)
 
 **CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** The Accounts page retries unresolved headshots and refreshes an inspector when its saved sign-in is renewed. A six-account Chromium fixture reproduced both defects in 1.08 and passed in 1.09. The existing official sign-in flow still saves before closing. Its first-party gate and protected persistence pass synthetic tests. Real private reads and automatic WebView sign-in closure remain attended checks.

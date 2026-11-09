@@ -4466,6 +4466,7 @@ dependencies = [
 name = "zenith-session-launch"
 version = "0.1.0"
 dependencies = [
+ "cookie",
  "reqwest",
  "serde",
  "serde_json",

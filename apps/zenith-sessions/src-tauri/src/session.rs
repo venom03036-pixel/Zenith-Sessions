@@ -750,8 +750,8 @@ pub struct Prepared {
 }
 
 pub fn prepare(
-    identity: SavedIdentity,
-    mut credential: Credential,
+    identity: &SavedIdentity,
+    credential: &mut Credential,
     target: Target,
     try_one: bool,
     permits: impl Fn() -> bool,
@@ -767,12 +767,10 @@ pub fn prepare(
     let player = VerifiedPlayer::registered()?;
     check(&permits)?;
     let auth = RobloxAuth::new().map_err(|error| error.to_string())?;
-    auth.verify(&mut credential, identity.user_id)
+    auth.verify(credential, identity.user_id)
         .map_err(|error| error.to_string())?;
     check(&permits)?;
-    let ticket = auth
-        .ticket(&mut credential)
-        .map_err(|error| error.to_string())?;
+    let ticket = auth.ticket(credential).map_err(|error| error.to_string())?;
     check(&permits)?;
     Ok(Prepared {
         player,
