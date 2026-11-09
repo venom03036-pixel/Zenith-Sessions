@@ -34,6 +34,8 @@ pub struct Record {
     pub username: String,
     pub place_id: String,
     pub requested_server: Option<Uuid>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub private_server: bool,
     pub checkpoint: Checkpoint,
 }
 
@@ -56,6 +58,7 @@ impl Record {
             username: self.username.clone(),
             place_id: self.place_id.clone(),
             requested_server: self.requested_server,
+            private_server: self.private_server,
             pid: match self.checkpoint {
                 Checkpoint::Started(process) => Some(process.pid),
                 _ => None,
@@ -76,6 +79,7 @@ impl Record {
             && self.place_id.bytes().all(|b| b.is_ascii_digit())
             && self.place_id.parse::<i64>().is_ok_and(|id| id > 0)
             && !self.requested_server.is_some_and(|id| id.is_nil())
+            && !(self.private_server && self.requested_server.is_some())
             && match self.checkpoint {
                 Checkpoint::Started(process) => process.pid > 0 && process.started_filetime > 0,
                 _ => true,
@@ -105,6 +109,7 @@ pub struct Review {
     username: String,
     place_id: String,
     requested_server: Option<Uuid>,
+    private_server: bool,
     pid: Option<u32>,
     state: ReviewState,
 }
@@ -154,7 +159,16 @@ impl Journal {
 
     fn parse(bytes: &[u8]) -> Option<Vec<Record>> {
         let doc: Document = serde_json::from_slice(bytes).ok()?;
-        (doc.version == 1 && valid_attempts(&doc.attempts)).then_some(doc.attempts)
+        let version = Self::version(&doc.attempts);
+        (doc.version == version && valid_attempts(&doc.attempts)).then_some(doc.attempts)
+    }
+
+    fn version(attempts: &[Record]) -> u8 {
+        if attempts.iter().any(|attempt| attempt.private_server) {
+            2
+        } else {
+            1
+        }
     }
 
     pub fn issue(&self) -> Option<&'static str> {
@@ -185,7 +199,7 @@ impl Journal {
             return Err(WRITE_FAILED.into());
         }
         let document = Document {
-            version: 1,
+            version: Self::version(&attempts),
             attempts,
         };
         if let Some(path) = &self.path {
@@ -264,8 +278,26 @@ mod tests {
             username: "ZenithFixture".into(),
             place_id: "1818".into(),
             requested_server: Some(Uuid::from_u128(42)),
+            private_server: false,
             checkpoint,
         }
+    }
+
+    #[test]
+    fn private_recovery_keeps_only_the_destination_kind_and_cannot_be_read_as_public() {
+        let fixture = Fixture::new();
+        let (mut journal, _) = Journal::open(fixture.journal());
+        let mut record = record(Checkpoint::Dispatching);
+        record.requested_server = None;
+        record.private_server = true;
+        journal.save(vec![record]).unwrap();
+        let contents = fs::read_to_string(fixture.journal()).unwrap();
+        assert!(contents.contains("\"version\":2") && contents.contains("\"privateServer\":true"));
+        assert!(!contents.contains("linkCode") && !contents.contains("revision"));
+        let public_schema = contents.replace("\"version\":2", "\"version\":1");
+        assert!(Journal::parse(public_schema.as_bytes()).is_none());
+        let (_, recovered) = Journal::open(fixture.journal());
+        assert!(recovered[0].private_server);
     }
 
     #[test]

@@ -8,6 +8,7 @@ import type { MacroRunView } from './macro-assignments';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { DestinationPicker, type Destination } from './destination-picker';
+import { PrivateServers, privateReference, type PrivateServer } from './private-servers';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
 import './workspace.css';
@@ -16,6 +17,7 @@ type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'stopping' |
 type Session = {
   attemptId: string; accountId: string; username: string; placeId: string;
   phase: Phase; pid: number | null; requestedServer: string | null; observedServer: string | null; detail: string | null;
+  privateServer: boolean;
 };
 type Admission = {
   limitingResource: 'stale' | 'invalid' | 'commit' | 'physical_memory' | null;
@@ -98,6 +100,9 @@ function App() {
   const [destination, setDestination] = useState<Destination>(() => ({
     place: localStorage.getItem('zenith-preview-place') ?? '', name: '', job: null,
   }));
+  const [privateSelection, setPrivateServer] = useState<PrivateServer | 'removed' | null>(null);
+  const privateServer = privateSelection === 'removed' ? null : privateSelection;
+  const privateMode = privateSelection !== null;
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('zenith-theme');
     return themes.find(([id]) => id === saved)?.[0] ?? 'graphite-mint';
@@ -146,8 +151,9 @@ function App() {
   const savedAccount = accounts.find(value => value.profileId === savedSignIn?.profileId);
   const inspectedSignIn = savedSignIn && savedSignIn.profileId === inspected?.profileId ? savedSignIn.attempt : '';
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
-  const placeEntered = Boolean(destination.place.trim());
-  const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || panicBusy || !panic || panic.held || !launchState || !!launchState.hold;
+  const placeEntered = privateMode ? !!privateServer : Boolean(destination.place.trim());
+  const cannotLaunch = !account || !placeEntered || (privateMode && active > 0) || isBusy(selectedSession)
+    || launching || panicBusy || !panic || panic.held || !launchState || !!launchState.hold;
 
   async function refresh() {
     if (reading.current) return;
@@ -278,7 +284,11 @@ function App() {
     if (cannotLaunch || !account || !panic || (tryOne && active > 0)) return;
     setLaunching(true);
     try {
-      if (await act('launch_account', {
+      if (privateServer) {
+        await act('launch_private_server', {
+          id: account.profileId, reference: privateReference(privateServer), tryOne, epoch: panic.epoch,
+        });
+      } else if (await act('launch_account', {
         id: account.profileId, placeId: destination.place, job: destination.job, tryOne, allowPair: pairEnabled,
         epoch: panic.epoch,
       })) {
@@ -425,12 +435,14 @@ function App() {
         onRefreshHeadshots={() => setAvatarRevision(value => value + 1)}
         legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
+          setPrivateServer(null);
           setDestination({ place: favorite.placeId, name: favorite.name, job: null });
           openLaunch(inspected);
         }}/>}
       </div>}
       {page === 'Accounts' && legacyWorkspace && <LegacyWorkspacePanel workspace={legacyWorkspace} offset={legacyOffset}
         onPage={setLegacyOffset} onFavorite={favorite => {
+          setPrivateServer(null);
           setDestination({ place: favorite.placeId, name: favorite.name, job: favorite.jobId });
           setPage('Sessions');
         }} onTheme={importedTheme ? () => setTheme(importedTheme) : undefined}/>}
@@ -445,15 +457,23 @@ function App() {
               <option value="" disabled>Choose an account</option>{accounts.map(item => <option key={item.profileId} value={item.profileId}>{item.username}</option>)}
             </select></label>
           </div>
-          <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}/>
-          <label className="pair-choice">
+          <PrivateServers account={account?.profileId} selected={privateServer} onSelect={setPrivateServer} disabled={launching}
+            onRecordChange={(id, row) => setPrivateServer(current =>
+              current && current !== 'removed' && current.id === id ? row ?? 'removed' : current)}/>
+          {privateMode ? <div className="private-selection row-actions">
+            {privateServer ? <p>Private invite · <strong>{privateServer.name}</strong> · Place {privateServer.placeId}</p>
+              : <p role="status">The selected invite was removed. Choose another invite to launch privately.</p>}
+            <button className="secondary-button" disabled={launching} onClick={() => setPrivateServer(null)}>Use a public game</button>
+          </div> : <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}/>}
+          {!privateMode && <label className="pair-choice">
             <input type="checkbox" checked={pairEnabled} disabled={active > 0 || launching} onChange={event => setPairRequested(event.target.checked)}/>
             Enable two-account trial
-          </label>
-          {pairEnabled && <p>Start with other Roblox clients closed. Launch one account, then choose a different account when the first is confirmed and ready.</p>}
+          </label>}
+          {!privateMode && pairEnabled && <p>Start with other Roblox clients closed. Launch one account, then choose a different account when the first is confirmed and ready.</p>}
+          {privateServer && active > 0 && <p>Stop the current session before launching a private invite.</p>}
           {launchState?.hold && <p role="status">{launchState.hold}</p>}
           {isBusy(selectedSession) && <p>This account already has an active session.</p>}
-          <div className="row-actions"><button className="primary-button" disabled={cannotLaunch || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> Launch</button>
+          <div className="row-actions"><button className="primary-button" disabled={cannotLaunch || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> {privateMode ? 'Launch private server' : 'Launch'}</button>
             {admission?.canTryOne && active === 0 && <button className="secondary-button" disabled={cannotLaunch} onClick={() => void launch(true)}>Try one account anyway</button>}
           </div>
         </section>
@@ -464,8 +484,9 @@ function App() {
           <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
           <p>Place {session.placeId}{session.pid ? ` · PID ${session.pid}` : ''}</p>
           {session.requestedServer && <p>Requested server {session.requestedServer}</p>}
+          {session.privateServer && <p>Requested destination · Private invite</p>}
           {session.detail && <p>{session.detail}</p>}
-          {session.observedServer && <p>Confirmed initial server {session.observedServer}</p>}
+          {session.observedServer && <p>{session.privateServer ? 'Observed server job' : 'Confirmed initial server'} {session.observedServer}</p>}
           {isBusy(session) && <div className="row-actions">
             {session.phase === 'running' && <button className="secondary-button" onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
             <button className="secondary-button" disabled={session.phase === 'stopping'} onClick={() => void act('stop_session', { attempt: session.attemptId })}>{session.phase === 'preparing' ? 'Cancel launch' : 'Stop Roblox'}</button>

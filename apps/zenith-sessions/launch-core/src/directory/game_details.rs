@@ -77,6 +77,11 @@ struct Gallery {
 
 impl Directory {
     pub fn game_details(&self, place: u64) -> Result<GameDetails, String> {
+        let universe = self.universe_for_place(place)?;
+        parse_details(place, universe, self.game_listing(universe)?).map_err(str::to_owned)
+    }
+
+    pub(crate) fn universe_for_place(&self, place: u64) -> Result<u64, String> {
         let mapping: PlaceMapping = self.read(
             endpoint(&format!(
                 "https://apis.roblox.com/universes/v1/places/{place}/universe"
@@ -86,17 +91,33 @@ impl Directory {
         if mapping.place_id.is_some_and(|id| id != place) {
             return Err(INVALID_RESPONSE.into());
         }
-        let universe = mapping
+        mapping
             .universe_id
             .filter(|&id| valid_id(id))
-            .ok_or(UNAVAILABLE)?;
-        let listing = self.read(
+            .ok_or_else(|| UNAVAILABLE.into())
+    }
+
+    pub(crate) fn root_place_for_universe(&self, universe: u64) -> Result<u64, String> {
+        let listing = self.game_listing(universe)?;
+        match listing.data.as_slice() {
+            [game]
+                if game.id == universe
+                    && !game.is_content_restricted
+                    && valid_id(game.root_place_id) =>
+            {
+                Ok(game.root_place_id)
+            }
+            _ => Err(UNAVAILABLE.into()),
+        }
+    }
+
+    fn game_listing(&self, universe: u64) -> Result<Listing<GameRecord>, String> {
+        self.read(
             endpoint(&format!(
                 "https://games.roblox.com/v1/games?universeIds={universe}"
             )),
             &self.game_details_cooldown,
-        )?;
-        parse_details(place, universe, listing).map_err(str::to_owned)
+        )
     }
 
     pub fn game_art(&self, universe: &str) -> Result<GameArt, String> {

@@ -4,6 +4,7 @@ type Attempt = {
   username: string;
   placeId: string;
   requestedServer: string | null;
+  privateServer: boolean;
   pid: number | null;
   state: RecoveryState;
 };
@@ -33,6 +34,7 @@ export function RecoveryPanel({ recovery, onDismiss, onArchive }: {
       <h3>{attempt.username}</h3>
       <p>Requested place {attempt.placeId}{attempt.pid ? ` · PID ${attempt.pid}` : ''}</p>
       {attempt.requestedServer && <p>Requested server {attempt.requestedServer}</p>}
+      {attempt.privateServer && <p>Requested destination · Private invite</p>}
       <p>{descriptions[attempt.state]}</p>
       {attempt.state !== 'surviving' && <button className="secondary-button"
         onClick={() => onDismiss(attempt.attemptId)}>{attempt.state === 'unknown' ? 'Check and dismiss' : 'Dismiss'}</button>}

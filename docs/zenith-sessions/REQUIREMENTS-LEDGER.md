@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust protected private-server invites (1.21)
+
+**CHAT-23, VA-06-03, PROD-CORE-03.** Sessions saves direct and Server share invitations in a separate current-user protected list. The UI uses record IDs and revisions for selection, local renaming, removal, and launch. The authenticated share resolver refuses expired, ambiguous or nonprivate destinations. Private dispatch rechecks the exact record, uses its own request envelope, and never grants confirmed-window authority based on place evidence alone. Loopback, DPAPI, recovery, and browser fixtures cover their documented scope. Live private access and arrival remain attended checks. See [Preview 1.21](RUST-DESKTOP-PREVIEW.md#preview-121-protected-private-server-invites).
+
 ## Rust public game details and artwork (1.20)
 
 **CHAT-23, PROD-UI-03.** The Sessions picker loads public game metadata and bounded artwork on request without changing the exact place or job. Requested place, root place, and experience ID are displayed separately. The browser before/after fixture exercises late responses and a pinned server. Rust checks reject mismatched listings and media, restricted details, and unsafe image addresses. See [Preview 1.20](RUST-DESKTOP-PREVIEW.md#preview-120-public-game-details-and-artwork).

@@ -15,8 +15,10 @@ use zenith_session_launch::{
 
 mod assignments;
 mod migration;
+mod private_servers;
 pub use assignments::{AssignmentRecipient, AssignmentTarget, AssignmentView};
 pub use migration::{LegacyView, MigrationReport};
+pub use private_servers::{PrivateServerReference, PrivateServerRow};
 
 const MAX_BUNDLE: usize = 128 * 1024;
 const MAX_ACCOUNTS: usize = 128;

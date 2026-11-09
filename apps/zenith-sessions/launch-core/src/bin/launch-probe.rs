@@ -257,11 +257,11 @@ mod probe {
             .map_err(|_| "system clock is invalid")?;
         let uri = player_uri(
             &ticket,
-            &Target { place, job: None },
+            &Target::public(place, None),
             tracker,
             attempt,
             timestamp.as_millis(),
-        );
+        )?;
         drop(ticket);
         let mut trial = Trial {
             player: player.spawn(&uri)?,

@@ -9,6 +9,7 @@ use serde::Serialize;
 use uuid::Uuid;
 use zenith_session_launch::{
     auth::{Credential, RobloxAuth},
+    directory::Directory,
     evidence::Observed,
     target::{Target, new_tracker, player_uri},
     windows::{
@@ -40,6 +41,7 @@ pub struct Session {
     phase: Phase,
     pid: Option<u32>,
     requested_server: Option<Uuid>,
+    private_server: bool,
     observed_server: Option<Uuid>,
     detail: Option<String>,
 }
@@ -53,6 +55,7 @@ pub struct Observation {
     expected_user: u64,
     expected_place: u64,
     expected_job: Option<Uuid>,
+    private_server: bool,
 }
 
 impl Observation {
@@ -61,12 +64,17 @@ impl Observation {
     }
 
     fn confirms(self, facts: &Observed) -> bool {
-        facts.user_id == Some(self.expected_user)
-            && facts.place_id == Some(self.expected_place)
-            && facts.connected
+        !self.private_server
+            && self.matches_account_and_place(facts)
             && facts
                 .job_id
                 .is_some_and(|job| self.expected_job.is_none_or(|expected| expected == job))
+    }
+
+    fn matches_account_and_place(self, facts: &Observed) -> bool {
+        facts.user_id == Some(self.expected_user)
+            && facts.place_id == Some(self.expected_place)
+            && facts.connected
     }
 
     fn mismatch(self, facts: &Observed) -> Option<&'static str> {
@@ -299,6 +307,9 @@ impl SessionOwner {
             return Err(hold);
         }
         let peer = self.active().next().map(|attempt| attempt.row.attempt_id);
+        if target.is_private() && (peer.is_some() || allow_pair) {
+            return Err("A private invite trial requires one client at a time.".into());
+        }
         if peer.is_some() && (!allow_pair || try_one) {
             return Err(
                 "A second client requires the two-account trial and standard memory headroom."
@@ -679,6 +690,7 @@ impl Attempt {
             username: self.row.username.clone(),
             place_id: self.row.place_id.clone(),
             requested_server: self.row.requested_server,
+            private_server: self.row.private_server,
             checkpoint,
         })
     }
@@ -692,7 +704,8 @@ impl Attempt {
                 place_id: target.place.to_string(),
                 phase: Phase::Preparing,
                 pid: None,
-                requested_server: target.job,
+                requested_server: target.job(),
+                private_server: target.is_private(),
                 observed_server: None,
                 detail: None,
             },
@@ -738,7 +751,7 @@ impl Attempt {
             tracker,
             attempt,
             timestamp.as_millis(),
-        );
+        )?;
         if !can_dispatch() {
             return Err("Zenith stopped this launch request.".into());
         }
@@ -752,7 +765,8 @@ impl Attempt {
             started: Instant::now(),
             expected_user: request.user_id,
             expected_place: request.target.place,
-            expected_job: request.target.job,
+            expected_job: request.target.job(),
+            private_server: request.target.is_private(),
         });
         self.preparing = false;
         self.row.phase = Phase::Starting;
@@ -812,6 +826,17 @@ impl Attempt {
                 row.detail = Some("Account and initial destination confirmed".into());
                 return;
             }
+            if observation.private_server
+                && observation.matches_account_and_place(&facts)
+                && player.has_window()
+            {
+                self.observation = None;
+                row.phase = Phase::Unconfirmed;
+                row.observed_server = facts.job_id;
+                row.detail =
+                    Some("Account and place confirmed. Check the private server in Roblox.".into());
+                return;
+            }
         }
         if observation.started.elapsed() >= Duration::from_secs(65) {
             self.observation = None;
@@ -869,7 +894,8 @@ pub struct Prepared {
 pub fn prepare(
     identity: &SavedIdentity,
     credential: &mut Credential,
-    target: Target,
+    mut target: Target,
+    directory: &Directory,
     try_one: bool,
     permits: impl Fn() -> bool + Send + Sync + 'static,
 ) -> Result<Prepared, String> {
@@ -886,6 +912,7 @@ pub fn prepare(
     let auth = RobloxAuth::for_launch(permits).map_err(|error| error.to_string())?;
     auth.verify(credential, identity.user_id)
         .map_err(|error| error.to_string())?;
+    target.resolve(&auth, credential, directory)?;
     let ticket = auth.ticket(credential).map_err(|error| error.to_string())?;
     Ok(Prepared {
         player,
@@ -924,10 +951,7 @@ mod tests {
             username: "Fixture".into(),
             user_id: 42,
         };
-        let target = Target {
-            place: 1818,
-            job: None,
-        };
+        let target = Target::public(1818, None);
         let mut owner = SessionOwner::default();
         assert_eq!(owner.playback_target(&account), PlaybackTarget::NoSession);
         owner.attempts.push(Attempt::new(&account, &target, None));
@@ -972,14 +996,7 @@ mod tests {
             user_id: 42,
             username: "Fixture".into(),
         };
-        let attempt = Attempt::new(
-            &account,
-            &Target {
-                place: 1818,
-                job: None,
-            },
-            None,
-        );
+        let attempt = Attempt::new(&account, &Target::public(1818, None), None);
         let id = attempt.row.attempt_id;
         let mut sessions = SessionOwner::default();
         sessions.attempts.push(attempt);
@@ -1005,14 +1022,7 @@ mod tests {
             username: "Fixture".into(),
             user_id: 42,
         };
-        let mut attempt = Attempt::new(
-            &account,
-            &Target {
-                place: 1818,
-                job: None,
-            },
-            None,
-        );
+        let mut attempt = Attempt::new(&account, &Target::public(1818, None), None);
         attempt.row.phase = Phase::Unconfirmed;
         let id = attempt.row.attempt_id;
         owner.attempts.push(attempt);
@@ -1029,14 +1039,7 @@ mod tests {
             username: "Fixture".into(),
             user_id: 42,
         };
-        let mut attempt = Attempt::new(
-            &account,
-            &Target {
-                place: 1818,
-                job: None,
-            },
-            None,
-        );
+        let mut attempt = Attempt::new(&account, &Target::public(1818, None), None);
         let id = attempt.row.attempt_id;
         attempt.row.phase = Phase::Unconfirmed;
         owner.attempts.push(attempt);
@@ -1070,6 +1073,7 @@ mod tests {
             expected_user: 42,
             expected_place: 1818,
             expected_job: Some(Uuid::from_u128(1)),
+            private_server: false,
         };
         let mut facts = Observed {
             user_id: Some(42),
@@ -1086,6 +1090,9 @@ mod tests {
         facts.connected = true;
         launch.expected_job = None;
         assert!(launch.confirms(&facts));
+        launch.private_server = true;
+        assert!(launch.matches_account_and_place(&facts));
+        assert!(!launch.confirms(&facts));
     }
 
     #[test]
@@ -1096,10 +1103,7 @@ mod tests {
             username: "ZenithFixture".into(),
             user_id: 4242,
         };
-        let initial = Target {
-            place: 1818,
-            job: None,
-        };
+        let initial = Target::public(1818, None);
         let pending = Attempt::new(&account, &initial, None);
         let first = pending.row.attempt_id;
         owner.attempts.push(pending);
@@ -1114,14 +1118,7 @@ mod tests {
         assert!(owner.hold(Instant::now(), false).is_some());
         owner.fail_preparation(first, "cancelled worker".into(), false);
         let job = Uuid::from_u128(42);
-        let replacement = Attempt::new(
-            &account,
-            &Target {
-                place: 1919,
-                job: Some(job),
-            },
-            None,
-        );
+        let replacement = Attempt::new(&account, &Target::public(1919, Some(job)), None);
         let second = replacement.row.attempt_id;
         owner.attempts.clear();
         owner.attempts.push(replacement);
@@ -1145,14 +1142,7 @@ mod tests {
             last_start: Some(now),
             ..SessionOwner::default()
         };
-        let mut first = Attempt::new(
-            &account,
-            &Target {
-                place: 1818,
-                job: None,
-            },
-            None,
-        );
+        let mut first = Attempt::new(&account, &Target::public(1818, None), None);
         first.row.phase = Phase::Starting;
         first.preparing = false;
         owner.attempts.push(first);
@@ -1172,10 +1162,7 @@ mod tests {
     #[test]
     fn stopping_the_first_client_fences_an_inflight_second_attempt() {
         let mut owner = SessionOwner::default();
-        let target = Target {
-            place: 1818,
-            job: None,
-        };
+        let target = Target::public(1818, None);
         let account = SavedIdentity {
             profile_id: Uuid::new_v4(),
             username: "FirstFixture".into(),

@@ -14,6 +14,8 @@ use serde::Deserialize;
 use serde_json::Value;
 use zeroize::Zeroizing;
 
+mod private_share;
+
 const IDENTITY: &str = "https://users.roblox.com/v1/users/authenticated";
 const ASSERTION: &str = "https://auth.roblox.com/v1/client-assertion/";
 const TICKET: &str = "https://auth.roblox.com/v1/authentication-ticket/";
@@ -267,32 +269,7 @@ impl RobloxAuth {
             _ => read_json(accepted("client assertion", assertion)?, "client assertion")?,
         };
         const STAGE: &str = "launch ticket";
-        let first = self.request(
-            STAGE,
-            credential,
-            Method::POST,
-            &self.ticket_url,
-            Some(&body),
-            None,
-        )?;
-        let response = if first.status() == StatusCode::FORBIDDEN
-            && !first.headers().contains_key("rblx-challenge-id")
-            && let Some(token) = first.headers().get(CSRF).filter(|token| !token.is_empty())
-        {
-            let mut token = token.clone();
-            token.set_sensitive(true);
-            self.request(
-                STAGE,
-                credential,
-                Method::POST,
-                &self.ticket_url,
-                Some(&body),
-                Some(token),
-            )?
-        } else {
-            first
-        };
-        let response = accepted(STAGE, response)?;
+        let response = self.post_with_csrf(STAGE, credential, &self.ticket_url, &body)?;
         response
             .headers()
             .get("rbx-authentication-ticket")
@@ -300,6 +277,34 @@ impl RobloxAuth {
             .filter(|ticket| !ticket.is_empty() && ticket.len() <= 8192)
             .map(|ticket| Zeroizing::new(ticket.to_owned()))
             .ok_or(Failure::InvalidResponse(STAGE))
+    }
+
+    fn post_with_csrf(
+        &self,
+        stage: &'static str,
+        credential: &mut Credential,
+        url: &str,
+        body: &Value,
+    ) -> Result<Response, Failure> {
+        let first = self.request(stage, credential, Method::POST, url, Some(body), None)?;
+        let response = if first.status() == StatusCode::FORBIDDEN
+            && !first.headers().contains_key("rblx-challenge-id")
+            && let Some(token) = first.headers().get(CSRF).filter(|token| !token.is_empty())
+        {
+            let mut token = token.clone();
+            token.set_sensitive(true);
+            self.request(
+                stage,
+                credential,
+                Method::POST,
+                url,
+                Some(body),
+                Some(token),
+            )?
+        } else {
+            first
+        };
+        accepted(stage, response)
     }
 
     fn request(
@@ -314,12 +319,13 @@ impl RobloxAuth {
         let user_id = credential
             .verified_user
             .ok_or(Failure::SignInRequired(stage))?;
+        let post = method == Method::POST;
         let response = self.send(stage, credential, method, url, body, csrf)?;
         if response.status() == StatusCode::UNAUTHORIZED {
             credential.verified_user = None;
         }
         let can_rotate = response.status().is_success()
-            || (stage == "launch ticket"
+            || (post
                 && response.status() == StatusCode::FORBIDDEN
                 && response
                     .headers()
@@ -541,9 +547,14 @@ mod tests {
                 {
                     let mut body = vec![0; size.parse().unwrap()];
                     reader.read_exact(&mut body).unwrap();
+                    let expected_body = if expected.request.starts_with("POST /share ") {
+                        serde_json::json!({"linkId": "synthetic-share", "linkType": "Server"})
+                    } else {
+                        serde_json::json!({"clientAssertion": "fixture"})
+                    };
                     assert_eq!(
                         serde_json::from_slice::<Value>(&body).unwrap(),
-                        serde_json::json!({"clientAssertion": "fixture"})
+                        expected_body
                     );
                 }
                 write!(stream, "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n{}\r\n{}",
@@ -563,6 +574,48 @@ mod tests {
             launch_permit: None,
         };
         (auth, worker)
+    }
+
+    #[test]
+    fn private_share_uses_the_verified_account_and_one_csrf_retry() {
+        let (auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42,"name":"fixture"}"#,
+            },
+            Exchange {
+                request: "POST /share HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "403 Forbidden",
+                headers: "x-csrf-token: fixture-share\r\n",
+                body: "{}",
+            },
+            Exchange {
+                request: "POST /share HTTP/1.1",
+                cookie: "original",
+                csrf: Some("fixture-share"),
+                status: "200 OK",
+                headers: "",
+                body: r#"{"privateServerInviteData":{"status":"Valid","universeId":11,"linkCode":"01234"}}"#,
+            },
+        ]);
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        let share = auth.identity_url.replace("/identity", "/share");
+        assert!(
+            auth.resolve_private_share_at(&mut credential, "synthetic-share", &share)
+                .is_err()
+        );
+        auth.verify(&mut credential, 42).unwrap();
+        let (universe, place, code) = auth
+            .resolve_private_share_at(&mut credential, "synthetic-share", &share)
+            .unwrap();
+        assert_eq!((universe, place, code.as_str()), (11, None, "01234"));
+        worker.join().unwrap();
     }
 
     #[test]

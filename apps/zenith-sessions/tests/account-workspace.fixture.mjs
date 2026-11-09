@@ -13,6 +13,8 @@ function exerciseWorkspace() {
   let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
   let launchedEpoch;
   let launchedTarget;
+  let savedInvites = [];
+  const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
   let catalogRequests = 0;
   const catalogCursor = { offset: 25, hostSessionId: 'fixture-session', catalogRevision: '9007199254740993', total: 26 };
   const selectionPage = { ...catalogCursor, offset: 0 };
@@ -39,7 +41,8 @@ function exerciseWorkspace() {
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = {}) => {
+    invoke: async (command, args = {}) => {
+      const { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = args;
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
@@ -102,7 +105,26 @@ function exerciseWorkspace() {
         case 'launch_account':
           if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale launch permit.');
           launchedEpoch = epoch;
-          launchedTarget = { placeId, job };
+          launchedTarget = args;
+          return;
+        case 'private_servers': return savedInvites;
+        case 'save_private_server':
+          if (args.invite !== inviteLink || args.name !== 'Fixture private server') throw new Error('Unexpected private save payload.');
+          savedInvites = [{ id: 'invite-1', revision: 'r1', name: args.name, placeId: '1819' }];
+          return savedInvites[0];
+        case 'rename_private_server':
+          if (args.reference?.id !== 'invite-1' || args.reference.revision !== 'r1' || args.name !== 'Renamed invite') {
+            throw new Error('Rename used the wrong private reference.');
+          }
+          savedInvites = [{ ...savedInvites[0], name: args.name, revision: 'r2' }];
+          return savedInvites[0];
+        case 'remove_private_server':
+          if (args.reference?.id !== 'invite-1' || args.reference.revision !== 'r2') throw new Error('Remove used a stale private reference.');
+          savedInvites = [];
+          return;
+        case 'launch_private_server':
+          if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale private launch permit.');
+          launchedTarget = args;
           return;
         case 'browse_public_servers':
           return { servers: [{ id: '11111111-0000-0000-0000-000000000001', playing: 4, maxPlayers: 8, ping: null }], nextCursor: null };
@@ -256,6 +278,46 @@ function exerciseWorkspace() {
           'Launch did not receive the exact requested subplace and pinned server');
       } finally {
         releaseGame?.();
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('a protected invite launches by reference without a public target or raw code', async () => {
+      const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      const type = (element, value) => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(element, value);
+        element.dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => find('[aria-label="Private servers"]'), 'no private server workflow in Sessions');
+        const panel = find('[aria-label="Private servers"]');
+        panel.querySelector('summary').click();
+        type(find('input[aria-label="Private server name"]'), 'Fixture private server');
+        type(find('input[aria-label="Private Roblox invite link"]'), inviteLink);
+        button('Save private invite').click();
+        await until(() => button('Use Fixture private server'), 'the invite did not appear in the saved list');
+        if (find('input[aria-label="Private Roblox invite link"]').value) throw new Error('The input retained a saved private link.');
+        button('Use Fixture private server').click();
+        await until(() => !find('input[placeholder="Enter a place ID or game link"]'), 'public and private targets were active together');
+        find('button[aria-label="Rename Fixture private server"]').click();
+        await until(() => find('input[aria-label="New private server name"]'), 'rename field did not open');
+        type(find('input[aria-label="New private server name"]'), 'Renamed invite');
+        await until(() => !button('Save name').disabled, 'rename was not ready to save');
+        button('Save name').click();
+        await until(() => find('.private-selection')?.textContent.includes('Renamed invite'), 'selected invite did not follow the rename');
+        button('Launch private server').click();
+        await until(() => launchedTarget?.reference?.id === 'invite-1', 'launch did not use a protected invite reference');
+        if (launchedTarget.reference.revision !== 'r2' || launchedTarget.job || launchedTarget.placeId || JSON.stringify(launchedTarget).includes(inviteLink)) {
+          throw new Error('Launch received an ambiguous destination or a raw invite.');
+        }
+        await until(() => !find('button[aria-label="Remove Renamed invite"]').disabled, 'the test launch did not finish');
+        find('button[aria-label="Remove Renamed invite"]').click();
+        await until(() => button('Remove invite'), 'remove confirmation did not open');
+        button('Remove invite').click();
+        await until(() => !button('Use Renamed invite') && button('Launch private server').disabled, 'removing the selected invite did not hold launch');
+        if (find('input[placeholder="Enter a place ID or game link"]')) throw new Error('Removing the invite fell back to a public target.');
+      } finally {
+        button('Use a public game')?.click();
         find('button[aria-label="Accounts"]').click();
       }
     });

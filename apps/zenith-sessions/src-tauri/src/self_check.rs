@@ -71,6 +71,7 @@ fn check_journal() -> Result<String, String> {
             username: "ZenithSelfCheck".into(),
             place_id: "1818".into(),
             requested_server: None,
+            private_server: false,
             checkpoint: Checkpoint::Dispatching,
         };
         journal.save(vec![attempt])?;

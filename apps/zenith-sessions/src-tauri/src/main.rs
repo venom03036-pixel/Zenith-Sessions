@@ -23,7 +23,7 @@ use std::{
 
 use library::{
     AssignmentRecipient, AssignmentTarget, AssignmentView, LegacyView, Library, MigrationReport,
-    SavedCredential,
+    PrivateServerReference, PrivateServerRow, SavedCredential,
 };
 use macro_catalog::{CatalogView, Choice as MacroChoice, Cursor as CatalogCursor, MacroCatalog};
 use macro_playback::{MacroPlayback, MacroRunView, ReviewKey};
@@ -38,13 +38,16 @@ use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blockin
 use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
+    auth::RobloxAuth,
     directory::{Directory, Game, GameArt, GameDetails, ServerPage, public_place},
+    private_invite::PrivateInvite,
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
     windows::{
         MAX_LEGACY_MIGRATION_BYTES, PriorityAction, PriorityState, SavedIdentity, memory_sample,
     },
 };
+use zeroize::Zeroizing;
 
 struct Workspace {
     library: Mutex<Library>,
@@ -510,6 +513,96 @@ async fn browse_public_servers(
 }
 
 #[tauri::command]
+async fn private_servers(
+    state: State<'_, Arc<Workspace>>,
+) -> Result<Vec<PrivateServerRow>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .private_servers()
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn save_private_server(
+    state: State<'_, Arc<Workspace>>,
+    name: String,
+    invite: String,
+    account: Option<Uuid>,
+) -> Result<PrivateServerRow, String> {
+    let invite = PrivateInvite::parse(&Zeroizing::new(invite))?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let place = match invite.direct_place() {
+            Some(place) => place,
+            None => state.read_saved_account(
+                account.ok_or("Choose a saved account to check this Roblox share link.")?,
+                |saved| {
+                    let auth = RobloxAuth::new().map_err(|error| error.to_string())?;
+                    auth.verify(&mut saved.credential, saved.identity.user_id)
+                        .map_err(|error| error.to_string())?;
+                    invite
+                        .resolve(&auth, &mut saved.credential, &state.directory)
+                        .map(|(place, _)| place)
+                },
+            )?,
+        };
+        let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+        if state.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        library.save_private_server(name, place, invite)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn rename_private_server(
+    state: State<'_, Arc<Workspace>>,
+    reference: PrivateServerReference,
+    name: String,
+) -> Result<PrivateServerRow, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .rename_private_server(reference, name)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn remove_private_server(
+    state: State<'_, Arc<Workspace>>,
+    reference: PrivateServerReference,
+) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .remove_private_server(reference)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+enum LaunchSource {
+    Public(Target),
+    Private(PrivateServerReference),
+}
+
+#[tauri::command]
 async fn launch_account(
     state: State<'_, Arc<Workspace>>,
     id: Uuid,
@@ -523,36 +616,76 @@ async fn launch_account(
     if job.is_some_and(|job| job.is_nil()) {
         return Err("Select a valid public server.".into());
     }
-    let target = Target { place, job };
+    launch_target(
+        Arc::clone(state.inner()),
+        id,
+        LaunchSource::Public(Target::public(place, job)),
+        try_one,
+        allow_pair,
+        epoch,
+    )
+    .await
+}
+
+#[tauri::command]
+async fn launch_private_server(
+    state: State<'_, Arc<Workspace>>,
+    id: Uuid,
+    reference: PrivateServerReference,
+    try_one: bool,
+    epoch: String,
+) -> Result<(), String> {
+    launch_target(
+        Arc::clone(state.inner()),
+        id,
+        LaunchSource::Private(reference),
+        try_one,
+        false,
+        epoch,
+    )
+    .await
+}
+
+async fn launch_target(
+    state: Arc<Workspace>,
+    id: Uuid,
+    source: LaunchSource,
+    try_one: bool,
+    allow_pair: bool,
+    epoch: String,
+) -> Result<(), String> {
     let epoch = epoch
         .parse()
         .map_err(|_| "Refresh the launch state before starting Roblox.")?;
     if !state.can_dispatch(epoch) {
         return Err("The launch state changed. Review it and choose Launch again.".into());
     }
-    let state = Arc::clone(state.inner());
     spawn_blocking(move || {
-        let (mut saved, attempt) = {
+        let (mut saved, attempt, target, reference) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             if !state.can_dispatch(epoch) {
                 return Err("Zenith stopped this launch request.".into());
             }
-            let saved = state
-                .library
-                .lock()
-                .map_err(|_| STATE_ERROR)?
-                .credential(id)?;
+            let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+            let (target, reference) = match source {
+                LaunchSource::Public(target) => (target, None),
+                LaunchSource::Private(reference) => {
+                    (library.private_target(reference)?, Some(reference))
+                }
+            };
+            let saved = library.credential(id)?;
             if !state.can_dispatch(epoch) {
                 return Err("Zenith stopped this launch request.".into());
             }
             let attempt = owner.reserve(&saved.identity, &target, allow_pair, try_one)?;
-            (saved, attempt)
+            (saved, attempt, target, reference)
         };
         let launch_state = Arc::clone(&state);
         let prepared = session::prepare(
             &saved.identity,
             &mut saved.credential,
             target,
+            &state.directory,
             try_one,
             move || {
                 launch_state.can_dispatch(epoch)
@@ -566,12 +699,16 @@ async fn launch_account(
             if !owner.permits(attempt) || !state.can_dispatch(epoch) {
                 return Err("The launch was cancelled or the first client stopped.".into());
             }
-            {
-                let library = state.library.lock().map_err(|_| STATE_ERROR)?;
-                if !state.can_dispatch(epoch) {
-                    return Err("Zenith stopped this launch request.".into());
-                }
-                library.finish_credential(&saved)?;
+            let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+            if !state.can_dispatch(epoch) {
+                return Err("Zenith stopped this launch request.".into());
+            }
+            library.finish_credential(&saved)?;
+            if let Some(reference) = reference {
+                // Hold the library lease through process creation so removal or rename cannot overtake dispatch.
+                library.private_target(reference)?;
+            } else {
+                drop(library);
             }
             let prepared = prepared?;
             owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
@@ -838,7 +975,12 @@ fn main() -> ExitCode {
             public_game_details,
             public_game_art,
             browse_public_servers,
+            private_servers,
+            save_private_server,
+            rename_private_server,
+            remove_private_server,
             launch_account,
+            launch_private_server,
             dismiss_recovered_launch,
             archive_launch_journal,
             stop_session,

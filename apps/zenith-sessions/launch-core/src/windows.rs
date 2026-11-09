@@ -146,6 +146,21 @@ pub fn seal_assignment_metadata(clear: &mut [u8]) -> Result<Vec<u8>, String> {
     seal_current_user(clear, ASSIGNMENT_ENTROPY, MAX_ASSIGNMENT_BYTES)
 }
 
+pub const MAX_PRIVATE_SERVER_BYTES: usize = 256 * 1024;
+const PRIVATE_SERVER_ENTROPY: &[u8] = b"ZenithSessions/Rust/PrivateServerInvites/v1";
+
+pub fn open_private_servers(encrypted: &mut [u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    unseal_current_user(
+        encrypted,
+        PRIVATE_SERVER_ENTROPY,
+        MAX_PRIVATE_SERVER_BYTES as u64,
+    )
+}
+
+pub fn seal_private_servers(clear: &mut [u8]) -> Result<Vec<u8>, String> {
+    seal_current_user(clear, PRIVATE_SERVER_ENTROPY, MAX_PRIVATE_SERVER_BYTES)
+}
+
 fn unseal_current_user(
     encrypted: &mut [u8],
     entropy: &[u8],
