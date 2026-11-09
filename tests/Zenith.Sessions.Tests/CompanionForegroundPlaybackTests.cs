@@ -8,6 +8,7 @@ using MacroSuite.Core.Models;
 using MacroSuite.Core.Steps;
 using MacroSuite.Core.Storage;
 using Xunit;
+using Zenith.MacroHost.Contracts;
 using Zenith.MacroHost.Execution;
 
 namespace Zenith.Sessions.Tests;
@@ -58,6 +59,26 @@ public sealed class CompanionForegroundPlaybackTests
         Assert.Equal(ForegroundPlaybackStatus.TargetUnavailable, (await f.Start().Completion.WaitAsync(Deadline)).Status);
         Assert.Empty(f.Player.Input);
         Assert.False(f.Arbiter.Snapshot.IsBusy);
+    }
+
+    [Fact]
+    public async Task PairingBindsTheHostPeerWindowAndStopGeneration()
+    {
+        await using var f = new Fixture([new KeyPressStep(W, 0)]);
+        var requested = new ForegroundControlRequest(f.Reference.HostSessionId, f.Reference.MacroId, f.Reference.SavedRevision,
+            f.Window.Handle.ToInt64(), f.Window.ProcessId, f.Window.ProcessInstance - DateTime.FromFileTimeUtc(0).Ticks);
+        int calls = 0;
+        var binding = new ForegroundControlBinding(f.Host, f.Reference.HostSessionId, f.Arbiter.StopGeneration,
+            (peer, _, _) => { calls++; Assert.Equal(77, peer); return ValueTask.FromResult<TargetWindowInfo?>(f.Window); });
+        var foreign = await binding.StartAsync(77, requested with { HostSessionId = Guid.NewGuid() }, default);
+        Assert.Equal(ForegroundControlOutcome.InvalidRequest, foreign.Rejection);
+        Assert.Equal(0, calls);
+        var mismatch = await binding.StartAsync(77, requested with { CreationFileTime = requested.CreationFileTime + 1 }, default);
+        Assert.Equal(ForegroundControlOutcome.TargetUnavailable, mismatch.Rejection);
+        f.Arbiter.SignalStop();
+        var stale = await binding.StartAsync(77, requested, default);
+        Assert.Equal(ForegroundControlOutcome.Stopped, stale.Rejection);
+        Assert.Empty(f.Player.Input);
     }
 
     [Fact]
@@ -151,7 +172,8 @@ public sealed class CompanionForegroundPlaybackTests
         private readonly MacroModel _document;
         private CompanionForegroundPlayback.Run? _active;
         public SavedMacroReference Reference { get; } = new(Guid.NewGuid(), Guid.NewGuid(), Guid.NewGuid());
-        public TargetWindowInfo Window { get; } = new(1234, 4711, 666, "Fixture", "Fixture window", new Rectangle(0, 0, 200, 200), 1);
+        public TargetWindowInfo Window { get; } = new(1234, 4711, DateTime.FromFileTimeUtc(666).Ticks,
+            "Fixture", "Fixture window", new Rectangle(0, 0, 200, 200), 1);
         public HostInputOperationArbiter Arbiter { get; } = new();
         public Player Player { get; } = new();
         public TargetService Targets { get; }

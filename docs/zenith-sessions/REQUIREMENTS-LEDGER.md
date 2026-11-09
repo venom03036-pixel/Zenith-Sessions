@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust–Personal foreground control protocol
+
+**CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** The one-run connection has mutual pairing proofs, bounded authenticated messages, exact saved and window identity fields, peer checks, and tracked Stop on disconnect or heartbeat expiry. The host binds its captured Stop generation and requires an independent ownership authorizer. Cross-runtime tests exercised Rust against the .NET listener. Desktop pairing and owned-client authorization wiring, visible run controls, and live Roblox input remain pending. See [the protocol and integration boundary](FOREGROUND-CONTROL-PIPE.md).
+
 ## Rust rebuild foreground macro backend
 
 **CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** The Personal backend can execute a protected saved revision containing bounded gameplay keys and delays in one exact foreground window. It uses the existing editor arbiter, interpreter, licensing gates, and session-bound Win32 input player. Tests exercised protected saved-versus-draft isolation at the native packet boundary, focus and process identity, generation changes, Panic, and cleanup quarantine. The Rust control connection and attended Roblox input trials are pending. The separate owned-game route under **CAP-13-03** remains outside this foreground path. See [the backend evidence](COMPANION-MACRO-OWNERSHIP-VERIFICATION.md#foreground-backend-for-the-rust-rebuild).

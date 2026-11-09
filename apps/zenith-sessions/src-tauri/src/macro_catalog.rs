@@ -10,7 +10,7 @@ use tokio::{
 use uuid::Uuid;
 use windows::Win32::{Foundation::ERROR_PIPE_BUSY, Storage::FileSystem::SECURITY_ANONYMOUS};
 
-mod peer;
+use zenith_sessions_desktop::pipe_peer;
 
 const PRODUCT: &str = "Zenith.Macros.Personal";
 const PIPE: &str = r"\\.\pipe\Zenith.Macros.Personal.Catalog.v1";
@@ -376,7 +376,7 @@ async fn connect(path: &str) -> Result<NamedPipeClient, Status> {
 
 async fn exchange(path: &str, query: &Query) -> Result<CatalogView, Status> {
     let mut pipe = connect(path).await?;
-    if !peer::owned_by_current_user(&pipe) {
+    if !pipe_peer::owned_by_current_user(&pipe) {
         return Err(Status::Unavailable);
     }
     let request_id = Uuid::new_v4();

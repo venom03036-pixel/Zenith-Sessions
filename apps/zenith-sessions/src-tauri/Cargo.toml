@@ -9,6 +9,8 @@ tauri-build = { version = "2.7", features = [] }
 
 [dependencies]
 base64 = "0.23"
+getrandom = "0.4"
+hmac = "0.12"
 tauri = { version = "2.12", features = [] }
 tokio = { version = "1", features = ["io-util", "net", "sync", "time"] }
 serde = { version = "1", features = ["derive"] }

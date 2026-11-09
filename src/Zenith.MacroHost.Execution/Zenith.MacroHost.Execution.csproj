@@ -7,6 +7,7 @@
   </PropertyGroup>
   <ItemGroup>
     <ProjectReference Include="../MacroSuite.Core/MacroSuite.Core.csproj" />
+    <ProjectReference Include="../Zenith.MacroHost.Contracts/Zenith.MacroHost.Contracts.csproj" />
     <ProjectReference Include="../Zenith.Automation.Input/Zenith.Automation.Input.csproj" />
     <InternalsVisibleTo Include="Zenith.Sessions.Tests" />
   </ItemGroup>

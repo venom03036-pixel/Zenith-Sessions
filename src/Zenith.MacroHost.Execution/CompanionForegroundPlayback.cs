@@ -72,6 +72,8 @@ public sealed class CompanionForegroundPlayback
         private PlaybackSessionContext? _session;
 
         public Guid Id => _lease.OperationId;
+        internal bool HasSession => Volatile.Read(ref _session) is not null;
+        internal bool IsStopping => !_lease.CanContinue;
         public bool IsPaused => Volatile.Read(ref _session)?.Control.IsPaused == true;
         public Task<ForegroundPlaybackResult> Completion { get; }
 
