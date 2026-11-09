@@ -275,10 +275,6 @@ public sealed class TelemetryPresentationTests
         IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
     }
     private static Task OnSta(Action work)
-    {
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        { try { work(); done.TrySetResult(); } catch (Exception error) { done.TrySetException(error); } }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
-    }
+        => PackagedLayoutCheck.RunOnStaAsync(() => new object(), _ => { work(); return Task.CompletedTask; },
+            _ => { }, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
 }

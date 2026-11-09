@@ -18,11 +18,8 @@ public sealed class AccountTemplateTests
     [InlineData("DenseAccountRow")]
     public Task ActualProductionRowTemplatesAcceptReadOnlyAccountProperties(string key)
     {
-        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread=new Thread(() =>
+        return PackagedLayoutCheck.RunOnStaAsync(() => new object(), _ =>
         {
-            try
-            {
                 // Exercise the actual production binding/geometry markup without constructing
                 // the native window, registering keys, creating tray icons or touching user data.
                 using var input=typeof(AccountTemplateTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;
@@ -43,20 +40,16 @@ public sealed class AccountTemplateTests
                 Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.DataBind);row.UpdateLayout();
                 Assert.Contains(Descendants(row).OfType<TextBlock>(),t=>t.Text==profile.Label);
                 if(key=="AccountRow") Assert.Contains(Descendants(row).OfType<TextBlock>(),t=>t.Text.Contains("@"+profile.Username));
-                row.DataContext=null;done.TrySetResult();
-            }
-            catch(Exception ex) {done.TrySetException(ex);}
-            finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
-        }) {IsBackground=true};
-        thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                row.DataContext=null;
+                return Task.CompletedTask;
+        }, _ => { }, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
     [Theory]
     [InlineData("AccountRow")]
     [InlineData("DenseAccountRow")]
     public Task ProductionRowActionsRemainReachableInACompactViewport(string key)
     {
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        return PackagedLayoutCheck.RunOnStaAsync(() => new object(), _ =>
         {
             Window? window = null;
             try
@@ -104,13 +97,10 @@ public sealed class AccountTemplateTests
                     var label = Assert.Single(Descendants(row).OfType<TextBlock>().Where(t => t.Name == "DenseAccountName"));
                     Assert.InRange(label.ActualWidth, 140, 400);
                 }
-                done.TrySetResult();
+                return Task.CompletedTask;
             }
-            catch (Exception ex) { done.TrySetException(ex); }
-            finally { window?.Close(); Dispatcher.CurrentDispatcher.InvokeShutdown(); }
-        }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start();
-        return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            finally { window?.Close(); }
+        }, _ => { }, CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
     private static IEnumerable<DependencyObject> Descendants(DependencyObject parent)
     {

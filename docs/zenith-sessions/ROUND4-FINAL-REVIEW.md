@@ -34,6 +34,8 @@ The attempted second pass on the four-minor candidate found a connected macro-ho
 
 ## Evidence to inspect before handing off
 
+The subsequent [fixture lifecycle repair](TEST-HARNESS-LIFECYCLE-REPAIR.md) also needs independent review on its immutable candidate. Inspect retained assertions and timing contracts, the dispatcher context through all three phases, completion after shutdown, and cleanup-entry barriers. The 400-case focused pass is not a substitute for either full gate. Failed gates 9 and 10 remain in the integration history.
+
 The later owner-authorized live trial and its narrow offline follow-up are recorded in [LIVE-TRIAL-20261108.md](LIVE-TRIAL-20261108.md). Review the additional delta from `3294d8a`: failed-preparation account-health refresh, unhealthy/expired review admission and closed-enum handoff diagnostics through the existing export. The accepted launch grammar and downstream credential/dispatch gates must remain unchanged. No successful native launch or bootstrapper qualification was observed. This descendant requires a fresh immutable review and two full gate records; the earlier candidate's acceptance does not transfer.
 
 The first follow-up `bf193748` received a **revise** assessment: a UI scheduling tail could replay an older queue snapshot into producer history. The replacement separates scheduling from ingestion and retains the actual failing-before interleaving test. Re-review that exact replacement before acceptance. Known remaining minor observations are gallery availability, dark-theme installation-list contrast, stale queued wording after a failed trial, and delayed metadata errors replacing trial stop-status text; stopped authority remains intact. These are listed in the live-trial record, not claimed repaired.

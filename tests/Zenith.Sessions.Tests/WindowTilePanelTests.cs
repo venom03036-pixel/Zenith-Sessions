@@ -67,15 +67,6 @@ public sealed class WindowTilePanelTests
         Assert.Throws<ArgumentException>(() => panel.Gap = double.NaN); Assert.Throws<ArgumentException>(() => panel.Gap = 33);
     });
     private static Task OnSta(Action action)
-    {
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            Exception? failure = null;
-            try { action(); } catch (Exception error) { failure = error; }
-            finally { Dispatcher.CurrentDispatcher.InvokeShutdown(); }
-            if (failure is null) done.TrySetResult(); else done.TrySetException(failure);
-        }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task;
-    }
+        => PackagedLayoutCheck.RunOnStaAsync(() => new object(), _ => { action(); return Task.CompletedTask; },
+            _ => { }, CancellationToken.None);
 }

@@ -26,6 +26,8 @@ internal static class PackagedLayoutCheck
         var thread = new Thread(() =>
         {
             var dispatcher = Dispatcher.CurrentDispatcher;
+            var previousContext = SynchronizationContext.Current;
+            SynchronizationContext.SetSynchronizationContext(new DispatcherSynchronizationContext(dispatcher));
             TState? state = null;
             Exception? failure = null;
             try
@@ -44,7 +46,12 @@ internal static class PackagedLayoutCheck
                 // inside its callback can retire the dispatcher before its Task completes.
                 try { if (state is not null) cleanup(state); }
                 catch (Exception ex) { failure ??= ex; }
-                finally { if (!dispatcher.HasShutdownStarted) dispatcher.InvokeShutdown(); }
+                finally
+                {
+                    try { if (!dispatcher.HasShutdownStarted) dispatcher.InvokeShutdown(); }
+                    catch (Exception ex) { failure ??= ex; }
+                    finally { SynchronizationContext.SetSynchronizationContext(previousContext); }
+                }
             }
             if (failure is null) done.TrySetResult(); else done.TrySetException(failure);
         }) { IsBackground = true, Name = "Zenith packaged layout check" };

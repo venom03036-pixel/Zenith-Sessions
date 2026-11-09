@@ -293,22 +293,8 @@ public sealed partial class ClientWindowIntegrationTests : IDisposable
         public void CancelWindowOperations() => Cancellations++;
     }
     private static Task OnUi(Func<Task> work)
-    {
-        var done = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            var dispatcher = Dispatcher.CurrentDispatcher; Task operation = Task.CompletedTask;
-            dispatcher.BeginInvoke(() => operation = Run());
-            async Task Run()
-            {
-                try { await work(); done.TrySetResult(); }
-                catch (Exception error) { done.TrySetException(error); }
-                finally { dispatcher.BeginInvokeShutdown(DispatcherPriority.Background); }
-            }
-            Dispatcher.Run(); operation.GetAwaiter().GetResult();
-        }) { IsBackground = true };
-        thread.SetApartmentState(ApartmentState.STA); thread.Start(); return done.Task.WaitAsync(TimeSpan.FromSeconds(20));
-    }
+        => PackagedLayoutCheck.RunOnStaAsync(() => new object(), _ => work(), _ => { }, CancellationToken.None)
+            .WaitAsync(TimeSpan.FromSeconds(20));
     public void Dispose()
     {
         string full = Path.GetFullPath(_root);

@@ -16,6 +16,8 @@ Exact attended steps and one question per decision are in [ROUND4-LIVE-TRIALS.md
 
 ## Current implementation and limits
 
+The live-follow-up candidate required [fixture lifecycle repairs](TEST-HARNESS-LIFECYCLE-REPAIR.md) after failed full gates 9 and 10. Five reproduced failures precede 400 affected passes; original assertions, time limits and skips are unchanged. Acceptance of this descendant still requires its own immutable review and successful pair of complete gate records.
+
 - Roblox-hosted saved-session sign-in replaces OAuth for the companion. Passwords stay on the provider page. Session credentials are identity-checked, encrypted locally, fenced by account revision/generation and cleared from transient work on Lock/Panic.
 - Optional master-password protection and portable password-sealed backup are built. Import creates fresh local identities, verifies consent and preserves existing accounts; it does not import launch qualification, webhook secrets, extra launch arguments or input authority.
 - Official-page and Direct-ticket native launch modes are separate. Ordinary standard-player launches require a recorded attended trial tied to the actual capture mode and exact executable identity. A changed/replaced executable requires a new trial. Bootstrapper launching is deferred; publisher inspection does not enable it.

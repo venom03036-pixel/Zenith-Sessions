@@ -50,11 +50,8 @@ public sealed class SidebarTemplateTests
     [InlineData("violet-dusk")]
     public Task ProductionNavigationLoadsWithRealThemeResourcesAndReachableLabeledControls(string theme)
     {
-        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread=new Thread(()=>
+        return PackagedLayoutCheck.RunOnStaAsync(()=>new object(),_=>
         {
-            try
-            {
                 var (view,resources)=ProductionRail();ThemeManager.Apply(resources,theme);
                 view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));view.UpdateLayout();
                 var buttons=Descendants(view).OfType<Button>().ToArray();
@@ -74,11 +71,8 @@ public sealed class SidebarTemplateTests
                     var fill=(Border)button.Template.FindName("Fill",button);Assert.NotNull(fill.Background);
                     button.Tag=false;
                 }
-                done.TrySetResult();
-            }
-            catch(Exception ex) {done.TrySetException(ex);}
-            finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
-        }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(10));
+                return Task.CompletedTask;
+        },_=>{},CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(10));
     }
     // Windows High Contrast Black and White, where the selection colour is the Highlight colour and every other text colour is the
     // window text colour, plus a dark preset and Light. The current page must draw its name, icon and account count in the selection
@@ -90,11 +84,8 @@ public sealed class SidebarTemplateTests
     [InlineData("light")]
     public Task TheCurrentPageDrawsItsNameIconAndCountReadablyOnTheSelectionColour(string palette)
     {
-        var done=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread=new Thread(()=>
+        return PackagedLayoutCheck.RunOnStaAsync(()=>new object(),_=>
         {
-            try
-            {
                 var (view,resources)=ProductionRail();SessionsThemes.Apply(resources,SessionsThemesTests.Palette(palette));
                 view.DataContext=new RailModel();view.Measure(new Size(184,500));view.Arrange(new Rect(0,0,184,500));
                 Dispatcher.CurrentDispatcher.Invoke(()=>{},DispatcherPriority.DataBind);view.UpdateLayout();
@@ -111,11 +102,8 @@ public sealed class SidebarTemplateTests
                     RenderedInk.AssertReadable(image,view,Descendants(button).OfType<System.Windows.Shapes.Path>().Single(),selection,3,$"{palette}: the current page's {page} icon");
                     button.Tag=false;
                 }
-                done.TrySetResult();
-            }
-            catch(Exception ex) {done.TrySetException(ex);}
-            finally {Dispatcher.CurrentDispatcher.InvokeShutdown();}
-        }) {IsBackground=true};thread.SetApartmentState(ApartmentState.STA);thread.Start();return done.Task.WaitAsync(TimeSpan.FromSeconds(30));
+                return Task.CompletedTask;
+        },_=>{},CancellationToken.None).WaitAsync(TimeSpan.FromSeconds(30));
     }
     // The production navigation rail with its own styles, over the shared controls; the caller applies a palette.
     private static (Border View,ResourceDictionary Resources) ProductionRail()

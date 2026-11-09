@@ -6,6 +6,8 @@ After acceptance of `3294d8a`, the owner authorized a saved-account Anime Card C
 
 ## Repository and current work
 
+The live-follow-up gates exposed offline fixture lifecycle defects; [the repair record](TEST-HARNESS-LIFECYCLE-REPAIR.md) preserves five red failures and 400 affected passes with original assertions/time limits intact. It remains a candidate until two complete clean-commit gates and independent review accept it. Do not interpret earlier accepted-build results as acceptance of these later changes.
+
 Workspace: `C:\Users\noelm\Downloads\Zenith_Macros_CameraPath`.
 
 - Integration checkout: `wt\Completion`, branch `completion/integration`.
