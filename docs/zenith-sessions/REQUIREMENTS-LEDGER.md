@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust local support report (1.23)
+
+**CAP-04-06, VA-10-03, PROD-UI-16.** Overview exports a local versioned JSON snapshot with typed admission, launch, recovery, and Panic evidence. The exporter projects an allowlist from the session owner and never serializes account profiles or free-form error text. Native tests cover redaction, collision refusal, and failed-write cleanup. The package self-check writes and reopens a synthetic report. Long-term event history and a full secret-absence audit remain separate. See [Preview 1.23](RUST-DESKTOP-PREVIEW.md#preview-123-local-support-report).
+
 ## Rust fatal-exit recovery and breaker (1.22)
 
 **CAP-08-06, CAP-14-03, PROD-CORE-03.** The desktop can arm a public launch for two automatic replacements after a recognized fatal exit from a confirmed owned client. It preserves the exact requested place and job, rechecks the saved account, uses normal admission, and binds authority to the current Panic generation and the retry chain. Waiting permission is memory-only. Browser, Windows child, and controlled scheduler tests cover their documented scope. Live fatal-exit recovery, disconnect rejoin, and hang recovery remain open. See [Preview 1.22](RUST-DESKTOP-PREVIEW.md#preview-122-fatal-exit-recovery).

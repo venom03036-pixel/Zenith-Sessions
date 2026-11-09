@@ -5,7 +5,9 @@ use std::{
 
 use crate::recovery::{Checkpoint, Journal, MAX_ENTRIES, Record, RecoveryView, ReviewState};
 
+mod diagnostics;
 mod retry;
+pub use diagnostics::{FailureStage, LaunchDiagnostics, PreparationFailure};
 use retry::Recovery;
 pub use retry::RetryRequest;
 
@@ -158,6 +160,7 @@ pub struct SessionOwner {
     last_start: Option<Instant>,
     journal: Journal,
     recovered: Vec<Record>,
+    last_reservation_failure: Option<FailureStage>,
 }
 
 impl SessionOwner {
@@ -176,6 +179,10 @@ impl SessionOwner {
             .rev()
             .map(|attempt| attempt.row.clone())
             .collect()
+    }
+
+    pub fn record_reservation_failure(&mut self, stage: FailureStage) {
+        self.last_reservation_failure = Some(stage);
     }
 
     pub fn launch_state(&self) -> LaunchState {
@@ -346,6 +353,7 @@ impl SessionOwner {
             self.attempts.remove(oldest);
         }
         self.attempts.push(attempt);
+        self.last_reservation_failure = None;
         Ok(id)
     }
 
@@ -363,13 +371,22 @@ impl SessionOwner {
             })
     }
 
-    pub fn fail_preparation(&mut self, id: Uuid, error: String, stopped: bool) {
+    pub fn fail_preparation(
+        &mut self,
+        id: Uuid,
+        error: String,
+        stopped: bool,
+        stage: FailureStage,
+    ) {
         if let Some(attempt) = self
             .attempts
             .iter_mut()
             .find(|attempt| attempt.row.attempt_id == id && attempt.preparing)
         {
             attempt.cancelled |= stopped;
+            if !attempt.cancelled {
+                attempt.failure_stage = Some(stage);
+            }
             attempt.fail_preparation(error);
         }
         self.release_idle_pair();
@@ -680,6 +697,8 @@ struct Attempt {
     dispatching: bool,
     cancelled: bool,
     recovery: Recovery,
+    failure_stage: Option<FailureStage>,
+    exit_status: Option<u32>,
 }
 
 impl Attempt {
@@ -734,6 +753,8 @@ impl Attempt {
             dispatching: false,
             cancelled: false,
             recovery: Recovery::default(),
+            failure_stage: None,
+            exit_status: None,
         }
     }
 
@@ -814,6 +835,7 @@ impl Attempt {
         };
         if let Some(facts) = facts {
             if let Some(mismatch) = observation.mismatch(&facts) {
+                self.failure_stage = Some(FailureStage::ArrivalEvidence);
                 self.observation = None;
                 if player.stop().is_ok() {
                     self.player = None;
@@ -849,6 +871,7 @@ impl Attempt {
             }
         }
         if observation.started.elapsed() >= Duration::from_secs(65) {
+            self.failure_stage = Some(FailureStage::ArrivalEvidence);
             self.observation = None;
             row.phase = Phase::Unconfirmed;
             row.detail = Some(
@@ -909,22 +932,29 @@ pub fn prepare(
     directory: &Directory,
     try_one: bool,
     permits: impl Fn() -> bool + Send + Sync + 'static,
-) -> Result<Prepared, String> {
-    fn check(permits: &impl Fn() -> bool) -> Result<(), String> {
+) -> Result<Prepared, PreparationFailure> {
+    fn check(permits: &impl Fn() -> bool) -> Result<(), PreparationFailure> {
         if !permits() {
-            return Err("The launch was cancelled or the first client stopped.".into());
+            return Err(FailureStage::FinalAuthorization
+                .failure("The launch was cancelled or the first client stopped."));
         }
         Ok(())
     }
     check(&permits)?;
-    check_memory(try_one)?;
-    let player = VerifiedPlayer::registered()?;
+    check_memory(try_one).map_err(|error| FailureStage::ResourceAdmission.failure(error))?;
+    let player =
+        VerifiedPlayer::registered().map_err(|error| FailureStage::PlayerTrust.failure(error))?;
     check(&permits)?;
-    let auth = RobloxAuth::for_launch(permits).map_err(|error| error.to_string())?;
+    let auth = RobloxAuth::for_launch(permits)
+        .map_err(|error| FailureStage::AccountVerification.failure(error.to_string()))?;
     auth.verify(credential, identity.user_id)
-        .map_err(|error| error.to_string())?;
-    target.resolve(&auth, credential, directory)?;
-    let ticket = auth.ticket(credential).map_err(|error| error.to_string())?;
+        .map_err(|error| FailureStage::AccountVerification.failure(error.to_string()))?;
+    target
+        .resolve(&auth, credential, directory)
+        .map_err(|error| FailureStage::PrivateInviteResolution.failure(error))?;
+    let ticket = auth
+        .ticket(credential)
+        .map_err(|error| FailureStage::LaunchTicket.failure(error.to_string()))?;
     Ok(Prepared {
         player,
         ticket,
@@ -1019,7 +1049,12 @@ mod tests {
         assert!(!sessions.permits(id));
         assert!(sessions.has_active_attempts());
         assert!(panic.resume(epoch, &sessions).is_err());
-        sessions.fail_preparation(id, "Synthetic late response".into(), true);
+        sessions.fail_preparation(
+            id,
+            "Synthetic late response".into(),
+            true,
+            FailureStage::FinalAuthorization,
+        );
         assert!(sessions.attempts[0].row.phase == Phase::Stopped);
         panic.resume(epoch, &sessions).unwrap();
         assert!(!sessions.permits(id));
@@ -1127,13 +1162,23 @@ mod tests {
         owner.stop(first).unwrap();
         assert!(!owner.permits(first));
         assert!(owner.hold(Instant::now(), false).is_some());
-        owner.fail_preparation(first, "cancelled worker".into(), false);
+        owner.fail_preparation(
+            first,
+            "cancelled worker".into(),
+            false,
+            FailureStage::FinalAuthorization,
+        );
         let job = Uuid::from_u128(42);
         let replacement = Attempt::new(&account, &Target::public(1919, Some(job)), None);
         let second = replacement.row.attempt_id;
         owner.attempts.clear();
         owner.attempts.push(replacement);
-        owner.fail_preparation(first, "late old failure".into(), false);
+        owner.fail_preparation(
+            first,
+            "late old failure".into(),
+            false,
+            FailureStage::LaunchTicket,
+        );
         assert!(owner.permits(second));
         assert!(owner.stop(first).is_err());
         let row = &owner.attempt(second).unwrap().row;
@@ -1195,7 +1240,12 @@ mod tests {
         assert!(owner.permits(second_id));
         owner.stop(first_id).unwrap();
         assert!(!owner.permits(second_id));
-        owner.fail_preparation(second_id, "First client stopped".into(), false);
+        owner.fail_preparation(
+            second_id,
+            "First client stopped".into(),
+            false,
+            FailureStage::FinalAuthorization,
+        );
         assert!(!owner.uses(account.profile_id));
         assert!(!owner.uses(other.profile_id));
         assert!(owner.hold(Instant::now(), true).is_none());

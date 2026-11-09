@@ -18,10 +18,11 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .macro-catalog .row-actions { margin-top: .75rem; }
 .session-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1rem; }
 .session-fields label, .destination-input label, .appearance-preview label { display: grid; gap: .5rem; color: var(--muted); }
-.destination-input input, .session-fields select, .appearance-preview select {
+.destination-input input, .session-fields select, .appearance-preview select, .support-report-path input {
   width: 100%; border: 1px solid var(--border); border-radius: .5rem; color: var(--heading);
   background: var(--field); font: inherit; padding: .7rem;
 }
+.support-report-path { grid-template-columns: minmax(0, 1fr); margin-top: .75rem; }
 .appearance-preview select { max-width: 16rem; }
 .app-shell[data-theme="light"] { color-scheme: light; }
 @media (prefers-color-scheme: light) { .app-shell[data-theme="follow-windows"] { color-scheme: light; } }

@@ -25,6 +25,26 @@ pub struct PanicView {
     error: Option<String>,
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PanicDiagnostics {
+    held: bool,
+    can_resume: bool,
+    shortcut_available: bool,
+    cleanup_error: bool,
+}
+
+impl PanicView {
+    pub fn diagnostics(&self) -> PanicDiagnostics {
+        PanicDiagnostics {
+            held: self.held,
+            can_resume: self.can_resume,
+            shortcut_available: self.shortcut_available,
+            cleanup_error: self.error.is_some(),
+        }
+    }
+}
+
 impl PanicStop {
     pub fn permit(&self) -> Result<u64, &'static str> {
         let epoch = self.epoch.load(Ordering::Acquire);

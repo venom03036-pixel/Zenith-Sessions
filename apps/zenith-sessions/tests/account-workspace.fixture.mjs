@@ -15,6 +15,7 @@ function exerciseWorkspace() {
   let launchedTarget;
   let sessionRows = [];
   let stoppedRecovery;
+  let reportAttempts = 0;
   let savedInvites = [];
   const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
   let catalogRequests = 0;
@@ -46,6 +47,10 @@ function exerciseWorkspace() {
     invoke: async (command, args = {}) => {
       const { id, epoch, cursor, stamp, target, edit, choice, action, request, place, universe, placeId, job } = args;
       switch (command) {
+        case 'export_support_report':
+          if (Object.keys(args).length !== 0) throw new Error('The report export accepted a renderer-supplied path or data.');
+          if (++reportAttempts === 1) throw 'Could not save the support report.';
+          return { path: 'C:\\Fixture\\support-reports\\zenith-report.json' };
         case 'workspace_snapshot': return {
           accounts, sessions: sessionRows, launch: { active: sessionRows.length, pairEnabled: false, hold: null },
           admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
@@ -348,6 +353,22 @@ function exerciseWorkspace() {
       } finally {
         find('button[aria-label="Sessions"]').getAttribute('aria-current') === 'page'
           && find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('the support report retries a local export and displays the saved path', async () => {
+      const button = () => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === 'Save support report');
+      find('button[aria-label="Overview"]').click();
+      try {
+        await until(() => button(), 'Overview does not offer a support report');
+        button().click();
+        const panel = () => find('[aria-label="Support report"]');
+        await until(() => panel()?.querySelector('[role="alert"]'), 'export failure was not visible');
+        button().click();
+        await until(() => panel()?.querySelector('input[aria-label="Saved support report path"]')?.value.endsWith('zenith-report.json'),
+          'the saved report path was missing');
+        if (reportAttempts !== 2) throw new Error('The support export ran more than once per click.');
+      } finally {
+        find('button[aria-label="Accounts"]').click();
       }
     });
     await check('Panic holds launches across pages until cleanup and explicit resume', async () => {

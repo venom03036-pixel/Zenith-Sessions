@@ -43,6 +43,7 @@ pub fn run(context: &Context<Wry>) -> ExitCode {
         ("Memory sampling", resources),
         ("Roblox installation", publisher),
         ("Launch recovery journal", check_journal()),
+        ("Local support report", crate::support_report::self_check()),
     ] {
         match result {
             Ok(detail) => println!("PASS {stage} · {detail}"),

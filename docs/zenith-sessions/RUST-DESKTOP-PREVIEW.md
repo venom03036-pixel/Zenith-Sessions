@@ -22,6 +22,18 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.23 local support report
+
+Open **Overview** and select **Save support report**. Zenith writes a JSON file under `com.zenith.sessions.preview\support-reports` in Windows local application data. Copy the path shown in Zenith into File Explorer to find the report. The export is local and on demand. The report command is available to the local Zenith window. [Tauri capability scopes](https://v2.tauri.app/security/capabilities/)
+
+The JSON contains a schema version, capture time, build metadata, the on-disk executable SHA-256 when readable, a memory-admission sample, typed recent launch stages, recovery counts, and Panic status. Use the local session card for the full error. Usernames, account and destination IDs, credentials, invite codes, raw logs, error text, and local paths are omitted from the file.
+
+The exporter uses its own fixed folder and writes each report to a new filename. It refuses a redirected report folder or an existing file at the report location. A temporary file is removed when publication fails. The browser fixture checks a failed export, retry, and the displayed path. Native tests check the JSON allowlist and file publication. The packaged self-check creates and reopens a report from an empty synthetic workspace, then removes the test file.
+
+To verify the desktop workflow, save a report, open the file at the displayed path, and compare its hash and typed state with the executable and Overview. Save another report and verify that it has a different filename. These checks can be done with no account signed in.
+
+The 1.23 executable has SHA-256 `4C5915457C4682DAB7D7638EB6E37F7E89ECD3DFBC4948E343B55B3C26CA50E0`. The browser regression failed on 1.22 and passed on 1.23. Seventy-three offline Rust tests, fifteen Chromium checks, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both packaged self-checks passed all seven stages. The matching Personal editor is in the same preview folder.
+
 ## Preview 1.22 fatal-exit recovery
 
 In **Sessions**, check **Restart after a fatal exit for this launch** before an ordinary public launch. The choice applies to that launch and its replacements. An owned client must first confirm arrival. If Windows later reports one of the recognized fatal exception statuses, the backend schedules a replacement after 8 seconds. A second qualifying exit waits 16 seconds. After two replacements, another exit requires a fresh manual launch. A normal close, an unknown status, or an exit before arrival leaves the attempt terminal. Windows exposes a process exit status that can reflect a caller-specified termination value, so the UI reports the observed status without inferring the underlying cause. [Windows process exit status](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getexitcodeprocess)

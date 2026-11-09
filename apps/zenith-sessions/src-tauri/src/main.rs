@@ -10,6 +10,7 @@ mod self_check;
 mod session;
 mod session_monitor;
 mod sign_in;
+mod support_report;
 
 use std::{
     collections::HashMap,
@@ -32,10 +33,11 @@ use panic_hotkey::PanicHotkey;
 use panic_stop::{PanicStop, PanicView};
 use serde::{Deserialize, Serialize};
 use session::{
-    ClientPerformance, LaunchState, PlaybackTarget, RetryRequest, Session, SessionOwner,
-    WindowPlacement,
+    ClientPerformance, FailureStage, LaunchState, PlaybackTarget, RetryRequest, Session,
+    SessionOwner, WindowPlacement,
 };
 use session_monitor::SessionMonitor;
+use support_report::SupportReports;
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
@@ -65,6 +67,7 @@ struct Workspace {
     logs: PathBuf,
     exiting: AtomicBool,
     monitor: Mutex<Option<SessionMonitor>>,
+    support_reports: SupportReports,
 }
 
 #[tauri::command]
@@ -714,21 +717,33 @@ fn run_launch(
         let (target, reference, retry) = match source {
             LaunchSource::Public(target) => (target, None, None),
             LaunchSource::Private(reference) => {
-                (library.private_target(reference)?, Some(reference), None)
+                let target = library.private_target(reference).inspect_err(|_| {
+                    owner.record_reservation_failure(FailureStage::PrivateInviteResolution);
+                })?;
+                (target, Some(reference), None)
             }
             LaunchSource::Recovery(retry) => {
                 (Target::public(retry.place, retry.job), None, Some(retry))
             }
         };
-        let saved = library.credential(id)?;
+        let saved = library.credential(id).inspect_err(|_| {
+            owner.record_reservation_failure(FailureStage::SavedSignIn);
+        })?;
         if !state.can_dispatch(epoch) {
             return Err("Zenith stopped this launch request.".into());
         }
         let attempt = match retry {
-            Some(retry) => owner.reserve_retry(retry, &saved.identity, &target, Instant::now())?,
+            Some(retry) => owner
+                .reserve_retry(retry, &saved.identity, &target, Instant::now())
+                .inspect_err(|_| {
+                    owner.record_reservation_failure(FailureStage::LaunchAdmission);
+                })?,
             None => {
-                let attempt =
-                    owner.reserve(&saved.identity, &target, preferences.allow_pair, try_one)?;
+                let attempt = owner
+                    .reserve(&saved.identity, &target, preferences.allow_pair, try_one)
+                    .inspect_err(|_| {
+                        owner.record_reservation_failure(FailureStage::LaunchAdmission);
+                    })?;
                 if preferences.recover {
                     owner.arm_recovery(attempt, epoch, preferences.allow_pair)?;
                 }
@@ -753,6 +768,7 @@ fn run_launch(
         },
     );
     let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+    let mut failed_at = FailureStage::FinalAuthorization;
     let result = (|| {
         if !owner.permits(attempt) || !state.can_dispatch(epoch) {
             return Err("The launch was cancelled or the first client stopped.".into());
@@ -768,11 +784,20 @@ fn run_launch(
         } else {
             drop(library);
         }
-        let prepared = prepared?;
+        let prepared = prepared.map_err(|error| {
+            failed_at = error.stage;
+            error.message
+        })?;
+        failed_at = FailureStage::NativeStart;
         owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
     })();
     if let Err(error) = &result {
-        owner.fail_preparation(attempt, error.clone(), !state.can_dispatch(epoch));
+        owner.fail_preparation(
+            attempt,
+            error.clone(),
+            !state.can_dispatch(epoch),
+            failed_at,
+        );
     }
     result
 }
@@ -977,6 +1002,7 @@ fn main() -> ExitCode {
                 logs,
                 exiting: AtomicBool::new(false),
                 monitor: Mutex::new(None),
+                support_reports: SupportReports::new(&root),
             });
             *state
                 .monitor
@@ -1030,6 +1056,7 @@ fn main() -> ExitCode {
         })
         .invoke_handler(tauri::generate_handler![
             workspace_snapshot,
+            support_report::export_support_report,
             saved_macro_catalog,
             macro_assignments,
             edit_macro_assignment,

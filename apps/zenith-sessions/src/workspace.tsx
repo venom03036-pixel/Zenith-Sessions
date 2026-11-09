@@ -7,6 +7,7 @@ import { MacroCatalogPanel } from './macro-catalog';
 import type { MacroRunView } from './macro-assignments';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { RecoveryPanel, type Recovery } from './recovery-panel';
+import { SupportReportPanel } from './support-report';
 import { DestinationPicker, type Destination } from './destination-picker';
 import { PrivateServers, privateReference, type PrivateServer } from './private-servers';
 import { Icon, type IconName } from './design-icons';
@@ -411,6 +412,7 @@ function App() {
           <article className="metric-card"><div className="metric-top">Available memory</div><strong>{admission ? gib(admission.physicalAvailable) : 'Unavailable'}</strong></article>
         </div>
         <Memory admission={admission}/>
+        <SupportReportPanel/>
       </>}
       {page === 'Accounts' && <div className={`accounts-workspace${inspected ? ' with-inspector' : ''}`}><section className="account-panel">
         <div className="panel-heading"><div><h2>Account library</h2><p>{filtered.length} of {accounts.length} accounts shown. Select an account to view its details.</p></div></div>

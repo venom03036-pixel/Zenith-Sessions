@@ -3,7 +3,7 @@ use std::time::{Duration, Instant};
 use uuid::Uuid;
 use zenith_session_launch::{target::Target, windows::SavedIdentity};
 
-use super::{Attempt, Phase, SessionOwner};
+use super::{Attempt, FailureStage, Phase, SessionOwner};
 
 const BACKOFF: [Duration; 2] = [Duration::from_secs(8), Duration::from_secs(16)];
 
@@ -75,6 +75,7 @@ impl Attempt {
         self.player = None;
         self.observation = None;
         self.row.pid = None;
+        self.exit_status = code;
         let arrived = self.row.phase == Phase::Running;
         self.row.phase = if self.row.phase == Phase::Starting {
             Phase::Failed
@@ -82,6 +83,9 @@ impl Attempt {
             Phase::Stopped
         };
         let fatal = code.filter(|code| is_fatal_exit(*code));
+        if fatal.is_some() || self.row.phase == Phase::Failed {
+            self.failure_stage = Some(FailureStage::ProcessExit);
+        }
         if let Some(code) = fatal {
             self.row.phase = Phase::Failed;
             let detail = format!("Windows reported a fatal exit (0x{code:08X}).");
@@ -174,6 +178,7 @@ impl SessionOwner {
             Err(error) => {
                 let attempt = self.attempt_mut(request.previous)?;
                 attempt.recovery.clear_wait();
+                attempt.failure_stage = Some(FailureStage::AutomaticRestart);
                 attempt.row.detail = Some(format!("Automatic restart stopped. {error}"));
                 Err(error)
             }
@@ -186,6 +191,7 @@ impl SessionOwner {
         {
             attempt.recovery.clear_wait();
             attempt.row.phase = Phase::Failed;
+            attempt.failure_stage = Some(FailureStage::AutomaticRestart);
             attempt.row.detail = Some(format!("Automatic restart stopped. {reason}"));
         }
     }

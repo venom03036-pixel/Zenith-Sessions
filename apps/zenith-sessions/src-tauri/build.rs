@@ -2,6 +2,7 @@ fn main() {
     tauri_build::try_build(tauri_build::Attributes::new().app_manifest(
         tauri_build::AppManifest::new().commands(&[
             "workspace_snapshot",
+            "export_support_report",
             "saved_macro_catalog",
             "macro_assignments",
             "edit_macro_assignment",
