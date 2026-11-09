@@ -1105,7 +1105,7 @@
                       <WrapPanel Margin="0,12,0,0">
                         <Button Content="Review selected-account trial" Click="StartNativeTrialClick" IsEnabled="{Binding CanRunNativeTrial}" MinHeight="36" Margin="0,0,8,8" />
                         <Button Content="Stop trial" Command="{Binding CancelNativeTrial}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,8,8" />
-                        <Button Content="Record this trial as verified" Command="{Binding RecordNativeLaunchVerification}" IsEnabled="{Binding CanRecordNativeLaunchVerification}" MinHeight="36" Margin="0,0,0,8" ToolTip="Available only while this session's latest trial is Client started · unverified and its Launch evidence shows the exact process observed and the client's own log reporting the expected player in the requested place. Recording saves that trial (mode, installation, time, request and process receipt; no sign-in material) and turns ordinary and group launching on for the saved launch mode and the selected installation." />
+                        <Button Content="Review accounts and record test" Command="{Binding ShowJoinStep}" CommandParameter="3" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,0,8" />
                       </WrapPanel>
                       <TextBlock Text="{Binding NativeTrialStatus}" Style="{StaticResource Muted}" FontSize="12" TextWrapping="Wrap" />
                     </StackPanel>
@@ -1296,11 +1296,11 @@
                   <TextBlock Text="{Binding LaunchPacingStatus}" Style="{StaticResource Caption}" Margin="0,12,0,0" />
                   <Border Margin="0,14,0,0" Visibility="{Binding IsNativeLaunchVerified, Converter={StaticResource HiddenIf}}"><StackPanel>
                     <TextBlock Text="Set up this Roblox installation" Style="{StaticResource SectionHeading}" />
-                    <TextBlock Text="{Binding AccountLaunchAvailability}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                    <TextBlock Text="Test one account on this installation first. After Zenith sees the expected account and game, record the successful test to enable ordinary launches." Style="{StaticResource Caption}" Margin="0,6,0,0" />
                     <TextBlock Text="{Binding NativeTrialSelection}" TextWrapping="Wrap" Margin="0,8,0,0" />
                     <TextBlock Text="{Binding NativeTrialInstallation}" Style="{StaticResource Caption}" Margin="0,4,0,0" />
                     <Button Content="Test selected account launch" Click="StartNativeTrialFromReviewClick" IsEnabled="{Binding CanRunNativeTrial}" Style="{StaticResource PrimaryButton}" MinHeight="36" Margin="0,10,0,0" />
-                    <WrapPanel Margin="0,8,0,0"><Button Content="Stop launch test" Command="{Binding CancelNativeTrial}" Style="{StaticResource QuietButton}" /><Button Content="Enable launches after successful test" Command="{Binding RecordNativeLaunchVerification}" IsEnabled="{Binding CanRecordNativeLaunchVerification}" Style="{StaticResource QuietButton}" /></WrapPanel>
+                    <WrapPanel Margin="0,8,0,0"><Button Content="Stop launch test" Command="{Binding CancelNativeTrial}" Style="{StaticResource QuietButton}" /><Button Content="Record this trial as verified" Command="{Binding RecordNativeLaunchVerification}" IsEnabled="{Binding CanRecordNativeLaunchVerification}" MinHeight="36" Margin="0,0,0,8" ToolTip="Available only while this session's latest trial is Client started · unverified and its Launch evidence shows the exact process observed and the client's own log reporting the expected player in the requested place. Recording saves that trial (mode, installation, time, request and process receipt; no sign-in material) and turns ordinary and group launching on for the saved launch mode and the selected installation." /></WrapPanel>
                     <TextBlock Text="{Binding NativeTrialStatus}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
                     <TextBlock Text="If this account already has a blocked request, cancel that row in the launch queue first. A test uses the highlighted account only." Style="{StaticResource Caption}" Margin="0,6,0,0" />
                     <Button Content="Choose Roblox installation" Command="{Binding Navigate}" CommandParameter="Settings" Style="{StaticResource QuietButton}" Margin="0,6,0,0" />

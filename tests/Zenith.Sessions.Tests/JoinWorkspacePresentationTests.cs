@@ -76,7 +76,7 @@ public sealed class JoinWorkspacePresentationTests
         }
         // Step 3 holds the launch actions; the step switch is presentation only.
         fixture.Model.ShowJoinStep.Execute("3");Layout(view,width,480);Assert.True(fixture.Model.IsJoinReadyStep);
-        foreach(string label in new[]{"Queue checked accounts","Queue bundle for this destination"})
+        foreach(string label in new[]{"Queue checked accounts","Queue bundle for this destination","Test selected account launch","Record this trial as verified"})
         {
             var button=FindButton(view,label);ScrollTo(view,button,width,480);Reachable(view,button);Assert.True(button.ActualHeight>=36);
         }

@@ -9,7 +9,7 @@ The owner reported an empty “Who is launching” panel, blocked ordinary launc
 - The review page exposes the existing selected-account trial and record commands. It uses the same one-use review dialog and evidence requirements as the advanced trial. Signing in never fabricates an installation qualification. The selected account, rather than an entire checked batch, is the subject of a trial.
 - The account row and inspector Launch actions go to game selection or launch review when the preferred game is missing or the installation is unqualified. Only that account is checked for this single-account action; unrelated batch checks are cleared. Existing pending-work and sign-in recovery behavior runs first.
 
-No native parser, credential storage, installation trust, process dispatch, singleton handling or verification criteria changed. No test was deleted, skipped or relaxed. One exact copy assertion was updated to the new actionable availability sentence; its verification assertions were retained and expanded.
+No native parser, credential storage, installation trust, process dispatch, singleton handling or verification criteria changed. No test was deleted, skipped or relaxed. One exact copy assertion was updated to the new actionable availability sentence; its verification assertions were retained and expanded. The inspector binding assertion now requires the state-aware ordinary account action, exact selected-account parameter and matching label; the prohibition on binding ordinary actions to the trial command remains. The record control remains singular and retains its original evidence guard, moved to review; the advanced section links to it.
 
 ## Regression evidence
 
@@ -34,8 +34,10 @@ During read-only inspection and ordinary queue recovery, the app showed `@sethpl
 3. Open **Choose accounts / set up launch**, select the account in **Who is launching**, and use **Test selected account launch**. Cancel any old blocked request for that account first. If the test button is disabled, check the displayed sign-in and installation state.
 4. Review the exact account/game/installation. With Official page mode, choose Play on the Roblox page. With Direct ticket mode, the existing direct preparation path runs instead. Do not switch modes merely to hide a failure.
 5. If no client starts, inspect **Launch evidence and diagnostics** and provide the fixed stage/reason, never a cookie or ticket. “No process-start receipt” means Zenith did not obtain a start receipt; it is not a request to reinstall or sign in repeatedly.
-6. Only when a fresh client reports the expected account and game will **Enable launches after successful test** be available. After recording it, ordinary launches become available for that exact executable and launch mode. An updated executable needs a new test.
+6. Only when a fresh client reports the expected account and game will **Record this trial as verified** be available. After recording it, ordinary launches become available for that exact executable and launch mode. An updated executable needs a new test.
 
 Native account arrival, persistence through provider rotation, and simultaneous sessions still require their recorded live trials. Bootstrapper support remains deferred; these changes do not introduce an embedded bootstrapper or claim multi-client compatibility.
 
 Final focused review verification: `launchflow-review-green.trx` passes **469 checks, zero failures or skips**, including the state-aware inspector regression. The earlier failed review finding is fixed; its red artifact is retained.
+
+The preliminary full run also detected five markup contract failures after the layout change. The recording control was consolidated to one original guarded button on the review step, and the inspector assertion now checks its deliberate state-aware action and exact parameter instead of the former unconditional queue binding. `launchflow-wiring-green.trx` passes all 48 affected cases; the ordinary-command/no-direct-trial distinction and all verification guards remain tested. The existing six-theme/two-width reachability test additionally covers the newly exposed trial and record actions.
