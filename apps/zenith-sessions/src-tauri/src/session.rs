@@ -414,36 +414,48 @@ impl SessionOwner {
         id: Uuid,
         try_one: bool,
         can_dispatch: impl Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), PreparationFailure> {
+        let native_start = |error| FailureStage::NativeStart.failure(error);
         if !self.permits(id) {
-            return Err("The launch was cancelled or the first client stopped.".into());
+            return Err(FailureStage::FinalAuthorization
+                .failure("The launch was cancelled or the first client stopped."));
         }
         if !can_dispatch() {
-            return Err("Zenith stopped this launch request.".into());
+            return Err(
+                FailureStage::FinalAuthorization.failure("Zenith stopped this launch request.")
+            );
         }
         // Commit intent before any native process creation. A crash between this write and the
         // receipt must remain uncertain, even if preparation and the OS call were milliseconds apart.
-        self.attempt_mut(id)?.dispatching = true;
-        self.sync_journal()?;
-        let peer = self.attempt(id)?.peer;
+        self.attempt_mut(id).map_err(native_start)?.dispatching = true;
+        self.sync_journal().map_err(native_start)?;
+        let peer = self.attempt(id).map_err(native_start)?.peer;
         if let Some(peer) = peer {
+            let peer_unavailable = || {
+                FailureStage::FinalAuthorization.failure("The first client is no longer available.")
+            };
             let player = self
-                .attempt_mut(peer)?
+                .attempt_mut(peer)
+                .map_err(|_| peer_unavailable())?
                 .player
                 .as_mut()
-                .ok_or("The first client is no longer available.")?;
+                .ok_or_else(peer_unavailable)?;
             if player.exited().unwrap_or(true) || !player.has_window() {
-                return Err("The first client is no longer available.".into());
+                return Err(peer_unavailable());
             }
         }
-        check_memory(try_one)?;
-        ensure_compatible_player_start(&self.owned_processes())?;
-        self.attempt_mut(id)?.dispatch(request, &can_dispatch)?;
+        check_memory(try_one).map_err(|error| FailureStage::ResourceAdmission.failure(error))?;
+        ensure_compatible_player_start(&self.owned_processes())
+            .map_err(|error| FailureStage::LaunchAdmission.failure(error))?;
+        self.attempt_mut(id)
+            .map_err(native_start)?
+            .dispatch(request, &can_dispatch)?;
         self.last_start = Some(Instant::now());
-        let recorded = self.sync_journal();
+        let recorded = self.sync_journal().map_err(native_start);
         if !can_dispatch() {
-            self.stop(id)?;
-            return Err("Zenith stopped the owned client during native startup.".into());
+            self.stop(id).map_err(native_start)?;
+            return Err(FailureStage::FinalAuthorization
+                .failure("Zenith stopped the owned client during native startup."));
         }
         recorded
     }
@@ -885,12 +897,12 @@ impl Attempt {
         &mut self,
         request: Prepared,
         can_dispatch: impl Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<(), PreparationFailure> {
         let attempt = self.row.attempt_id;
         let launched = SystemTime::now();
         let timestamp = launched
             .duration_since(UNIX_EPOCH)
-            .map_err(|_| "System clock is invalid")?;
+            .map_err(|_| FailureStage::NativeStart.failure("System clock is invalid"))?;
         let tracker = new_tracker();
         let uri = player_uri(
             &request.ticket,
@@ -898,11 +910,21 @@ impl Attempt {
             tracker,
             attempt,
             timestamp.as_millis(),
-        )?;
+        )
+        .map_err(|error| FailureStage::NativeStart.failure(error))?;
+        request
+            .player
+            .require_registered()
+            .map_err(|error| FailureStage::PlayerTrust.failure(error))?;
         if !can_dispatch() {
-            return Err("Zenith stopped this launch request.".into());
+            return Err(
+                FailureStage::FinalAuthorization.failure("Zenith stopped this launch request.")
+            );
         }
-        let player = request.player.spawn(&uri)?;
+        let player = request
+            .player
+            .spawn(&uri)
+            .map_err(|error| FailureStage::NativeStart.failure(error))?;
         let pid = player.pid();
         self.player = Some(player);
         self.observation = Some(Observation {
@@ -1093,6 +1115,9 @@ pub fn prepare(
     target
         .resolve(&auth, credential, directory)
         .map_err(|error| FailureStage::PrivateInviteResolution.failure(error))?;
+    let player = player
+        .refresh_registered()
+        .map_err(|error| FailureStage::PlayerTrust.failure(error))?;
     let ticket = auth
         .ticket(credential)
         .map_err(|error| FailureStage::LaunchTicket.failure(error.to_string()))?;

@@ -22,6 +22,14 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.31 Roblox player changes during launch
+
+Zenith checks the registered standard player before checking the selected account. After resolving the destination and before requesting a ticket, it reuses the held verified file when the registration is unchanged. When the registration points to a different file, Zenith verifies the new file's Roblox publisher before proceeding. Immediately before process creation, it checks the current registration again. If the registration changed a second time, the launch shows a player-trust failure and asks you to wait for the update to finish and choose **Launch** again. The process has no start receipt. The same account and destination can be selected again without a prior trial gate.
+
+The regression fixtures cover a changed registration, a replacement that fails publisher verification, an unchanged held file, and a second change before startup. For an attended trial during a normal Roblox update, launch a designated account to a known public place and record the registered executable path before and after the update. If Zenith reports that the registration changed, wait for the updater to finish, choose **Launch** again, and confirm account and destination in the new Roblox window and in Zenith. A race after process creation can still leave an update-launched replacement outside Zenith's ownership. Record that case separately and close the replacement in Roblox before starting another trial. No Roblox downgrade or manually edited registration is needed for the attended trial.
+
+The 1.31 executable has SHA-256 `F761CEC1CEDACB05F5E10A394CB126D857DF13718B7E2ED959E5B649E4090A13`. Both registration regressions failed before the guard and passed with it. Eighty-seven offline Rust tests, twenty-four browser checks against the Release assets, formatting, Clippy with warnings denied, and a zero-warning Release build passed. The staged executable passed all eight self-check stages twice.
+
 ## Preview 1.30 recently joined public servers
 
 Open **Recently joined public servers** in **Sessions** to see up to 24 distinct place and server pairs, with the most recent confirmed initial arrival first. Zenith saves the exact place ID, server ID, and confirmation time in the local preview library. A revisit moves that pair to the top. History carries no account identity, private invite data, or sign-in material.

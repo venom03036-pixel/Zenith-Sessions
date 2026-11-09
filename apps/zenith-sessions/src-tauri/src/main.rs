@@ -810,8 +810,12 @@ fn run_launch(
             failed_at = error.stage;
             error.message
         })?;
-        failed_at = FailureStage::NativeStart;
-        owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
+        owner
+            .dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
+            .map_err(|error| {
+                failed_at = error.stage;
+                error.message
+            })
     })();
     if let Err(error) = &result {
         owner.fail_preparation(

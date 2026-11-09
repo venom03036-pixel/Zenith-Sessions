@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust standard-player registration fence (1.31)
+
+**CAP-02-03, CAP-08-02, CAP-08-05, VA-06-02, PROD-QA-04.** The desktop standard-player path checks registration before ticket issuance, re-verifies a changed image, and refuses native start if the final registration differs from the held executable. The launch report distinguishes player trust, resource admission, and final authorization from native process creation failures. The existing start journal and cancellation checks cover the same attempt. Two synthetic registration regressions failed before the guard and passed after it. A naturally occurring Roblox update and attribution of a replacement process after startup still require separate evidence. [Preview 1.31](RUST-DESKTOP-PREVIEW.md#preview-131-roblox-player-changes-during-launch)
+
 ## Rust confirmed public server history (1.30)
 
 **CAP-04-05, CAP-12-02, CAP-14-01, PROD-UI-04.** Sessions saves up to 24 distinct public places and server IDs from confirmed initial arrivals. The history stores confirmation times, restores from a bounded versioned file, and isolates storage errors from launch control. Selecting a visit pins the exact destination. Clearing requires confirmation and leaves the active destination selected. The native, browser, and packaged fixtures cover persistence, the ownership and identity boundaries, and exact selection. Live recording and later in-session teleports remain separate. [Preview 1.30](RUST-DESKTOP-PREVIEW.md#preview-130-recently-joined-public-servers)

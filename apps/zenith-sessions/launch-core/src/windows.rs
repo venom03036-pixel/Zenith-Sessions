@@ -361,6 +361,10 @@ pub struct VerifiedPlayer {
 
 impl VerifiedPlayer {
     pub fn registered() -> Result<Self, String> {
+        Self::open(&Self::registered_executable()?)
+    }
+
+    fn registered_executable() -> Result<PathBuf, String> {
         let mut value = vec![0_u16; 32768];
         let mut bytes = (value.len() * size_of::<u16>()) as u32;
         // This is the official per-user install record, not the protocol handler or
@@ -379,16 +383,48 @@ impl VerifiedPlayer {
         if status.is_err() {
             return Err("Roblox's registered player is unavailable. Select the installed standard RobloxPlayerBeta.exe.".into());
         }
-        let path = registered_path(
+        registered_path(
             value
                 .get(..bytes as usize / size_of::<u16>())
                 .ok_or("Roblox's registered player path is too long")?,
-        )?;
-        Self::open(&path)
+        )
     }
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    fn canonical_registration() -> Result<PathBuf, String> {
+        Self::registered_executable()?
+            .canonicalize()
+            .map_err(|_| "Roblox's registered player file is unavailable".into())
+    }
+
+    pub fn refresh_registered(self) -> Result<Self, String> {
+        self.refresh_at(&Self::canonical_registration()?, Self::open)
+    }
+
+    fn refresh_at(
+        self,
+        registered: &Path,
+        verify: impl FnOnce(&Path) -> Result<Self, String>,
+    ) -> Result<Self, String> {
+        if self.path == registered {
+            return Ok(self);
+        }
+        drop(self);
+        verify(registered)
+    }
+
+    pub fn require_registered(&self) -> Result<(), String> {
+        self.require_registered_at(&Self::canonical_registration()?)
+    }
+
+    fn require_registered_at(&self, registered: &Path) -> Result<(), String> {
+        if self.path != registered {
+            return Err("Roblox changed its registered player during launch. Wait for the update to finish, then choose Launch again.".into());
+        }
+        Ok(())
     }
 
     pub fn open(path: &Path) -> Result<Self, String> {
@@ -487,6 +523,51 @@ mod tests {
             .encode_utf16()
             .collect();
         assert!(registered_path(&command_line).is_err());
+    }
+
+    fn fixture_verified_player(path: &str) -> VerifiedPlayer {
+        VerifiedPlayer {
+            path: PathBuf::from(path),
+            _held_file: File::open(std::env::current_exe().unwrap()).unwrap(),
+        }
+    }
+
+    #[test]
+    fn a_changed_player_registration_requires_verifying_the_replacement() {
+        let original = fixture_verified_player("old/RobloxPlayerBeta.exe");
+        let next = Path::new("new/RobloxPlayerBeta.exe");
+        let replacement = original
+            .refresh_at(next, |path| {
+                assert_eq!(path, next);
+                Ok(fixture_verified_player("new/RobloxPlayerBeta.exe"))
+            })
+            .unwrap();
+        assert_eq!(replacement.path(), next);
+
+        let original = fixture_verified_player("old/RobloxPlayerBeta.exe");
+        let refusal = original.refresh_at(next, |_| Err("Publisher rejected".into()));
+        assert_eq!(refusal.err().as_deref(), Some("Publisher rejected"));
+
+        let current = fixture_verified_player("new/RobloxPlayerBeta.exe");
+        assert_eq!(
+            current
+                .refresh_at(next, |_| panic!(
+                    "unchanged executable is already held and verified"
+                ))
+                .unwrap()
+                .path(),
+            next
+        );
+    }
+
+    #[test]
+    fn a_second_registration_change_fences_native_start() {
+        let held = fixture_verified_player("new/RobloxPlayerBeta.exe");
+        assert!(held.require_registered_at(held.path()).is_ok());
+        assert!(
+            held.require_registered_at(Path::new("later/RobloxPlayerBeta.exe"))
+                .is_err()
+        );
     }
 
     pub(super) fn fixture_player() -> OwnedPlayer {
