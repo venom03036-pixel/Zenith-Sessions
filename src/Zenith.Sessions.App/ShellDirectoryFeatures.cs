@@ -181,6 +181,17 @@ public sealed partial class ShellViewModel
             }
             if(row.NeedsSignIn || row.KnownUserId is not { } userId) {await AuthorizeSelectedAsync(false);return;}
             if(!QueueReady) {Notice="The launch queue is unavailable. Resolve its storage error before requesting a client.";return;}
+            if(!IsNativeLaunchVerified || row.Profile.PreferredPlaceId is not >0)
+            {
+                // A single-account action must not inherit a previous batch's checked recipients.
+                // Take the user to the existing reviewed launch path, without persisting a doomed request.
+                foreach(var account in Accounts)account.IsChecked=ReferenceEquals(account,row);
+                if(row.Profile.PreferredPlaceId is >0)ServerBrowser.UsePreferredPlace(row.Profile.PreferredPlaceId.Value);
+                Navigate.Execute("JoinGame");ShowJoinStep.Execute(ServerBrowser.CanUseDestination?"3":"1");
+                Notice=ServerBrowser.CanUseDestination?"Review this account and destination before starting. This installation may need its first launch test."
+                    :"Choose a game for this account, then review the launch. No client has started.";
+                return;
+            }
             var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
             var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
             Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;

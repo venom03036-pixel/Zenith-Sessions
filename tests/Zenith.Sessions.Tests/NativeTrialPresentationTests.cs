@@ -10,6 +10,25 @@ namespace Zenith.Sessions.Tests;
 
 public sealed partial class ClientWindowIntegrationTests
 {
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public Task AccountLaunchOffersGameSelectionOrInstallationTrialWithoutCreatingBlockedWork(bool preferredGame) => OnUi(async()=>
+    {
+        await using var shell=await NativeTrialShellAsync(destination:false);
+        if(!preferredGame)await shell.SaveAccountAsync(shell.SelectedAccount!.Profile with {PreferredPlaceId=null});
+        var chosen=shell.SelectedAccount!;
+        var unrelated=new AccountRow(AccountProfile.Create("Unrelated checked account")){IsChecked=true};shell.Accounts.Add(unrelated);
+        shell.Navigate.Execute("Accounts");shell.AccountPower.Execute(chosen);await shell.AccountPower.Execution;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle);
+        Assert.Empty(shell.Launches);Assert.True(shell.IsJoinGame);Assert.Same(chosen,shell.SelectedAccount);
+        Assert.True(chosen.IsChecked);Assert.False(unrelated.IsChecked);
+        Assert.Equal(preferredGame,shell.IsJoinReadyStep);Assert.Equal(!preferredGame,shell.IsJoinFindStep);
+        if(preferredGame)Assert.Equal(42,shell.ServerBrowser.ReadyDestination!.PlaceId);
+        else Assert.Null(shell.ServerBrowser.ReadyDestination);
+        Assert.False(shell.IsNativeLaunchVerified);
+    });
+
     // Only injected observations/sign-in callbacks and owned temporary metadata/DPAPI are used.
     // The selected executable path never exists. No trial is executed while all guards pass;
     // no process, WebView, real browser/account or native child is started by these fixtures.

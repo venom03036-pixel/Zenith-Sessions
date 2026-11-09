@@ -78,7 +78,7 @@ public sealed partial class ShellViewModel
     /// <summary>The Accounts page note: ordinary launching's state in one sentence, never a claim about a client's account or arrival.</summary>
     public string AccountLaunchAvailability => IsNativeLaunchVerified && SavedNativeLaunchVerification is { } verified
         ? "Account-selecting launch is on for " + verified.ModeLabel + " through " + verified.Product + ", by a trial you recorded as verified. A client's account and arrival are still confirmed only by its own log reports."
-        : "Account-selecting launch is still being verified.";
+        : "This Roblox installation needs a successful launch test. Choose a game and account, then use Test selected account launch on the launch review page. Signing in saves the account; it does not complete this test.";
     /// <summary>The trial card's text while ordinary launching is on through the selected installation.</summary>
     private string VerifiedNativeLaunchStatus(NativeLaunchVerification verified)
         => "Ordinary launching is on for " + verified.ModeLabel + " through " + verified.Product + ", because of " + verified.Describe()
@@ -90,6 +90,7 @@ public sealed partial class ShellViewModel
         _canRecordShown = CanRecordNativeLaunchVerification;
         Raise(nameof(IsNativeLaunchVerified)); Raise(nameof(CanRecordNativeLaunchVerification)); Raise(nameof(CanForgetNativeLaunchVerification));
         Raise(nameof(NativeLaunchVerificationStatus)); Raise(nameof(AccountLaunchAvailability)); Raise(nameof(CanRunNativeTrial));
+        Raise(nameof(CanQueueTargetedLaunch));
     }
     // Each presentation tick re-projects the evidence; raise the record control only when its answer changed.
     private void RefreshRecordableTrial()

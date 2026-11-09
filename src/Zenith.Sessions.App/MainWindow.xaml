@@ -565,7 +565,7 @@
                       <TextBlock Grid.Row="1" Text="Preferred game" Style="{StaticResource KeyText}" Margin="0,10,12,0" />
                       <TextBlock Grid.Row="1" Grid.Column="1" Text="{Binding SelectedAccount.Destination}" ToolTip="{Binding SelectedAccount.Destination}" Style="{StaticResource ValueText}" Margin="0,10,0,0" />
                     </Grid>
-                    <Button Content="Queue preferred game" Command="{Binding QueueSelected}" IsEnabled="{Binding QueueReady}" Style="{StaticResource PrimaryButton}" ToolTip="Uses this profile's preferred game. A queued request is not verified arrival." MinHeight="36" Margin="0,14,0,0" />
+                    <Button Content="Launch selected account" Command="{Binding AccountPower}" CommandParameter="{Binding SelectedAccount}" IsEnabled="{Binding QueueReady}" Style="{StaticResource PrimaryButton}" ToolTip="Launch the preferred game, or choose a game and complete this installation's launch test first." MinHeight="36" Margin="0,14,0,0" />
                     <Button Content="Choose server…" Command="{Binding OpenJoinGameForSelectedAccount}" IsEnabled="{Binding HasSelection}" MinHeight="36" Margin="0,8,0,0" />
                     <Border Style="{StaticResource Divider}" />
                     <DockPanel>
@@ -1142,7 +1142,8 @@
                     </StackPanel>
                     <Border Style="{StaticResource Divider}" />
                     <StackPanel DataContext="{Binding ServerBrowser}">
-                      <Button Content="{Binding QuickJoinLabel}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="{Binding QuickJoinToolTip}" />
+                      <Button Content="{Binding QuickJoinLabel}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding DataContext.CanQueueTargetedLaunch, RelativeSource={RelativeSource AncestorType=Window}}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="{Binding QuickJoinToolTip}" />
+                      <Button Content="Choose accounts / set up launch" Command="{Binding DataContext.ShowJoinStep, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="3" IsEnabled="{Binding CanUseDestination}" MinHeight="36" Margin="0,8,0,0" />
                       <Button Content="Browse servers" Command="{Binding DataContext.ShowJoinStep, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="2" MinHeight="36" Margin="0,8,0,0" />
                       <WrapPanel Margin="0,8,0,0">
                         <Button Content="Open on Roblox.com" Click="OpenGamePageClick" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource QuietButton}" MinHeight="36" Margin="0,0,4,0" ToolTip="Open this game's public Roblox page in your browser. Nothing is launched or signed in." />
@@ -1243,9 +1244,21 @@
             <StackPanel Visibility="{Binding IsJoinReadyStep, Converter={StaticResource VisibleIf}}">
               <Grid Margin="0,0,0,16">
                 <Grid.ColumnDefinitions><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /><ColumnDefinition Width="16" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
-                <Border Style="{StaticResource SurfaceCard}"><StackPanel DataContext="{Binding RecipientBundles}">
+                <Border Style="{StaticResource SurfaceCard}"><StackPanel>
                   <TextBlock Text="Who is launching" Style="{StaticResource SectionHeading}" />
-                  <TextBlock Text="Accounts checked in Accounts, or a saved bundle" Style="{StaticResource Caption}" Margin="0,2,0,12" />
+                  <TextBlock Text="Check accounts for a batch, or select one account. These are the accounts on your current Accounts page." Style="{StaticResource Caption}" Margin="0,2,0,12" />
+                  <ListBox x:Name="JoinAccountPicker" ItemsSource="{Binding Accounts}" SelectedItem="{Binding SelectedAccount, Mode=TwoWay}" MinHeight="80" MaxHeight="240" ScrollViewer.HorizontalScrollBarVisibility="Disabled" HorizontalContentAlignment="Stretch" AutomationProperties.Name="Accounts to launch">
+                    <ListBox.ItemTemplate><DataTemplate>
+                      <Grid Margin="2,6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
+                        <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,8,0" AutomationProperties.Name="{Binding Label, StringFormat='Include {0} in launch'}" />
+                        <Border Grid.Column="1" Width="32" Height="32" CornerRadius="6" Background="{DynamicResource SelectionBackground}" Margin="0,0,8,0"><Grid><TextBlock Text="{Binding Initial}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding HasAvatar, Converter={StaticResource HiddenIf}}" /><Image Source="{Binding Avatar}" Stretch="UniformToFill" Visibility="{Binding HasAvatar, Converter={StaticResource VisibleIf}}" /></Grid></Border>
+                        <StackPanel Grid.Column="2"><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Username}" /><TextBlock Text="{Binding Identity}" Style="{StaticResource Caption}" /></StackPanel>
+                      </Grid>
+                    </DataTemplate></ListBox.ItemTemplate>
+                  </ListBox>
+                  <TextBlock Text="{Binding DestinationRecipientCount, StringFormat='Accounts chosen: {0}'}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                  <Button Content="Find or sign in to accounts" Command="{Binding Navigate}" CommandParameter="Accounts" Style="{StaticResource QuietButton}" Margin="0,6,0,12" />
+                  <Expander Header="Use a saved bundle"><StackPanel DataContext="{Binding RecipientBundles}" Margin="0,8,0,0">
                   <ComboBox ItemsSource="{Binding Bundles}" SelectedItem="{Binding SelectedBundle}" DisplayMemberPath="Name" IsEnabled="{Binding CanManage}" MinHeight="32" AutomationProperties.Name="Saved account bundle" ToolTip="Saved account bundle" />
                   <TextBlock Text="{Binding SelectedSummary}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
                   <TextBlock Text="{Binding DataContext.BundleCapacitySummary, RelativeSource={RelativeSource AncestorType=Window}}" TextWrapping="Wrap" Foreground="{DynamicResource AccentPrimary}" Margin="0,6,0,10" />
@@ -1258,6 +1271,7 @@
                     </StackPanel>
                   </Expander>
                   <TextBlock Text="{Binding Status}" Style="{StaticResource Caption}" Margin="0,8,0,0" />
+                  </StackPanel></Expander>
                 </StackPanel></Border>
                 <Border Grid.Column="2" Style="{StaticResource SurfaceCard}"><StackPanel DataContext="{Binding ServerBrowser}">
                   <TextBlock Text="Where they’re joining" Style="{StaticResource SectionHeading}" />
@@ -1280,14 +1294,25 @@
                     <StackPanel><TextBlock Text="Launch and run" FontWeight="SemiBold" /><TextBlock Text="Open each client, wait for the game, then start the assigned macro. Coming soon." Style="{StaticResource Caption}" Margin="0,4,0,0" /></StackPanel>
                   </Border>
                   <TextBlock Text="{Binding LaunchPacingStatus}" Style="{StaticResource Caption}" Margin="0,12,0,0" />
+                  <Border Margin="0,14,0,0" Visibility="{Binding IsNativeLaunchVerified, Converter={StaticResource HiddenIf}}"><StackPanel>
+                    <TextBlock Text="Set up this Roblox installation" Style="{StaticResource SectionHeading}" />
+                    <TextBlock Text="{Binding AccountLaunchAvailability}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                    <TextBlock Text="{Binding NativeTrialSelection}" TextWrapping="Wrap" Margin="0,8,0,0" />
+                    <TextBlock Text="{Binding NativeTrialInstallation}" Style="{StaticResource Caption}" Margin="0,4,0,0" />
+                    <Button Content="Test selected account launch" Click="StartNativeTrialFromReviewClick" IsEnabled="{Binding CanRunNativeTrial}" Style="{StaticResource PrimaryButton}" MinHeight="36" Margin="0,10,0,0" />
+                    <WrapPanel Margin="0,8,0,0"><Button Content="Stop launch test" Command="{Binding CancelNativeTrial}" Style="{StaticResource QuietButton}" /><Button Content="Enable launches after successful test" Command="{Binding RecordNativeLaunchVerification}" IsEnabled="{Binding CanRecordNativeLaunchVerification}" Style="{StaticResource QuietButton}" /></WrapPanel>
+                    <TextBlock Text="{Binding NativeTrialStatus}" Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                    <TextBlock Text="If this account already has a blocked request, cancel that row in the launch queue first. A test uses the highlighted account only." Style="{StaticResource Caption}" Margin="0,6,0,0" />
+                    <Button Content="Choose Roblox installation" Command="{Binding Navigate}" CommandParameter="Settings" Style="{StaticResource QuietButton}" Margin="0,6,0,0" />
+                  </StackPanel></Border>
                 </StackPanel></Border>
               </Grid>
               <Border Style="{StaticResource SurfaceCard}" Padding="16,12" Margin="0,0,0,16">
                 <DockPanel>
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
-                    <Button Content="Queue bundle for this destination" DataContext="{Binding RecipientBundles}" Command="{Binding Queue}" IsEnabled="{Binding CanQueueSelected}" Margin="0,0,8,0" />
+                    <Border IsEnabled="{Binding IsNativeLaunchVerified}"><Button Content="Queue bundle for this destination" DataContext="{Binding RecipientBundles}" Command="{Binding Queue}" IsEnabled="{Binding CanQueueSelected}" Margin="0,0,8,0" /></Border>
                     <Button Content="Stop bundle work" DataContext="{Binding RecipientBundles}" Command="{Binding Cancel}" IsEnabled="{Binding IsBusy}" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                    <Button Content="Queue checked accounts" DataContext="{Binding ServerBrowser}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" Padding="16,6" />
+                    <Border IsEnabled="{Binding CanQueueTargetedLaunch}"><Button Content="Queue checked accounts" DataContext="{Binding ServerBrowser}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" Padding="16,6" /></Border>
                   </StackPanel>
                   <TextBlock Text="Clients open one after another. Sign-in, launch support and free memory are checked again for every account." Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,16,0" />
                 </DockPanel>

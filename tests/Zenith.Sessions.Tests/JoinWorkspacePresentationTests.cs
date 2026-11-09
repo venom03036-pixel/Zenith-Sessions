@@ -358,6 +358,45 @@ public sealed class JoinWorkspacePresentationTests
     });
 
     private static XDocument Source(){using var stream=typeof(JoinWorkspacePresentationTests).Assembly.GetManifestResourceStream("ProductionMainWindow.xaml")!;return XDocument.Load(stream);}
+    [Fact]
+    public Task LaunchReviewLetsTheUserSelectAndCheckSavedAccountsWithoutCreatingABundle()=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint");var model=fixture.Model;
+        var first=new AccountRow(AccountProfile.Create("First saved account"));
+        var second=new AccountRow(AccountProfile.Create("Second saved account"));
+        model.Accounts.Add(first);model.Accounts.Add(second);model.ShowJoinStep.Execute("3");
+        Layout(fixture.View,1088,640);
+        var picker=Assert.Single(Visual(fixture.View).OfType<ListBox>().Where(list=>list.Name=="JoinAccountPicker"));
+        Assert.Equal(new[]{first,second},picker.Items.Cast<AccountRow>());
+        picker.SelectedItem=second;Flush();Assert.Same(second,model.SelectedAccount);
+        var checks=Visual(picker).OfType<CheckBox>().ToArray();Assert.Equal(2,checks.Length);
+        checks[0].IsChecked=true;checks[1].IsChecked=true;Flush();
+        Assert.True(first.IsChecked);Assert.True(second.IsChecked);Assert.Equal(2,model.DestinationRecipientCount);
+        checks[0].IsChecked=false;checks[1].IsChecked=false;Flush();
+        Assert.Equal(1,model.DestinationRecipientCount);Assert.Same(second,model.SelectedAccount);
+        Assert.Empty(model.Launches);Assert.Empty(model.RecipientBundles.Bundles);
+    });
+
+    [Fact]
+    public Task UnverifiedInstallationOffersSetupInsteadOfAnOrdinaryLaunchThatWillBeBlocked()=>SearchTest.OnUi(async()=>
+    {
+        await using var fixture=new Fixture("graphite-mint");var model=fixture.Model;
+        await model.InitializeAsync();model.Accounts.Clear();
+        var account=new AccountRow(AccountProfile.Create("Saved account"));model.Accounts.Add(account);model.SelectedAccount=account;
+        model.ServerBrowser.UsePreferredPlace(42);Layout(fixture.View,1088,640);
+        Assert.True(model.ServerBrowser.CanUseDestination);Assert.False(model.IsNativeLaunchVerified);
+        Assert.False(FindButton(fixture.View,model.ServerBrowser.QuickJoinLabel).IsEnabled);
+        var setup=FindButton(fixture.View,"Choose accounts / set up launch");Assert.True(setup.IsEnabled);
+        setup.Command.Execute(setup.CommandParameter);Layout(fixture.View,1088,640);Assert.True(model.IsJoinReadyStep);
+        Assert.False(FindButton(fixture.View,"Queue checked accounts").IsEnabled);
+        var trial=FindButton(fixture.View,"Test selected account launch");Assert.Equal(Visibility.Visible,trial.Visibility);
+        Assert.False(trial.IsEnabled); // Synthetic, uninitialized account cannot be used as a live trial.
+        Assert.Empty(model.Launches);Assert.Equal(0,fixture.Capture.Calls);
+        var sourceTrial=Page(Source(),"JoinGamePage").Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Content")=="Test selected account launch");
+        Assert.Equal("StartNativeTrialFromReviewClick",(string?)sourceTrial.Attribute("Click"));
+        Assert.Equal("{Binding CanRunNativeTrial}",(string?)sourceTrial.Attribute("IsEnabled"));
+    });
+
     private static XElement Page(XDocument source,string name)=>source.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
     private static XElement Named(XElement page,string name)=>page.Descendants().Single(element=>(string?)element.Attribute(X+"Name")==name);
     private sealed class Fixture:IAsyncDisposable

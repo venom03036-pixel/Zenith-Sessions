@@ -388,7 +388,8 @@ public sealed partial class ClientWindowIntegrationTests
         await using var shell = await NativeEvidenceShellAsync(child, monitor);
         Assert.False(shell.IsNativeLaunchVerified); Assert.False(shell.CanRecordNativeLaunchVerification); Assert.False(shell.CanForgetNativeLaunchVerification);
         Assert.StartsWith("Ordinary launching: off", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
-        Assert.Equal("Account-selecting launch is still being verified.", shell.AccountLaunchAvailability);
+        Assert.Equal("This Roblox installation needs a successful launch test. Choose a game and account, then use Test selected account launch on the launch review page. Signing in saves the account; it does not complete this test.", shell.AccountLaunchAvailability);
+        Assert.False(shell.CanQueueTargetedLaunch);
         shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
         var evidence = await NativeEvidenceStartedAsync(shell);
         // A started client alone is not enough, and neither is a fresh process without a matching log report.
@@ -407,6 +408,12 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.True(shell.CanRecordNativeLaunchVerification);
         shell.RecordNativeLaunchVerification.Execute(null); await shell.RecordNativeLaunchVerification.Execution;
         Assert.True(shell.IsNativeLaunchVerified); Assert.False(shell.CanRecordNativeLaunchVerification); Assert.True(shell.CanForgetNativeLaunchVerification);
+        Assert.True(shell.CanQueueTargetedLaunch);
+        var selected=shell.SelectedAccount;selected!.IsChecked=false;shell.SelectedAccount=null;
+        Assert.False(shell.CanQueueTargetedLaunch);
+        selected.IsChecked=true;Assert.True(shell.CanQueueTargetedLaunch);selected.IsChecked=false;shell.SelectedAccount=selected;
+        shell.ServerBrowser.LinkInput="pending destination";Assert.False(shell.CanQueueTargetedLaunch);
+        shell.ServerBrowser.UsePreferredPlace(42);Assert.True(shell.CanQueueTargetedLaunch);
         Assert.False(shell.CanRunNativeTrial); // Ordinary launching replaces the trial while it is on.
         string settings = await ReadSettingsAsync();
         Assert.Contains("\"NativeLaunchVerifications\":[{\"Mode\":\"official-page\",\"Product\":\"Roblox\",", settings, StringComparison.Ordinal);
@@ -422,6 +429,7 @@ public sealed partial class ClientWindowIntegrationTests
         shell.SelectedNativeLaunchMode = ShellViewModel.NativeLaunchModeOptions.Single(option => option.Mode == NativeLaunchMode.DirectTicket);
         shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         Assert.False(shell.IsNativeLaunchVerified); Assert.False(shell.CanForgetNativeLaunchVerification);
+        Assert.False(shell.CanQueueTargetedLaunch);
         Assert.Contains("do not apply to this selection", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
         shell.SelectedNativeLaunchMode = ShellViewModel.NativeLaunchModeOptions.Single(option => option.Mode == NativeLaunchMode.OfficialPage);
         shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;

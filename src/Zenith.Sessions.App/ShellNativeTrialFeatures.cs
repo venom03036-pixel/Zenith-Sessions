@@ -208,6 +208,7 @@ public sealed partial class ShellViewModel
     }
     private void RefreshNativeTrialFeatures()
     {
+        Raise(nameof(CanQueueTargetedLaunch));
         Raise(nameof(CanRunNativeTrial));Raise(nameof(CanRunPrivateNativeTrial));Raise(nameof(CanRefreshInstallations));Raise(nameof(CanAddRobloxAccount));Raise(nameof(NativeTrialSelection));Raise(nameof(NativeTrialInstallation));Raise(nameof(CanInspectNativeHandoff));
         if(!_ready||IsLocked||_shuttingDown||_nativeLaunch.IsBusy||IsAuthorizing||!_nativeMetadataRefresh.IsCompleted
             ||Interlocked.Exchange(ref _nativeMetadataPending,0)==0)return;

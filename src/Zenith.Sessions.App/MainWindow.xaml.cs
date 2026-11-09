@@ -224,6 +224,7 @@ public partial class MainWindow : Window
         }
         finally { _vm.DiscardNativeTrialReview(review); }
     }
+    private void StartNativeTrialFromReviewClick(object sender,RoutedEventArgs e) => StartNativeTrialClick(sender,e);
     private void ReviewFriendshipPairs(object sender, RoutedEventArgs e)
     {
         var review = _vm.CaptureFriendshipReview();

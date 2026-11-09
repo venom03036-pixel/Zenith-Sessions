@@ -24,6 +24,9 @@ public sealed partial class ShellViewModel
     }
     /// <summary>"Find a server with room for N" needs a usable destination and at least one checked or selected account to find room for.</summary>
     public bool CanFindServerWithRoom => ServerBrowser.CanUseDestination && DestinationRecipientCount > 0;
+    /// <summary>Presentation gate only; the queue still rechecks the exact installation and each recipient before starting.</summary>
+    public bool CanQueueTargetedLaunch => IsNativeLaunchVerified && QueueReady && CanUseDirectories()
+        && ServerBrowser.CanUseDestination && (Accounts.Any(row=>row.IsChecked) || SelectedAccount is { } selected && Accounts.Contains(selected));
     private void InitializeDestinationCapacity()
     {
         Accounts.CollectionChanged += CapacityAccountsChanged;
@@ -57,6 +60,7 @@ public sealed partial class ShellViewModel
     private void RefreshDestinationCapacity()
     {
         Raise(nameof(DestinationRecipientCount)); Raise(nameof(CanFindServerWithRoom));
+        Raise(nameof(CanQueueTargetedLaunch));
         string? unavailable = IsLocked || _shuttingDown
             ? "Capacity advice is unavailable while controls are locked or stopping. No seats are reserved."
             : ServerBrowser.HasDestinationDraft
