@@ -77,6 +77,7 @@ impl Credential {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Failure {
+    Cancelled,
     Network(&'static str),
     Timeout(&'static str),
     SignInRequired(&'static str),
@@ -91,6 +92,7 @@ pub enum Failure {
 impl fmt::Display for Failure {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Cancelled => f.write_str("Zenith stopped this launch request."),
             Self::Network(stage) => write!(f, "{stage}: could not contact Roblox"),
             Self::Timeout(stage) => write!(f, "{stage}: Roblox response timed out"),
             Self::SignInRequired(stage) => write!(f, "{stage}: sign in to this account again"),
@@ -122,6 +124,7 @@ pub struct RobloxAuth {
     identity_url: String,
     assertion_url: String,
     ticket_url: String,
+    launch_permit: Option<Box<dyn Fn() -> bool + Send + Sync>>,
 }
 
 #[derive(Deserialize)]
@@ -156,7 +159,25 @@ impl RobloxAuth {
             identity_url: IDENTITY.into(),
             assertion_url: ASSERTION.into(),
             ticket_url: TICKET.into(),
+            launch_permit: None,
         })
+    }
+
+    pub fn for_launch(permits: impl Fn() -> bool + Send + Sync + 'static) -> Result<Self, Failure> {
+        let mut auth = Self::new()?;
+        auth.launch_permit = Some(Box::new(permits));
+        Ok(auth)
+    }
+
+    fn check_launch(&self) -> Result<(), Failure> {
+        if self
+            .launch_permit
+            .as_ref()
+            .is_some_and(|permits| !permits())
+        {
+            return Err(Failure::Cancelled);
+        }
+        Ok(())
     }
 
     pub fn verify(&self, credential: &mut Credential, user_id: u64) -> Result<(), Failure> {
@@ -342,7 +363,10 @@ impl RobloxAuth {
         if let Some(csrf) = csrf {
             request = request.header(CSRF, csrf);
         }
-        request.send().map_err(|error| {
+        self.check_launch()?;
+        let response = request.send();
+        self.check_launch()?;
+        response.map_err(|error| {
             if error.is_timeout() {
                 Failure::Timeout(stage)
             } else {
@@ -536,8 +560,48 @@ mod tests {
             identity_url: format!("http://{address}/identity"),
             assertion_url: format!("http://{address}/assertion"),
             ticket_url: format!("http://{address}/ticket"),
+            launch_permit: None,
         };
         (auth, worker)
+    }
+
+    #[test]
+    fn a_stop_at_the_ticket_response_discards_it_without_sending_a_csrf_retry() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let (mut auth, worker) = server(vec![
+            Exchange {
+                request: "GET /identity HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"id":42}"#,
+            },
+            Exchange {
+                request: "GET /assertion HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "200 OK",
+                headers: "",
+                body: r#"{"clientAssertion":"fixture"}"#,
+            },
+            Exchange {
+                request: "POST /ticket HTTP/1.1",
+                cookie: "original",
+                csrf: None,
+                status: "403 Forbidden",
+                headers: "x-csrf-token: must-not-retry\r\n",
+                body: "{}",
+            },
+        ]);
+        let checkpoints = AtomicUsize::new(0);
+        auth.launch_permit = Some(Box::new(move || {
+            checkpoints.fetch_add(1, Ordering::Relaxed) < 5
+        }));
+        let mut credential = Credential::new(Zeroizing::new("original".into())).unwrap();
+        auth.verify(&mut credential, 42).unwrap();
+        assert_eq!(auth.ticket(&mut credential), Err(Failure::Cancelled));
+        worker.join().unwrap();
     }
 
     #[test]

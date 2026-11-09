@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod library;
+mod panic_hotkey;
+mod panic_stop;
 mod recovery;
 mod self_check;
 mod session;
@@ -18,6 +20,8 @@ use std::{
 };
 
 use library::{LegacyView, Library, MigrationReport, SavedCredential};
+use panic_hotkey::PanicHotkey;
+use panic_stop::{PanicStop, PanicView};
 use serde::Serialize;
 use session::{ClientPerformance, LaunchState, Session, SessionOwner, WindowPlacement};
 use tauri::ipc::{InvokeBody, Request};
@@ -35,7 +39,9 @@ use zenith_session_launch::{
 
 struct Workspace {
     library: Mutex<Library>,
-    owner: Mutex<SessionOwner>,
+    owner: Arc<Mutex<SessionOwner>>,
+    panic: Arc<PanicStop>,
+    hotkey: Option<PanicHotkey>,
     directory: Directory,
     sign_in: Mutex<sign_in::SignInState>,
     sign_in_directory: PathBuf,
@@ -50,6 +56,7 @@ struct Snapshot {
     sessions: Vec<Session>,
     launch: LaunchState,
     recovery: recovery::RecoveryView,
+    panic: PanicView,
     admission: Option<Admission>,
     sign_in_attempt: Option<Uuid>,
     sign_in_error: Option<String>,
@@ -59,6 +66,10 @@ struct Snapshot {
 const STATE_ERROR: &str = "Zenith could not access the workspace state";
 
 impl Workspace {
+    fn can_dispatch(&self, epoch: u64) -> bool {
+        !self.exiting.load(Ordering::Acquire) && self.panic.permits(epoch)
+    }
+
     fn read_saved_account<T>(
         &self,
         id: Uuid,
@@ -88,10 +99,16 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
     spawn_blocking(move || {
         let observation = state.owner.lock().map_err(|_| STATE_ERROR)?.observation();
         let evidence = observation.map(|sample| (sample, sample.read(&state.logs)));
-        let (sessions, launch, recovery) = {
+        let (sessions, launch, recovery, panic) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             owner.reconcile(evidence);
-            (owner.rows(), owner.launch_state(), owner.recovery())
+            let shortcut = state.hotkey.as_ref().is_some_and(PanicHotkey::is_running);
+            (
+                owner.rows(),
+                owner.launch_state(),
+                owner.recovery(),
+                state.panic.view(&owner, shortcut),
+            )
         };
         let accounts = state.library.lock().map_err(|_| STATE_ERROR)?.accounts();
         let admission = memory_sample()
@@ -103,6 +120,7 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             sessions,
             launch,
             recovery,
+            panic,
             admission,
             sign_in_attempt: sign_in.active.as_ref().map(|flow| flow.attempt),
             sign_in_error: sign_in.active.as_ref().and_then(|flow| flow.error.clone()),
@@ -297,54 +315,67 @@ async fn launch_account(
     job: Option<Uuid>,
     try_one: bool,
     allow_pair: bool,
+    epoch: String,
 ) -> Result<(), String> {
     let place = public_place(&place_id)?;
     if job.is_some_and(|job| job.is_nil()) {
         return Err("Select a valid public server.".into());
     }
     let target = Target { place, job };
+    let epoch = epoch
+        .parse()
+        .map_err(|_| "Refresh the launch state before starting Roblox.")?;
+    if !state.can_dispatch(epoch) {
+        return Err("The launch state changed. Review it and choose Launch again.".into());
+    }
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let (mut saved, attempt) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-            if state.exiting.load(Ordering::Acquire) {
-                return Err("Zenith is closing.".into());
+            if !state.can_dispatch(epoch) {
+                return Err("Zenith stopped this launch request.".into());
             }
             let saved = state
                 .library
                 .lock()
                 .map_err(|_| STATE_ERROR)?
                 .credential(id)?;
+            if !state.can_dispatch(epoch) {
+                return Err("Zenith stopped this launch request.".into());
+            }
             let attempt = owner.reserve(&saved.identity, &target, allow_pair, try_one)?;
             (saved, attempt)
         };
+        let launch_state = Arc::clone(&state);
         let prepared = session::prepare(
             &saved.identity,
             &mut saved.credential,
             target,
             try_one,
-            || {
-                !state.exiting.load(Ordering::Acquire)
-                    && state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
+            move || {
+                launch_state.can_dispatch(epoch)
+                    && launch_state.owner.lock().is_ok_and(|owner| {
+                        launch_state.can_dispatch(epoch) && owner.permits(attempt)
+                    })
             },
         );
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
         let result = (|| {
-            if !owner.permits(attempt) || state.exiting.load(Ordering::Acquire) {
+            if !owner.permits(attempt) || !state.can_dispatch(epoch) {
                 return Err("The launch was cancelled or the first client stopped.".into());
             }
-            state
-                .library
-                .lock()
-                .map_err(|_| STATE_ERROR)?
-                .finish_credential(&saved)?;
+            {
+                let library = state.library.lock().map_err(|_| STATE_ERROR)?;
+                if !state.can_dispatch(epoch) {
+                    return Err("Zenith stopped this launch request.".into());
+                }
+                library.finish_credential(&saved)?;
+            }
             let prepared = prepared?;
-            owner.dispatch(prepared, attempt, try_one, || {
-                !state.exiting.load(Ordering::Acquire)
-            })
+            owner.dispatch(prepared, attempt, try_one, || state.can_dispatch(epoch))
         })();
         if let Err(error) = &result {
-            owner.fail_preparation(attempt, error.clone());
+            owner.fail_preparation(attempt, error.clone(), !state.can_dispatch(epoch));
         }
         result
     })
@@ -403,11 +434,41 @@ async fn stop_all_sessions(state: State<'_, Arc<Workspace>>) -> Result<(), Strin
 }
 
 #[tauri::command]
+async fn panic_stop(state: State<'_, Arc<Workspace>>) -> Result<(), String> {
+    let epoch = state.panic.trip();
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.panic.drain(epoch, &state.owner))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn resume_launches(state: State<'_, Arc<Workspace>>, epoch: String) -> Result<(), String> {
+    let epoch = epoch
+        .parse()
+        .map_err(|_| "Refresh the Panic stop state before resuming.")?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        if state.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        state.panic.resume(epoch, &owner)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
+    let epoch = state.panic.permit()?;
     let owner = state
         .owner
         .try_lock()
         .map_err(|_| "Zenith is updating the session. Try again.")?;
+    if !state.can_dispatch(epoch) {
+        return Err("Zenith stopped this window action.".into());
+    }
     owner.focus(attempt)
 }
 
@@ -433,11 +494,12 @@ async fn set_client_priority(
     attempt: Uuid,
     action: PriorityAction,
 ) -> Result<PriorityState, String> {
+    let epoch = state.panic.permit()?;
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
-        if state.exiting.load(Ordering::Acquire) {
-            return Err("Zenith is closing.".into());
+        if !state.can_dispatch(epoch) {
+            return Err("Zenith stopped this priority action.".into());
         }
         owner.set_client_priority(attempt, action)
     })
@@ -454,6 +516,7 @@ async fn tile_windows(
     if attempts.is_empty() || attempts.len() > 16 {
         return Err("Select between one and sixteen confirmed windows.".into());
     }
+    let epoch = state.panic.permit()?;
     let anchor = app
         .get_webview_window("main")
         .ok_or("The Zenith window is unavailable.")?
@@ -466,7 +529,7 @@ async fn tile_windows(
             .owner
             .lock()
             .map_err(|_| STATE_ERROR)?
-            .tile_windows(&attempts, anchor, || state.exiting.load(Ordering::Acquire))
+            .tile_windows(&attempts, anchor, || !state.can_dispatch(epoch))
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -485,12 +548,28 @@ fn main() -> ExitCode {
             let root = app.path().app_local_data_dir()?;
             let library = Library::open(root.join("library")).map_err(std::io::Error::other)?;
             let logs = app.path().local_data_dir()?.join("Roblox").join("logs");
+            let directory = Directory::new().map_err(std::io::Error::other)?;
+            let owner = Arc::new(Mutex::new(SessionOwner::open(
+                root.join("library").join("launch-journal.json"),
+            )));
+            let panic = Arc::new(PanicStop::default());
+            let hotkey_owner = Arc::clone(&owner);
+            let hotkey_panic = Arc::clone(&panic);
+            let hotkey = PanicHotkey::start(
+                u32::from(windows::Win32::UI::Input::KeyboardAndMouse::VK_P.0),
+                move || {
+                    let epoch = hotkey_panic.trip();
+                    if let Err(error) = hotkey_panic.drain(epoch, &hotkey_owner) {
+                        eprintln!("{error}");
+                    }
+                },
+            );
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
-                owner: Mutex::new(SessionOwner::open(
-                    root.join("library").join("launch-journal.json"),
-                )),
-                directory: Directory::new().map_err(std::io::Error::other)?,
+                owner,
+                panic,
+                hotkey,
+                directory,
                 sign_in: Mutex::new(sign_in::SignInState::default()),
                 sign_in_directory: root.join("isolated-sign-in"),
                 logs,
@@ -544,6 +623,8 @@ fn main() -> ExitCode {
             archive_launch_journal,
             stop_session,
             stop_all_sessions,
+            panic_stop,
+            resume_launches,
             focus_session,
             client_performance,
             set_client_priority,

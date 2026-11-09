@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust emergency stop (1.11)
+
+**CAP-13-04, CAP-08-02, CAP-11-03, PROD-QA-03.** The persistent header action and native Windows shortcut revoke old launch permits before waiting for the session owner. Preparation, ticket retries, final native dispatch and pending window actions check the current permit. Owned cleanup holds admission until an explicit, current Resume. Tests cover native registration and conflict, message routing, a late ticket, late preparation, stale Resume, and the rendered hold. Physical key delivery, real Roblox stop, graceful close, and macro-input integration remain pending. See [Preview 1.11](RUST-DESKTOP-PREVIEW.md#preview-111-emergency-stop).
+
 ## Rust protected sign-in rotation (1.10)
 
 **VA-03-01, VA-04-03, VA-06-03, VA-08-04, CAP-14-01.** The Rust preview confirms each distinct replacement against the exact Roblox user before using it and replaces the same protected file only while its original receipt still matches. A per-account claim serializes reads and launch preparation. Explicit renewal, removal and launch cancellation fence stale results. Controlled HTTP and Windows DPAPI fixtures cover foreign and repeated replacements, bounded expiry, the ticket retry path, reopen, and cross-language migration. Actual provider rotation and a post-rotation live launch remain attended. See [Preview 1.10](RUST-DESKTOP-PREVIEW.md#preview-110-saved-sign-in-rotation).

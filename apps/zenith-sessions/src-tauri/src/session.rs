@@ -205,6 +205,10 @@ impl SessionOwner {
         self.attempts.iter().filter(|attempt| attempt.active())
     }
 
+    pub fn has_active_attempts(&self) -> bool {
+        self.active().next().is_some()
+    }
+
     fn hold(&self, now: Instant, pair_enabled: bool) -> Option<String> {
         if self.closing {
             return Some("Zenith is closing.".into());
@@ -320,12 +324,13 @@ impl SessionOwner {
             })
     }
 
-    pub fn fail_preparation(&mut self, id: Uuid, error: String) {
+    pub fn fail_preparation(&mut self, id: Uuid, error: String, stopped: bool) {
         if let Some(attempt) = self
             .attempts
             .iter_mut()
             .find(|attempt| attempt.row.attempt_id == id && attempt.preparing)
         {
+            attempt.cancelled |= stopped;
             attempt.fail_preparation(error);
         }
         self.release_idle_pair();
@@ -343,7 +348,7 @@ impl SessionOwner {
             return Err("The launch was cancelled or the first client stopped.".into());
         }
         if !can_dispatch() {
-            return Err("Zenith is closing.".into());
+            return Err("Zenith stopped this launch request.".into());
         }
         // Commit intent before any native process creation. A crash between this write and the
         // receipt must remain uncertain, even if preparation and the OS call were milliseconds apart.
@@ -362,13 +367,14 @@ impl SessionOwner {
         }
         check_memory(try_one)?;
         ensure_compatible_player_start(&self.owned_processes())?;
-        if !can_dispatch() {
-            return Err("Zenith is closing.".into());
-        }
-        self.attempt_mut(id)?.dispatch(request)?;
+        self.attempt_mut(id)?.dispatch(request, &can_dispatch)?;
         self.last_start = Some(Instant::now());
-        self.sync_journal()?;
-        Ok(())
+        let recorded = self.sync_journal();
+        if !can_dispatch() {
+            self.stop(id)?;
+            return Err("Zenith stopped the owned client during native startup.".into());
+        }
+        recorded
     }
 
     pub fn observation(&self) -> Option<Observation> {
@@ -611,7 +617,11 @@ impl Attempt {
         });
     }
 
-    fn dispatch(&mut self, request: Prepared) -> Result<(), String> {
+    fn dispatch(
+        &mut self,
+        request: Prepared,
+        can_dispatch: impl Fn() -> bool,
+    ) -> Result<(), String> {
         let attempt = self.row.attempt_id;
         let launched = SystemTime::now();
         let timestamp = launched
@@ -625,6 +635,9 @@ impl Attempt {
             attempt,
             timestamp.as_millis(),
         );
+        if !can_dispatch() {
+            return Err("Zenith stopped this launch request.".into());
+        }
         let player = request.player.spawn(&uri)?;
         let pid = player.pid();
         self.player = Some(player);
@@ -754,7 +767,7 @@ pub fn prepare(
     credential: &mut Credential,
     target: Target,
     try_one: bool,
-    permits: impl Fn() -> bool,
+    permits: impl Fn() -> bool + Send + Sync + 'static,
 ) -> Result<Prepared, String> {
     fn check(permits: &impl Fn() -> bool) -> Result<(), String> {
         if !permits() {
@@ -766,12 +779,10 @@ pub fn prepare(
     check_memory(try_one)?;
     let player = VerifiedPlayer::registered()?;
     check(&permits)?;
-    let auth = RobloxAuth::new().map_err(|error| error.to_string())?;
+    let auth = RobloxAuth::for_launch(permits).map_err(|error| error.to_string())?;
     auth.verify(credential, identity.user_id)
         .map_err(|error| error.to_string())?;
-    check(&permits)?;
     let ticket = auth.ticket(credential).map_err(|error| error.to_string())?;
-    check(&permits)?;
     Ok(Prepared {
         player,
         ticket,
@@ -801,6 +812,41 @@ fn gib(bytes: u64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn panic_holds_resume_until_the_cancelled_preparation_reports_completion() {
+        use crate::panic_stop::PanicStop;
+        use std::sync::Mutex;
+
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            user_id: 42,
+            username: "Fixture".into(),
+        };
+        let attempt = Attempt::new(
+            &account,
+            &Target {
+                place: 1818,
+                job: None,
+            },
+            None,
+        );
+        let id = attempt.row.attempt_id;
+        let mut sessions = SessionOwner::default();
+        sessions.attempts.push(attempt);
+        let owner = Mutex::new(sessions);
+        let panic = PanicStop::default();
+        let epoch = panic.trip();
+        panic.drain(epoch, &owner).unwrap();
+        let mut sessions = owner.lock().unwrap();
+        assert!(!sessions.permits(id));
+        assert!(sessions.has_active_attempts());
+        assert!(panic.resume(epoch, &sessions).is_err());
+        sessions.fail_preparation(id, "Synthetic late response".into(), true);
+        assert!(sessions.attempts[0].row.phase == Phase::Stopped);
+        panic.resume(epoch, &sessions).unwrap();
+        assert!(!sessions.permits(id));
+    }
 
     #[test]
     fn arrangement_rejects_unknown_duplicate_and_unconfirmed_attempts() {
@@ -917,7 +963,7 @@ mod tests {
         owner.stop(first).unwrap();
         assert!(!owner.permits(first));
         assert!(owner.hold(Instant::now(), false).is_some());
-        owner.fail_preparation(first, "cancelled worker".into());
+        owner.fail_preparation(first, "cancelled worker".into(), false);
         let job = Uuid::from_u128(42);
         let replacement = Attempt::new(
             &account,
@@ -930,7 +976,7 @@ mod tests {
         let second = replacement.row.attempt_id;
         owner.attempts.clear();
         owner.attempts.push(replacement);
-        owner.fail_preparation(first, "late old failure".into());
+        owner.fail_preparation(first, "late old failure".into(), false);
         assert!(owner.permits(second));
         assert!(owner.stop(first).is_err());
         let row = &owner.attempt(second).unwrap().row;
@@ -1002,7 +1048,7 @@ mod tests {
         assert!(owner.permits(second_id));
         owner.stop(first_id).unwrap();
         assert!(!owner.permits(second_id));
-        owner.fail_preparation(second_id, "First client stopped".into());
+        owner.fail_preparation(second_id, "First client stopped".into(), false);
         assert!(!owner.uses(account.profile_id));
         assert!(!owner.uses(other.profile_id));
         assert!(owner.hold(Instant::now(), true).is_none());

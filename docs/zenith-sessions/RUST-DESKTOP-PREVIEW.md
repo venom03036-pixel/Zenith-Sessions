@@ -22,6 +22,20 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.11 emergency stop
+
+**Panic stop** is available in the header on every page. **Ctrl+Shift+P** also invokes it through a native Windows shortcut worker, including when another app has focus. If Windows refuses registration, the workspace shows a shortcut notice and the button remains available. [Windows global shortcut registration](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-registerhotkey)
+
+Panic immediately revokes old launch permits and holds new starts. It cancels preparation, discards late launch authentication results, prevents further launch authentication requests and retries, and asks the current owner to stop its client processes. A delayed Launch click still carries the previous state and is refused after Resume. An HTTP request already sent can finish within its existing timeout. If Windows has already entered process creation, Zenith stops the resulting owned process when it has the handle. Recovered and externally started clients stay outside that process-control boundary.
+
+**Resume launches** appears after the owned work finishes and cleanup succeeds. A newer Panic invalidates an older Resume action. If cleanup fails, the hold remains and the header button retries it. Resume permits a fresh launch selection. It does not replay an interrupted request. The Panic hold belongs to the current app run. The existing recovery journal governs unresolved starts after restart. The normal **Stop all owned clients** action remains available in Sessions.
+
+The Chromium fixture reproduced the missing header control in 1.10 and verified the hold and explicit resume in 1.11. Native tests register an alternate Windows shortcut, post a fixture message to its own native queue, verify the Panic fence and registration conflict, and verify release on shutdown. Separate fixtures check late preparation, stale Resume, and cancellation before a CSRF retry. No Roblox client or account was used in those checks.
+
+For the attended keyboard check, open this preview, move focus to Notepad, press **Ctrl+Shift+P**, and return to Zenith. Confirm the hold appears and only **Resume launches** clears it. For the owned-client trial, launch one designated account, verify its arrival, and repeat the shortcut with Roblox focused. Check that the exact client closes, any unrelated window stays open, and a new launch remains held until Resume. Repeat during the preparing phase and confirm no late start appears. Physical key delivery and stopping a real Roblox client remain attended checks. Bounded graceful window close and a future automation input owner's Panic integration remain separate work.
+
+The 1.11 executable has SHA-256 `29689A104E536EDCEAC0F317670BA60553223B095D237451417EC0C086F996A5`. Forty-eight offline Rust tests, four Chromium fixture checks, formatting, Clippy with warnings denied, the frontend build, and the zero-warning Release build passed. Both packaged self-checks passed all six stages.
+
 ## Preview 1.10 saved sign-in rotation
 
 When Roblox returns a replacement sign-in during authenticated account reads or launch preparation, Zenith checks the replacement against the authenticated-user endpoint before using it. It refuses a different account and asks for a fresh sign-in if Roblox returns a second distinct replacement during confirmation. A server-returned expiry can shorten the original saved lifetime. The encrypted bundle format and library location are compatible with Preview 1.09. [Roblox authenticated-user endpoint](https://create.roblox.com/docs/cloud/reference/domains/users), [cookie expiration rules](https://datatracker.ietf.org/doc/html/rfc6265)

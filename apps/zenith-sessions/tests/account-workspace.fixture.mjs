@@ -10,18 +10,34 @@ function exerciseWorkspace() {
     profileId: `fixture-${index + 1}`, username: `Fixture${index + 1}`,
   }));
   let savedSignIn = null;
+  let panic = { epoch: '0', held: false, canResume: false, shortcutAvailable: true, error: null };
+  let launchedEpoch;
+  localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
   let releaseFirstProfile;
   const firstProfile = new Promise(resolve => { releaseFirstProfile = resolve; });
   window.__TAURI_INTERNALS__ = {
-    invoke: async (command, { id } = {}) => {
+    invoke: async (command, { id, epoch } = {}) => {
       switch (command) {
         case 'workspace_snapshot': return {
           accounts, sessions: [], launch: { active: 0, pairEnabled: false, hold: null },
-          admission: null, recovery: { issue: null, attempts: [] },
+          admission: { limitingResource: null, physicalAvailable: 1, physicalRequired: 1,
+            commitAvailable: 1, commitRequired: 1, canTryOne: false },
+          recovery: { issue: null, attempts: [] }, panic,
           signInAttempt: null, signInError: null, savedSignIn,
         };
         case 'legacy_workspace': return null;
+        case 'panic_stop':
+          panic = { ...panic, epoch: '3', held: true };
+          return;
+        case 'resume_launches':
+          if (epoch !== '3' || !panic.canResume) throw new Error('The fixture requires confirmed cleanup.');
+          panic = { ...panic, epoch: '4', held: false, canResume: false };
+          return;
+        case 'launch_account':
+          if (panic.held || epoch !== panic.epoch) throw new Error('The fixture rejected a stale launch permit.');
+          launchedEpoch = epoch;
+          return;
         case 'account_headshots':
           headshotRequests++;
           return Object.fromEntries(accounts.slice(0, headshotRequests === 1 ? 5 : 6)
@@ -76,6 +92,25 @@ function exerciseWorkspace() {
     await check('renewal refreshes the already selected account', async () => {
       savedSignIn = { profileId: 'fixture-6', attempt: 'renewed-fixture' };
       await until(() => /Robux73/.test(details()), 'renewed account still showed the old balance');
+    });
+    await check('Panic holds launches across pages until cleanup and explicit resume', async () => {
+      const button = (label) => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === label);
+      const stop = button('Panic stop');
+      if (!stop) throw new Error('Panic stop is missing from Accounts');
+      const bounds = stop.getBoundingClientRect();
+      if (bounds.width === 0 || bounds.left < 0 || bounds.right > innerWidth) throw new Error('Panic stop is outside the visible toolbar');
+      if (stop.getAttribute('aria-keyshortcuts') !== 'Control+Shift+P') throw new Error('Native shortcut status is missing');
+      stop.click();
+      await until(() => find('[aria-label="Panic stop status"]'), 'Panic hold did not appear');
+      if (button('Resume launches')) throw new Error('Resume is visible before cleanup');
+      find('button[aria-label="Sessions"]').click();
+      await until(() => button('Launch')?.disabled, 'Panic did not hold the launch control');
+      panic = { ...panic, canResume: true };
+      await until(() => button('Resume launches'), 'Resume did not appear after cleanup');
+      button('Resume launches').click();
+      await until(() => button('Launch')?.disabled === false, 'Explicit resume did not rearm launching');
+      button('Launch').click();
+      await until(() => launchedEpoch === '4', 'A fresh launch did not include the resumed permit');
     });
     const result = document.createElement('output');
     result.id = 'account-fixture-result';

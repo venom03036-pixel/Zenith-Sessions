@@ -18,6 +18,8 @@ fn main() {
             "archive_launch_journal",
             "stop_session",
             "stop_all_sessions",
+            "panic_stop",
+            "resume_launches",
             "focus_session",
             "client_performance",
             "set_client_priority",

@@ -21,9 +21,11 @@ type Admission = {
   commitAvailable: number; commitRequired: number; canTryOne: boolean;
 };
 type LaunchState = { active: number; pairEnabled: boolean; hold: string | null };
+type PanicState = { epoch: string; held: boolean; canResume: boolean; shortcutAvailable: boolean; error: string | null };
 type Snapshot = {
   accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null;
   recovery: Recovery;
+  panic: PanicState;
   signInAttempt: string | null; signInError: string | null;
   savedSignIn: { attempt: string; profileId: string } | null;
 };
@@ -100,6 +102,7 @@ function App() {
   const [failure, setFailure] = useState('');
   const [loadingError, setLoadingError] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [panicBusy, setPanicBusy] = useState(false);
   const [pairRequested, setPairRequested] = useState(false);
   const [importing, setImporting] = useState(false);
   const [legacyWorkspace, setLegacyWorkspace] = useState<LegacyWorkspace | null>(null);
@@ -126,6 +129,7 @@ function App() {
   const confirmedWindows = sessions.filter(session => session.phase === 'running');
   const windowRows = sessions.filter(session => isBusy(session) || placements.some(result => result.attemptId === session.attemptId));
   const launchState = snapshot?.launch;
+  const panic = snapshot?.panic;
   const recovery = snapshot?.recovery;
   const hasRecovery = recovery && (recovery.issue || recovery.attempts.length > 0);
   const active = launchState?.active ?? 0;
@@ -136,7 +140,7 @@ function App() {
   const savedSignIn = snapshot?.savedSignIn;
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = Boolean(destination.place.trim());
-  const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || !launchState || !!launchState.hold;
+  const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || panicBusy || !panic || panic.held || !launchState || !!launchState.hold;
 
   async function refresh() {
     if (reading.current) return;
@@ -227,6 +231,12 @@ function App() {
     } finally { void refresh(); }
   }
 
+  async function changePanic(epoch?: string) {
+    setPanicBusy(true);
+    try { await (epoch ? act('resume_launches', { epoch }) : act('panic_stop', {})); }
+    finally { setPanicBusy(false); }
+  }
+
   async function importFile(input: HTMLInputElement) {
     const selectedFile = input.files?.[0];
     input.value = '';
@@ -258,11 +268,12 @@ function App() {
   }
 
   async function launch(tryOne: boolean) {
-    if (cannotLaunch || !account || (tryOne && active > 0)) return;
+    if (cannotLaunch || !account || !panic || (tryOne && active > 0)) return;
     setLaunching(true);
     try {
       if (await act('launch_account', {
         id: account.profileId, placeId: destination.place, job: destination.job, tryOne, allowPair: pairEnabled,
+        epoch: panic.epoch,
       })) {
         localStorage.setItem('zenith-preview-place', destination.place.trim());
       }
@@ -323,11 +334,22 @@ function App() {
           className={page === label ? 'active' : ''} onClick={() => setPage(label)}><Icon name={icon} size={16}/><span>{label}</span></button>)}
       </nav>
       <div className="top-actions">
+        <button className="panic-button" title={panic?.shortcutAvailable ? 'Ctrl+Shift+P' : undefined}
+          aria-keyshortcuts={panic?.shortcutAvailable ? 'Control+Shift+P' : undefined}
+          disabled={panicBusy} onClick={() => void changePanic()}>Panic stop</button>
         <button className="icon-button" aria-label="Refresh" onClick={() => { setAvatarRevision(value => value + 1); void refresh(); }}><Icon name="refresh" size={16}/></button>
         <button className="icon-button" aria-label="Appearance" aria-expanded={showAppearance} onClick={() => setShowAppearance(value => !value)}><Icon name="sun" size={16}/></button>
       </div>
     </header>
     <section className="workspace">
+      {panic && !panic.shortcutAvailable && <p className="panic-shortcut-note" role="status">The global Panic shortcut is unavailable. Use the Panic stop button.</p>}
+      {panic?.held && <section className="inline-alert panic-hold" aria-label="Panic stop status">
+        <div role="status"><strong>New launches are held.</strong>
+          {panic.error ? <p>{panic.error} Select Panic stop to retry.</p>
+            : !panic.canResume && <p>Waiting for owned clients and launch work to finish.</p>}
+        </div>
+        {panic.canResume && <button className="secondary-button" disabled={panicBusy} onClick={() => void changePanic(panic.epoch)}>Resume launches</button>}
+      </section>}
       {showAppearance && <section className="account-panel preview-panel appearance-preview">
         <label>Appearance <select value={theme} onChange={event => {
           const choice = themes.find(([id]) => id === event.target.value);
@@ -443,7 +465,7 @@ function App() {
         <section className="account-panel preview-panel">
           <h2>Desktop layout</h2>
           <p>Tile confirmed windows on the monitor containing Zenith. Use restored, resizable Roblox windows.</p>
-          <button className="primary-button" disabled={arranging || !confirmedWindows.length} onClick={() => void tileWindows()}>
+          <button className="primary-button" disabled={arranging || panic?.held || !confirmedWindows.length} onClick={() => void tileWindows()}>
             <Icon name="grid" size={16}/>{arranging ? 'Arranging…' : 'Tile confirmed windows'}
           </button>
           {!confirmedWindows.length && <p>No Roblox windows are confirmed yet.</p>}
