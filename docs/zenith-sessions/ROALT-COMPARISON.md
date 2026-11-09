@@ -2,6 +2,8 @@
 
 [The account launch-flow correction](LAUNCH-FLOW-REPAIR.md) adds an account picker directly to launch review and exposes the installation test before ordinary launches. Saved bundles are optional. This improves the actual joining workflow without copying RoALT code or bypassing Zenith's native evidence checks; a successful live launch remains to be demonstrated by the owner.
 
+The correction remains a test candidate: full offline qualification is held by repeated fixture setup timeouts recorded in that repair document. Focused passing UI checks and a packaged synthetic self-check do not establish RoALT parity or native multi-client success.
+
 This comparison describes the current Zenith implementation and its limits. The detailed earlier static comparison is retained in [round4/history/ROALT-COMPARISON.md](round4/history/ROALT-COMPARISON.md); its old completion claims are not current acceptance evidence. RoALT was a read-only source reference. No RoALT code or branding was imported.
 
 The user's chosen direction is Zenith branding/themes, the existing left sidebar, avatar headshots, matching game media and an evenly tiled window overview. UI work remains separate; this completion pass makes only needed corrections/wiring.
