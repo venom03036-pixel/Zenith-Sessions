@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust account inspection and sign-in recovery (1.14)
+
+**CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** Accounts opens with an inspector, can switch between each of six synthetic profiles, retries a failed headshot image, and identifies the latest successful sign-in. Automatic verification retries temporary failures before showing a manual retry. The first-party landing and save-before-close gates still apply. Browser before/after, Windows and Rust tests, and anonymous public endpoint checks passed for their documented scope. Actual private profile reads and automatic closure remain attended checks. See [Preview 1.14](RUST-DESKTOP-PREVIEW.md#preview-114-account-details-and-sign-in).
+
 ## Rust macro assignments (1.13)
 
 **CAP-13-01, CAP-14-01, CAP-16-02, PROD-UI-01.** Automation can save, replace and remove a preview-local reference for an account or an imported group or bundle. Save rechecks the editor page and saved revision. A current target and assignment snapshot are checked before an atomic DPAPI update. Verified identity binds imported account references, and the original archive remains intact. Browser, protected storage, cross-runtime catalog, and C# migration fixtures passed. Playback and installed-editor verification remain pending. See [Preview 1.13](RUST-DESKTOP-PREVIEW.md#preview-113-macro-assignments).

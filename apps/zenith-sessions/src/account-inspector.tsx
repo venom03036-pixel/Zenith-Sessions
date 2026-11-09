@@ -16,10 +16,20 @@ function errorMessage(error: unknown) {
 
 export function Avatar({ username, image, large = false }: { username: string; image?: string; large?: boolean }) {
   const [visible, setVisible] = useState(false);
-  return <span className={`avatar preview-avatar${large ? ' inspector-avatar' : ''}`}>
+  const [failed, setFailed] = useState(false);
+  const [retried, setRetried] = useState(false);
+  useEffect(() => {
+    if (!failed || retried) return;
+    const timer = window.setTimeout(() => {
+      setFailed(false);
+      setRetried(true);
+    }, 1500);
+    return () => window.clearTimeout(timer);
+  }, [failed, retried]);
+  return <span aria-hidden="true" className={`avatar preview-avatar${large ? ' inspector-avatar' : ''}`}>
     {!visible && <span>{username.slice(0, 2).toUpperCase()}</span>}
-    {image && <img src={image} alt="" referrerPolicy="no-referrer" hidden={!visible}
-      onLoad={() => setVisible(true)} onError={() => setVisible(false)}/>}
+    {image && !failed && <img key={String(retried)} src={image} alt="" referrerPolicy="no-referrer" hidden={!visible}
+      onLoad={() => setVisible(true)} onError={() => { setVisible(false); setFailed(true); }}/>}
   </span>;
 }
 
@@ -34,16 +44,17 @@ function dateLabel(date: string) {
   return Number.isNaN(value.valueOf()) ? 'Unavailable' : value.toLocaleDateString();
 }
 
-export function AccountInspector({ account, image, imageRevision, onFavorite, legacyDetails }: {
+export function AccountInspector({ account, image, imageRevision, onFavorite, onRefreshHeadshots, legacyDetails }: {
   account: Account;
   image?: string;
   imageRevision: number;
   onFavorite: (favorite: Favorite) => void;
+  onRefreshHeadshots: () => void;
   legacyDetails?: ReactNode;
 }) {
   const [revision, setRevision] = useState(0);
   return <AccountDetails key={revision} account={account} image={image} imageRevision={imageRevision} onFavorite={onFavorite} legacyDetails={legacyDetails}
-    onRefresh={() => setRevision(value => value + 1)}/>;
+    onRefresh={() => { setRevision(value => value + 1); onRefreshHeadshots(); }}/>;
 }
 
 function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {

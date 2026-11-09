@@ -22,6 +22,18 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.14 account details and sign-in
+
+**Accounts** opens with the first saved profile visible in the inspector. Select another account's name or headshot to see its Roblox display name, profile details, public favorite games, friends, and Robux balance. Select a favorite to use it as the launch destination. Refresh in the inspector checks the details and headshots again. The account list and inspector use Roblox's avatar headshot for the saved user ID. Initials remain visible while the image loads or if Roblox cannot provide it. [Roblox headshots](https://create.roblox.com/docs/cloud/reference/features/avatars), [Roblox user data](https://create.roblox.com/docs/cloud/reference/features/users)
+
+When an isolated sign-in reaches Roblox Home, Zenith verifies the identity, saves the protected sign-in, then requests closure of the sign-in window and identifies the account that was saved. Temporary network or validation failures get up to two automatic retries. Challenges, rate limits, and local save failures display the reason for the stopped attempt. Use **Retry save** after resolving the issue.
+
+The Chromium fixture reproduced an empty initial inspector, an image failure stuck on initials, and missing save confirmation in 1.13. The updated fixture checks all six synthetic accounts individually and tests that late results for a previous account cannot populate the next account's details. An anonymous Roblox request verified the public profile, headshot, and favorites endpoints. Controlled Windows and Rust tests exercised protected persistence and the retry policy.
+
+The 1.14 executable has SHA-256 `8C2555994BBAFC0D6B397CB97F9C9C05690FE726B3A765C39179D919A1A4A4F2`. Fifty-four offline Rust tests, nine Chromium checks, formatting, Clippy, the frontend build, and a zero-warning Release build passed. Both packaged self-checks passed all six stages.
+
+For the attended check, open 1.14 under the same Windows user as the previous Rust preview. In **Accounts**, select each saved profile and compare its headshot, favorites, friends, and balance with Roblox. Renew one designated account through **Add account**. After reaching Home, check that the sign-in window closes and the saved-account notice names that account. Reopen the preview and verify the account and its details are still available. Real private reads and automatic closure against a live Roblox sign-in remain to be checked.
+
 ## Preview 1.13 macro assignments
 
 Open **Automation**, refresh the Personal catalog, and choose **Select macro**. Under **Macro assignments**, select **Assign selected macro** or **Replace assignment** on a saved account, imported group, or imported bundle. **Remove assignment** clears the preview's effective reference and works while the editor is closed. The preview pages through targets in groups of 25.

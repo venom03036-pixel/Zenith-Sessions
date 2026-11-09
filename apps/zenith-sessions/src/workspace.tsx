@@ -125,8 +125,9 @@ function App() {
   const accounts = snapshot?.accounts ?? [];
   const accountKey = accounts.map(item => item.profileId).join(',');
   const importedTheme = themes.find(([id]) => id === legacyWorkspace?.theme)?.[0];
-  const inspected = accounts.find(value => value.profileId === selected);
-  const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
+  const selectedAccount = accounts.find(value => value.profileId === selected);
+  const inspected = selectedAccount ?? accounts[0];
+  const account = selectedAccount ?? (accounts.length === 1 ? accounts[0] : undefined);
   const sessions = snapshot?.sessions ?? [];
   const confirmedWindows = sessions.filter(session => session.phase === 'running');
   const windowRows = sessions.filter(session => isBusy(session) || placements.some(result => result.attemptId === session.attemptId));
@@ -140,6 +141,7 @@ function App() {
   const admission = snapshot?.admission;
   const signInAttempt = snapshot?.signInAttempt;
   const savedSignIn = snapshot?.savedSignIn;
+  const savedAccount = accounts.find(value => value.profileId === savedSignIn?.profileId);
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
   const placeEntered = Boolean(destination.place.trim());
   const cannotLaunch = !account || !placeEntered || isBusy(selectedSession) || launching || panicBusy || !panic || panic.held || !launchState || !!launchState.hold;
@@ -215,12 +217,12 @@ function App() {
     return () => { current = false; window.clearTimeout(retry); };
   }, [accountKey, avatarRevision, savedSignIn?.attempt]);
   useEffect(() => {
-    if (savedSignIn && seenSignIn.current !== savedSignIn.attempt) {
+    if (savedSignIn && savedAccount && seenSignIn.current !== savedSignIn.attempt) {
       seenSignIn.current = savedSignIn.attempt;
       setSelected(savedSignIn.profileId);
       setQuery('');
     }
-  }, [savedSignIn]);
+  }, [savedSignIn, savedAccount]);
 
   async function act(command: string, payload: Record<string, unknown>) {
     setFailure('');
@@ -373,6 +375,8 @@ function App() {
         <button className="secondary-button" onClick={() => setPage('Sessions')}>Open Sessions</button>
       </div>}
       {page === 'Accounts' && legacyNotice && <p role="status" className="inline-alert">{legacyNotice}</p>}
+      {page === 'Accounts' && !signInAttempt && savedAccount &&
+        <p role="status" className="inline-alert sign-in-saved">Saved Roblox sign-in for @{savedAccount.username}.</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
         <p>Finish signing in inside the Roblox window. Zenith will save the verified sign-in and close the window automatically.</p>
@@ -391,7 +395,7 @@ function App() {
         <Memory admission={admission}/>
       </>}
       {page === 'Accounts' && <div className={`accounts-workspace${inspected ? ' with-inspector' : ''}`}><section className="account-panel">
-        <div className="panel-heading"><div><h2>Account library</h2><p>{filtered.length} of {accounts.length} accounts shown</p></div></div>
+        <div className="panel-heading"><div><h2>Account library</h2><p>{filtered.length} of {accounts.length} accounts shown. Select an account to view its details.</p></div></div>
         <div className="toolbar"><label className="search-box"><Icon name="search" size={17}/><input ref={search} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search accounts…" aria-label="Search accounts"/><kbd>Ctrl K</kbd></label></div>
         {accounts.length > 0 && headshotNotice && <p className="headshot-notice" role="status">{headshotNotice}</p>}
         {filtered.length ? <div className="table-wrap"><table>
@@ -413,6 +417,7 @@ function App() {
       </section>
       {inspected && <AccountInspector key={`${inspected.profileId}:${savedSignIn?.profileId === inspected.profileId ? savedSignIn.attempt : ''}`}
         account={inspected} image={avatars[inspected.profileId]} imageRevision={avatarRevision}
+        onRefreshHeadshots={() => setAvatarRevision(value => value + 1)}
         legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
           setDestination({ place: favorite.placeId, name: favorite.name, job: null });

@@ -10,7 +10,7 @@ use tauri::{
 };
 use uuid::Uuid;
 use zenith_session_launch::{
-    auth::{Credential, RobloxAuth},
+    auth::{Credential, Failure, RobloxAuth},
     windows::SavedIdentity,
 };
 use zeroize::Zeroizing;
@@ -19,6 +19,43 @@ use crate::{STATE_ERROR, Workspace};
 
 const LOGIN: &str = "https://www.roblox.com/login";
 const HOME: &str = "https://www.roblox.com/";
+
+enum SaveFailure {
+    Busy,
+    Provider(Failure),
+    Local(String),
+}
+
+impl SaveFailure {
+    fn message(&self) -> String {
+        match self {
+            Self::Busy => "Zenith is already checking this sign-in".into(),
+            Self::Provider(error) => error.to_string(),
+            Self::Local(message) => message.clone(),
+        }
+    }
+
+    fn retry_delay(&self, retries: usize) -> Option<Duration> {
+        match self {
+            Self::Provider(
+                Failure::Network(_) | Failure::Timeout(_) | Failure::SignInRequired(_),
+            ) => [2, 5].get(retries).copied().map(Duration::from_secs),
+            _ => None,
+        }
+    }
+}
+
+impl From<&str> for SaveFailure {
+    fn from(message: &str) -> Self {
+        Self::Local(message.into())
+    }
+}
+
+impl From<String> for SaveFailure {
+    fn from(message: String) -> Self {
+        Self::Local(message)
+    }
+}
 
 pub struct SignIn {
     pub attempt: Uuid,
@@ -124,6 +161,8 @@ pub async fn begin_sign_in(
 
 fn monitor(app: &AppHandle, state: &Workspace, attempt: Uuid) {
     let deadline = Instant::now() + Duration::from_secs(15 * 60);
+    let mut retries = 0;
+    let mut next_check = Instant::now();
     while Instant::now() < deadline {
         if state.exiting.load(Ordering::Acquire)
             || !state.sign_in.lock().is_ok_and(|sign_in| {
@@ -138,22 +177,27 @@ fn monitor(app: &AppHandle, state: &Workspace, attempt: Uuid) {
         let Some(window) = app.get_webview_window(&label(attempt)) else {
             return;
         };
-        if window.url().is_ok_and(|url| signed_in_landing(&url))
-            && !matches!(try_save(app, state, attempt), Ok(None))
-        {
-            return;
+        if Instant::now() >= next_check && window.url().is_ok_and(|url| signed_in_landing(&url)) {
+            match try_save(app, state, attempt) {
+                Ok(Some(_)) => return,
+                Ok(None) | Err(SaveFailure::Busy) => {}
+                Err(error) => {
+                    let Some(delay) = error.retry_delay(retries) else {
+                        report_save_error(state, attempt, error.message());
+                        return;
+                    };
+                    retries += 1;
+                    next_check = Instant::now() + delay;
+                }
+            }
         }
         std::thread::sleep(Duration::from_secs(1));
     }
-    if let Ok(mut sign_in) = state.sign_in.lock()
-        && let Some(flow) = sign_in
-            .active
-            .as_mut()
-            .filter(|flow| flow.attempt == attempt)
-    {
-        flow.error =
-            Some("Automatic saving timed out. Finish signing in, then retry saving.".into());
-    }
+    report_save_error(
+        state,
+        attempt,
+        "Automatic saving timed out. Finish signing in, then retry saving.".into(),
+    );
 }
 
 #[tauri::command]
@@ -182,9 +226,15 @@ pub async fn finish_sign_in(
     attempt: Uuid,
 ) -> Result<SavedIdentity, String> {
     let state = Arc::clone(state.inner());
-    spawn_blocking(move || {
-        try_save(&app, &state, attempt)?
-            .ok_or_else(|| "Finish signing in in the Roblox window, then retry.".into())
+    spawn_blocking(move || match try_save(&app, &state, attempt) {
+        Ok(Some(identity)) => Ok(identity),
+        Ok(None) => Err("Finish signing in in the Roblox window, then retry.".into()),
+        Err(SaveFailure::Busy) => Err(SaveFailure::Busy.message()),
+        Err(error) => {
+            let message = error.message();
+            report_save_error(&state, attempt, message.clone());
+            Err(message)
+        }
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -194,7 +244,7 @@ fn try_save(
     app: &AppHandle,
     state: &Workspace,
     attempt: Uuid,
-) -> Result<Option<SavedIdentity>, String> {
+) -> Result<Option<SavedIdentity>, SaveFailure> {
     {
         let mut sign_in = state.sign_in.lock().map_err(|_| STATE_ERROR)?;
         let flow = sign_in
@@ -203,7 +253,7 @@ fn try_save(
             .filter(|flow| flow.attempt == attempt)
             .ok_or("Open a Roblox sign-in window first")?;
         if flow.saving {
-            return Err("Zenith is already checking this sign-in".into());
+            return Err(SaveFailure::Busy);
         }
         flow.saving = true;
     }
@@ -215,18 +265,26 @@ fn try_save(
             .filter(|flow| flow.attempt == attempt)
     {
         flow.saving = false;
-        if let Err(error) = &result {
-            flow.error = Some(error.clone());
-        }
     }
     result
+}
+
+fn report_save_error(state: &Workspace, attempt: Uuid, message: String) {
+    if let Ok(mut sign_in) = state.sign_in.lock()
+        && let Some(flow) = sign_in
+            .active
+            .as_mut()
+            .filter(|flow| flow.attempt == attempt)
+    {
+        flow.error = Some(message);
+    }
 }
 
 fn capture_and_save(
     app: &AppHandle,
     state: &Workspace,
     attempt: Uuid,
-) -> Result<Option<SavedIdentity>, String> {
+) -> Result<Option<SavedIdentity>, SaveFailure> {
     let window = app
         .get_webview_window(&label(attempt))
         .ok_or("The Roblox sign-in window closed")?;
@@ -258,13 +316,13 @@ fn capture_and_save(
         .map(|date| date.unix_timestamp().max(0) as u64)
         .unwrap_or(253_402_300_799);
     let mut credential = Credential::new(Zeroizing::new(cookie.value().to_owned()))
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| SaveFailure::Local(error.to_string()))?;
     credential.limit_expiry(expires);
     drop(cookies);
     let (user_id, username) = RobloxAuth::new()
-        .map_err(|error| error.to_string())?
+        .map_err(SaveFailure::Provider)?
         .signed_in_user(&mut credential)
-        .map_err(|error| error.to_string())?;
+        .map_err(SaveFailure::Provider)?;
     if !window.url().is_ok_and(|url| signed_in_landing(&url)) {
         return Ok(None);
     }
@@ -356,5 +414,28 @@ mod tests {
         assert_eq!(sign_in.active.as_ref().unwrap().attempt, current);
         sign_in.clear(current);
         assert!(sign_in.active.is_none());
+    }
+
+    #[test]
+    fn automatic_save_retries_temporary_validation_failures_with_a_fixed_limit() {
+        for error in [
+            Failure::Network("fixture"),
+            Failure::Timeout("fixture"),
+            Failure::SignInRequired("fixture"),
+        ] {
+            let failure = SaveFailure::Provider(error);
+            assert_eq!(failure.retry_delay(0), Some(Duration::from_secs(2)));
+            assert_eq!(failure.retry_delay(1), Some(Duration::from_secs(5)));
+            assert_eq!(failure.retry_delay(2), None);
+        }
+        for failure in [
+            SaveFailure::Provider(Failure::RateLimited("fixture", Some(15))),
+            SaveFailure::Provider(Failure::Challenge("fixture")),
+            SaveFailure::Provider(Failure::IdentityChanged),
+            SaveFailure::Provider(Failure::UnstableSignIn),
+            SaveFailure::Local("storage failure".into()),
+        ] {
+            assert_eq!(failure.retry_delay(0), None);
+        }
     }
 }

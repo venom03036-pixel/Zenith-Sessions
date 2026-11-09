@@ -102,10 +102,18 @@ function exerciseWorkspace() {
       try { await test(); checks.push(`PASS ${label}`); }
       catch (error) { checks.push(`FAIL ${label} (${error.message})`); }
     }
+    await check('the first saved account is already selected in Accounts', async () => {
+      await until(() => row(1)?.getAttribute('aria-pressed') === 'true' && details().includes('fixture-1 favorite'),
+        'opening Accounts left the inspector empty');
+    });
     await check('pending headshot is retried and rendered', async () => {
       await until(() => row(6)?.querySelector('img:not([hidden])')?.naturalWidth > 0,
         'sixth headshot stayed on initials');
       if (headshotRequests !== 2) throw new Error(`expected 2 requests, got ${headshotRequests}`);
+    });
+    await check('a completed headshot whose image fails to load is retried', async () => {
+      await until(() => row(2)?.querySelector('img:not([hidden])')?.naturalWidth > 0,
+        'a failed CDN image stayed on initials');
     });
     await check('switching accounts replaces all selected details', async () => {
       row(1).click();
@@ -120,6 +128,20 @@ function exerciseWorkspace() {
     await check('renewal refreshes the already selected account', async () => {
       savedSignIn = { profileId: 'fixture-6', attempt: 'renewed-fixture' };
       await until(() => /Robux73/.test(details()), 'renewed account still showed the old balance');
+      if (!document.querySelector('.sign-in-saved')?.textContent.includes('@Fixture6')) {
+        throw new Error('a successful save did not identify the account that was saved');
+      }
+    });
+    await check('all six saved accounts show their own headshot and details', async () => {
+      for (let index = 1; index <= accounts.length; index++) {
+        row(index).click();
+        const id = `fixture-${index}`;
+        await until(() => row(index).getAttribute('aria-pressed') === 'true'
+          && details().includes(`${id} display name`) && details().includes(`${id} favorite`)
+          && details().includes(`${id} friend`) && details().includes(index === 6 ? 'Robux73' : 'Robux0')
+          && find('[aria-label="Account details"] img:not([hidden])')?.src.endsWith(`?${id}`),
+        `account ${index} showed missing or mismatched details`);
+      }
     });
     await check('Panic holds launches across pages until cleanup and explicit resume', async () => {
       const button = (label) => [...document.querySelectorAll('button')].find(button => button.textContent.trim() === label);
@@ -184,13 +206,19 @@ const scratchParent = await realpath(tmpdir());
 const prefix = 'zenith-account-fixture-';
 const profile = await mkdtemp(join(scratchParent, prefix));
 const mime = { '.js': 'text/javascript', '.css': 'text/css', '.html': 'text/html' };
+let failSecondHeadshot = true;
 const server = createServer(async (request, response) => {
   try {
-    const { pathname } = new URL(request.url, 'http://127.0.0.1');
+    const { pathname, search } = new URL(request.url, 'http://127.0.0.1');
     if (pathname === '/fixture.js') {
       response.writeHead(200, { 'Content-Type': 'text/javascript' });
       response.end(`(${exerciseWorkspace.toString()})()`);
     } else if (pathname === '/headshot.svg') {
+      if (search === '?fixture-2' && failSecondHeadshot) {
+        failSecondHeadshot = false;
+        response.writeHead(404, { 'Cache-Control': 'no-store' }).end();
+        return;
+      }
       response.writeHead(200, { 'Content-Type': 'image/svg+xml' });
       response.end('<svg xmlns="http://www.w3.org/2000/svg" width="32" height="32"><circle cx="16" cy="16" r="16" fill="teal"/></svg>');
     } else if (pathname === '/') {
@@ -214,7 +242,7 @@ try {
   });
   const { stdout } = await promisify(execFile)(browser, [
     '--headless=new', '--disable-background-networking', '--disable-sync', '--no-first-run', '--no-default-browser-check',
-    `--user-data-dir=${profile}`, '--dump-dom', '--virtual-time-budget=16000',
+    `--user-data-dir=${profile}`, '--dump-dom', '--virtual-time-budget=27000',
     `http://127.0.0.1:${server.address().port}/`,
   ], { timeout: 30000, windowsHide: true, maxBuffer: 1024 * 1024 });
   const result = stdout.match(/<output id="account-fixture-result">([^<]*)<\/output>/)?.[1];
