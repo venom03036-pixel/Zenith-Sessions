@@ -57,4 +57,15 @@ For rollback, close the diagnostics app and use the existing Zenith executable a
 
 ## Next gates
 
-Use a second designated account for the five two-account batches before completing the broader UI and migration. Roblox update handoff ownership still needs a production solution. The redesigned UI, durable account storage, password migration, singleton coordination and takeover, window tools, private joining, performance controls, and the sixteen-account validation remain open. See the [feature inventory](ROALT-1.1-FEATURE-INVENTORY.md) for the wider comparison.
+The two-account probe is ready for an attended test. Both accounts must be designated by the owner and signed into legacy Zenith. Close legacy Zenith after sign-in, then stage each account with the procedure above. Use the rebuild branch's current debug probe. The archived `f780e15` binary is the preserved live-tested single-account build.
+
+```powershell
+$secondUsername = 'OWNER_APPROVED_USERNAME'
+$first = & ./apps/zenith-sessions/tools/Stage-LaunchProbe.ps1 -Username sethplayzfan
+$second = & ./apps/zenith-sessions/tools/Stage-LaunchProbe.ps1 -Username $secondUsername
+& ./apps/zenith-sessions/launch-core/target/debug/launch-probe.exe --pair $first sethplayzfan $second $secondUsername 110829983956014 --registered-player (Join-Path $env:LOCALAPPDATA 'Roblox/logs')
+```
+
+The pair command rejects duplicate protected Roblox IDs before contacting Roblox. It reserves the Windows compatibility name only if free, requires the standard memory margins for each client, confirms the first arrival before starting the second, and checks that both owned windows coexist for three seconds. The probe stops its owned processes in reverse order, including after a partial failure. It cannot take over existing clients or prove that either account remains connected after the overlap sample.
+
+Offline checks use synthetic Windows objects and processes. Live coexistence requires the second authorized sign-in, followed by the five pair batches. Cancellation, restart reconciliation, update handoff ownership, and takeover need separate production tests. The redesigned UI, durable account storage, password migration, window tools, private joining, performance controls, and sixteen-account validation remain open. See the [feature inventory](ROALT-1.1-FEATURE-INVENTORY.md) for the wider comparison.

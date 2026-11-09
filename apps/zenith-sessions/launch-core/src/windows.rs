@@ -1,4 +1,7 @@
+mod pair_lease;
 mod publisher;
+
+pub use pair_lease::PairLease;
 
 use std::{
     fs::{File, OpenOptions},
@@ -7,7 +10,7 @@ use std::{
     os::windows::{ffi::OsStringExt, fs::OpenOptionsExt, io::AsRawHandle, process::CommandExt},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use ::windows::{
@@ -247,6 +250,45 @@ mod tests {
             .collect();
         assert!(registered_path(&command_line).is_err());
     }
+
+    #[test]
+    fn stopping_an_owned_process_leaves_a_different_process_running() {
+        fn fixture() -> OwnedPlayer {
+            let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+            let child =
+                Command::new(windows.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+                    .args([
+                        "-NoProfile",
+                        "-NonInteractive",
+                        "-Command",
+                        "Start-Sleep -Seconds 20",
+                    ])
+                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()
+                    .unwrap();
+            OwnedPlayer {
+                identity: process_identity(&child),
+                child,
+            }
+        }
+
+        let mut owned = fixture();
+        let mut other = fixture();
+        let owned_identity = owned.identity();
+        let other_identity = other.identity();
+        let stop_result = owned.stop();
+        let owned_exited = owned.exited();
+        let other_exited = other.exited();
+        let other_cleanup = other.stop();
+        assert_ne!(owned_identity.unwrap().pid, other_identity.unwrap().pid);
+        stop_result.unwrap();
+        other_cleanup.unwrap();
+        assert!(owned_exited.unwrap());
+        assert!(!other_exited.unwrap());
+    }
 }
 
 #[derive(Clone, Copy, Serialize)]
@@ -287,10 +329,21 @@ impl OwnedPlayer {
     }
 
     pub fn stop(&mut self) -> io::Result<()> {
-        if !self.exited()? {
-            self.child.kill()?;
+        if self.exited()? {
+            return Ok(());
         }
-        self.child.wait()?;
+        if let Err(error) = self.child.kill()
+            && !self.exited()?
+        {
+            return Err(error);
+        }
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while !self.exited()? {
+            if Instant::now() >= deadline {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
         Ok(())
     }
 }
