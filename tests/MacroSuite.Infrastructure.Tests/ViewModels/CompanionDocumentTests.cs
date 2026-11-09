@@ -4,10 +4,14 @@ using System.Reflection;
 using System.Text.Json;
 using FluentAssertions;
 using MacroSuite.App.ViewModels;
+using MacroSuite.Core.Abstractions;
 using MacroSuite.Core.Models;
 using MacroSuite.Core.Steps;
 using MacroSuite.Core.Storage;
+using MacroSuite.Infrastructure.Input;
 using MacroSuite.Infrastructure.Storage;
+using MacroSuite.Infrastructure.Tests.Input;
+using MacroSuite.Infrastructure.Windows;
 using Xunit;
 using Zenith.MacroHost.Contracts;
 using Zenith.MacroHost.Execution;
@@ -79,6 +83,54 @@ public partial class MacroEditorViewModelTests
         (await vm.CompanionDocuments.ReadAsync(reference)).Status.Should().Be(SavedMacroDocumentReadStatus.Changed);
         (await preparer.PrepareAsync(reference, TargetedMacroScope.OwnedWindowDiagnostic)).Status.Should().Be(SavedMacroPreparationStatus.Changed);
     });
+
+    [Fact]
+    public Task CompanionDocument_ForegroundPathUsesTheSavedRevisionAndExistingWin32Player() => CompanionOnUi(async () =>
+    {
+        using var folder = new RoutingTempFolder();
+        var saved = new MacroModel
+        {
+            Name = "Saved gameplay key",
+            Settings = new() { Target = new() { Mode = MacroTargetMode.ActiveExternalWindow } },
+            Steps = [new KeyPressStep(0x57, 0)]
+        };
+        using var documents = new ReceiptDocuments(folder.Library, saved);
+        var native = new RecordingNativeInputSink();
+        using var player = new Win32InputPlayer(native);
+        using var vm = CreateCompanionEditor(folder.Library, documents, player: player);
+        var reference = await SavedReference(vm);
+        var draft = new KeyPressStep(0x41, 0);
+        vm.SelectedScript!.Actions[0] = draft;
+        vm.Steps.ReplaceAt(0, draft);
+
+        await using var preparer = new SavedMacroPlanPreparer(vm.CompanionDocuments, static _ => { });
+        using var targets = new CompanionForegroundFixture();
+        var foreground = new CompanionForegroundPlayback(vm.InputOperations, preparer, targets, player,
+            new OwnershipActivation(), new DummyFeatureGate(), _ => Task.FromResult(true), static _ => { });
+        var started = foreground.Start(reference, targets.Window, vm.InputOperations.StopGeneration);
+        started.Rejection.Should().BeNull();
+        var completed = await started.Operation!.Completion.WaitAsync(TimeSpan.FromSeconds(5));
+        completed.Status.Should().Be(ForegroundPlaybackStatus.Completed);
+        native.Inputs.Select(input => input.ui.ki.wVk).Should().Equal((ushort)0x57, (ushort)0x57);
+        native.Inputs.Select(input => input.ui.ki.dwFlags & NativeMethods.KEYEVENTF_KEYUP)
+            .Should().Equal(0u, NativeMethods.KEYEVENTF_KEYUP);
+        vm.InputOperations.Snapshot.IsBusy.Should().BeFalse();
+        player.Session.Should().BeNull();
+    });
+
+    private sealed class CompanionForegroundFixture : ITargetWindowService
+    {
+        public TargetWindowInfo Window { get; } = new(171, 71, 1000, "Fixture", "Synthetic", new(0, 0, 100, 100), 1);
+        public bool SupportsWindowTargeting => true;
+        public TargetWindowSnapshot Snapshot => new(Window, Window, 1, 1, true);
+        public event EventHandler? Changed { add { } remove { } }
+        public Task<IReadOnlyList<TargetWindowInfo>> EnumerateAsync(CancellationToken ct = default) => throw new NotSupportedException();
+        public ResolvedMacroTarget Resolve(MacroTargetRule rule, TargetWindowInfo? preferredExternal = null) => new(rule, Window);
+        public TargetValidation Inspect(ResolvedMacroTarget target) => new(target.Window == Window, true, false, Window.ClientBounds, 1);
+        public void RegisterOwnWindow(nint window) => throw new NotSupportedException();
+        public bool TryActivate(ResolvedMacroTarget target) => throw new InvalidOperationException("Fixture must not steal focus.");
+        public void Dispose() { }
+    }
 
     [Fact]
     public Task CompanionDocument_ExactLoadedRevisionPreparesWithoutPublishingBodyOrReadingForCatalog() => CompanionOnUi(async () =>

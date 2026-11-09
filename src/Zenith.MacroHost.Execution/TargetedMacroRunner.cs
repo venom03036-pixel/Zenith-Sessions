@@ -114,6 +114,8 @@ public sealed class TargetedMacroRunner : IAsyncDisposable
         ArgumentNullException.ThrowIfNull(plan);
         ArgumentNullException.ThrowIfNull(target);
         unstarted = null;
+        if (plan.Scope != TargetedMacroScope.OwnedWindowDiagnostic)
+            return new(TargetedMacroStartStatus.Rejected, null);
         if (lease is not null && (lease.Kind != HostInputOperationKind.Companion || !lease.CanContinue))
             return new(TargetedMacroStartStatus.Rejected, null);
         if (!_support.Supports(plan) || plan.PeakHolds > _input.MaximumHoldsPerRun)

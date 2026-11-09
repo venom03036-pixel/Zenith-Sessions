@@ -7,7 +7,8 @@ using Zenith.Sessions.Core;
 namespace Zenith.MacroHost.Execution;
 public enum TargetedMacroScope
 {
-    OwnedWindowDiagnostic = 1
+    OwnedWindowDiagnostic = 1,
+    ForegroundOwnedWindow = 2
 }
 
 public enum TargetedMacroPlanProblem
@@ -23,7 +24,7 @@ public enum TargetedMacroPlanProblem
 
 public sealed class TargetedMacroPlanException(TargetedMacroPlanProblem problem) : Exception(problem switch
 {
-    TargetedMacroPlanProblem.UnsupportedTarget => "The saved target policy is not supported by this diagnostic execution scope.",
+    TargetedMacroPlanProblem.UnsupportedTarget => "The saved target policy is not supported by this execution scope.",
     TargetedMacroPlanProblem.UnsupportedStep => "The entire macro must use supported flat input and delay actions before it can run.",
     TargetedMacroPlanProblem.UnsupportedInput => "The macro contains unsupported input or coordinate semantics.",
     TargetedMacroPlanProblem.ResourceLimit => "The macro exceeds the bounded execution plan limits.",
@@ -78,6 +79,7 @@ public sealed class TargetedMacroPlan
     public static readonly TimeSpan MaximumRuntime = TimeSpan.FromHours(1);
     private readonly FrozenStep[] _steps;
     private readonly Settings _settings;
+    internal static MacroTargetRule ForegroundRule { get; } = new() { Mode = MacroTargetMode.ActiveExternalWindow };
     internal IReadOnlyList<int> Keys { get; }
     internal TargetedMacroSignals Signals { get; }
     public Guid MacroId { get; }
@@ -99,8 +101,18 @@ public sealed class TargetedMacroPlan
 
     public static TargetedMacroPlan Compile(MacroModel source, TargetedMacroScope scope)
     {
-        if (source is null || scope != TargetedMacroScope.OwnedWindowDiagnostic)
+        if (scope != TargetedMacroScope.OwnedWindowDiagnostic)
             throw Bad(TargetedMacroPlanProblem.InvalidDocument);
+        return CompileCore(source, scope);
+    }
+
+    internal static TargetedMacroPlan CompileForeground(MacroModel source)
+        => CompileCore(source, TargetedMacroScope.ForegroundOwnedWindow);
+
+    private static TargetedMacroPlan CompileCore(MacroModel source, TargetedMacroScope scope)
+    {
+        if (source is null) throw Bad(TargetedMacroPlanProblem.InvalidDocument);
+        bool foreground = scope == TargetedMacroScope.ForegroundOwnedWindow;
         try
         {
             if (source.Id == Guid.Empty || source.SchemaVersion != MacroSchema.CurrentVersion || source.Settings is null || source.Steps is null)
@@ -111,7 +123,7 @@ public sealed class TargetedMacroPlan
                 throw Bad(TargetedMacroPlanProblem.Disabled);
             // Explicit unbound fixture consent is required; never strip a saved Screen,
             // active-window, application or title-based policy to make it executable here.
-            if (source.Settings.Target is not null)
+            if (foreground ? source.Settings.Target != ForegroundRule : source.Settings.Target is not null)
                 throw Bad(TargetedMacroPlanProblem.UnsupportedTarget);
             var settings = Settings.Copy(source.Settings);
             int count = source.Steps.Count;
@@ -127,6 +139,10 @@ public sealed class TargetedMacroPlan
                 var step = source.Steps[index];
                 if (step is null || step.StepId == Guid.Empty || !ids.Add(step.StepId))
                     throw Bad(TargetedMacroPlanProblem.InvalidDocument);
+                if (foreground && step is not (KeyPressStep or DelayStep))
+                    throw Bad(TargetedMacroPlanProblem.UnsupportedStep);
+                if (foreground && step is KeyPressStep key && !IsForegroundKey(key.KeyCode))
+                    throw Bad(TargetedMacroPlanProblem.UnsupportedInput);
                 var frozen = FrozenStep.Copy(step);
                 steps[index] = frozen;
                 if (frozen.Timestamp > TimeSpan.Zero)
@@ -166,6 +182,10 @@ public sealed class TargetedMacroPlan
         }
     }
 
+    // Use ordinary gameplay keys. System keys, modifiers and navigation shortcuts are outside this scope.
+    private static bool IsForegroundKey(int key)
+        => key is 0x20 or (>= 0x25 and <= 0x28) or (>= 0x30 and <= 0x39) or (>= 0x41 and <= 0x5a);
+
     internal bool Fits(TargetedInputTarget target)
     {
         if (!target.IsValid || target.ContentBounds.Width > MaximumClientDimension || target.ContentBounds.Height > MaximumClientDimension)
@@ -191,8 +211,8 @@ public sealed class TargetedMacroPlan
     internal MacroModel CreateModel() => new()
     {
         Id = MacroId,
-        Name = "Owned-window diagnostic macro",
-        Settings = _settings.Create(),
+        Name = Scope == TargetedMacroScope.ForegroundOwnedWindow ? "Companion foreground macro" : "Owned-window diagnostic macro",
+        Settings = _settings.Create(Scope == TargetedMacroScope.ForegroundOwnedWindow ? ForegroundRule : null),
         Steps = _steps.Select(step => step.Create()).ToArray()
     };
     internal static TargetedMacroPlanException Bad(TargetedMacroPlanProblem problem) => new(problem);
@@ -206,7 +226,7 @@ public sealed class TargetedMacroPlan
             return value;
         }
 
-        public MacroSettings Create() => new()
+        public MacroSettings Create(MacroTargetRule? target) => new()
         {
             PlaybackSpeed = Speed,
             RepeatCount = Repeats,
@@ -214,7 +234,8 @@ public sealed class TargetedMacroPlan
             MaxRuntime = Runtime,
             MaxIterations = Iterations,
             MaxLoopDepth = Depth,
-            IsActive = true
+            IsActive = true,
+            Target = target
         };
     }
 

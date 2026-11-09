@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust rebuild foreground macro backend
+
+**CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** The Personal backend can execute a protected saved revision containing bounded gameplay keys and delays in one exact foreground window. It uses the existing editor arbiter, interpreter, licensing gates, and session-bound Win32 input player. Tests exercised protected saved-versus-draft isolation at the native packet boundary, focus and process identity, generation changes, Panic, and cleanup quarantine. The Rust control connection and attended Roblox input trials are pending. The separate owned-game route under **CAP-13-03** remains outside this foreground path. See [the backend evidence](COMPANION-MACRO-OWNERSHIP-VERIFICATION.md#foreground-backend-for-the-rust-rebuild).
+
 ## Rust playback target review (1.15)
 
 **CAP-13-01, CAP-13-02, CAP-13-04, CAP-16-02.** Automation rechecks a selected protected assignment and the editor's exact enabled saved revision. It resolves explicit account, imported group, and ordered imported bundle scopes, preserving missing or unlinked members in review. It reports initial arrival and current owned-window evidence, and Panic fences late review results. The Windows fixture exercises unique and ambiguous owned windows. This does not establish live Roblox review or macro execution. See [Preview 1.15](RUST-DESKTOP-PREVIEW.md#preview-115-playback-target-review).

@@ -53,6 +53,8 @@ public sealed class SavedMacroDocumentPin
     }
 
     internal TargetedMacroPlan Compile(TargetedMacroScope scope) => TargetedMacroPlan.Compile(_model, scope);
+    internal TargetedMacroPlan CompileForeground() => TargetedMacroPlan.CompileForeground(_model);
+    internal Func<bool> CurrentGuard => _current;
     public override string ToString() => "Host-local authenticated saved-document pin";
 }
 
@@ -103,10 +105,12 @@ public enum SavedMacroPreparationStatus
 /// <summary>An immutable compatible plan pinned for one requested operation, not permission to send input.</summary>
 public sealed class PreparedSavedMacroPlan
 {
+    private readonly Func<bool>? _current;
     public SavedMacroReference Reference { get; }
     public TargetedMacroPlan Plan { get; }
-    internal PreparedSavedMacroPlan(SavedMacroReference reference, TargetedMacroPlan plan)
-    { Reference = reference; Plan = plan; }
+    internal PreparedSavedMacroPlan(SavedMacroReference reference, TargetedMacroPlan plan, Func<bool>? current = null)
+    { Reference = reference; Plan = plan; _current = current; }
+    internal bool IsCurrent() => _current?.Invoke() == true;
     public override string ToString() => "Pinned saved-macro plan; input eligibility is separate";
 }
 
@@ -165,13 +169,19 @@ public sealed class SavedMacroPlanPreparer : IAsyncDisposable
     }
 
     public Task<SavedMacroPreparationResult> PrepareAsync(SavedMacroReference reference, TargetedMacroScope scope,
-        CancellationToken ct = default)
+        CancellationToken ct = default) => PrepareWithScopeAsync(reference, scope, false, ct);
+
+    internal Task<SavedMacroPreparationResult> PrepareForegroundAsync(SavedMacroReference reference, CancellationToken ct)
+        => PrepareWithScopeAsync(reference, TargetedMacroScope.ForegroundOwnedWindow, true, ct);
+
+    private Task<SavedMacroPreparationResult> PrepareWithScopeAsync(SavedMacroReference reference, TargetedMacroScope scope,
+        bool foreground, CancellationToken ct)
     {
         lock (_sync)
         {
             if (_closed) return Task.FromResult(new SavedMacroPreparationResult(SavedMacroPreparationStatus.Closed));
             if (!reference.IsValid) return Task.FromResult(new SavedMacroPreparationResult(SavedMacroPreparationStatus.InvalidReference));
-            if (scope != TargetedMacroScope.OwnedWindowDiagnostic)
+            if (!foreground && scope != TargetedMacroScope.OwnedWindowDiagnostic)
                 return Task.FromResult(new SavedMacroPreparationResult(SavedMacroPreparationStatus.UnsupportedDocument,
                     problem: TargetedMacroPlanProblem.InvalidDocument));
             if (ct.IsCancellationRequested) return Task.FromResult(new SavedMacroPreparationResult(SavedMacroPreparationStatus.Cancelled));
@@ -196,16 +206,17 @@ public sealed class SavedMacroPlanPreparer : IAsyncDisposable
             Type? fault = null;
             if (read.Pin is not { } pin || pin.Reference != reference || !pin.IsCurrent(out fault))
                 return Result(SavedMacroPreparationStatus.Changed, fault);
-            var plan = pin.Compile(scope);
+            var plan = scope == TargetedMacroScope.ForegroundOwnedWindow ? pin.CompileForeground() : pin.Compile(scope);
             linked.Token.ThrowIfCancellationRequested();
             if (plan.MacroId != reference.MacroId || !pin.IsCurrent(out fault)) return Result(SavedMacroPreparationStatus.Changed, fault);
             lock (_sync)
             {
                 if (_closed) return new(SavedMacroPreparationStatus.Closed);
                 linked.Token.ThrowIfCancellationRequested();
-                // Only frozen scalar plan data escapes. Do not retain the pin/model in
-                // a callback closure or share mutable step instances between runs.
-                return new(SavedMacroPreparationStatus.Ready, new(reference, plan));
+                // Foreground admission can recheck the source after waiting for neutral input.
+                // Borrow the guard alone so the result cannot retain the decrypted model.
+                var guard = scope == TargetedMacroScope.ForegroundOwnedWindow ? pin.CurrentGuard : null;
+                return new(SavedMacroPreparationStatus.Ready, new(reference, plan, guard));
             }
         }
         catch (OperationCanceledException) { return new(SavedMacroPreparationStatus.Cancelled); }

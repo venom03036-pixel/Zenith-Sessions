@@ -1,5 +1,17 @@
 # Companion macro ownership and Stop verification
 
+## Foreground backend for the Rust rebuild
+
+`CompanionForegroundPlayback` runs one exact saved revision through the existing MacroExecutor and host-owned input player. It takes a host-local window receipt with the expected handle, process ID, and process start time, and checks that the current foreground matches. It borrows the same input arbiter as the editor, checks activation and playback licensing, and rechecks the saved revision after waiting for neutral input. It preserves the saved **Active external window** policy. Its first execution scope supports finite macros using delays and ordinary letter, digit, arrow, and space key actions. Other target modes and action types fail preparation before any input.
+
+Focus loss pauses the run and releases its held input. Resume checks neutral input and the same foreground window. Stop revokes the lease, cancels preparation or playback, and waits for the actual worker and owned releases. An incomplete cleanup leaves the arbiter quarantined. Ordinary input uses the existing session-bound Win32 executor. This follows the Windows input-stream and foreground APIs. [Microsoft SendInput documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-sendinput), [Microsoft foreground window documentation](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-getforegroundwindow)
+
+The Personal integration fixture reads a protected saved revision through the actual editor source and runs it through the real Win32 player with a recording native sink. The packets contain the saved key and its release, while the different editor draft remains unexecuted. The Sessions fixtures cover rejection of an unsupported later step, reused handles, a saved revision changing during preparation, focus loss with a held key, explicit resume, Panic during a pending read, and incomplete cleanup. **131 Sessions checks, 96 Personal checks, and 762 Core checks passed.** The host Release build completed with zero warnings and errors. The tested execution assembly SHA-256 is `156E00E65620C916AB290AB10BEF78FF04083BC2FC479BDAF003E00FF2710655`.
+
+The desktop package remains [Preview 1.15](RUST-DESKTOP-PREVIEW.md#preview-115-playback-target-review). The host-local operation has no command endpoint. The Rust preview still needs an explicitly authorized Personal connection that binds the exact owned client to the host receipt, maps stop and disconnect to that operation, and exposes its status. Only then can an attended trial verify focus, delivery, pause and release with a designated Roblox account. The controlled fixtures send no desktop input.
+
+## Earlier diagnostic backend
+
 Backend cycle 0.51. The staged application remains the previously verified 0.50 preview. This cycle does not promote a new package.
 
 ## Backend handoff

@@ -4,6 +4,7 @@ using System.Runtime.ExceptionServices;
 using System.Windows.Threading;
 using FluentAssertions;
 using MacroSuite.App.ViewModels;
+using MacroSuite.Core.Abstractions;
 using MacroSuite.Core.AI;
 using MacroSuite.Core.Input;
 using MacroSuite.Core.Models;
@@ -19,10 +20,10 @@ namespace MacroSuite.Infrastructure.Tests.ViewModels;
 public partial class MacroEditorViewModelTests
 {
     private MacroEditorViewModel CreateCompanionEditor(string directory, IMacroDocumentStore documents,
-        TestInputRecorder? recorder = null, bool deferred = false)
+        TestInputRecorder? recorder = null, bool deferred = false, IInputPlayer? player = null)
     {
         var gate = new DummyFeatureGate();
-        return new MacroEditorViewModel(new DummyCaptureService(), new DummyInputPlayer(),
+        return new MacroEditorViewModel(new DummyCaptureService(), player ?? new DummyInputPlayer(),
             new AIVisionRouter(new InMemorySecretVault()), new DummyApprovalGate(), gate,
             new UsageTracker(new DummyUsageRepository(), gate), new DummyAuditLogger(),
             customMacrosDirectory: directory, documentStore: documents, seedDemoData: false,
