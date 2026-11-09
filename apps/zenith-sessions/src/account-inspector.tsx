@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 
 export type Account = { profileId: string; username: string };
 type Profile = { userId: string; displayName: string; description: string; created: string };
@@ -34,21 +34,23 @@ function dateLabel(date: string) {
   return Number.isNaN(value.valueOf()) ? 'Unavailable' : value.toLocaleDateString();
 }
 
-export function AccountInspector({ account, image, onFavorite }: {
+export function AccountInspector({ account, image, onFavorite, legacyDetails }: {
   account: Account;
   image?: string;
   onFavorite: (favorite: Favorite) => void;
+  legacyDetails?: ReactNode;
 }) {
   const [revision, setRevision] = useState(0);
-  return <AccountDetails key={revision} account={account} image={image} onFavorite={onFavorite}
+  return <AccountDetails key={revision} account={account} image={image} onFavorite={onFavorite} legacyDetails={legacyDetails}
     onRefresh={() => setRevision(value => value + 1)}/>;
 }
 
-function AccountDetails({ account, image, onFavorite, onRefresh }: {
+function AccountDetails({ account, image, onFavorite, onRefresh, legacyDetails }: {
   account: Account;
   image?: string;
   onFavorite: (favorite: Favorite) => void;
   onRefresh: () => void;
+  legacyDetails?: ReactNode;
 }) {
   const [profile, setProfile] = useState<Remote<Profile>>({});
   const [favorites, setFavorites] = useState<Remote<Page<Favorite>>>({});
@@ -119,6 +121,7 @@ function AccountDetails({ account, image, onFavorite, onRefresh }: {
       {profile.value.description && <p className="account-bio">{profile.value.description}</p>}
     </>}
     {profile.error && <p role="status">{profile.error}</p>}
+    {legacyDetails && <section><h3>Legacy profile details</h3>{legacyDetails}</section>}
     <section>
       <h3>Robux</h3>
       <p>{balance.value !== undefined ? <strong>{BigInt(balance.value).toLocaleString()}</strong>

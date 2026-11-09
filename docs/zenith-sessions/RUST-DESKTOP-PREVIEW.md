@@ -20,7 +20,29 @@ The preview rechecks the signed standard Roblox player and verifies the saved ac
 
 Server browsing requests one public page at a time. Occupancy is reported by Roblox when the page loads, and seats are assigned when Roblox joins the server. Changing the destination clears the selected server. The initial game-name results are capped at 50. Public links with query parameters and private/share links are rejected by this preview.
 
-The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile. The isolated import path does not replace complete migration of groups, notes, settings, macro assignments, or password-protected records.
+The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
+
+## Preview 1.07 legacy workspace migration
+
+The full-workspace import preserves legacy profile IDs and notes, aliases, group membership and definitions, saved favorite destinations, recipient bundles, macro assignment references, and a portable subset of preferences. The Accounts view shows imported details for matching verified profiles, archived profiles, and legacy favorite destinations. A favorite can preselect an exact place and optional public server in Sessions. Applying a supported theme is a separate action. Group and bundle editing, macro execution, and applying other archived preferences remain pending.
+
+1. Exit the legacy WPF Zenith Sessions app, including its tray process. From this checkout, build the migration helper and stage a protected workspace.
+
+   ```powershell
+   dotnet build ./apps/zenith-sessions/tools/LegacyProbeBundle/LegacyProbeBundle.csproj -c Release
+   $migration = & ./apps/zenith-sessions/tools/Stage-LaunchProbe.ps1 -Workspace
+   $migration
+   ```
+
+2. Open Preview 1.07 under the same Windows user. In **Accounts**, choose **Import protected file**, then select the returned `legacy-workspace.zenith-migration` file. The single-account `.dpapi` option is also available from that picker.
+3. Compare the counts and select a linked profile to check notes, groups and preferred place. Review **Archived profiles** for records without a verified identity. For an imported, historically verified account whose sign-in expired, complete the official sign-in again for that same Roblox account.
+4. To retry an interrupted import, select the exact same protected file. After a completed import, this preview library refuses a second workspace import. Existing preview sign-ins with the same verified Roblox user ID take precedence. The active preview library holds up to 128 accounts, and the archive preserves profiles beyond that capacity. The staging limit is 10,000 profiles and a 16 MiB encrypted workspace.
+
+The helper acquires the original app's instance lock while staging a copy. Keep the original WPF app and data directory for rollback. The stage includes local metadata and current-user protected files, so keep it on this PC. The installed Rust archive contains metadata only, protected with current-user DPAPI. Each transferred sign-in is stored in its normal per-account DPAPI file. An interrupted import keeps a fingerprint of the input for retry. The migration does not carry queued launches, process state, executable trust, or private access links. A password-protected or unreadable legacy vault contributes metadata only. Its protected credentials remain in the original vault. Returning to the WPF app uses the original library, and changes in the preview do not sync back.
+
+The cross-language fixture covered a valid sign-in, an expired sign-in, an unlinked profile, a pre-existing Rust sign-in, and a password-protected legacy workspace. It also checked an interrupted import, reopen, and refusal to re-import a completed archive after removal. The actual owner's migration and packaged file-picker interaction remain attended checks.
+
+The 1.07 executable has SHA-256 `2C2DCBD28478A8570007D5FC110EAA7900AB3E3B909B71EE9C51E2DF0E44A548`. Thirty-two offline Rust checks and the separate C#→Rust migration test passed. The installed-archive regression failed before the metadata-only correction and passed afterward. The helper and desktop Release builds passed with zero warnings, and both packaged self-check runs passed all five stages.
 
 ## Preview 1.06 desktop windows
 

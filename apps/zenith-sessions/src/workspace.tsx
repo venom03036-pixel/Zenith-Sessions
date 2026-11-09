@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AccountInspector, Avatar, type Account } from './account-inspector';
+import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { DestinationPicker, type Destination } from './destination-picker';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
@@ -28,6 +29,7 @@ type WindowPlacement = {
   attemptId: string;
   placement: 'placed' | 'changed' | 'rejected' | 'unconfirmed' | 'cancelled';
 };
+type MigrationReport = { profiles: number; added: number; signInsAdded: number; existingKept: number };
 
 const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window']];
 const pageDescription: Record<Page, string> = {
@@ -96,6 +98,10 @@ function App() {
   const [launching, setLaunching] = useState(false);
   const [pairRequested, setPairRequested] = useState(false);
   const [importing, setImporting] = useState(false);
+  const [legacyWorkspace, setLegacyWorkspace] = useState<LegacyWorkspace | null>(null);
+  const [legacyOffset, setLegacyOffset] = useState(0);
+  const [legacyRevision, setLegacyRevision] = useState(0);
+  const [legacyNotice, setLegacyNotice] = useState('');
   const [signInBusy, setSignInBusy] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [placements, setPlacements] = useState<WindowPlacement[]>([]);
@@ -108,6 +114,7 @@ function App() {
   const seenSignIn = useRef('');
   const accounts = snapshot?.accounts ?? [];
   const accountKey = accounts.map(item => item.profileId).join(',');
+  const importedTheme = themes.find(([id]) => id === legacyWorkspace?.theme)?.[0];
   const inspected = accounts.find(value => value.profileId === selected);
   const account = accounts.find(value => value.profileId === selected) ?? (accounts.length === 1 ? accounts[0] : undefined);
   const sessions = snapshot?.sessions ?? [];
@@ -153,6 +160,14 @@ function App() {
   }, []);
   useEffect(() => localStorage.setItem('zenith-theme', theme), [theme]);
   useEffect(() => {
+    let current = true;
+    void invoke<LegacyWorkspace | null>('legacy_workspace', { offset: legacyOffset }).then(
+      workspace => { if (current) setLegacyWorkspace(workspace); },
+      error => { if (current) setLegacyNotice(typeof error === 'string' ? error : 'Could not read the legacy workspace.'); },
+    );
+    return () => { current = false; };
+  }, [accountKey, legacyOffset, legacyRevision]);
+  useEffect(() => {
     if (!accountKey) return;
     let current = true;
     void invoke<Record<string, string>>('account_headshots').then(
@@ -183,16 +198,24 @@ function App() {
     const selectedFile = input.files?.[0];
     input.value = '';
     if (!selectedFile) return;
-    if (selectedFile.size === 0 || selectedFile.size > 131072) {
-      setFailure('Choose a protected Zenith sign-in bundle smaller than 128 KiB.');
+    const workspace = selectedFile.name.toLowerCase().endsWith('.zenith-migration');
+    if (selectedFile.size === 0 || selectedFile.size > (workspace ? 16 * 1024 * 1024 : 131072)) {
+      setFailure(workspace ? 'Choose a protected legacy workspace of up to 16 MiB.' : 'Choose a protected Zenith sign-in bundle of up to 128 KiB.');
       return;
     }
     setImporting(true);
     setFailure('');
     try {
-      const encrypted = Array.from(new Uint8Array(await selectedFile.arrayBuffer()));
-      const imported = await invoke<Account>('import_account', { encrypted });
-      setSelected(imported.profileId);
+      const bytes = await selectedFile.arrayBuffer();
+      if (workspace) {
+        const result = await invoke<MigrationReport>('import_legacy', bytes);
+        setLegacyNotice(`Preserved ${result.profiles} profiles. Added ${result.added} accounts and ${result.signInsAdded} sign-ins. Kept ${result.existingKept} matching accounts.`);
+        setLegacyOffset(0);
+        setLegacyRevision(value => value + 1);
+      } else {
+        const imported = await invoke<Account>('import_account', { encrypted: Array.from(new Uint8Array(bytes)) });
+        setSelected(imported.profileId);
+      }
     } catch (error) {
       setFailure(typeof error === 'string' ? error : 'Could not read the protected sign-in bundle.');
     } finally {
@@ -281,13 +304,14 @@ function App() {
       <div className="page-heading">
         <div><h1>{page}</h1><p>{pageDescription[page]}</p></div>
         {page === 'Accounts' && <div className="heading-actions">
-          <button className="secondary-button" disabled={importing} onClick={() => file.current?.click()}>{importing ? 'Importing…' : 'Import saved sign-in'}</button>
+          <button className="secondary-button" disabled={importing} onClick={() => file.current?.click()}>{importing ? 'Importing…' : 'Import protected file'}</button>
           <button className="primary-button" disabled={signInBusy || !!signInAttempt} onClick={() => void beginSignIn()}><Icon name="plus" size={16}/> Add account</button>
         </div>}
       </div>
-      <input ref={file} type="file" accept=".dpapi" hidden onChange={event => void importFile(event.currentTarget)}/>
+      <input ref={file} type="file" accept=".dpapi,.zenith-migration" hidden onChange={event => void importFile(event.currentTarget)}/>
       {loadingError && <p role="alert" className="inline-alert">Zenith could not read the local workspace. Select Refresh to retry.</p>}
       {failure && <p role="alert" className="inline-alert">{failure}</p>}
+      {page === 'Accounts' && legacyNotice && <p role="status" className="inline-alert">{legacyNotice}</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
         <p>Finish signing in inside the Roblox window. Zenith will save the verified sign-in and close the window automatically.</p>
@@ -326,11 +350,17 @@ function App() {
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>
       {inspected && <AccountInspector key={inspected.profileId} account={inspected} image={avatars[inspected.profileId]}
+        legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
           setDestination({ place: favorite.placeId, name: favorite.name, job: null });
           openLaunch(inspected);
         }}/>}
       </div>}
+      {page === 'Accounts' && legacyWorkspace && <LegacyWorkspacePanel workspace={legacyWorkspace} offset={legacyOffset}
+        onPage={setLegacyOffset} onFavorite={favorite => {
+          setDestination({ place: favorite.placeId, name: favorite.name, job: favorite.jobId });
+          setPage('Sessions');
+        }} onTheme={importedTheme ? () => setTheme(importedTheme) : undefined}/>}
       {page === 'Sessions' && <>
         <section className="account-panel preview-panel">
           <h2>Launch Roblox</h2>

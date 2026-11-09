@@ -3,6 +3,8 @@ fn main() {
         tauri_build::AppManifest::new().commands(&[
             "workspace_snapshot",
             "import_account",
+            "import_legacy",
+            "legacy_workspace",
             "remove_account",
             "account_headshots",
             "account_profile",

@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust legacy workspace migration (1.07)
+
+**CAP-03-01, CAP-16-02, VA-03-01, VA-03-05.** The C# helper exports a staged legacy workspace into a current-user DPAPI archive. The Rust importer binds protected sign-ins to exact profile identities, preserves existing preview sign-ins, retains profiles whose credentials are expired or unavailable, and presents imported metadata and favorite destinations. The staged workspace retains assignment and preference metadata. Synthetic C#→Rust compatibility tests exercised normal and password-protected SQLite/vault libraries, interruption, retry, renewal state, and preservation of an existing sign-in. Real legacy import and packaged picker interaction remain attended checks. See the [migration and rollback steps](RUST-DESKTOP-PREVIEW.md#preview-107-legacy-workspace-migration).
+
 ## Rust desktop window tiling (1.06)
 
 **PROD-UI-05, PROD-CORE-08.** The Windows page focuses and tiles confirmed owned Roblox windows. The worker pins each selected attempt and native window identity, checks the work area and native minimum sizes, and records per-window placement readback. Native Windows fixture tests confirmed a remote custom minimum, two non-overlapping placements, and an unchanged unrelated window. Planner and controller tests cover odd dimensions, negative monitor coordinates, minimum-size rejection, and stale or duplicate attempts. Live Roblox, mixed-DPI placement, preview capture, and rendered interaction remain pending. See the [desktop Windows trial](RUST-DESKTOP-PREVIEW.md#preview-106-desktop-windows).

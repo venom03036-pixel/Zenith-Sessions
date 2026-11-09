@@ -16,9 +16,10 @@ use std::{
     time::Instant,
 };
 
-use library::Library;
+use library::{LegacyView, Library, MigrationReport};
 use serde::Serialize;
 use session::{LaunchState, Session, SessionOwner, WindowPlacement};
+use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
 use zenith_session_launch::{
@@ -26,7 +27,7 @@ use zenith_session_launch::{
     directory::{Directory, Game, ServerPage, public_place},
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
-    windows::{SavedIdentity, memory_sample},
+    windows::{MAX_LEGACY_MIGRATION_BYTES, SavedIdentity, memory_sample},
 };
 
 struct Workspace {
@@ -95,6 +96,47 @@ async fn import_account(
             .lock()
             .map_err(|_| STATE_ERROR)?
             .import(encrypted)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn import_legacy(
+    state: State<'_, Arc<Workspace>>,
+    request: Request<'_>,
+) -> Result<MigrationReport, String> {
+    let InvokeBody::Raw(bytes) = request.body() else {
+        return Err("Select a protected Zenith legacy workspace file.".into());
+    };
+    if bytes.is_empty() || bytes.len() > MAX_LEGACY_MIGRATION_BYTES {
+        return Err("The migration file has an invalid size.".into());
+    }
+    let bytes = bytes.clone();
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .import_legacy(bytes)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn legacy_workspace(
+    state: State<'_, Arc<Workspace>>,
+    offset: usize,
+) -> Result<Option<LegacyView>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .library
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .legacy_view(offset)
     })
     .await
     .map_err(|_| STATE_ERROR.to_owned())?
@@ -382,6 +424,8 @@ fn main() -> ExitCode {
         .invoke_handler(tauri::generate_handler![
             workspace_snapshot,
             import_account,
+            import_legacy,
+            legacy_workspace,
             remove_account,
             account_headshots,
             account_profile,

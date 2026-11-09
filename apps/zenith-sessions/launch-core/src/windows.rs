@@ -82,38 +82,7 @@ pub fn read_probe_credential(path: &Path, username: &str) -> Result<(u64, Creden
 }
 
 pub fn open_saved_bundle(encrypted: &mut [u8]) -> Result<(SavedIdentity, Credential), String> {
-    if encrypted.is_empty() || encrypted.len() as u64 > MAX_BUNDLE {
-        return Err("invalid protected probe bundle length".into());
-    }
-    let mut entropy = PROBE_ENTROPY.to_vec();
-    let input = blob(encrypted);
-    let entropy = blob(&mut entropy);
-    let mut output = CRYPT_INTEGER_BLOB::default();
-    // DPAPI owns this allocation. Copy only bounded bytes, wipe and release on all paths.
-    unsafe {
-        CryptUnprotectData(
-            &input,
-            None,
-            Some(&entropy),
-            None,
-            None,
-            CRYPTPROTECT_UI_FORBIDDEN,
-            &mut output,
-        )
-        .map_err(|_| "Windows could not unlock the current-user probe bundle")?;
-    }
-    let clear = if output.pbData.is_null() {
-        return Err("Windows returned an empty probe bundle".into());
-    } else {
-        // SAFETY: a successful CryptUnprotectData transfers cbData writable bytes to us.
-        unsafe {
-            let bytes = std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize);
-            let copy = (bytes.len() as u64 <= MAX_BUNDLE).then(|| Zeroizing::new(bytes.to_vec()));
-            bytes.zeroize();
-            LocalFree(Some(HLOCAL(output.pbData.cast())));
-            copy.ok_or("decoded probe bundle is too large")?
-        }
-    };
+    let clear = unseal_current_user(encrypted, PROBE_ENTROPY, MAX_BUNDLE)?;
     let bundle: Bundle =
         serde_json::from_slice(&clear).map_err(|_| "invalid protected probe bundle")?;
     let now = SystemTime::now()
@@ -141,6 +110,56 @@ pub fn open_saved_bundle(encrypted: &mut [u8]) -> Result<(SavedIdentity, Credent
         },
         Credential::new(bundle.cookie).map_err(|error| error.to_string())?,
     ))
+}
+
+pub const MAX_LEGACY_MIGRATION_BYTES: usize = 16 * 1024 * 1024;
+const LEGACY_MIGRATION_ENTROPY: &[u8] = b"ZenithSessions/Rust/LegacyMigration/v1";
+
+pub fn open_legacy_migration(encrypted: &mut [u8]) -> Result<Zeroizing<Vec<u8>>, String> {
+    unseal_current_user(
+        encrypted,
+        LEGACY_MIGRATION_ENTROPY,
+        MAX_LEGACY_MIGRATION_BYTES as u64,
+    )
+}
+
+pub fn seal_legacy_metadata(clear: &mut [u8]) -> Result<Vec<u8>, String> {
+    seal_current_user(clear, LEGACY_MIGRATION_ENTROPY, MAX_LEGACY_MIGRATION_BYTES)
+}
+
+fn unseal_current_user(
+    encrypted: &mut [u8],
+    entropy: &[u8],
+    limit: u64,
+) -> Result<Zeroizing<Vec<u8>>, String> {
+    if encrypted.is_empty() || encrypted.len() as u64 > limit {
+        return Err("The protected file has an invalid size.".into());
+    }
+    let mut entropy = entropy.to_vec();
+    let input = blob(encrypted);
+    let entropy = blob(&mut entropy);
+    let mut output = CRYPT_INTEGER_BLOB::default();
+    // SAFETY: DPAPI owns the successful output. Wipe and release it before returning.
+    unsafe {
+        CryptUnprotectData(
+            &input,
+            None,
+            Some(&entropy),
+            None,
+            None,
+            CRYPTPROTECT_UI_FORBIDDEN,
+            &mut output,
+        )
+        .map_err(|_| "Windows could not open this current-user protected file.")?;
+        if output.pbData.is_null() {
+            return Err("Windows returned an empty protected file.".into());
+        }
+        let bytes = std::slice::from_raw_parts_mut(output.pbData, output.cbData as usize);
+        let copy = (bytes.len() as u64 <= limit).then(|| Zeroizing::new(bytes.to_vec()));
+        bytes.zeroize();
+        LocalFree(Some(HLOCAL(output.pbData.cast())));
+        copy.ok_or_else(|| "The decoded protected file is too large.".into())
+    }
 }
 
 fn blob(bytes: &mut [u8]) -> CRYPT_INTEGER_BLOB {
@@ -191,8 +210,15 @@ pub fn seal_saved_bundle(
         })
         .map_err(|_| "Could not encode the saved sign-in")?,
     );
-    let mut entropy = PROBE_ENTROPY.to_vec();
-    let input = blob(&mut clear);
+    seal_current_user(&mut clear, PROBE_ENTROPY, MAX_BUNDLE as usize)
+}
+
+fn seal_current_user(clear: &mut [u8], entropy: &[u8], limit: usize) -> Result<Vec<u8>, String> {
+    if clear.is_empty() || clear.len() > limit {
+        return Err("The file is too large to protect.".into());
+    }
+    let mut entropy = entropy.to_vec();
+    let input = blob(clear);
     let entropy = blob(&mut entropy);
     let mut output = CRYPT_INTEGER_BLOB::default();
     // SAFETY: the inputs remain alive during DPAPI and the successful output is released here.
@@ -206,13 +232,15 @@ pub fn seal_saved_bundle(
             CRYPTPROTECT_UI_FORBIDDEN,
             &mut output,
         )
-        .map_err(|_| "Windows could not protect the saved sign-in")?;
+        .map_err(|_| "Windows could not protect this file.")?;
         if output.pbData.is_null() {
-            return Err("Windows returned an empty protected sign-in".into());
+            return Err("Windows returned an empty protected file.".into());
         }
-        let bytes = std::slice::from_raw_parts(output.pbData, output.cbData as usize).to_vec();
+        let size = output.cbData as usize;
+        let bytes =
+            (size <= limit).then(|| std::slice::from_raw_parts(output.pbData, size).to_vec());
         LocalFree(Some(HLOCAL(output.pbData.cast())));
-        Ok(bytes)
+        bytes.ok_or_else(|| "The protected file exceeds the size limit.".into())
     }
 }
 

@@ -12,6 +12,9 @@ use zenith_session_launch::{
     windows::{SavedIdentity, open_saved_bundle, seal_saved_bundle},
 };
 
+mod migration;
+pub use migration::{LegacyView, MigrationReport};
+
 const MAX_BUNDLE: usize = 128 * 1024;
 const MAX_ACCOUNTS: usize = 128;
 
@@ -180,7 +183,11 @@ impl Library {
     }
 
     fn save_index(&self) -> Result<(), String> {
-        let json = serde_json::to_vec(&self.accounts.values().collect::<Vec<_>>())
+        self.write_index(&self.accounts)
+    }
+
+    fn write_index(&self, accounts: &BTreeMap<Uuid, SavedIdentity>) -> Result<(), String> {
+        let json = serde_json::to_vec(&accounts.values().collect::<Vec<_>>())
             .map_err(|_| "Could not encode the account index")?;
         atomic_write(&self.root.join("accounts.json"), &json)
     }

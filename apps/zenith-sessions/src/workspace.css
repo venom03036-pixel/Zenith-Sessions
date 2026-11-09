@@ -57,4 +57,10 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .friends-list li { display: grid; gap: .1rem; padding: .4rem; }
 .friends-list li span { color: var(--muted); }
 .window-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .75rem; }
+.legacy-workspace details { margin: .6rem 0; }
+.legacy-workspace summary { cursor: pointer; }
+.legacy-workspace .archived-profile { padding: .4rem .6rem; background: var(--field); border-radius: .5rem; }
+.legacy-workspace dl { display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; }
+.legacy-workspace dd { margin: 0; }
+.legacy-workspace .account-bio { white-space: pre-wrap; overflow-wrap: anywhere; }
 @media (max-width: 950px) { .accounts-workspace.with-inspector { grid-template-columns: minmax(0, 1fr); } }
