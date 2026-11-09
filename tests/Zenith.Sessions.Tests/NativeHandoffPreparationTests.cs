@@ -14,6 +14,51 @@ public sealed partial class NativeHandoffPreparationTests : IDisposable
     private const string Original="synthetic-preparation-original",Current="synthetic-preparation-current",Raw="synthetic-secret-must-not-escape";
     private static LinkedIdentity Identity(long user=123)=>new(user,"verified_player",RobloxSessionIdentity.Issuer,user.ToString(CultureInfo.InvariantCulture));
 
+    [Fact]
+    public async Task DirectHttpRotationIsIdentityCheckedSavedEncryptedAndDispatchedWithTheFinalGrant()
+    {
+        await using var f = await Fixture.Open(_root);
+        using var transport = new DirectTicketTransport();
+        using var tickets = new RobloxLaunchTicketClient(transport);
+        await using var capture = new DirectTicketNativeHandoffCapture(tickets);
+        var result = await f.Service.PrepareNativeHandoffAsync(f.Intent, capture, default);
+        Assert.Equal(NativeHandoffPreparationStatus.Ready, result.Status);
+        using var prepared = Assert.IsType<NativeHandoffPreparation>(result.Preparation);
+        Assert.Equal(NativeLaunchMode.DirectTicket, prepared.Mode);
+        Assert.Equal(new[] { Current }, f.Client.Seen);
+        using (var reopened = new ProtectedCredentialVault(_root))
+        {
+            var saved = await reopened.ReadWriteSnapshotAsync(f.Profile.Id, default);
+            Assert.Equal(Current, saved.Record!.SessionCookie);
+            Assert.Equal(AuthorizationHealth.Linked, saved.Record.Health);
+            Assert.Equal(prepared.FinalGrant, saved);
+        }
+        using var starter = new Starter(); await using var coordinator = new NativeHandoffCoordinator(f.Vault);
+        var attempt = await coordinator.DispatchAsync(prepared.Candidate, prepared.FinalGrant, prepared.Intent, starter,
+            new LaunchAuthorizationValidator(f.Repository, f.Vault).ValidateAsync, () => true, () => new(true, "Synthetic owned reservation"), default);
+        Assert.Equal(NativeHandoffAttemptStatus.StartedUnverified, attempt.Status);
+        Assert.Equal(1, starter.Calls); Assert.Equal(2, transport.Calls);
+        foreach (var file in Directory.EnumerateFiles(_root, "*", SearchOption.AllDirectories))
+        {
+            string stored = System.Text.Encoding.UTF8.GetString(await File.ReadAllBytesAsync(file));
+            Assert.DoesNotContain(Original, stored); Assert.DoesNotContain(Current, stored); Assert.DoesNotContain(SyntheticHandoff.Ticket, stored);
+        }
+    }
+
+    private sealed class DirectTicketTransport : System.Net.Http.HttpMessageHandler
+    {
+        public int Calls;
+        protected override Task<System.Net.Http.HttpResponseMessage> SendAsync(System.Net.Http.HttpRequestMessage request, CancellationToken ct)
+        {
+            Calls++;
+            Assert.Equal(".ROBLOSECURITY=" + (Calls == 1 ? Original : Current), Assert.Single(request.Headers.GetValues("Cookie")));
+            var response = new System.Net.Http.HttpResponseMessage(System.Net.HttpStatusCode.OK) { Content = new System.Net.Http.StringContent("{}") };
+            if (Calls == 1) response.Headers.Add("Set-Cookie", ".ROBLOSECURITY=" + Current + "; Domain=.roblox.com; Secure; HttpOnly; Max-Age=3600");
+            else response.Headers.Add("rbx-authentication-ticket", SyntheticHandoff.Ticket);
+            return Task.FromResult(response);
+        }
+    }
+
     [Theory]
     [InlineData(false,false)] [InlineData(true,false)] [InlineData(false,true)] [InlineData(true,true)]
     public async Task OwnBrowserCaptureAndSamePlayerVerificationReturnOnlyThisOperationsFinalGrant(bool job,bool projection)

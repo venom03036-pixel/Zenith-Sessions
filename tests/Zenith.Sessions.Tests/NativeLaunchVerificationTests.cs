@@ -102,7 +102,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
             var reloaded = await store.LoadAsync(default);
             Assert.Null(reloaded.Notice);
             Assert.Equal(Entry(), Assert.Single(reloaded.Settings.NativeLaunchVerifications!));
-            Assert.Equal(NativeLaunchModes.OfficialPageValue, reloaded.Settings.NativeLaunchMode); // The mode itself is a separate choice.
+            Assert.Equal(NativeLaunchModes.DirectTicketValue, reloaded.Settings.NativeLaunchMode); // The mode itself is a separate choice.
         }
         Assert.Throws<InvalidDataException>(() => new SessionsSettings(NativeLaunchVerifications: [Entry("browser")]).Validated());
         Assert.Throws<InvalidDataException>(() => new SessionsSettings(NativeLaunchVerifications: [Entry() with { UserId = 0 }]).Validated());
@@ -251,11 +251,15 @@ public sealed class NativeLaunchVerificationTests : IDisposable
         Assert.Equal(0, overlap); // One preparation and start at a time, as for a trial.
         var receipts = rows.Select(row => store.Row(row.Operation!.Intent.OperationId)!.ProcessReceipt!).ToArray();
         Assert.Equal(3, receipts.Select(receipt => receipt.ProcessId).Distinct().Count()); Assert.All(receipts, receipt => Assert.True(receipt.IsValid));
-        // A fourth ordinary request while paused is Queued; a trial needs an Unverified provider, so it is refused while ordinary launching is on.
+        // A fourth ordinary request while paused is Queued. Optional diagnostics use their own exact consent,
+        // even when the provider already supports ordinary launches; cancellation cannot leave that consent behind.
         await queue.SetPausedAsync(true, default);
         var fourth = await queue.EnqueueAsync(Profile("Four"), default, new(456, 7), new(42));
         Assert.Equal(LaunchState.Queued, fourth.State); Assert.False(queue.IsTrialOperation(fourth.Intent.OperationId));
-        await Assert.ThrowsAsync<LaunchQueueException>(() => queue.EnqueueTrialAsync(Profile("Trial"), default, new(456, 7), new(42)));
+        var diagnostic = await queue.EnqueueTrialAsync(Profile("Trial"), default, new(456, 7), new(42));
+        Assert.True(queue.IsTrialOperation(diagnostic.Intent.OperationId));
+        await queue.CancelAsync(diagnostic.Intent.OperationId, default);
+        Assert.False(await queue.ResumeTrialAsync(diagnostic.Intent.OperationId, default));
         // Forgetting the verification (the source reports none) stops ordinary launching: the still Queued request is
         // recorded blocked at its turn, and no preparation is created for it.
         source.Saved = null;
@@ -286,7 +290,7 @@ public sealed class NativeLaunchVerificationTests : IDisposable
     {
         var entry = Assert.Single(SettingsSearchCatalog.Search(query), entry => entry.Id == "verified-launch");
         Assert.Equal(SettingsSearchTarget.Installations, entry.Target); Assert.Equal("Settings", SettingsSearchCatalog.PageOf(entry.Target));
-        Assert.Contains("Off by default", entry.Description, StringComparison.Ordinal);
+        Assert.Contains("Direct ticket needs no recorded trial", entry.Description, StringComparison.Ordinal);
         Assert.Contains("Record this trial as verified", entry.Description, StringComparison.Ordinal);
         using var stream = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(stream);
         var document = XDocument.Load(stream!);
@@ -307,10 +311,10 @@ public sealed class NativeLaunchVerificationTests : IDisposable
         var guide = Assert.Single(document.Descendants().Where(e => e.Name.LocalName == "ScrollViewer"
             && ((string?)e.Attribute("Visibility"))?.Contains("IsGuide", StringComparison.Ordinal) == true));
         var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
-        Assert.Contains(texts, text => text == "Ordinary launching after a verified trial");
-        string section = Assert.Single(texts, text => text.StartsWith("Ordinary and group launch requests", StringComparison.Ordinal));
-        foreach (string expected in new[] { "recorded blocked", "Record this trial as verified", "Forget verified trial", "settings.json", "no sign-in material",
-            "one start at a time", "pauses the queue", "still confirmed only by its own log reports", "queue them again", "Off by default" })
+        Assert.Contains(texts, text => text == "Saved account launch availability");
+        string section = Assert.Single(texts, text => text.StartsWith("Direct ticket launches saved accounts immediately", StringComparison.Ordinal));
+        foreach (string expected in new[] { "does not require a successful setup trial", "after a Roblox update", "Forget verified trial", "executable publisher", "saved authorization",
+            "resource headroom", "pauses the queue", "client log reporting the expected player", "queue again", "Official page diagnostic mode retains its recorded-trial requirement" })
             Assert.Contains(expected, section, StringComparison.Ordinal);
     }
 
@@ -382,13 +386,34 @@ public sealed class NativeLaunchVerificationTests : IDisposable
 public sealed partial class ClientWindowIntegrationTests
 {
     [Fact]
+    public Task DirectSavedAccountQueueStartsWithoutRecordingATrialAndKeepsReceiptSeparateFromArrival() => OnUi(async () =>
+    {
+        var child = new NativeEvidenceChild { PreparedMode = NativeLaunchMode.DirectTicket };
+        await using var shell = await NativeEvidenceShellAsync(child, new NativeEvidenceMonitor(), mode: NativeLaunchMode.DirectTicket);
+        Assert.False(shell.IsNativeLaunchVerified); Assert.True(shell.IsNativeLaunchAvailable); Assert.True(shell.CanQueueTargetedLaunch);
+        Assert.Contains("No recorded trial is required", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
+        shell.SelectedAccount!.IsChecked = true;
+        shell.QueueTargetedAccounts.Execute(null); await shell.QueueTargetedAccounts.Execution;
+        await Dispatcher.Yield(DispatcherPriority.ApplicationIdle); // Observe the posted queue projection, as the UI does.
+        Assert.Contains("1 queued, 0 blocked", shell.Notice, StringComparison.Ordinal);
+        Assert.NotEqual(LaunchProblem.ProviderUnavailable, Assert.Single(shell.Launches).Operation.Problem);
+        shell.ToggleQueuePause.Execute(null); await shell.ToggleQueuePause.Execution;
+        var evidence = await NativeEvidenceStartedAsync(shell);
+        Assert.Equal(1, child.Preparations); Assert.Equal(1, child.Starts);
+        Assert.True(child.Entered.Task.Result.RequiresVerifiedExecutable);
+        Assert.Equal(child.Receipt.ProcessId, evidence.Operation.ProcessReceipt!.ProcessId);
+        Assert.False(evidence.View!.ArrivalVerified); Assert.False(shell.IsNativeLaunchVerified);
+        Assert.DoesNotContain("NativeLaunchVerifications\":[{", await ReadSettingsAsync(), StringComparison.Ordinal);
+    });
+
+    [Fact]
     public Task RecordingATrialAsVerifiedNeedsFreshMatchingEvidenceAndThenTurnsOrdinaryLaunchingOn() => OnUi(async () =>
     {
         var monitor = new NativeEvidenceMonitor(); var child = new NativeEvidenceChild();
         await using var shell = await NativeEvidenceShellAsync(child, monitor);
         Assert.False(shell.IsNativeLaunchVerified); Assert.False(shell.CanRecordNativeLaunchVerification); Assert.False(shell.CanForgetNativeLaunchVerification);
         Assert.StartsWith("Ordinary launching: off", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
-        Assert.Equal("This Roblox installation needs a successful launch test. Choose a game and account, then use Test selected account launch on the launch review page. Signing in saves the account; it does not complete this test.", shell.AccountLaunchAvailability);
+        Assert.Contains("Official page mode needs a recorded launch test", shell.AccountLaunchAvailability, StringComparison.Ordinal);
         Assert.False(shell.CanQueueTargetedLaunch);
         shell.StartNativeTrial.Execute(Assert.IsType<ShellViewModel.NativeTrialReview>(shell.CaptureNativeTrialReview())); await shell.StartNativeTrial.Execution;
         var evidence = await NativeEvidenceStartedAsync(shell);
@@ -425,12 +450,12 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.Contains("Ordinary launching is on", shell.NativeTrialStatus, StringComparison.Ordinal);
         Assert.Contains("Recorded the trial as verified", shell.Notice, StringComparison.Ordinal);
         Assert.DoesNotContain(shell.Events, line => line.Contains("Operation failed", StringComparison.Ordinal));
-        // The verification is for this mode: saving Direct ticket turns ordinary launching off until that mode is verified too.
+        // Verification remains mode-specific; Direct ticket is available without borrowing the official-page trial.
         shell.SelectedNativeLaunchMode = ShellViewModel.NativeLaunchModeOptions.Single(option => option.Mode == NativeLaunchMode.DirectTicket);
         shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         Assert.False(shell.IsNativeLaunchVerified); Assert.False(shell.CanForgetNativeLaunchVerification);
-        Assert.False(shell.CanQueueTargetedLaunch);
-        Assert.Contains("do not apply to this selection", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
+        Assert.True(shell.CanQueueTargetedLaunch);
+        Assert.Contains("No recorded trial is required", shell.NativeLaunchVerificationStatus, StringComparison.Ordinal);
         shell.SelectedNativeLaunchMode = ShellViewModel.NativeLaunchModeOptions.Single(option => option.Mode == NativeLaunchMode.OfficialPage);
         shell.SaveSettings.Execute(null); await shell.SaveSettings.Execution;
         Assert.True(shell.IsNativeLaunchVerified);
@@ -440,7 +465,7 @@ public sealed partial class ClientWindowIntegrationTests
     public Task ASavedVerificationLetsACheckedAccountRequestStartThroughThePreparingProviderUntilItIsForgotten() => OnUi(async () =>
     {
         Directory.CreateDirectory(_root);
-        var saved = new SessionsSettings(NativeLaunchVerifications: [new("official-page", "Roblox", DateTimeOffset.UtcNow, Guid.NewGuid(), 730009, DateTimeOffset.UtcNow.AddHours(-1).UtcTicks, 456, 42, NativeEvidenceIdentity)]).Validated();
+        var saved = new SessionsSettings(NativeLaunchMode: "official-page", NativeLaunchVerifications: [new("official-page", "Roblox", DateTimeOffset.UtcNow, Guid.NewGuid(), 730009, DateTimeOffset.UtcNow.AddHours(-1).UtcTicks, 456, 42, NativeEvidenceIdentity)]).Validated();
         await File.WriteAllTextAsync(Path.Combine(_root, "settings.json"), JsonSerializer.Serialize(saved));
         var monitor = new NativeEvidenceMonitor(); var child = new NativeEvidenceChild();
         await using var shell = await NativeEvidenceShellAsync(child, monitor, trialAvailable: false);

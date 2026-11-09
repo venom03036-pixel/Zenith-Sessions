@@ -56,6 +56,17 @@ public sealed partial class NativeTrialQueueTests
         await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
         var binding = invalid switch { "missing-binding" => null, "zero-user" => new LaunchAccountBinding(0, 7),
             "zero-generation" => new LaunchAccountBinding(123, 0), _ => Binding };
+        if (invalid == "supported")
+        {
+            // Direct saved-account launching is now supported without a historical trial; an optional diagnostic
+            // trial still owns exact per-request consent and cannot borrow a general queue resume.
+            var request = await queue.EnqueueTrialAsync(Profile(), default, binding!, Destination);
+            Assert.True(queue.IsTrialOperation(request.Intent.OperationId));
+            Assert.True(await queue.ResumeTrialAsync(request.Intent.OperationId, default));
+            await Until(() => store.Row(request.Intent.OperationId)?.State == LaunchState.ClientStartedUnverified);
+            Assert.False(((Provider)provider).Contexts.Single().RequiresVerifiedExecutable);
+            Assert.Single(store.Last.Operations); return;
+        }
         await Assert.ThrowsAsync<LaunchQueueException>(() => queue.EnqueueTrialAsync(Profile(), default, binding!,
             invalid == "missing-destination" ? null! : Destination));
         Assert.Empty(store.Last.Operations);

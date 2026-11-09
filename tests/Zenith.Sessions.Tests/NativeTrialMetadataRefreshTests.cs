@@ -125,6 +125,11 @@ public sealed partial class ClientWindowIntegrationTests
 
     private async Task<ShellViewModel> MetadataFailureShellAsync(MetadataFailureChild child, MetadataIdentity identity)
     {
+        if (!System.IO.File.Exists(System.IO.Path.Combine(_root, "settings.json")))
+        {
+            using var settings = new Zenith.Sessions.Windows.SettingsStore(_root);
+            await settings.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(NativeLaunchMode: "official-page"), default);
+        }
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner());
         var shell = new ShellViewModel(_root, false, Dispatcher.CurrentDispatcher, new NativeEvidenceMonitor(),
             signIn: new HandoffSignIn(), sessionClient: identity, nativeProvider: provider, clientReleases: new NativeEvidenceReleases());

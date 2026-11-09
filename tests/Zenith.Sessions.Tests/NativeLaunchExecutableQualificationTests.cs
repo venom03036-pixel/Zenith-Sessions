@@ -18,6 +18,54 @@ public sealed class NativeLaunchExecutableQualificationTests
         DateTimeOffset.UtcNow, 7, null, RobloxServerKind.Unknown, true), requiresVerifiedExecutable: true);
 
     [Fact]
+    public async Task DirectSavedAccountLaunchNeedsFreshTrustButNoHistoricalTrial()
+    {
+        var source = new Source { LaunchMode = NativeLaunchMode.DirectTicket };
+        var child = new Child { PreparedMode = NativeLaunchMode.DirectTicket };
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new Trust(), source, (_, identity) => identity == Original);
+        provider.Configure(Candidate());
+        Assert.Equal(CapabilityState.Supported, provider.AccountLaunch.State);
+        var context = Context(); var result = await provider.PrepareAsync(context, default);
+        await using var prepared = Assert.IsAssignableFrom<IPreparedAccountLaunch>(result.Prepared);
+        using var boundary = new LaunchDispatchBoundary(context.OriginalIntent, (_, _) => Task.FromResult(true), () => true, () => new(true, "Synthetic"));
+        Assert.Equal(ProviderLaunchStatus.ClientStartedUnverified, (await prepared.DispatchAsync(boundary, default)).Status);
+        Assert.Equal(1, child.Preparations); Assert.Equal(1, child.Starts); Assert.Null(source.Saved);
+    }
+
+    [Theory]
+    [InlineData("mode")]
+    [InlineData("file")]
+    [InlineData("selection")]
+    public async Task DirectLaunchRechecksThePreparedModeFileAndSelectionAtDispatch(string change)
+    {
+        var source = new Source { LaunchMode = NativeLaunchMode.DirectTicket }; bool current = true;
+        var child = new Child { PreparedMode = NativeLaunchMode.DirectTicket };
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new Trust(), source, (_, _) => current);
+        provider.Configure(Candidate()); var context = Context();
+        var result = await provider.PrepareAsync(context, default);
+        await using var prepared = Assert.IsAssignableFrom<IPreparedAccountLaunch>(result.Prepared);
+        if (change == "mode") source.LaunchMode = NativeLaunchMode.OfficialPage;
+        else if (change == "file") current = false;
+        else provider.Configure(null);
+        using var boundary = new LaunchDispatchBoundary(context.OriginalIntent, (_, _) => Task.FromResult(true), () => true, () => new(true, "Synthetic"));
+        Assert.Equal(ProviderLaunchStatus.RejectedBeforeStart, (await prepared.DispatchAsync(boundary, default)).Status);
+        Assert.Equal(0, child.Starts);
+    }
+
+    [Theory]
+    [InlineData(false, NativeLaunchMode.DirectTicket)]
+    [InlineData(true, NativeLaunchMode.OfficialPage)]
+    [InlineData(true, null)]
+    public async Task DirectLaunchCannotSkipTheHeldIdentityOrUseAnotherPreparedMode(bool identity, NativeLaunchMode? mode)
+    {
+        var child = new Child { Identity = identity ? Original : null, PreparedMode = mode };
+        await using var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new Trust(), new Source { LaunchMode = NativeLaunchMode.DirectTicket }, (_, _) => true);
+        provider.Configure(Candidate()); var result = await provider.PrepareAsync(Context(), default);
+        if (result.Prepared is { } prepared) await prepared.DisposeAsync();
+        Assert.Equal(LaunchPreparationFailure.Rejected, result.Failure); Assert.Equal(1, child.Preparations); Assert.Equal(0, child.Starts);
+    }
+
+    [Fact]
     public async Task AReadableLegacyVerificationNeverEnablesOrdinaryLaunching()
     {
         var source = new Source { Saved = Entry(null).Validated() };
@@ -154,7 +202,7 @@ public sealed class NativeLaunchExecutableQualificationTests
     }
 
     private sealed class Source : INativeLaunchVerificationSource
-    { public NativeLaunchVerification? Saved; public NativeLaunchVerification? Find(ClientInstallationProduct product) => Saved; }
+    { public NativeLaunchMode? LaunchMode { get; set; } public NativeLaunchVerification? Saved; public NativeLaunchVerification? Find(ClientInstallationProduct product) => Saved; }
     private sealed class Trust : IAsyncDisposable { public ValueTask DisposeAsync() => ValueTask.CompletedTask; }
     private sealed class Child : IConfiguredNativeLaunchChild
     {

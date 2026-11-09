@@ -593,6 +593,9 @@ public sealed class LaunchPacingTests
         var pacing = queue.ReadPacing(); Assert.True(pacing.Ready); Assert.Equal(TimeSpan.Zero, pacing.Remaining);
         // No outside signal: the release itself wakes the queue, which starts the next request now.
         await Until(() => provider.Starts.Count == 2);
+        // Starts is incremented inside the provider, before the coordinator durably records the receipt.
+        // Join that active operation before asserting its persisted result; keep the exact state assertion.
+        await queue.WaitForActiveCleanupAsync(default);
         Assert.Equal(LaunchState.ClientStartedUnverified, Row(store, second).State);
     }
 

@@ -298,8 +298,13 @@ public sealed partial class ClientWindowIntegrationTests
 
     // trialAvailable is false when the test saved a verified trial first (R-launch-0): ordinary launching is then on and the trial is not offered.
     private async Task<ShellViewModel> NativeEvidenceShellAsync(NativeEvidenceChild child, NativeEvidenceMonitor monitor,IAccountRepository? accounts=null,
-        IPublicRobloxClientReleaseDirectory? releases=null,bool trialAvailable=true)
+        IPublicRobloxClientReleaseDirectory? releases=null,bool trialAvailable=true,NativeLaunchMode mode=NativeLaunchMode.OfficialPage)
     {
+        if (!System.IO.File.Exists(System.IO.Path.Combine(_root, "settings.json")))
+        {
+            using var settings = new Zenith.Sessions.Windows.SettingsStore(_root);
+            await settings.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(NativeLaunchMode: NativeLaunchModes.ToSettingsValue(mode)), default);
+        }
         var provider = new WindowsConfiguredNativeLaunchProvider(_ => child, new NativeEvidenceTrustOwner(), matchesExecutable: (_, identity) => identity == NativeEvidenceIdentity);
         // No installation discovery is injected, so a null release source would hand the shell its live public directory and
         // every trial start would ask Roblox (O-C9-4). The synthetic source answers at once; a held read is injected explicitly.

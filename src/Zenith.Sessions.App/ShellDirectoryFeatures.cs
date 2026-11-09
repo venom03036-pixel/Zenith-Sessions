@@ -181,20 +181,22 @@ public sealed partial class ShellViewModel
             }
             if(row.NeedsSignIn || row.KnownUserId is not { } userId) {await AuthorizeSelectedAsync(false);return;}
             if(!QueueReady) {Notice="The launch queue is unavailable. Resolve its storage error before requesting a client.";return;}
-            if(!IsNativeLaunchVerified || row.Profile.PreferredPlaceId is not >0)
+            if(!IsNativeLaunchAvailable || row.Profile.PreferredPlaceId is not >0)
             {
                 // A single-account action must not inherit a previous batch's checked recipients.
                 // Take the user to the existing reviewed launch path, without persisting a doomed request.
                 foreach(var account in Accounts)account.IsChecked=ReferenceEquals(account,row);
                 if(row.Profile.PreferredPlaceId is >0)ServerBrowser.UsePreferredPlace(row.Profile.PreferredPlaceId.Value);
                 Navigate.Execute("JoinGame");ShowJoinStep.Execute(ServerBrowser.CanUseDestination?"3":"1");
-                Notice=ServerBrowser.CanUseDestination?"Review this account and destination before starting. This installation may need its first launch test."
+                Notice=ServerBrowser.CanUseDestination?"Review this account and destination before starting. Select an installed Roblox player in Settings if launching is unavailable."
                     :"Choose a game for this account, then review the launch. No client has started.";
                 return;
             }
             var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
             var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
-            Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem):"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
+            Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem)
+                :EffectiveQueuePaused?"Native launch queued. Choose Resume queue to start Roblox."
+                :"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
         },error=>Fail(error,ManagerSubsystem.Queue));
         RefreshPublicImageActivity();
     }
@@ -449,7 +451,8 @@ public sealed partial class ShellViewModel
             if(review.Spread is { } servers) advice=servers.ExplainRecorded(queued+blocked,withServer);
         }
         QueueExpanded=true;
-        return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable. No arrival is assumed. {advice}";
+        string resume=queued>0&&EffectiveQueuePaused?" Queue paused: choose Resume queue to start Roblox.":"";
+        return $"Place {target.PlaceId} destination requests: {queued} queued, {blocked} blocked, {skipped} already pending or unavailable.{resume} No arrival is assumed. {advice}";
     }
     private void RefreshAccountLaunchStates()
     {

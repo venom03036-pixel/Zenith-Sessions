@@ -57,7 +57,7 @@ public sealed partial class ClientWindowIntegrationTests
         // A real trial-installation change still revokes: onto a present native row, and off it again.
         vm.RefreshInstallations.Execute(null); await vm.RefreshInstallations.Execution;
         vm.SelectedInstallation = vm.InstallationCandidates[0];
-        Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Native file selected", vm.NativeTrialStatus);
+        Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Direct ticket launching is ready", vm.NativeTrialStatus);
         await WaitForQueuePauseLabelAsync(vm, "Resume queue");
         await ResumeQueueForInstallationTestAsync(vm);
         vm.SelectedInstallation = vm.InstallationCandidates[1];
@@ -101,7 +101,7 @@ public sealed partial class ClientWindowIntegrationTests
         foreach (var unsupported in new[] { launcher, managed })
         {
             vm.SelectedInstallation = native;
-            Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Native file selected", vm.NativeTrialStatus);
+            Assert.True(InstallationTestQueuePaused(vm)); Assert.Contains("Direct ticket launching is ready", vm.NativeTrialStatus);
             await WaitForQueuePauseLabelAsync(vm, "Resume queue");
             await ResumeQueueForInstallationTestAsync(vm);
             vm.SelectedInstallation = unsupported;
@@ -118,7 +118,7 @@ public sealed partial class ClientWindowIntegrationTests
         using var source = Assembly.GetExecutingAssembly().GetManifestResourceStream("ProductionMainWindow.xaml"); Assert.NotNull(source);
         string xaml = new StreamReader(source!).ReadToEnd();
         Assert.DoesNotContain("No candidate is chosen as your launch provider", xaml, StringComparison.Ordinal);
-        Assert.Contains("makes it the installation for an explicit trial in Join a game; changing that row stops any trial and pauses the queue", xaml, StringComparison.Ordinal);
+        Assert.Contains("Changing the installation stops pending preparation and pauses the queue", xaml, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -534,7 +534,7 @@ public sealed partial class ClientWindowIntegrationTests
         Assert.False(froststrap.IsSuggested); Assert.Equal("", froststrap.Suggestion);
         // The provider accepted the preselection exactly as it would a click, so the trial card names the file.
         Assert.Equal(player.ExecutablePath, vm.NativeTrialInstallation);
-        Assert.Contains("Native file selected", vm.NativeTrialStatus, StringComparison.Ordinal);
+        Assert.Contains("Direct ticket launching is ready", vm.NativeTrialStatus, StringComparison.Ordinal);
         Assert.Contains("Suggested", vm.InstallationStatus, StringComparison.Ordinal);
         Assert.Contains("preselection", vm.InstallationStatus, StringComparison.Ordinal);
         Assert.Empty(vm.Launches);

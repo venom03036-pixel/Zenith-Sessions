@@ -38,6 +38,11 @@ public sealed partial class ClientWindowIntegrationTests
 
     private async Task<ShellViewModel> NativeTrialShellAsync(bool sample = false, bool installation = true, bool destination = true, bool link = true)
     {
+        if (!System.IO.File.Exists(System.IO.Path.Combine(_root, "settings.json")))
+        {
+            using var settings = new Zenith.Sessions.Windows.SettingsStore(_root);
+            await settings.SaveAsync(new Zenith.Sessions.Windows.SessionsSettings(NativeLaunchMode: "official-page"), default);
+        }
         var shell = new ShellViewModel(_root, sample, Dispatcher.CurrentDispatcher, new Monitor(),
             signIn: new HandoffSignIn(), sessionClient: new HandoffIdentity());
         try

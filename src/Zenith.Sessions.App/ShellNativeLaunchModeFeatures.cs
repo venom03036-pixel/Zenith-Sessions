@@ -3,8 +3,8 @@ using Zenith.Sessions.Core;
 
 namespace Zenith.Sessions.App;
 
-// R-api-7 (owner decision 2026-11-08): the saved native launch mode. Official page stays the default until the live trial
-// verifies the direct mode. Only the saved value acts (the draft waits for Save settings); it is applied to the one
+// Owner decision: Direct ticket is the saved-account default without historical trial qualification.
+// Only the saved value acts (the draft waits for Save settings); it is applied to the one
 // selectable capture the native provider is composed with, read once per preparation. Choosing a mode grants nothing:
 // publisher trust, account binding, resource admission, pacing, Panic fences and one start at a time are unchanged.
 public sealed partial class ShellViewModel
@@ -14,10 +14,10 @@ public sealed partial class ShellViewModel
 
     public static IReadOnlyList<NativeLaunchModeOption> NativeLaunchModeOptions { get; } = Array.AsReadOnly(new NativeLaunchModeOption[]
     {
-        new(NativeLaunchMode.OfficialPage, "Official page (default)",
-            "A trial opens the selected account's private Roblox game page and captures the page's own launch request when you choose Play. Native account selection, compatibility and arrival remain unverified."),
-        new(NativeLaunchMode.DirectTicket, "Direct ticket",
-            "A trial asks Roblox for a launch ticket with the account's saved sign-in and builds the launch request itself: no page opens and no click is needed. Zenith names itself in that request and never pretends to be the Roblox website or a browser. The ticket is used once and never written anywhere. Every other check stays, the ticket proves neither the account nor arrival, and this mode is unverified until the live trial.")
+        new(NativeLaunchMode.DirectTicket, "Direct ticket (default)",
+            "Launch uses the encrypted saved sign-in to request a ticket and start Roblox directly. The account and executable publisher are verified for each start. No browser page or recorded setup trial is needed; arrival is checked separately."),
+        new(NativeLaunchMode.OfficialPage, "Official page",
+            "Diagnostic alternative: a trial opens the selected account's private Roblox game page and captures its launch request when you choose Play. Ordinary launching in this mode requires a verified trial.")
     });
 
     private NativeLaunchModeOption _selectedNativeLaunchMode = NativeLaunchModeOptions[0];
@@ -53,7 +53,7 @@ public sealed partial class ShellViewModel
         {
             // Revoke the old review/queue epoch before another capture can observe the new mode. Reverting the
             // preference later cannot revive a review or an in-flight preparation (including a release check).
-            FenceNativeTrial("The native launch mode changed and the launch queue was paused. Review a new trial before starting; existing clients remain open.");
+            FenceNativeTrial("The native launch mode changed and the launch queue was paused. Review the destination and resume when ready; existing clients remain open.");
             _launchQueue.SignalPanic();
         }
         _nativeCapture.Mode = mode;

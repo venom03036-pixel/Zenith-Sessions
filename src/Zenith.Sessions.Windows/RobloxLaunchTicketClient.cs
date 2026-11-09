@@ -13,8 +13,8 @@ namespace Zenith.Sessions.Windows;
 /// auth.roblox.com/v1/authentication-ticket/), no redirects, no cookie jar, one anti-forgery (CSRF) handshake retry, a
 /// 64 KiB body cap and a bounded deadline. The CSRF token Roblox last accepted is kept in memory per identity (profile plus
 /// verified account) and sent first, never saved, logged or sent for another identity, and dropped on any failure, on Forget
-/// and on Dispose. Zenith identifies itself honestly: its own User-Agent, never a Referer, Origin or User-Agent that claims
-/// to be the Roblox website or a browser; the RBXAuthenticationNegotiation protocol header the ticket endpoint expects is
+/// and on Dispose. Zenith uses its own User-Agent, with the Roblox Origin/Referer required by this web launch protocol;
+/// the RBXAuthenticationNegotiation protocol header the ticket endpoint expects is
 /// sent on the ticket request only. The assertion is optional, as on the website: an unusable assertion answer still asks
 /// for a ticket with an empty JSON body, while a refused session (401), a human check or a rate limit stops at once. The
 /// ticket is read from the rbx-authentication-ticket response header into a one-use protected value; the body buffers that
@@ -26,7 +26,7 @@ public sealed class RobloxLaunchTicketClient : IRobloxLaunchTicketClient, IDispo
 {
     public static readonly Uri AssertionEndpoint = new("https://auth.roblox.com/v1/client-assertion/");
     public static readonly Uri TicketEndpoint = new("https://auth.roblox.com/v1/authentication-ticket/");
-    /// <summary>Zenith's own name on these requests. Never a browser's or the Roblox website's User-Agent, Referer or Origin.</summary>
+    /// <summary>Zenith's own name on these requests; no browser User-Agent is impersonated.</summary>
     public const string UserAgent = "ZenithSessions/0.50";
     private const string TicketHeader = "rbx-authentication-ticket", NegotiationHeader = "RBXAuthenticationNegotiation", CsrfHeader = "X-CSRF-TOKEN";
     private const int MaximumBodyBytes = 65536, MaximumAssertionCharacters = 16384;
@@ -96,7 +96,7 @@ public sealed class RobloxLaunchTicketClient : IRobloxLaunchTicketClient, IDispo
             byte[] body = assertion ?? EmptyBody;
             for (int attempt = 0; attempt < 2; attempt++)
             {
-                using var response = await SendAsync(HttpMethod.Post, _ticketEndpoint, body, credential, csrf, stop.Token).ConfigureAwait(false);
+                using var response = await SendAsync(HttpMethod.Post, _ticketEndpoint, body, rotated ?? credential, csrf, stop.Token).ConfigureAwait(false);
                 if (response.RequestMessage?.RequestUri is { } actual && actual != _ticketEndpoint) return Answer(new(RobloxLaunchTicketOutcome.Unavailable));
                 rotated = Newest(rotated, response, credential);
                 // The documented handshake: a missing or refused token gets one retry with the issued token, then stop.
@@ -113,6 +113,13 @@ public sealed class RobloxLaunchTicketClient : IRobloxLaunchTicketClient, IDispo
         catch (OperationCanceledException) when (!ct.IsCancellationRequested) { return Answer(new(RobloxLaunchTicketOutcome.Unavailable)); }
         catch (HttpRequestException) { return Answer(new(RobloxLaunchTicketOutcome.Unavailable)); }
         catch (IOException) { return Answer(new(RobloxLaunchTicketOutcome.Unavailable)); }
+        catch (RobloxSessionException)
+        {
+            // A deleted/malformed replacement invalidates the chain. Never retry with an older cookie or return
+            // an earlier replacement as usable when the server has explicitly replaced it again.
+            rotated?.Dispose(); rotated = null;
+            return new(RobloxLaunchTicketOutcome.SignInRequired);
+        }
         finally
         {
             Keep(scope, epoch, accepted ? csrf : null); rotated?.Dispose();
@@ -155,13 +162,11 @@ public sealed class RobloxLaunchTicketClient : IRobloxLaunchTicketClient, IDispo
 
     /// <summary>
     /// The newest session cookie wins, as in a browser's cookie store: a response without one keeps the earlier
-    /// candidate, and an unusable one (foreign domain, deletion, unreadable lifetime) leaves none to keep.
+    /// candidate. An unusable replacement stops the entire negotiation; it cannot fall back to an older cookie.
     /// </summary>
     private RobloxSessionCredential? Newest(RobloxSessionCredential? earlier, HttpResponseMessage response, RobloxSessionCredential original)
     {
-        RobloxSessionCredential? next;
-        try { next = RobloxSessionClient.Rotation(response, original, _time.GetUtcNow()); }
-        catch (RobloxSessionException) { earlier?.Dispose(); return null; }
+        var next = RobloxSessionClient.Rotation(response, earlier ?? original, _time.GetUtcNow());
         if (next is null) return earlier;
         earlier?.Dispose(); return next;
     }
@@ -193,6 +198,8 @@ public sealed class RobloxLaunchTicketClient : IRobloxLaunchTicketClient, IDispo
         }
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.UserAgent.ParseAdd(UserAgent);
+        request.Headers.Referrer = new Uri("https://www.roblox.com/");
+        request.Headers.Add("Origin", "https://www.roblox.com");
         request.Headers.Add("Cookie", ".ROBLOSECURITY=" + credential.CopyValue());
         if (csrf is not null) request.Headers.Add(CsrfHeader, csrf);
         return await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, ct).ConfigureAwait(false);

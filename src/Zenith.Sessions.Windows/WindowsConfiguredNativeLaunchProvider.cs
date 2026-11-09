@@ -3,10 +3,10 @@ using Zenith.Sessions.Core;
 namespace Zenith.Sessions.Windows;
 
 /// <summary>
-/// Explicit, transient native installation selection. The capability is Unverified until the user records one explicit trial
-/// through the exact selected executable and the saved launch mode as verified (R-launch-0, read from
-/// <see cref="INativeLaunchVerificationSource"/> on every read); then it is Supported, so the queue records ordinary and group
-/// requests as Queued and starts them through the same preparation and checks as a trial. The real constructor owns one shared
+/// Explicit, transient native installation selection. Direct ticket supports ordinary launches without a historical trial;
+/// the real child still verifies and holds the executable and validates the saved account on every attempt. Official page
+/// retains its exact-executable recorded-trial policy. The mode comes from committed settings, is pinned for preparation
+/// and is rechecked at dispatch. The real constructor owns one shared
 /// trust verifier; preparer, capture and vault remain caller-owned. Changing selection never abandons an existing preparation,
 /// native start or child cleanup.
 /// </summary>
@@ -33,7 +33,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
     /// <param name="acceptedPublishers">Where the publisher the user accepted for each bootstrapper (R-launch-17) is read when the
     /// selected bootstrapper's executable is verified; null accepts none, so no bootstrapper is ever started.</param>
     /// <param name="verifications">Where the trial the user recorded as verified for the saved launch mode and the selected product
-    /// (R-launch-0) is read when the capability is read; null finds none, so the capability stays Unverified and ordinary launching off.</param>
+    /// and the committed mode are read. Null retains the unverified capability.</param>
     public WindowsConfiguredNativeLaunchProvider(IRobloxNativeHandoffPreparer preparer, IRobloxNativeHandoffCapture capture,
         IAuthorizationDispatchVault dispatchVault, IExtraClientArgumentsSource? extraArguments = null, IAcceptedBootstrapperPublisherSource? acceptedPublishers = null,
         INativeLaunchVerificationSource? verifications = null)
@@ -53,10 +53,11 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
 
     private static readonly ProviderCapability UnverifiedLaunch = new("Native account launch", CapabilityState.Unverified,
         "An explicitly selected native installation can be prepared for a separately consented trial. Account selection, browser/native compatibility and arrival remain unverified; ordinary launching stays off until a trial is recorded as verified for the saved launch mode and the selected installation.");
+    private static readonly ProviderCapability DirectLaunch = new("Native account launch", CapabilityState.Supported,
+        "Launch the saved account with a fresh Roblox ticket. Each start checks the account, executable publisher, resource headroom and stop state. A process receipt does not confirm the player or arrival.");
 
     /// <summary>
-    /// Unverified, as before, unless an installation is selected and the verification source finds a trial recorded as verified for
-    /// the saved launch mode and that exact executable identity: then Supported, and the queue's ordinary gate opens. Read on every call
+    /// Direct ticket is available for a selected standard player. Official page needs a recorded matching trial. Read on every call
     /// (the saved settings, never a draft, decide), fail-closed: no selection, no source, a source that reports none or throws, a
     /// poisoned or disposed provider all read Unverified. The source is never invoked under this provider's gate.
     /// </summary>
@@ -67,6 +68,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             ClientInstallationCandidate? selected; INativeLaunchVerificationSource? source;
             lock (_gate) { if (_disposed || _poisoned) return UnverifiedLaunch; selected = _selected; source = _verifications; }
             if (selected is null || source is null || selected.Product != ClientInstallationProduct.Roblox) return UnverifiedLaunch;
+            if (UsesDirectLaunch(selected)) return DirectLaunch;
             NativeLaunchVerification? verification;
             try { verification = source.Find(selected.Product); }
             catch (Exception) { return UnverifiedLaunch; }
@@ -110,6 +112,27 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             return verification is not null && MatchesVerification(selected, verification) ? verification : null;
         }
         catch (Exception) { return null; }
+    }
+    private bool UsesDirectLaunch(ClientInstallationCandidate selected)
+    {
+        try { return selected.Product == ClientInstallationProduct.Roblox && _verifications?.LaunchMode == NativeLaunchMode.DirectTicket; }
+        catch (Exception) { return false; }
+    }
+    private bool DirectPreparationCurrent(Owner owner)
+    {
+        try { return UsesDirectLaunch(owner.Selection) && owner.Mode == NativeLaunchMode.DirectTicket
+            && owner.Executable is { } identity && _matchesExecutable(owner.Selection, identity); }
+        catch (Exception) { return false; }
+    }
+    /// <summary>A matching recorded trial, independent of direct-launch availability.</summary>
+    public bool HasRecordedVerification
+    {
+        get
+        {
+            ClientInstallationCandidate? selected;
+            lock (_gate) { if (_disposed || _poisoned) return false; selected = _selected; }
+            return selected is not null && CurrentVerification(selected) is not null;
+        }
     }
     /// <summary>The exact held executable of a successful explicit trial, never a later file observed when recording.</summary>
     public NativeLaunchExecutableIdentity? GetStartedExecutableIdentity(Guid operationId)
@@ -202,8 +225,12 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             owner.Token.ThrowIfCancellationRequested();
             if (owner.Context.RequiresVerifiedExecutable)
             {
-                owner.Verification = CurrentVerification(owner.Selection);
-                if (owner.Verification is null) throw new InvalidOperationException("The selected executable needs a new trial.");
+                owner.DirectLaunch = UsesDirectLaunch(owner.Selection);
+                if (!owner.DirectLaunch)
+                {
+                    owner.Verification = CurrentVerification(owner.Selection);
+                    if (owner.Verification is null) throw new InvalidOperationException("The selected executable needs a new trial.");
+                }
             }
             var child = _factory(owner.Selection) ?? throw new InvalidOperationException("Native preparation could not be created.");
             Volatile.Write(ref owner.Child, child);
@@ -218,12 +245,14 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             failure = result?.Failure is LaunchPreparationFailure.Expired ? LaunchPreparationFailure.Expired : LaunchPreparationFailure.Rejected;
             if (result?.Failure == LaunchPreparationFailure.None && result.Prepared is { } prepared)
             {
-                if (owner.Context.RequiresVerifiedExecutable && owner.Executable != owner.Verification!.Executable)
+                if (owner.DirectLaunch && !DirectPreparationCurrent(owner))
+                    throw new InvalidOperationException("The direct launch mode or held executable changed during preparation.");
+                if (owner.Context.RequiresVerifiedExecutable && !owner.DirectLaunch && owner.Executable != owner.Verification!.Executable)
                 {
                     Volatile.Write(ref _rejectedVerification, owner.Verification);
                     throw new InvalidOperationException("The held executable does not match the recorded trial.");
                 }
-                if (owner.Context.RequiresVerifiedExecutable && (owner.Mode is not { } mode
+                if (owner.Context.RequiresVerifiedExecutable && !owner.DirectLaunch && (owner.Mode is not { } mode
                     || NativeLaunchModes.ToSettingsValue(mode) != owner.Verification!.Mode))
                     throw new InvalidOperationException("The prepared launch mode does not match the recorded trial.");
                 if (prepared.IsExpired) failure = LaunchPreparationFailure.Expired;
@@ -508,6 +537,7 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
         public NativeLaunchExecutableIdentity? Executable;
         public NativeLaunchMode? Mode;
         public NativeLaunchVerification? Verification;
+        public bool DirectLaunch;
         public CancellationTokenRegistration DiagnosticCancellation;
     }
     private sealed class DiagnosticEntry(long stamp, long generation, NativeLaunchDiagnosticSnapshot snapshot)
@@ -559,9 +589,10 @@ public sealed class WindowsConfiguredNativeLaunchProvider : IPreparingLaunchProv
             {
                 _provider.UpdateDiagnostic(_owner, value => value with { Stage = NativeLaunchDiagnosticStage.Dispatching });
                 using var stop = CancellationTokenSource.CreateLinkedTokenSource(_owner.Token, ct);
-                bool verified = !_owner.Context.RequiresVerifiedExecutable
-                    || _owner.Verification is { } accepted && _owner.Executable == accepted.Executable
-                        && _provider.CurrentVerification(_owner.Selection) == accepted;
+                bool verified = !_owner.Context.RequiresVerifiedExecutable || (_owner.DirectLaunch
+                    ? _provider.DirectPreparationCurrent(_owner)
+                    : _owner.Verification is { } accepted && _owner.Executable == accepted.Executable
+                        && _provider.CurrentVerification(_owner.Selection) == accepted);
                 if (allowed && verified && !IsExpired && !stop.IsCancellationRequested)
                 {
                     invoked = true; result = NativeResult(await _prepared.DispatchAsync(boundary, stop.Token).ConfigureAwait(false));

@@ -25,7 +25,7 @@ public sealed partial class ShellViewModel
     /// <summary>"Find a server with room for N" needs a usable destination and at least one checked or selected account to find room for.</summary>
     public bool CanFindServerWithRoom => ServerBrowser.CanUseDestination && DestinationRecipientCount > 0;
     /// <summary>Presentation gate only; the queue still rechecks the exact installation and each recipient before starting.</summary>
-    public bool CanQueueTargetedLaunch => IsNativeLaunchVerified && QueueReady && CanUseDirectories()
+    public bool CanQueueTargetedLaunch => IsNativeLaunchAvailable && QueueReady && CanUseDirectories()
         && ServerBrowser.CanUseDestination && (Accounts.Any(row=>row.IsChecked) || SelectedAccount is { } selected && Accounts.Contains(selected));
     private void InitializeDestinationCapacity()
     {

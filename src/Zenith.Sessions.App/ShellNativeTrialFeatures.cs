@@ -156,7 +156,8 @@ public sealed partial class ShellViewModel
         {
             _nativeLaunch.Configure(eligible);
             // A recorded trial for the saved mode and this row's product (R-launch-0) means ordinary launching is on through it.
-            NativeTrialStatus=_nativeLaunch.Selected?(SavedNativeLaunchVerification is { } verified&&IsNativeLaunchVerified?VerifiedNativeLaunchStatus(verified)
+            NativeTrialStatus=_nativeLaunch.Selected?(SavedNativeLaunchMode==NativeLaunchMode.DirectTicket&&IsNativeLaunchAvailable?NativeLaunchVerificationStatus
+                    :SavedNativeLaunchVerification is { } verified&&IsNativeLaunchVerified?VerifiedNativeLaunchStatus(verified)
                     :BootstrapperProducts.IsBootstrapper(eligible!.Product)
                     ?$"Launch through {eligible.Product} selected for an explicit trial. {eligible.Product} starts the Roblox player and applies its own client settings and FFlags; Zenith does not write client files. Its signature is checked against the publisher you accepted, and the account and destination are checked again, before any start; compatibility remains unverified."
                     :"Native file selected for an explicit trial. Its publisher, account and destination are checked again; compatibility remains unverified.")

@@ -4,14 +4,14 @@ using Zenith.Sessions.Windows;
 namespace Zenith.Sessions.App;
 
 /// <summary>
-/// Ordinary launching after a verified trial (R-launch-0, owner decision of 2026-11-08). Off by default: ordinary single and group
-/// launch requests are recorded blocked until the user records one explicit trial as verified for the saved native launch mode and
+/// Direct ticket launches immediately (latest owner decision); availability is separate from a recorded trial. The optional
+/// Official page diagnostic mode retains its historical trial gate. For that mode the user records a trial for the mode and
 /// the selected executable identity. The gate is evidence: the trial's request must still be "Client started · unverified" with its
 /// receipt, and its current Launch evidence must show the exact process observed and the client's own log reporting the expected
 /// player in the requested place (<see cref="NativeLaunchVerification.CanRecord"/>). Recording saves the mode, product, held executable identity, time and the
 /// trial's request and receipt in settings.json (no sign-in material); the configured provider reads it on every capability read and
 /// reports Supported, so the queue's existing ordinary path opens with no review per account. A different saved mode or installation
-/// turns it off; Forget verified trial removes the entry and pauses the queue. Nothing here proves a later client's account or arrival.
+/// turns Official page launching off; Forget verified trial removes the entry and pauses the queue. Direct ticket stays available. Nothing here proves a later client's account or arrival.
 /// </summary>
 public sealed partial class ShellViewModel
 {
@@ -28,8 +28,9 @@ public sealed partial class ShellViewModel
         ForgetNativeLaunchVerification = new(_ => ForgetNativeLaunchVerificationAsync(), error => Fail(error, ManagerSubsystem.Settings));
     }
 
-    /// <summary>True while the configured provider reports Supported: the saved mode and the selected installation's product have a recorded trial.</summary>
-    public bool IsNativeLaunchVerified => _nativeLaunch.AccountLaunch.State == CapabilityState.Supported;
+    /// <summary>The selected installation has a matching historical trial; this is not the direct-launch availability gate.</summary>
+    public bool IsNativeLaunchVerified => _nativeLaunch.HasRecordedVerification;
+    public bool IsNativeLaunchAvailable => _nativeLaunch.AccountLaunch.State == CapabilityState.Supported;
 
     /// <summary>The entry saved for the saved mode and the selected row's product, from the last saved settings (never a draft); null for none.</summary>
     private NativeLaunchVerification? SavedNativeLaunchVerification => SelectedInstallation?.Candidate is { } candidate
@@ -53,13 +54,15 @@ public sealed partial class ShellViewModel
             var saved = Volatile.Read(ref _savedSettings); var mode = SavedNativeLaunchMode; string label = NativeLaunchModes.Label(mode);
             var candidate = SelectedInstallation?.Candidate;
             if (candidate is null)
-                return "Ordinary launching: off. No native installation is selected. Select one above, run Review selected-account trial in Join a game, and record that trial as verified when its Launch evidence reports the expected player in the requested place."
+                return "Launching is unavailable until a Roblox player installation is selected above. Direct ticket starts a saved account without a setup trial."
                     + OtherVerifications(saved.NativeLaunchVerifications, mode, null);
             if (!_nativeLaunch.Selected)
                 return "Ordinary launching: off. The selected row cannot be the trial installation, so no trial can run or be recorded through it; see the trial status above."
                     + OtherVerifications(saved.NativeLaunchVerifications, mode, null);
             if (candidate.Product != ClientInstallationProduct.Roblox)
                 return "Ordinary launching: off. Bootstrapper qualification is deferred until its exact Roblox player can be associated with the launch. Select the standard Roblox player for this build.";
+            if (mode == NativeLaunchMode.DirectTicket && IsNativeLaunchAvailable)
+                return "Direct ticket launching is ready. Launch uses the saved account immediately, with fresh account and publisher checks. No recorded trial is required, including after a Roblox update. A process start does not confirm arrival; check Launch evidence after joining.";
             if (IsNativeLaunchVerified && NativeLaunchVerification.For(saved.NativeLaunchVerifications, mode, candidate.Product) is { } verified)
                 return "Ordinary launching: on for " + label + " through " + candidate.Product + ", because of " + verified.Describe()
                     + ". Ordinary and group launch requests use this installation with the same publisher, sign-in, account, resource and stop checks as a trial, one start at a time, and no review per account."
@@ -76,9 +79,13 @@ public sealed partial class ShellViewModel
         return others.Length == 0 ? "" : " Verified trials saved for other choices: " + string.Join("; ", others) + "; they do not apply to this selection.";
     }
     /// <summary>The Accounts page note: ordinary launching's state in one sentence, never a claim about a client's account or arrival.</summary>
-    public string AccountLaunchAvailability => IsNativeLaunchVerified && SavedNativeLaunchVerification is { } verified
+    public string AccountLaunchAvailability => SavedNativeLaunchMode == NativeLaunchMode.DirectTicket && IsNativeLaunchAvailable
+        ? "Choose an account and game, then Launch. Zenith uses the encrypted saved sign-in and checks the player and executable before starting Roblox."
+        : IsNativeLaunchVerified && SavedNativeLaunchVerification is { } verified
         ? "Account-selecting launch is on for " + verified.ModeLabel + " through " + verified.Product + ", by a trial you recorded as verified. A client's account and arrival are still confirmed only by its own log reports."
-        : "This Roblox installation needs a successful launch test. Choose a game and account, then use Test selected account launch on the launch review page. Signing in saves the account; it does not complete this test.";
+        : SavedNativeLaunchMode == NativeLaunchMode.DirectTicket
+            ? "Select an installed Roblox player in Settings to launch your saved accounts."
+            : "Official page mode needs a recorded launch test. Choose Direct ticket in Settings to launch saved accounts without that setup step.";
     /// <summary>The trial card's text while ordinary launching is on through the selected installation.</summary>
     private string VerifiedNativeLaunchStatus(NativeLaunchVerification verified)
         => "Ordinary launching is on for " + verified.ModeLabel + " through " + verified.Product + ", because of " + verified.Describe()
@@ -88,7 +95,7 @@ public sealed partial class ShellViewModel
     private void RefreshNativeLaunchVerification()
     {
         _canRecordShown = CanRecordNativeLaunchVerification;
-        Raise(nameof(IsNativeLaunchVerified)); Raise(nameof(CanRecordNativeLaunchVerification)); Raise(nameof(CanForgetNativeLaunchVerification));
+        Raise(nameof(IsNativeLaunchVerified)); Raise(nameof(IsNativeLaunchAvailable)); Raise(nameof(CanRecordNativeLaunchVerification)); Raise(nameof(CanForgetNativeLaunchVerification));
         Raise(nameof(NativeLaunchVerificationStatus)); Raise(nameof(AccountLaunchAvailability)); Raise(nameof(CanRunNativeTrial));
         Raise(nameof(CanQueueTargetedLaunch));
     }
@@ -134,8 +141,10 @@ public sealed partial class ShellViewModel
         if (IsLocked || _shuttingDown) return;
         // Off again: ordinary requests are recorded blocked from now on, and the queue stops the way a selection change stops it.
         ConfigureNativeTrialInstallation();
-        NativeTrialStatus = Notice = "Ordinary launching is off for " + saved.ModeLabel + " through " + candidate.Product + ": the verified trial was forgotten and the launch queue was paused."
-            + " Explicit trials are available again; run one and record it to turn ordinary launching back on.";
+        NativeTrialStatus = Notice = mode == NativeLaunchMode.DirectTicket
+            ? "The recorded diagnostic trial was forgotten and the launch queue was paused. Direct ticket launching remains available."
+            : "Ordinary launching is off for " + saved.ModeLabel + " through " + candidate.Product + ": the verified trial was forgotten and the launch queue was paused."
+                + " Explicit trials are available again; run one and record it to turn ordinary launching back on.";
         RefreshNativeLaunchVerification();
     }
 
@@ -145,6 +154,7 @@ public sealed partial class ShellViewModel
     /// </summary>
     private sealed class SavedNativeLaunchVerifications(ShellViewModel owner) : INativeLaunchVerificationSource
     {
+        public NativeLaunchMode? LaunchMode => NativeLaunchModes.TryParse(Volatile.Read(ref owner._savedSettings).NativeLaunchMode, out var mode) ? mode : null;
         public NativeLaunchVerification? Find(ClientInstallationProduct product)
         {
             var saved = Volatile.Read(ref owner._savedSettings);

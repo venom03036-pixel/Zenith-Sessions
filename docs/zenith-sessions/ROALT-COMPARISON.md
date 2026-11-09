@@ -1,6 +1,8 @@
 # Zenith Sessions and the RoALT reference
 
-[The account launch-flow correction](LAUNCH-FLOW-REPAIR.md) adds an account picker directly to launch review and exposes the installation test before ordinary launches. Saved bundles are optional. This improves the actual joining workflow without copying RoALT code or bypassing Zenith's native evidence checks; a successful live launch remains to be demonstrated by the owner.
+Latest owner decision and repair: [0.81 saved-account direct launch](DIRECT-LAUNCH-REPAIR.md) supersedes the manual trial prerequisite for Direct ticket. Normal launches now use encrypted saved sessions immediately, with current account/publisher checks and corrected cookie rotation. The owner performs the next live test. The 1,737 affected offline checks passed; whole-build/package evidence is recorded separately for the exact candidate commit. Earlier failure records below remain historical evidence.
+
+[The account launch-flow correction](LAUNCH-FLOW-REPAIR.md) adds an account picker directly to launch review and exposes account and installation choices. Saved bundles are optional. This improves the actual joining workflow without copying RoALT code or bypassing Zenith's native evidence checks; a successful live launch remains to be demonstrated by the owner.
 
 The correction remains a test candidate: full offline qualification is held by repeated fixture setup timeouts recorded in that repair document. Focused passing UI checks and a packaged synthetic self-check do not establish RoALT parity or native multi-client success.
 
@@ -13,8 +15,8 @@ The user's chosen direction is Zenith branding/themes, the existing left sidebar
 | Capability observed in the reference | Current Zenith behavior | Acceptance still required |
 |---|---|---|
 | Saved account sign-ins | Roblox-hosted sign-in with isolated WebView2 lifecycle; identity-checked encrypted sessions, no OAuth dependency | Attended real provider sign-in, rotation, cancellation and cleanup |
-| Separate account launches | Standard-player Official-page and Direct-ticket modes; one-use preparation and held executable identity; recorded qualification per actual mode/executable | Correct player/destination for each client; simultaneous-client compatibility without singleton workarounds |
-| Launch after an executable update | Old verification is insufficient for changed bytes/identity | A new attended trial for the selected executable |
+| Separate account launches | Direct ticket by default, without a historical trial; one-use preparation and held, publisher-checked executable identity. Official page retains its diagnostic trial gate | Correct player/destination for each client; simultaneous-client compatibility without singleton workarounds |
+| Launch after an executable update | Direct ticket checks the current executable publisher/identity on every attempt; no historical trial required | Correct real client start and arrival after an update; Official page still requires matching qualification |
 | Bootstrapper detection | Discovery and publisher inspection remain available | Launching is excluded from the first build by owner choice |
 | Account protection/backup | Windows protection, optional password-wrapped vault key, fresh protected-state check on dashboard Unlock and password-sealed portable archive; fresh imported identities | Separate-Windows-account/PC import, migration interruption, password recovery |
 | Player and game images | Public avatar headshots with bounded Pending retry; universe-correlated icons/media and navigation | Real thumbnail availability, pending/blocked media and matching game gallery |

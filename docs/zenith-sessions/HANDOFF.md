@@ -1,5 +1,7 @@
 # Zenith Sessions — round-4 engineering handoff
 
+Latest owner decision and repair: [0.81 saved-account direct launch](DIRECT-LAUNCH-REPAIR.md) supersedes the manual trial prerequisite for Direct ticket. Normal launches now use encrypted saved sessions immediately, with current account/publisher checks and corrected cookie rotation. The owner performs the next live test. The 1,737 affected offline checks passed; whole-build/package evidence is recorded separately for the exact candidate commit. Earlier failure records below remain historical evidence.
+
 Current owner handoff: [0.80 launch-flow repair and exact test steps](LAUNCH-FLOW-REPAIR.md). The owner chose “Finish the code; I’ll test it myself.” The account currently displayed a saved sign-in; the old blocked request was cancelled through the UI. Do not treat the historical renewal requirement below as a new instruction to sign in again. The new picker and setup route are covered by offline regressions; real native start and multi-client behavior are not yet qualified.
 
 **Latest offline outcome: qualification held.** Two full gate runs failed in setup-timeout fixtures; a third diagnostic run repeated one of them. No tests were relaxed or skipped to obtain a pass. Follow the exact failure evidence and next engineering steps in the 0.80 record before claiming complete validation. Any delivered executable is an isolated test candidate; main and the accepted package remain unchanged. The owner controls the next live test; the assistant is not running it unattended.

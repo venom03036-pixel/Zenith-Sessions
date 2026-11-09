@@ -10,7 +10,7 @@ namespace Zenith.Sessions.Windows;
 public sealed class SelectableNativeHandoffCapture : IRobloxNativeHandoffCapture
 {
     private readonly IRobloxNativeHandoffCapture _officialPage, _directTicket;
-    private int _mode = (int)NativeLaunchMode.OfficialPage;
+    private int _mode = (int)NativeLaunchModes.Default;
 
     public SelectableNativeHandoffCapture(IRobloxNativeHandoffCapture officialPage, IRobloxNativeHandoffCapture directTicket)
     {

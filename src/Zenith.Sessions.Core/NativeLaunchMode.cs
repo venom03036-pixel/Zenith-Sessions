@@ -1,11 +1,11 @@
 namespace Zenith.Sessions.Core;
 
 /// <summary>
-/// How a native start gets its ticket-bearing roblox-player request. OfficialPage, the default, captures the official game
-/// page's own request in a private browser when the user chooses Play. DirectTicket (R-api-7, owner decision of 2026-11-08)
+/// How a native start gets its ticket-bearing roblox-player request. OfficialPage captures the official game
+/// page's own request in a private browser when the user chooses Play. DirectTicket is the default (owner direct-launch decision)
 /// asks Roblox for an authentication ticket with the account's saved sign-in and builds the request itself, with no page
 /// and no click. Both requests go through the same grammar, admission and dispatch checks, and neither proves the
-/// account or arrival; the direct mode is unverified until the live trial.
+/// account or arrival. A historical trial is not a prerequisite for DirectTicket.
 /// </summary>
 public enum NativeLaunchMode { OfficialPage, DirectTicket }
 
@@ -13,7 +13,7 @@ public enum NativeLaunchMode { OfficialPage, DirectTicket }
 public static class NativeLaunchModes
 {
     public const string OfficialPageValue = "official-page", DirectTicketValue = "direct-ticket";
-    public static NativeLaunchMode Default => NativeLaunchMode.OfficialPage;
+    public static NativeLaunchMode Default => NativeLaunchMode.DirectTicket;
 
     public static string ToSettingsValue(NativeLaunchMode mode) => mode switch
     {

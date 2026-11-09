@@ -254,9 +254,9 @@ public sealed partial class LaunchCoordinator : IAsyncDisposable
         try
         {
             RequireHealthy();
-            if(trial && (_provider is not IPreparingLaunchProvider || (_provider.AccountLaunch.State!=CapabilityState.Unverified && !(requestedDestination?.ServerKind==RobloxServerKind.Private && _provider.AccountLaunch.State==CapabilityState.Supported))
+            if(trial && (_provider is not IPreparingLaunchProvider || _provider.AccountLaunch.State is not (CapabilityState.Unverified or CapabilityState.Supported)
                 || binding is not {UserId:>0,AuthorizationGeneration:>0} || requestedDestination is null))
-                throw new LaunchQueueException("A native trial needs an unverified preparing provider, a saved account binding and an explicit destination.");
+                throw new LaunchQueueException("A native trial needs an available preparing provider, a saved account binding and an explicit destination.");
             if(!trial && requestedDestination?.ServerKind==RobloxServerKind.Private) throw new LaunchQueueException("Private servers require an explicit attended trial.");
             if(generation!=Interlocked.Read(ref _generation)) throw new LaunchQueueException("The launch queue was stopped while this request was waiting. Choose a fresh request after reviewing the stop.");
             ct.ThrowIfCancellationRequested();

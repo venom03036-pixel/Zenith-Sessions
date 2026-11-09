@@ -9,8 +9,8 @@ using Zenith.Sessions.Windows;
 namespace Zenith.Sessions.Tests;
 
 // R-api-7 (owner decision 2026-11-08): the direct launch-ticket request. Every request ends at an owned synthetic handler
-// or a loopback socket; no secret leaves the test. Zenith identifies itself honestly: its own User-Agent, never a
-// Referer, Origin or User-Agent that claims to be the Roblox website or a browser.
+// or a loopback socket; no secret leaves the test. The wire contract uses Zenith's own User-Agent
+// and Roblox's protocol Origin/Referer; redirects and automatic cookie jars remain disabled.
 public sealed class RobloxLaunchTicketClientTests
 {
     private const string Secret = "synthetic-session-cookie";
@@ -19,6 +19,57 @@ public sealed class RobloxLaunchTicketClientTests
     private const string AssertionEndpoint = "https://auth.roblox.com/v1/client-assertion/";
     private const string TicketEndpoint = "https://auth.roblox.com/v1/authentication-ticket/";
     private static readonly RobloxShareLinkTokenScope Account = new(Guid.Parse("6f1c2a52-8d0e-4c1b-9a43-0b7d2f1e5c11"), 456);
+
+    [Fact]
+    public async Task EachTicketStepUsesTheNewestCookieIncludingTheCsrfRetry()
+    {
+        int step = 0;
+        using var handler = new Handler((request, _) =>
+        {
+            string expected = step switch { 0 => Secret, 1 => "assertion-replacement", _ => "csrf-replacement" };
+            Assert.Equal(".ROBLOSECURITY=" + expected, Assert.Single(request.Headers.GetValues("Cookie")));
+            var response = step switch { 0 => Json("{}"), 1 => Denied("retry-token"), _ => Issued(Ticket) };
+            if (step < 2) response.Headers.Add("Set-Cookie", ".ROBLOSECURITY=" + (step == 0 ? "assertion-replacement" : "csrf-replacement") + "; Domain=.roblox.com; Path=/; Secure; HttpOnly; Max-Age=3600");
+            step++; return Task.FromResult(response);
+        });
+        using var client = new RobloxLaunchTicketClient(handler);
+        using var original = new RobloxSessionCredential(Secret);
+        using var result = await client.RequestAsync(original, Account, default);
+        Assert.Equal(RobloxLaunchTicketOutcome.Issued, result.Outcome); Assert.Equal(3, step);
+        using var rotated = result.TakeRotatedCredential(); Assert.Equal("csrf-replacement", rotated!.CopyValue());
+        Assert.Equal(Secret, original.CopyValue()); // The borrowed vault credential is never mutated or disposed here.
+    }
+
+    [Theory]
+    [InlineData(".ROBLOSECURITY=; Domain=.roblox.com; Max-Age=0")]
+    [InlineData(".ROBLOSECURITY=foreign; Domain=example.com")]
+    public async Task AnInvalidReplacementStopsBeforeAnotherRequestOrAnIssuedTicketIsAccepted(string cookie)
+    {
+        using var handler = new Handler((request, _) =>
+        {
+            var response = request.Method == HttpMethod.Get ? Json("{}") : Issued(Ticket);
+            response.Headers.Add("Set-Cookie", cookie); return Task.FromResult(response);
+        });
+        using var client = new RobloxLaunchTicketClient(handler);
+        using var result = await Request(client, Account);
+        Assert.NotEqual(RobloxLaunchTicketOutcome.Issued, result.Outcome);
+        Assert.Null(result.TakeTicket()); Assert.Null(result.TakeRotatedCredential()); Assert.Equal(1, handler.Calls);
+    }
+
+    [Fact]
+    public async Task TicketNegotiationSuppliesTheRobloxProtocolOriginWithZenithsOwnUserAgent()
+    {
+        using var handler = new Handler((request, _) =>
+        {
+            Assert.Equal("https://www.roblox.com/", request.Headers.Referrer?.AbsoluteUri);
+            Assert.Equal("https://www.roblox.com", Assert.Single(request.Headers.GetValues("Origin")));
+            Assert.Equal(RobloxLaunchTicketClient.UserAgent, Assert.Single(request.Headers.GetValues("User-Agent")));
+            return Task.FromResult(request.Method == HttpMethod.Get ? Json("{}") : Issued(Ticket));
+        });
+        using var client = new RobloxLaunchTicketClient(handler);
+        using var result = await Request(client, Account);
+        Assert.Equal(RobloxLaunchTicketOutcome.Issued, result.Outcome);
+    }
 
     [Fact]
     public async Task GetsTheAssertionThenPostsTheTicketRequestWithHonestHeadersAndReadsTheTicketHeader()
@@ -30,7 +81,7 @@ public sealed class RobloxLaunchTicketClientTests
             Assert.Equal(".ROBLOSECURITY=" + Secret, Assert.Single(request.Headers.GetValues("Cookie")));
             Assert.Equal(RobloxLaunchTicketClient.UserAgent, Assert.Single(request.Headers.GetValues("User-Agent")));
             Assert.StartsWith("ZenithSessions/", RobloxLaunchTicketClient.UserAgent, StringComparison.Ordinal);
-            Assert.False(request.Headers.Contains("Referer")); Assert.False(request.Headers.Contains("Origin"));
+            Assert.Equal("https://www.roblox.com/", request.Headers.Referrer?.AbsoluteUri); Assert.Equal("https://www.roblox.com", Assert.Single(request.Headers.GetValues("Origin")));
             Assert.Equal("application/json", Assert.Single(request.Headers.Accept).MediaType);
             if (request.Method == HttpMethod.Get)
             {
@@ -221,7 +272,7 @@ public sealed class RobloxLaunchTicketClientTests
         {
             Assert.Equal(".ROBLOSECURITY=" + Secret, Assert.Single(LoopbackHttpServer.HeaderValues(sent, "Cookie")));
             Assert.Equal(RobloxLaunchTicketClient.UserAgent, Assert.Single(LoopbackHttpServer.HeaderValues(sent, "User-Agent")));
-            Assert.Empty(LoopbackHttpServer.HeaderValues(sent, "Referer")); Assert.Empty(LoopbackHttpServer.HeaderValues(sent, "Origin"));
+            Assert.Equal("https://www.roblox.com/", Assert.Single(LoopbackHttpServer.HeaderValues(sent, "Referer"))); Assert.Equal("https://www.roblox.com", Assert.Single(LoopbackHttpServer.HeaderValues(sent, "Origin")));
             Assert.DoesNotContain("synthetic-tracker", sent, StringComparison.Ordinal);
         });
         Assert.Throws<ArgumentException>(() => new RobloxLaunchTicketClient(new Uri("http://auth.roblox.com/")));

@@ -8,13 +8,14 @@ using Zenith.Sessions.Windows;
 
 namespace Zenith.Sessions.Tests;
 
-// R-api-7 (owner decision 2026-11-08): the native launch mode is a saved preference. Official page stays the default until
-// the live trial verifies the direct mode; a schema-1 file from before the field loads unchanged.
+// Latest owner decision: saved-account launches use Direct ticket without a historical trial.
+// Explicit Official page diagnostics still persist; the earlier default migrates once.
 public sealed partial class ClientWindowIntegrationTests
 {
     [Fact]
     public Task ChoosingDirectTicketAndSavingSwitchesTheNativeCaptureAndReloadsThatChoice() => OnUi(async () =>
     {
+        using (var settings = new SettingsStore(_root)) await settings.SaveAsync(new SessionsSettings(NativeLaunchMode: "official-page"), default);
         var monitor = new Monitor();
         await using (var shell = await Ready(monitor))
         {
@@ -45,16 +46,39 @@ public sealed class NativeLaunchModeSettingsTests : IDisposable
     private static readonly XNamespace X = "http://schemas.microsoft.com/winfx/2006/xaml";
 
     [Fact]
-    public async Task OfficialPageIsTheDefaultAndASchemaOneFileFromBeforeTheModeLoadsWithoutANotice()
+    public void NewSettingsStartSavedAccountsDirectlyWithoutAnOfficialPage()
     {
-        Assert.Equal(NativeLaunchModes.OfficialPageValue, new SessionsSettings().Validated().NativeLaunchMode);
-        Assert.Equal(NativeLaunchMode.OfficialPage, NativeLaunchModes.Default);
+        Assert.Equal(NativeLaunchMode.DirectTicket, NativeLaunchModes.Default);
+        Assert.Equal("direct-ticket", new SessionsSettings().Validated().NativeLaunchMode);
+    }
+
+    [Fact]
+    public async Task TheOldPageDefaultUpgradesOnceWithoutChangingTheFileAndLaterExplicitPageChoiceSurvives()
+    {
+        Directory.CreateDirectory(_root);
+        const string old = "{\"Version\":1,\"Theme\":\"ocean-blue\",\"NativeLaunchMode\":\"official-page\"}";
+        await File.WriteAllTextAsync(SettingsPath, old);
+        using var store = new SettingsStore(_root);
+        var loaded = await store.LoadAsync(default);
+        Assert.Equal("direct-ticket", loaded.Settings.NativeLaunchMode); Assert.Equal("ocean-blue", loaded.Settings.Theme);
+        Assert.Contains("upgraded", loaded.Notice, StringComparison.Ordinal); Assert.Equal(old, await File.ReadAllTextAsync(SettingsPath));
+        await store.SaveAsync(loaded.Settings with { NativeLaunchMode = "official-page" }, default);
+        var reloaded = await store.LoadAsync(default);
+        Assert.Equal("official-page", reloaded.Settings.NativeLaunchMode); Assert.Null(reloaded.Notice);
+        Assert.Equal(1, reloaded.Settings.NativeLaunchPolicyRevision);
+    }
+
+    [Fact]
+    public async Task DirectTicketIsTheDefaultAndASchemaOneFileFromBeforeTheModeLoadsWithoutANotice()
+    {
+        Assert.Equal(NativeLaunchModes.DirectTicketValue, new SessionsSettings().Validated().NativeLaunchMode);
+        Assert.Equal(NativeLaunchMode.DirectTicket, NativeLaunchModes.Default);
         Directory.CreateDirectory(_root);
         await File.WriteAllTextAsync(SettingsPath, "{\"Version\":1,\"Theme\":\"ocean-blue\",\"DenseAccounts\":true}");
         using (var store = new SettingsStore(_root))
         {
             var loaded = await store.LoadAsync(default);
-            Assert.Null(loaded.Notice); Assert.Equal(NativeLaunchModes.OfficialPageValue, loaded.Settings.NativeLaunchMode); Assert.Equal("ocean-blue", loaded.Settings.Theme);
+            Assert.Null(loaded.Notice); Assert.Equal(NativeLaunchModes.DirectTicketValue, loaded.Settings.NativeLaunchMode); Assert.Equal("ocean-blue", loaded.Settings.Theme);
             await store.SaveAsync(loaded.Settings with { NativeLaunchMode = "Direct-Ticket" }, default); // Saved in its canonical spelling.
         }
         Assert.Contains("\"NativeLaunchMode\":\"direct-ticket\"", await File.ReadAllTextAsync(SettingsPath), StringComparison.Ordinal);
@@ -72,9 +96,9 @@ public sealed class NativeLaunchModeSettingsTests : IDisposable
     [InlineData(" Official-Page ", true, NativeLaunchMode.OfficialPage)]
     [InlineData("direct-ticket", true, NativeLaunchMode.DirectTicket)]
     [InlineData("DIRECT-TICKET", true, NativeLaunchMode.DirectTicket)]
-    [InlineData("ticket", false, NativeLaunchMode.OfficialPage)]
-    [InlineData("", false, NativeLaunchMode.OfficialPage)]
-    [InlineData(null, false, NativeLaunchMode.OfficialPage)]
+    [InlineData("ticket", false, NativeLaunchMode.DirectTicket)]
+    [InlineData("", false, NativeLaunchMode.DirectTicket)]
+    [InlineData(null, false, NativeLaunchMode.DirectTicket)]
     public void OnlyTheTwoNamedModesParseAndEachHasOneSavedSpelling(string? value, bool parses, NativeLaunchMode expected)
     {
         Assert.Equal(parses, NativeLaunchModes.TryParse(value, out var mode)); Assert.Equal(expected, mode);
@@ -104,8 +128,8 @@ public sealed class NativeLaunchModeSettingsTests : IDisposable
         Assert.Contains(option.Ancestors(), ancestor => ancestor.Name.LocalName == "StackPanel"
             && ancestor.Descendants().Any(e => (string?)e.Attribute(X + "Name") == "SettingsInstallationsAnchor"));
         Assert.Equal(2, ShellViewModel.NativeLaunchModeOptions.Count);
-        Assert.Equal(NativeLaunchMode.OfficialPage, ShellViewModel.NativeLaunchModeOptions[0].Mode); Assert.Equal("Official page (default)", ShellViewModel.NativeLaunchModeOptions[0].Name);
-        Assert.Equal(NativeLaunchMode.DirectTicket, ShellViewModel.NativeLaunchModeOptions[1].Mode); Assert.Equal("Direct ticket", ShellViewModel.NativeLaunchModeOptions[1].Name);
+        Assert.Equal(NativeLaunchMode.DirectTicket, ShellViewModel.NativeLaunchModeOptions[0].Mode); Assert.Equal("Direct ticket (default)", ShellViewModel.NativeLaunchModeOptions[0].Name);
+        Assert.Equal(NativeLaunchMode.OfficialPage, ShellViewModel.NativeLaunchModeOptions[1].Mode); Assert.Equal("Official page", ShellViewModel.NativeLaunchModeOptions[1].Name);
         Assert.All(ShellViewModel.NativeLaunchModeOptions, option => Assert.Contains("verif", option.Description, StringComparison.OrdinalIgnoreCase));
     }
 
@@ -119,13 +143,13 @@ public sealed class NativeLaunchModeSettingsTests : IDisposable
         var texts = guide.Descendants().Where(e => e.Name.LocalName == "TextBlock").Select(e => ProductionWindowStrings.Resolve((string?)e.Attribute("Text"))).ToList();
         Assert.Contains(texts, text => text == "Native launch mode");
         string mode = Assert.Single(texts, text => text.Contains("Settings → Roblox installation → Native launch mode", StringComparison.Ordinal));
-        Assert.Contains("Official page is the default", mode, StringComparison.Ordinal);
-        Assert.Contains("Direct ticket asks Roblox for a launch ticket with the account's saved sign-in", mode, StringComparison.Ordinal);
-        Assert.Contains("no page opens and no click is needed", mode, StringComparison.Ordinal);
-        Assert.Contains("Zenith names itself in that request and never pretends to be the Roblox website or a browser", mode, StringComparison.Ordinal);
-        Assert.Contains("The ticket is used once and never written anywhere", mode, StringComparison.Ordinal);
-        Assert.Contains("Every other check stays", mode, StringComparison.Ordinal);
-        Assert.Contains("proves neither the account nor arrival", mode, StringComparison.Ordinal);
+        Assert.Contains("Direct ticket is the default", mode, StringComparison.Ordinal);
+        Assert.Contains("authentication ticket with the encrypted saved sign-in", mode, StringComparison.Ordinal);
+        Assert.Contains("without opening a game page", mode, StringComparison.Ordinal);
+        Assert.Contains("Zenith sends its own User-Agent with the Roblox protocol Origin and Referer headers", mode, StringComparison.Ordinal);
+        Assert.Contains("The ticket is used once and never saved", mode, StringComparison.Ordinal);
+        Assert.Contains("Every account, publisher, resource and stop check stays", mode, StringComparison.Ordinal);
+        Assert.Contains("Neither mode proves the account or arrival", mode, StringComparison.Ordinal);
     }
 
     [Fact]

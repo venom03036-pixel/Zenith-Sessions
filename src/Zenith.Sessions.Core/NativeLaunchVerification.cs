@@ -133,4 +133,6 @@ public sealed record NativeLaunchVerification(string Mode, string Product, DateT
 public interface INativeLaunchVerificationSource
 {
     NativeLaunchVerification? Find(ClientInstallationProduct product);
+    /// <summary>The committed mode, never an unsaved UI draft. Unknown sources retain the recorded-trial policy.</summary>
+    NativeLaunchMode? LaunchMode => null;
 }
