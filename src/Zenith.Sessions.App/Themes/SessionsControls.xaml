@@ -5,6 +5,57 @@
         <ResourceDictionary Source="ModernControls.xaml"/>
     </ResourceDictionary.MergedDictionaries>
 
+    <!-- Own list chrome in the companion. OS templates otherwise use white inactive selection and blue focus fills. -->
+    <Style TargetType="{x:Type ListBox}">
+        <Setter Property="Background" Value="{DynamicResource CardBackground}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushLight}"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="ScrollViewer.CanContentScroll" Value="True"/>
+        <Setter Property="VirtualizingPanel.IsVirtualizing" Value="True"/>
+    </Style>
+    <Style TargetType="{x:Type ListView}" BasedOn="{StaticResource {x:Type ListBox}}"/>
+    <Style x:Key="SessionsListRow" TargetType="{x:Type ListBoxItem}">
+        <Setter Property="Background" Value="{DynamicResource CardBackground}"/>
+        <Setter Property="Foreground" Value="{DynamicResource TextPrimary}"/>
+        <Setter Property="BorderBrush" Value="Transparent"/>
+        <Setter Property="BorderThickness" Value="1"/>
+        <Setter Property="Padding" Value="5,3"/>
+        <Setter Property="HorizontalContentAlignment" Value="Stretch"/>
+        <Setter Property="VerticalContentAlignment" Value="Center"/>
+        <Setter Property="FocusVisualStyle" Value="{StaticResource KeyboardFocusRing}"/>
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="{x:Type ListBoxItem}">
+            <Border x:Name="SessionsListRowChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
+                <ContentPresenter HorizontalAlignment="{TemplateBinding HorizontalContentAlignment}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
+        <Style.Triggers>
+            <Trigger Property="IsMouseOver" Value="True"><Setter Property="Background" Value="{DynamicResource HoverBackground}"/></Trigger>
+            <Trigger Property="IsSelected" Value="True">
+                <Setter Property="Background" Value="{DynamicResource SelectionBackground}"/>
+                <Setter Property="Foreground" Value="{DynamicResource SelectionForeground}"/>
+                <Setter Property="BorderBrush" Value="{DynamicResource SelectionBorder}"/>
+            </Trigger>
+        </Style.Triggers>
+    </Style>
+    <Style TargetType="{x:Type ListBoxItem}" BasedOn="{StaticResource SessionsListRow}"/>
+    <Style x:Key="SessionsListViewRow" TargetType="{x:Type ListViewItem}" BasedOn="{StaticResource SessionsListRow}">
+        <Setter Property="Template"><Setter.Value><ControlTemplate TargetType="{x:Type ListViewItem}">
+            <Border x:Name="SessionsListRowChrome" Background="{TemplateBinding Background}" BorderBrush="{TemplateBinding BorderBrush}" BorderThickness="{TemplateBinding BorderThickness}" Padding="{TemplateBinding Padding}">
+                <GridViewRowPresenter Content="{TemplateBinding Content}" Columns="{Binding View.Columns, RelativeSource={RelativeSource AncestorType={x:Type ListView}}}" VerticalAlignment="{TemplateBinding VerticalContentAlignment}"/>
+            </Border>
+        </ControlTemplate></Setter.Value></Setter>
+    </Style>
+    <Style TargetType="{x:Type ListViewItem}" BasedOn="{StaticResource SessionsListViewRow}"/>
+    <Style x:Key="SessionsListText" TargetType="TextBlock" BasedOn="{StaticResource {x:Type TextBlock}}">
+        <Style.Triggers><DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource SelectionForeground}"/></DataTrigger></Style.Triggers>
+    </Style>
+    <Style x:Key="SessionsListCaption" TargetType="TextBlock" BasedOn="{StaticResource SessionsListText}">
+        <Setter Property="Foreground" Value="{DynamicResource TextSecondary}"/>
+        <Setter Property="FontSize" Value="12"/>
+        <Style.Triggers><DataTrigger Binding="{Binding IsSelected, RelativeSource={RelativeSource AncestorType=ListBoxItem}}" Value="True"><Setter Property="Foreground" Value="{DynamicResource SelectionForeground}"/></DataTrigger></Style.Triggers>
+    </Style>
+
     <!-- Companion-only editable variant. ComboBox owns text/selection synchronization
          through its named editable part; the host's noneditable style stays unchanged. -->
     <Style x:Key="SessionsEditableComboBox" TargetType="{x:Type ComboBox}" BasedOn="{StaticResource {x:Type ComboBox}}">

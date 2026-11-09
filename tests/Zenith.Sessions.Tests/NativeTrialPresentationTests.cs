@@ -308,7 +308,7 @@ public sealed partial class ClientWindowIntegrationTests
         var ordinary=Assert.Single(buttons.Where(button => (string?)button.Attribute("Command") == "{Binding AccountPower}"));
         Assert.Equal("{Binding SelectedAccount}",(string?)ordinary.Attribute("CommandParameter"));
         Assert.Equal("{Binding SelectedAccount.PowerLabel}",(string?)ordinary.Attribute("Content"));
-        Assert.Contains(buttons, button => (string?)button.Attribute("Command") == "{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}");
+        Assert.Contains(buttons, button => (string?)button.Attribute("Command") == "{Binding DataContext.LaunchTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}");
         Assert.Contains(buttons, button => (string?)button.Attribute("Command") == "{Binding CancelNativeTrial}");
         // The redesign folds the trial into an "advanced" expander on Find a game; its header still names it as a trial.
         Assert.Contains(document.Descendants(ui + "Expander"), expander => ((string?)expander.Attribute("Header"))?.Contains("Native account trial", StringComparison.Ordinal) == true);

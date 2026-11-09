@@ -45,7 +45,7 @@ public sealed partial class ShellViewModel
         if(IsLocked || !QueueReady) return;
         bool paused=!EffectiveQueuePaused;long epoch=Interlocked.Read(ref _queuePresentationStopEpoch);
         bool accepted=true;
-        if(paused) {await _launchQueue.SetPausedAsync(true,_lifetime.Token);_queuePaused=true;}
+        if(paused) {HoldQueuePresentation();await _launchQueue.SetPausedAsync(true,_lifetime.Token);_queuePaused=true;}
         else accepted=await _launchQueue.TryResumeAsync(_lifetime.Token);
         if(!paused)
         {

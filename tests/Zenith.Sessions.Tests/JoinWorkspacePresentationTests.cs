@@ -35,7 +35,7 @@ public sealed class JoinWorkspacePresentationTests
         foreach(string handler in new[]{"StartNativeTrialClick","CopyLaunchEvidence","SaveLaunchEvidence","DeleteFavoriteDestination","ReplaceRecipientBundleMembers"})
             Assert.Single(join.Descendants(Ui+"Button").Where(button=>(string?)button.Attribute("Click")==handler));
         var controls = join.Descendants(Ui + "Button").ToList();
-        foreach(string label in new[]{"Copy requested link","Queue checked accounts","Browse public servers"})
+        foreach(string label in new[]{"Copy requested link","Launch checked accounts","Browse public servers"})
             Assert.Equal("{Binding CanUseDestination}",(string?)controls.Single(button=>(string?)button.Attribute("Content")==label).Attribute("IsEnabled"));
         Assert.Contains(controls,button=>(string?)button.Attribute("Content")=="Cancel / discard draft" && (string?)button.Attribute("Command")=="{Binding Cancel}");
         Assert.Contains(join.Descendants(Ui+"TextBlock"),block=>(string?)block.Attribute("Visibility")=="{Binding HasDestinationDraft, Converter={StaticResource VisibleIf}}");
@@ -76,7 +76,7 @@ public sealed class JoinWorkspacePresentationTests
         }
         // Step 3 holds the launch actions; the step switch is presentation only.
         fixture.Model.ShowJoinStep.Execute("3");Layout(view,width,480);Assert.True(fixture.Model.IsJoinReadyStep);
-        foreach(string label in new[]{"Queue checked accounts","Queue bundle for this destination","Test selected account launch","Record this trial as verified"})
+        foreach(string label in new[]{"Launch checked accounts","Queue bundle for this destination","Test selected account launch","Record this trial as verified"})
         {
             var button=FindButton(view,label);ScrollTo(view,button,width,480);Reachable(view,button);Assert.True(button.ActualHeight>=36);
         }
@@ -109,7 +109,7 @@ public sealed class JoinWorkspacePresentationTests
         // (an invite, a gameInstanceId link or a used public server); its wording must come from that destination.
         var join=Page(Source(),"JoinGamePage");
         var quick=join.Descendants(Ui+"Button").Single(button=>(string?)button.Attribute("Style")=="{StaticResource PrimaryButton}"
-            && (string?)button.Attribute("Command")=="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}"
+            && (string?)button.Attribute("Command")=="{Binding DataContext.LaunchTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}"
             && button.Ancestors().Any(ancestor=>(string?)ancestor.Attribute("DataContext")=="{Binding ServerBrowser}")
             && button.ElementsAfterSelf(Ui+"Button").Any(next=>(string?)next.Attribute("Content")=="Browse servers"));
         Assert.Equal("{Binding QuickJoinLabel}",(string?)quick.Attribute("Content"));
@@ -388,7 +388,7 @@ public sealed class JoinWorkspacePresentationTests
         Assert.False(FindButton(fixture.View,model.ServerBrowser.QuickJoinLabel).IsEnabled);
         var setup=FindButton(fixture.View,"Choose accounts / set up launch");Assert.True(setup.IsEnabled);
         setup.Command.Execute(setup.CommandParameter);Layout(fixture.View,1088,640);Assert.True(model.IsJoinReadyStep);
-        Assert.False(FindButton(fixture.View,"Queue checked accounts").IsEnabled);
+        Assert.False(FindButton(fixture.View,"Launch checked accounts").IsEnabled);
         var trial=FindButton(fixture.View,"Test selected account launch");Assert.Equal(Visibility.Visible,trial.Visibility);
         Assert.False(trial.IsEnabled); // Synthetic, uninitialized account cannot be used as a live trial.
         Assert.Empty(model.Launches);Assert.Equal(0,fixture.Capture.Calls);

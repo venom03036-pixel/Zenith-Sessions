@@ -94,7 +94,7 @@
       <Setter Property="Padding" Value="12,0" />
       <Setter Property="BorderBrush" Value="{DynamicResource BorderBrushLight}" />
     </Style>
-    <Style TargetType="ListViewItem">
+    <Style TargetType="ListViewItem" BasedOn="{StaticResource SessionsListViewRow}">
       <Setter Property="MinHeight" Value="40" />
       <Setter Property="Foreground" Value="{DynamicResource TextPrimary}" />
       <Setter Property="HorizontalContentAlignment" Value="Stretch" />
@@ -1142,7 +1142,7 @@
                     </StackPanel>
                     <Border Style="{StaticResource Divider}" />
                     <StackPanel DataContext="{Binding ServerBrowser}">
-                      <Button Content="{Binding QuickJoinLabel}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding DataContext.CanQueueTargetedLaunch, RelativeSource={RelativeSource AncestorType=Window}}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="{Binding QuickJoinToolTip}" />
+                      <Button Content="{Binding QuickJoinLabel}" Command="{Binding DataContext.LaunchTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding DataContext.CanQueueTargetedLaunch, RelativeSource={RelativeSource AncestorType=Window}}" Style="{StaticResource PrimaryButton}" MinHeight="36" ToolTip="{Binding QuickJoinToolTip}" />
                       <Button Content="Choose accounts / set up launch" Command="{Binding DataContext.ShowJoinStep, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="3" IsEnabled="{Binding CanUseDestination}" MinHeight="36" Margin="0,8,0,0" />
                       <Button Content="Browse servers" Command="{Binding DataContext.ShowJoinStep, RelativeSource={RelativeSource AncestorType=Window}}" CommandParameter="2" MinHeight="36" Margin="0,8,0,0" />
                       <WrapPanel Margin="0,8,0,0">
@@ -1252,7 +1252,7 @@
                       <Grid Margin="2,6"><Grid.ColumnDefinitions><ColumnDefinition Width="Auto" /><ColumnDefinition Width="Auto" /><ColumnDefinition Width="*" /></Grid.ColumnDefinitions>
                         <CheckBox IsChecked="{Binding IsChecked, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" VerticalAlignment="Center" Margin="0,0,8,0" AutomationProperties.Name="{Binding Label, StringFormat='Include {0} in launch'}" />
                         <Border Grid.Column="1" Width="32" Height="32" CornerRadius="6" Background="{DynamicResource SelectionBackground}" Margin="0,0,8,0"><Grid><TextBlock Text="{Binding Initial}" HorizontalAlignment="Center" VerticalAlignment="Center" Visibility="{Binding HasAvatar, Converter={StaticResource HiddenIf}}" /><Image Source="{Binding Avatar}" Stretch="UniformToFill" Visibility="{Binding HasAvatar, Converter={StaticResource VisibleIf}}" /></Grid></Border>
-                        <StackPanel Grid.Column="2"><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Username}" /><TextBlock Text="{Binding Identity}" Style="{StaticResource Caption}" /></StackPanel>
+                        <StackPanel Grid.Column="2"><TextBlock Text="{Binding Label}" Style="{StaticResource SessionsListText}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Username}" /><TextBlock Text="{Binding Identity}" Style="{StaticResource SessionsListCaption}" /></StackPanel>
                       </Grid>
                     </DataTemplate></ListBox.ItemTemplate>
                   </ListBox>
@@ -1312,7 +1312,7 @@
                   <StackPanel DockPanel.Dock="Right" Orientation="Horizontal">
                     <Border IsEnabled="{Binding IsNativeLaunchAvailable}"><Button Content="Queue bundle for this destination" DataContext="{Binding RecipientBundles}" Command="{Binding Queue}" IsEnabled="{Binding CanQueueSelected}" Margin="0,0,8,0" /></Border>
                     <Button Content="Stop bundle work" DataContext="{Binding RecipientBundles}" Command="{Binding Cancel}" IsEnabled="{Binding IsBusy}" Style="{StaticResource QuietButton}" Margin="0,0,8,0" />
-                    <Border IsEnabled="{Binding CanQueueTargetedLaunch}"><Button Content="Queue checked accounts" DataContext="{Binding ServerBrowser}" Command="{Binding DataContext.QueueTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" Padding="16,6" /></Border>
+                    <Border IsEnabled="{Binding CanQueueTargetedLaunch}"><Button Content="Launch checked accounts" DataContext="{Binding ServerBrowser}" Command="{Binding DataContext.LaunchTargetedAccounts, RelativeSource={RelativeSource AncestorType=Window}}" IsEnabled="{Binding CanUseDestination}" Style="{StaticResource PrimaryButton}" Padding="16,6" /></Border>
                   </StackPanel>
                   <TextBlock Text="Clients open one after another. Sign-in, launch support and free memory are checked again for every account." Style="{StaticResource Caption}" VerticalAlignment="Center" Margin="0,0,16,0" />
                 </DockPanel>
@@ -1896,10 +1896,10 @@
           <ListView ItemsSource="{Binding Launches}" Background="{DynamicResource CardBackground}" Foreground="{DynamicResource TextPrimary}" BorderBrush="{DynamicResource BorderBrushLight}" VirtualizingPanel.IsVirtualizing="True" VirtualizingPanel.VirtualizationMode="Recycling" ScrollViewer.CanContentScroll="True" AutomationProperties.Name="Launch requests">
             <ListView.View>
               <GridView>
-                <GridViewColumn Header="Account / process" Width="225"><GridViewColumn.CellTemplate><DataTemplate><StackPanel><TextBlock Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Label}" /><TextBlock Text="{Binding ProcessReceipt}" ToolTip="{Binding ProcessReceipt}" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{DynamicResource TextSecondary}" Margin="0,3,0,0" /><TextBlock Text="{Binding ResourceEstimate}" ToolTip="{Binding ResourceEstimate}" TextTrimming="CharacterEllipsis" FontSize="11" Foreground="{DynamicResource TextMuted}" Margin="0,3,0,0" /></StackPanel></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
-                <GridViewColumn Header="State" Width="145"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding State}" TextWrapping="Wrap" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
-                <GridViewColumn Header="Destination" Width="230"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding RequestedDestination}" ToolTip="{Binding RequestedDestination}" TextTrimming="CharacterEllipsis" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
-                <GridViewColumn Header="Details" Width="290"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding Detail}" ToolTip="{Binding Detail}" TextTrimming="CharacterEllipsis" Foreground="{DynamicResource TextSecondary}" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+                <GridViewColumn Header="Account / process" Width="225"><GridViewColumn.CellTemplate><DataTemplate><StackPanel><TextBlock Style="{StaticResource SessionsListText}" Text="{Binding Label}" TextTrimming="CharacterEllipsis" ToolTip="{Binding Label}" /><TextBlock Text="{Binding ProcessReceipt}" ToolTip="{Binding ProcessReceipt}" TextTrimming="CharacterEllipsis" FontSize="11" Style="{StaticResource SessionsListCaption}" Margin="0,3,0,0" /><TextBlock Text="{Binding ResourceEstimate}" ToolTip="{Binding ResourceEstimate}" TextTrimming="CharacterEllipsis" FontSize="11" Style="{StaticResource SessionsListCaption}" Margin="0,3,0,0" /></StackPanel></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+                <GridViewColumn Header="State" Width="145"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Style="{StaticResource SessionsListText}" Text="{Binding State}" TextWrapping="Wrap" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+                <GridViewColumn Header="Destination" Width="230"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Style="{StaticResource SessionsListText}" Text="{Binding RequestedDestination}" ToolTip="{Binding RequestedDestination}" TextTrimming="CharacterEllipsis" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
+                <GridViewColumn Header="Details" Width="290"><GridViewColumn.CellTemplate><DataTemplate><TextBlock Text="{Binding Detail}" ToolTip="{Binding Detail}" TextTrimming="CharacterEllipsis" Style="{StaticResource SessionsListCaption}" /></DataTemplate></GridViewColumn.CellTemplate></GridViewColumn>
                 <GridViewColumn Header="" Width="160">
                   <GridViewColumn.CellTemplate>
                     <DataTemplate>

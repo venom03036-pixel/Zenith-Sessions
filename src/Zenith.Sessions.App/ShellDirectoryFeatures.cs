@@ -33,7 +33,7 @@ public sealed partial class AccountRow
         "Cancel this account's pending launch. A client may need review if startup already began.":_launchState is { }?_launchDetail:SignInStatusBusy?
         "Protected storage was busy, so this account's saved sign-in was not read. Refresh checks it again without opening Roblox sign-in.":KnownUserId is null?
         "Connect this saved profile through Roblox's sign-in page. Games remain native.":NeedsSignIn?
-        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game, or choose a game and complete this installation's launch test first. For a chosen server link, use Sessions → Join a game.";
+        "This saved sign-in needs renewing before it can launch. Sign in opens Roblox's sign-in page; games remain native.":"Launch this account's preferred game, or choose a game in Sessions → Join a game. The saved sign-in and selected Roblox player are checked before startup.";
     public void SetPublicPresentation(PublicAccountData value)
     {
         if(value.UserId!=KnownUserId) return;
@@ -96,6 +96,8 @@ public sealed partial class ShellViewModel
     private bool _destinationSearchContextAllowed,_destinationSearchSuspended;
     public AsyncCommand RefreshPublicAccount {get;private set;}=null!;
     public AsyncCommand QueueTargetedAccounts {get;private set;}=null!;
+    public AsyncCommand LaunchTargetedAccounts {get;private set;}=null!;
+    private sealed record PowerRequest(object? Row, long Epoch, long StopEpoch);
     public AsyncCommand AccountPower {get;private set;}=null!;
     public Command OpenJoinGameForSelectedAccount {get;private set;}=null!;
     public Command UseSelectedPreferredPlace {get;private set;}=null!;
@@ -154,9 +156,12 @@ public sealed partial class ShellViewModel
             ServerBrowser.UsePreferredPlace(place);Tab="JoinGame";
         });
         QueueTargetedAccounts=new(parameter=>QueueTargetedAccountsAsync((TargetedRequest?)parameter),error=>Fail(error,ManagerSubsystem.Queue),_=>CaptureTargetedRequest());
+        LaunchTargetedAccounts=new(parameter=>QueueTargetedAccountsAsync((TargetedRequest?)parameter,true),error=>Fail(error,ManagerSubsystem.Queue),_=>CaptureTargetedRequest());
         AccountPower=new(async parameter=>
         {
-            if(!CanUseDirectories() || parameter is not AccountRow row || !Accounts.Contains(row)) return;
+            if(!CanUseDirectories() || parameter is not PowerRequest request || request.Epoch!=_directoryGeneration
+                || request.StopEpoch!=Interlocked.Read(ref _queuePresentationStopEpoch)
+                || request.Row is not AccountRow row || !Accounts.Contains(row)) return;
             SelectedAccount=row;
             var launch=Launches.LastOrDefault(l=>l.Operation.Intent.ProfileId==row.Profile.Id && !LaunchDescriptions.Terminal(l.Operation.State));
             if(launch is not null)
@@ -193,11 +198,9 @@ public sealed partial class ShellViewModel
                 return;
             }
             var binding=new LaunchAccountBinding(userId,row.AuthorizationGeneration??0);
-            var operation=await _launchQueue.EnqueueAsync(row.Profile,_lifetime.Token,binding);
-            Notice=operation.State==LaunchState.Blocked?LaunchDescriptions.Explain(operation.Problem)
-                :EffectiveQueuePaused?"Native launch queued. Choose Resume queue to start Roblox."
-                :"Native launch queued. It is not a confirmed running client.";QueueExpanded=true;
-        },error=>Fail(error,ManagerSubsystem.Queue));
+            Notice=await QueueFrozenRecipientsAsync(new(row.Profile.PreferredPlaceId.Value),[(row.Profile,binding)],request.Epoch,_lifetime.Token,start:true);
+            QueueExpanded=true;
+        },error=>Fail(error,ManagerSubsystem.Queue),parameter=>new PowerRequest(parameter,_directoryGeneration,Interlocked.Read(ref _queuePresentationStopEpoch)));
         RefreshPublicImageActivity();
     }
     private Task PublishPublicImageAsync(PublicAccountPageUpdate update,CancellationToken ct)=>_dispatcher.InvokeAsync(()=>
@@ -366,7 +369,7 @@ public sealed partial class ShellViewModel
         _publicImageLoader.ReplacePage(_queryGeneration,bindings);
     }
     private sealed record TargetedRequest(RobloxRequestedDestination Destination,
-        IReadOnlyList<(AccountProfile Profile,LaunchAccountBinding? Binding)> Recipients,long Epoch);
+        IReadOnlyList<(AccountProfile Profile,LaunchAccountBinding? Binding)> Recipients,long Epoch,long StopEpoch);
     private TargetedRequest? CaptureTargetedRequest()
     {
         if(!CanUseDirectories() || !QueueReady || ServerBrowser.ReadyDestination is not { } target)return null;
@@ -374,9 +377,9 @@ public sealed partial class ShellViewModel
         var checkedRows=Accounts.Where(r=>r.IsChecked).ToArray();
         var recipients=checkedRows.Length>0?checkedRows:SelectedAccount is { } selected && Accounts.Contains(selected)?[selected]:[];
         var snapshot=recipients.Select(r=>(r.Profile,Binding:r.KnownUserId is >0 && r.AuthorizationGeneration is >0?new LaunchAccountBinding(r.KnownUserId.Value,r.AuthorizationGeneration.Value):null)).ToArray();
-        return new(target,snapshot,_directoryGeneration);
+        return new(target,snapshot,_directoryGeneration,Interlocked.Read(ref _queuePresentationStopEpoch));
     }
-    private async Task QueueTargetedAccountsAsync(TargetedRequest? request)
+    private async Task QueueTargetedAccountsAsync(TargetedRequest? request,bool start=false)
     {
         if(!CanUseDirectories())return;
         if(request is null)
@@ -384,14 +387,16 @@ public sealed partial class ShellViewModel
             if(!_preserveStopNotice)Notice=ServerBrowser.HasDestinationDraft?"Use or discard the pending destination before queuing accounts.":"Choose a validated destination and available launch queue first.";
             return;
         }
-        if(request.Epoch!=_directoryGeneration || !QueueReady)return;
+        if(request.Epoch!=_directoryGeneration || !QueueReady
+            || start && request.StopEpoch!=Interlocked.Read(ref _queuePresentationStopEpoch))return;
         if(request.Recipients.Count==0) {Notice="Select an account or check accounts on this page.";return;}
-        string summary=await QueueFrozenRecipientsAsync(request.Destination,request.Recipients,request.Epoch,_lifetime.Token);
+        string summary=await QueueFrozenRecipientsAsync(request.Destination,request.Recipients,request.Epoch,_lifetime.Token,start);
         if(request.Epoch==_directoryGeneration && CanUseDirectories())Notice=summary;
     }
     private async Task<string> QueueFrozenRecipientsAsync(RobloxRequestedDestination target,
-        IReadOnlyList<(AccountProfile Profile,LaunchAccountBinding? Binding)> snapshot,long epoch,CancellationToken ct)
+        IReadOnlyList<(AccountProfile Profile,LaunchAccountBinding? Binding)> snapshot,long epoch,CancellationToken ct,bool start=false)
     {
+        long presentationEpoch=Interlocked.Read(ref _queuePresentationStopEpoch);
         // Freeze advisory occupancy with the same recipient/target snapshot. It never reserves
         // seats, authenticates accounts or changes the existing native-provider admission guards.
         var capacityAdvice=ServerBrowser.AssessRequestedCapacity(target,snapshot.Count);
@@ -421,12 +426,23 @@ public sealed partial class ShellViewModel
             }
             IReadOnlyList<LaunchBatchRow> rows;
             // A stopped or unhealthy queue rejects the whole review before anything is written.
-            try{rows=await _launchQueue.EnqueueBatchAsync(review,ct);}
-            catch(LaunchQueueException){rows=[];}
+            try{rows=start?await _launchQueue.StartBatchAsync(review,ct):await _launchQueue.EnqueueBatchAsync(review,ct);}
+            catch(LaunchQueueException)
+            {
+                QueueExpanded=true;
+                if(start)return "Launch was not started. Review the launch queue: resume or cancel other paused requests, then launch this selection again.";
+                rows=[];
+            }
             // The queue does not know the page's directory epoch. Leaving the page or locking
             // after the commit withdraws the rows this command created; rows the queue already
             // cancelled for a stop are left alone.
             bool withdrawn=ct.IsCancellationRequested||epoch!=_directoryGeneration;
+            if(start && !withdrawn && presentationEpoch==Interlocked.Read(ref _queuePresentationStopEpoch)
+                && !IsLocked && !_shuttingDown && Volatile.Read(ref _latestQueue) is {Paused:false})
+            {
+                _queuePresentationStopHeld=false;_queuePaused=false;
+                Raise(nameof(QueuePauseLabel));RefreshVisibleQueueStatus();RefreshOverview();
+            }
             // The recorded requests are one batch for Discord alerts, which announce it once every request has settled.
             if(!withdrawn) NoteLaunchBatchRecorded(rows,target.PlaceId);
             int withServer=0;
@@ -482,7 +498,7 @@ public sealed partial class ShellViewModel
     {
         DisposeDestinationCapacity();
         CancelDirectoryFeatures(true);
-        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,AccountPower.Execution,PreferredGameNameOperation);
+        await Task.WhenAll(RefreshPublicAccount.Execution,QueueTargetedAccounts.Execution,LaunchTargetedAccounts.Execution,AccountPower.Execution,PreferredGameNameOperation);
         await _publicImageLoader.DisposeAsync();
         await DestinationSearch.DisposeAsync();
         await RobloxFavorites.DisposeAsync();

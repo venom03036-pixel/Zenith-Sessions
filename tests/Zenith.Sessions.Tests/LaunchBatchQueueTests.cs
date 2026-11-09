@@ -20,6 +20,66 @@ public sealed class LaunchBatchQueueTests
             stabilization: TimeSpan.Zero, stagger: TimeSpan.Zero, budgetResolver: budget);
 
     [Fact]
+    public async Task ExplicitBatchStartRunsOnlyTheFreshBatchWithoutASeparateResume()
+    {
+        var store = new Store();
+        // Successful synthetic starts exercise batch sequencing; two refusals intentionally pause the queue.
+        var provider = new Provider(result: intent => new(ProviderLaunchStatus.VerifiedArrival,
+            intent.UserId, intent.PlaceId, 42, DateTime.UtcNow.Ticks, intent.RequestedJobId));
+        await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
+        var profiles = new[] { Profile(), Profile(), Profile() };
+        var review = queue.CaptureBatchReview(Target, profiles.Select((profile, i) => (profile, (LaunchAccountBinding?)Binding(i + 1))).ToArray());
+        var rows = await queue.StartBatchAsync(review);
+        using var timeout = new CancellationTokenSource(Deadline);
+        while (provider.Calls.Count != 3) await Task.Delay(5, timeout.Token);
+        await queue.WaitForActiveCleanupAsync(timeout.Token);
+        Assert.False(store.Last.Paused);
+        Assert.Equal(profiles.Select(p => p.Id).Order(), provider.Calls.Select(p => p.ProfileId).Order());
+        Assert.All(provider.Calls, call => { Assert.Equal(Job, call.RequestedJobId); Assert.Equal(Place, call.PlaceId); });
+        Assert.All(rows, row => Assert.False(queue.IsTrialOperation(row.Operation!.Intent.OperationId)));
+    }
+
+    [Fact]
+    public async Task ExplicitBatchStartCannotResumeOtherPreviouslyPausedRequests()
+    {
+        var store = new Store(); var provider = new Provider();
+        await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
+        var existing = await queue.EnqueueAsync(Profile(), default, Binding());
+        var review = queue.CaptureBatchReview(Target, [(Profile(), Binding(2))]);
+        await Assert.ThrowsAsync<LaunchQueueException>(() => queue.StartBatchAsync(review));
+        Assert.Equal(existing.Intent.OperationId, Assert.Single(store.Last.Operations).Intent.OperationId);
+        Assert.True(store.Last.Paused); Assert.Empty(provider.Calls);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task StopDuringExplicitBatchWriteCancelsTheBatchAndCannotResume(bool cancelCaller)
+    {
+        var store = new Store(); var provider = new Provider();
+        await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
+        using var cancel = new CancellationTokenSource();
+        var gate = store.HoldNextWrite();
+        var review = queue.CaptureBatchReview(Target, [(Profile(), Binding())]);
+        var work = queue.StartBatchAsync(review, cancel.Token);
+        try { await gate.Entered.Task.WaitAsync(Deadline); if (cancelCaller) cancel.Cancel(); else queue.SignalPanic(); }
+        finally { gate.Release.TrySetResult(); }
+        Assert.Equal(LaunchState.Cancelled, Assert.Single(await work.WaitAsync(Deadline)).Operation!.State);
+        Assert.True(store.Last.Paused); Assert.Empty(provider.Calls);
+    }
+
+    [Fact]
+    public async Task AStoppedReviewCannotBeUsedForAnExplicitStart()
+    {
+        var store = new Store(); var provider = new Provider();
+        await using var queue = Queue(store, provider); await queue.InitializeAsync(default);
+        var review = queue.CaptureBatchReview(Target, [(Profile(), Binding())]);
+        queue.SignalPanic();
+        await Assert.ThrowsAsync<LaunchQueueException>(() => queue.StartBatchAsync(review));
+        Assert.True(store.Last.Paused); Assert.Empty(provider.Calls); Assert.Empty(store.Last.Operations);
+    }
+
+    [Fact]
     public async Task SixteenAccountsShareOneDurableExactLinkRequestAndReopenForReview()
     {
         string root = Path.Combine(Path.GetTempPath(), "ZenithLaunchBatch-" + Guid.NewGuid().ToString("N"));

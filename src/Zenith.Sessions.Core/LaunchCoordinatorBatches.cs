@@ -160,7 +160,15 @@ public sealed partial class LaunchCoordinator
     }
 
     /// <summary>Record the accepted subset together. The ordinary launch and authorization gates apply to every row.</summary>
-    public async Task<IReadOnlyList<LaunchBatchRow>> EnqueueBatchAsync(LaunchBatchReview review, CancellationToken ct = default)
+    public Task<IReadOnlyList<LaunchBatchRow>> EnqueueBatchAsync(LaunchBatchReview review, CancellationToken ct = default)
+        => EnqueueBatchCoreAsync(review, false, ct);
+
+    /// <summary>An explicit Launch gesture records and starts this fresh batch, including from the initial paused state.
+    /// It cannot resume unrelated queued work, reuse a stopped review, or infer trial consent. Queue-only callers stay paused.</summary>
+    public Task<IReadOnlyList<LaunchBatchRow>> StartBatchAsync(LaunchBatchReview review, CancellationToken ct = default)
+        => EnqueueBatchCoreAsync(review, true, ct);
+
+    private async Task<IReadOnlyList<LaunchBatchRow>> EnqueueBatchCoreAsync(LaunchBatchReview review, bool start, CancellationToken ct)
     {
         ArgumentNullException.ThrowIfNull(review);
         await _serial.WaitAsync(ct).ConfigureAwait(false);
@@ -177,6 +185,9 @@ public sealed partial class LaunchCoordinator
             RequireCurrent();
             if (!review.TryConsume(_batchReviewOwner))
                 throw new LaunchQueueException("This launch review was already submitted or belongs to another queue.");
+
+            if (start && _paused && _operations.Any(row => row.State == LaunchState.Queued || LaunchDescriptions.AwaitsCapacity(row)))
+                throw new LaunchQueueException("Other requests are paused in the queue. Resume or cancel them before launching this selection.");
 
             var pendingProfiles = new HashSet<Guid>();
             var latestByProfile = review.Recipients[0].RetrySource is null ? null : new Dictionary<Guid, LaunchOperation>();
@@ -251,8 +262,15 @@ public sealed partial class LaunchCoordinator
             if (operations.Count == 0) return Array.AsReadOnly(rows);
 
             TrimHistory();
-            int start = _operations.Count;
+            int firstAdded = _operations.Count;
             _operations.AddRange(operations);
+            bool resumed = start && _paused && operations.Any(row => row.State == LaunchState.Queued);
+            if (resumed)
+            {
+                _pauseReason = LaunchQueuePauseReason.None; _paused = false;
+                // Panic can run without this lane. Its generation wins before the write and again after it.
+                if (Stopped()) _paused = true;
+            }
             // Once a write begins, own it through durable completion. A concurrent stop
             // cancels the entire accepted subset before the runner can acquire this lane.
             await PersistAsync(CancellationToken.None, notify: false).ConfigureAwait(false);
@@ -261,8 +279,9 @@ public sealed partial class LaunchCoordinator
             {
                 if (Stopped())
                 {
+                    if (resumed) _paused = true;
                     var now = _time.GetUtcNow();
-                    int index = start;
+                    int index = firstAdded;
                     for (int i = 0; i < rows.Length; i++)
                     {
                         if (rows[i].Operation is not { } operation) continue;

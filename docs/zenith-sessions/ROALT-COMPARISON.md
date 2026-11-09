@@ -1,5 +1,7 @@
 # Zenith Sessions and the RoALT reference
 
+Latest follow-up: [0.82 launch-click and theme repair](LAUNCH-CLICK-AND-THEME-REPAIR.md). Quick join, Launch checked accounts and preferred-game Launch now start a fresh selection without a separate Resume. List selection uses Zenith colors. Pause/Panic and unrelated paused work remain protected. This supersedes 0.81's enqueue-only button behavior; saved-session/ticket handling is unchanged. Offline evidence and remaining live acceptance are separate.
+
 Latest owner decision and repair: [0.81 saved-account direct launch](DIRECT-LAUNCH-REPAIR.md) supersedes the manual trial prerequisite for Direct ticket. Normal launches now use encrypted saved sessions immediately, with current account/publisher checks and corrected cookie rotation. The owner performs the next live test. The 1,737 affected offline checks passed; whole-build/package evidence is recorded separately for the exact candidate commit. Earlier failure records below remain historical evidence.
 
 [The account launch-flow correction](LAUNCH-FLOW-REPAIR.md) adds an account picker directly to launch review and exposes account and installation choices. Saved bundles are optional. This improves the actual joining workflow without copying RoALT code or bypassing Zenith's native evidence checks; a successful live launch remains to be demonstrated by the owner.

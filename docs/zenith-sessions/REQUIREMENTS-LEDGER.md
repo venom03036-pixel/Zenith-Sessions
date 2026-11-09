@@ -1,5 +1,10 @@
 # Zenith Sessions requirements and acceptance ledger
 
+
+## Launch gesture and selection contrast checkpoint (0.82-launchbinding)
+
+**VA-04-03, VA-06-03, PROD-UI-02.** Fresh explicit account launches now record and start atomically from the initially paused queue. Older paused requests require an explicit separate decision; a later Pause/Panic or cancellation still wins. The account picker and queue selection use existing theme colors and readable selected text. RoALT's public direct-launch source was re-read; encrypted saved sessions, current identity/publisher checks and the corrected 0.81 ticket flow are preserved. No user credential/session change or native client trial was performed. The initial three launch regressions, six theme failures and three late-Pause failures are retained, along with the wider WPF layout failure and its fix. See [scope, tests and owner steps](LAUNCH-CLICK-AND-THEME-REPAIR.md); final whole-suite/package results remain separate from focused evidence.
+
 ## Current round-4 index
 
 The current 93-item dispositions, precise live trials and owner decisions are in [ROUND4-STATUS.md](ROUND4-STATUS.md) and [ROUND4-LIVE-TRIALS.md](ROUND4-LIVE-TRIALS.md). [QUALITY_STATUS.md](QUALITY_STATUS.md) defines exact-commit acceptance; [HANDOFF.md](HANDOFF.md) describes the current code and operation boundaries. Dated checkpoints below retain their historical scope and are not cumulative completion claims. In particular, the standard-player-first/exact-executable qualification repair supersedes the earlier bootstrapper launch experiment, and the Settings update controls are now wired. Full live product and release acceptance remain unproven.
