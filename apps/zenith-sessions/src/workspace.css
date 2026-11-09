@@ -1,0 +1,24 @@
+*, *::before, *::after { box-sizing: border-box; }
+body { color-scheme: dark; }
+button:disabled { cursor: not-allowed; opacity: .55; }
+.workspace { padding-bottom: 1rem; }
+.preview-panel { margin-top: 1rem; padding: 1.1rem 1.25rem; }
+.preview-panel h2 { margin: 0 0 .75rem; font-size: 1.1rem; }
+.preview-panel p { color: var(--muted); }
+.preview-metrics { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.preview-avatar { --avatar: var(--mint); }
+.table-wrap th:first-child, .table-wrap td:first-child { padding-left: 1.25rem; }
+.inline-alert { border: 1px solid var(--border); border-radius: .65rem; background: var(--panel); padding: .75rem 1rem; color: var(--heading); }
+.session-fields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: .75rem; margin-bottom: 1rem; }
+.session-fields label, .appearance-preview label { display: grid; gap: .5rem; color: var(--muted); }
+.session-fields input, .session-fields select, .appearance-preview select {
+  width: 100%; border: 1px solid var(--border); border-radius: .5rem; color: var(--heading);
+  background: var(--field); font: inherit; padding: .7rem;
+}
+.appearance-preview select { max-width: 16rem; }
+.app-shell[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: light) { .app-shell[data-theme="follow-windows"] { color-scheme: light; } }
+.session-title { display: flex; align-items: center; gap: .8rem; }
+.session-title h2 { margin: 0; }
+.memory-grid { display: grid; grid-template-columns: minmax(8rem, 1fr) 3fr; gap: .6rem; }
+.memory-grid dd { margin: 0; color: var(--muted); }

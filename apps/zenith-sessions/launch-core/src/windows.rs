@@ -15,18 +15,25 @@ use std::{
 
 use ::windows::{
     Win32::{
-        Foundation::{FILETIME, HANDLE, HLOCAL, HWND, LPARAM, LocalFree},
+        Foundation::{
+            CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE, HLOCAL, HWND, LPARAM, LocalFree,
+        },
         Security::Cryptography::{
             CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptUnprotectData,
         },
         Storage::FileSystem::FILE_SHARE_READ,
         System::{
+            Diagnostics::ToolHelp::{
+                CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW,
+                TH32CS_SNAPPROCESS,
+            },
             Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
             SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
             Threading::GetProcessTimes,
         },
         UI::WindowsAndMessaging::{
-            EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsWindowVisible,
+            EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+            SW_RESTORE, SetForegroundWindow, ShowWindowAsync,
         },
     },
     core::{BOOL, w},
@@ -39,6 +46,14 @@ use crate::{admission::MemorySample, auth::Credential};
 
 const PROBE_ENTROPY: &[u8] = b"ZenithSessions/Rust/LaunchProbe/v1";
 const MAX_BUNDLE: u64 = 128 * 1024;
+
+#[derive(Clone, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct SavedIdentity {
+    pub profile_id: Uuid,
+    pub username: String,
+    pub user_id: u64,
+}
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -57,11 +72,19 @@ pub fn read_probe_credential(path: &Path, username: &str) -> Result<(u64, Creden
     File::open(path)
         .and_then(|file| file.take(MAX_BUNDLE + 1).read_to_end(&mut encrypted))
         .map_err(|_| "could not read the protected probe bundle")?;
+    let (identity, credential) = open_saved_bundle(&mut encrypted)?;
+    if !identity.username.eq_ignore_ascii_case(username) {
+        return Err("saved sign-in does not match the requested account".into());
+    }
+    Ok((identity.user_id, credential))
+}
+
+pub fn open_saved_bundle(encrypted: &mut [u8]) -> Result<(SavedIdentity, Credential), String> {
     if encrypted.is_empty() || encrypted.len() as u64 > MAX_BUNDLE {
         return Err("invalid protected probe bundle length".into());
     }
     let mut entropy = PROBE_ENTROPY.to_vec();
-    let input = blob(&mut encrypted);
+    let input = blob(encrypted);
     let entropy = blob(&mut entropy);
     let mut output = CRYPT_INTEGER_BLOB::default();
     // DPAPI owns this allocation. Copy only bounded bytes, wipe and release on all paths.
@@ -98,13 +121,22 @@ pub fn read_probe_credential(path: &Path, username: &str) -> Result<(u64, Creden
         || bundle.profile_id.is_nil()
         || bundle.user_id == 0
         || bundle.generation == 0
-        || !bundle.username.eq_ignore_ascii_case(username)
+        || bundle.username.is_empty()
+        || bundle.username.len() > 20
+        || !bundle
+            .username
+            .bytes()
+            .all(|value| value.is_ascii_alphanumeric() || value == b'_')
         || bundle.expires_unix_seconds <= now.as_secs()
     {
         return Err("saved sign-in is expired or does not match the requested account".into());
     }
     Ok((
-        bundle.user_id,
+        SavedIdentity {
+            profile_id: bundle.profile_id,
+            username: bundle.username,
+            user_id: bundle.user_id,
+        },
         Credential::new(bundle.cookie).map_err(|error| error.to_string())?,
     ))
 }
@@ -131,6 +163,48 @@ pub fn memory_sample() -> Result<MemorySample, String> {
         commit_total: state.ullTotalPageFile,
         commit_available: state.ullAvailPageFile,
     })
+}
+
+pub fn ensure_isolated_player_start() -> Result<(), String> {
+    // SAFETY: the snapshot is owned here and closed after enumeration on every result path.
+    let snapshot = unsafe { CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) }
+        .map_err(|_| "Could not check for existing Roblox clients")?;
+    let result = (|| {
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_of::<PROCESSENTRY32W>() as u32,
+            ..Default::default()
+        };
+        unsafe { Process32FirstW(snapshot, &mut entry) }
+            .map_err(|_| "Could not read the current process list")?;
+        loop {
+            let end = entry
+                .szExeFile
+                .iter()
+                .position(|unit| *unit == 0)
+                .unwrap_or(entry.szExeFile.len());
+            let executable = String::from_utf16_lossy(&entry.szExeFile[..end]);
+            if [
+                "RobloxPlayerBeta.exe",
+                "RobloxPlayerInstaller.exe",
+                "RoALT.exe",
+                "Zenith.Sessions.App.exe",
+            ]
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&executable))
+            {
+                return Err(format!(
+                    "Close {executable} before starting this single-account session"
+                ));
+            }
+            match unsafe { Process32NextW(snapshot, &mut entry) } {
+                Ok(()) => (),
+                Err(error) if error.code() == ERROR_NO_MORE_FILES.to_hresult() => return Ok(()),
+                Err(_) => return Err("Could not finish checking for other players".into()),
+            }
+        }
+    })();
+    let _ = unsafe { CloseHandle(snapshot) };
+    result
 }
 
 pub struct VerifiedPlayer {
@@ -316,12 +390,35 @@ impl OwnedPlayer {
     }
 
     pub fn has_window(&self) -> bool {
-        let Some(identity) = self.identity else {
-            return false;
-        };
+        self.window().is_some()
+    }
+
+    pub fn focus(&self) -> Result<(), &'static str> {
+        let window = self
+            .window()
+            .ok_or("The owned Roblox window is unavailable")?;
+        // SAFETY: the window was found for the exact process still held by this OwnedPlayer.
+        unsafe {
+            let mut pid = 0;
+            GetWindowThreadProcessId(window, Some(&mut pid));
+            if pid != self.pid() {
+                return Err("The Roblox window changed");
+            }
+            if IsIconic(window).as_bool() {
+                let _ = ShowWindowAsync(window, SW_RESTORE);
+            }
+            if !SetForegroundWindow(window).as_bool() {
+                return Err("Windows declined focus. Select Roblox in the taskbar.");
+            }
+        }
+        Ok(())
+    }
+
+    fn window(&self) -> Option<HWND> {
+        let identity = self.identity?;
         let mut search = WindowSearch {
             pid: identity.pid,
-            found: false,
+            found: None,
         };
         // SAFETY: enumeration is synchronous. The callback borrows this stack value only during the call.
         let _ = unsafe { EnumWindows(Some(window_callback), LPARAM((&raw mut search) as isize)) };
@@ -373,7 +470,7 @@ fn process_identity(child: &std::process::Child) -> Option<ProcessIdentity> {
 
 struct WindowSearch {
     pid: u32,
-    found: bool,
+    found: Option<HWND>,
 }
 
 unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
@@ -386,8 +483,8 @@ unsafe extern "system" fn window_callback(window: HWND, param: LPARAM) -> BOOL {
             && IsWindowVisible(window).as_bool()
             && GetWindow(window, GW_OWNER).is_err()
         {
-            search.found = true;
+            search.found = Some(window);
         }
     }
-    BOOL::from(!search.found)
+    BOOL::from(search.found.is_none())
 }

@@ -1,7 +1,7 @@
 {
   "identifier": "diagnostics",
-  "description": "Local diagnostics window can read Windows launch memory admission.",
+  "description": "The local Zenith workspace can manage its protected library and owned session.",
   "windows": ["main"],
   "local": true,
-  "permissions": ["allow-read-admission"]
+  "permissions": ["allow-workspace-snapshot", "allow-import-account", "allow-remove-account", "allow-launch-account", "allow-stop-session", "allow-focus-session"]
 }
