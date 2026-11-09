@@ -103,6 +103,9 @@ public sealed partial class ShellViewModel
         if (_shuttingDown || IsLocked || _keepAwakeStopped || !_ready) return;
         int minutes = SavedKeepAwakeMinutes;
         var gate = _capabilityGate.Check(GatedFeature.KeepClientsAwake);
+        // A late/manual tick must retain the same transport gate as the initial schedule.
+        // Otherwise recent user input arms a retry for a feature that cannot run at all.
+        if (IsSample || _keepAwakeRunner is not { } runner) { ScheduleKeepAwake(); return; }
         TimeSpan? idle;
         try { idle = _userIdle.IdleFor; }
         catch (Exception ex) { _diagnostics.RecordFailure(ManagerSubsystem.KeepAwake, ex.GetType()); idle = null; }
@@ -114,7 +117,6 @@ public sealed partial class ShellViewModel
                 KeepAwakeStatus = "Waiting until you have left the keyboard and mouse alone for 10 seconds, so the press never takes a window from you.";
                 ArmKeepAwake(wait); return;
         }
-        if (IsSample || _keepAwakeRunner is not { } runner) { ScheduleKeepAwake(); return; }
         var clients = KeepAwakeClients();
         if (clients.Length == 0)
         {

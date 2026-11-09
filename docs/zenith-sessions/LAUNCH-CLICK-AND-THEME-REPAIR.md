@@ -30,6 +30,8 @@ The account picker inherited a white Windows list background. Selected queue con
 
 The earlier full Sessions run (`artifacts/launch-click-fix/full-sessions/sessions-full.trx`) recorded **7,219 passed, 2 failed, 1 environment skip**. Failures were the previously observed missing-transport Keep Awake timer and `CoalescedQueuePresentationCannotReplayAnOlderProducerSnapshot` (an empty snapshot in its controlled scheduling assertion). The ordering case passed unchanged in the final focused rerun. These failures are retained and are not converted into a clean full-suite result; no tests were disabled or relaxed. The one skip is the existing Windows fault-record environment case.
 
+The clean-commit six-suite run at `c1419d8` (`artifacts/launch-click-fix/final-checks/checks.json`) passed the other five suites and reproduced only the Keep Awake failure in Sessions (7,220 passed, one failed, one environment skip). The coalesced-queue case passed. That remaining scheduling defect is now repaired: a tick checks sample/no-transport availability before user-idle deferral, retaining the same gate as the initial schedule. No input support was enabled, no test was altered, and the existing failing test now passes. `artifacts/launch-click-fix/transport-and-launch/transport-and-launch.trx` records 80 passing affected checks with no failures/skips. The next clean-commit gate uses `artifacts/launch-click-fix/final-checks-2/`.
+
 Final source identity, full-suite results, rendered screenshots and packaged self-check results belong to this repair's artifacts and delivered build receipt. Historical round-4 dispositions and earlier failed gates are not rewritten. Main is not promoted by a focused pass or a candidate package.
 
 ## Owner test

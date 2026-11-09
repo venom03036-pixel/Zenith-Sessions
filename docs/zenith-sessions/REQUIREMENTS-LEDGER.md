@@ -1,6 +1,11 @@
 # Zenith Sessions requirements and acceptance ledger
 
 
+## No-transport scheduling correction (0.82-transportguard)
+
+**CAP-13-05.** The full launch-repair regression run reproduced an existing late-tick defect: user-idle deferral armed a timer before checking whether any input transport existed. The tick now applies the same sample/transport guard as initial scheduling, before deferral. No input capability was enabled and no test changed. The existing failing integration case and 79 related launch/queue/theme/Keep Awake checks pass in `artifacts/launch-click-fix/transport-and-launch/transport-and-launch.trx`. See [repair evidence](LAUNCH-CLICK-AND-THEME-REPAIR.md).
+
+
 ## Launch gesture and selection contrast checkpoint (0.82-launchbinding)
 
 **VA-04-03, VA-06-03, PROD-UI-02.** Fresh explicit account launches now record and start atomically from the initially paused queue. Older paused requests require an explicit separate decision; a later Pause/Panic or cancellation still wins. The account picker and queue selection use existing theme colors and readable selected text. RoALT's public direct-launch source was re-read; encrypted saved sessions, current identity/publisher checks and the corrected 0.81 ticket flow are preserved. No user credential/session change or native client trial was performed. The initial three launch regressions, six theme failures and three late-Pause failures are retained, along with the wider WPF layout failure and its fix. See [scope, tests and owner steps](LAUNCH-CLICK-AND-THEME-REPAIR.md); final whole-suite/package results remain separate from focused evidence.
