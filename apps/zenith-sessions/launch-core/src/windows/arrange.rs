@@ -1,6 +1,6 @@
 use std::time::{Duration, Instant};
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, POINT, RECT, WPARAM},
     Graphics::Gdi::{
@@ -13,10 +13,11 @@ use windows::Win32::{
         },
         WindowsAndMessaging::{
             GA_ROOT, GW_OWNER, GWL_STYLE, GetAncestor, GetWindow, GetWindowLongW, GetWindowRect,
-            GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, MINMAXINFO,
-            SM_CXMINTRACK, SM_CYMINTRACK, SMTO_ABORTIFHUNG, SMTO_BLOCK, SMTO_ERRORONEXIT,
-            SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
-            SendMessageTimeoutW, SetWindowPos, WM_GETMINMAXINFO, WS_POPUP, WS_THICKFRAME,
+            GetWindowThreadProcessId, IsIconic, IsWindowVisible, IsZoomed, MINMAXINFO, SC_MINIMIZE,
+            SC_RESTORE, SM_CXMINTRACK, SM_CYMINTRACK, SMTO_ABORTIFHUNG, SMTO_BLOCK,
+            SMTO_ERRORONEXIT, SWP_ASYNCWINDOWPOS, SWP_NOACTIVATE, SWP_NOOWNERZORDER, SWP_NOZORDER,
+            SendMessageTimeoutW, SetWindowPos, WM_GETMINMAXINFO, WM_SYSCOMMAND, WS_POPUP,
+            WS_THICKFRAME,
         },
     },
 };
@@ -32,6 +33,59 @@ pub enum Placement {
     Rejected,
     Unconfirmed,
     Cancelled,
+}
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WindowVisibility {
+    Minimize,
+    Restore,
+}
+
+impl OwnedPlayer {
+    pub fn set_window_visibility(
+        &self,
+        visibility: WindowVisibility,
+        permitted: impl Fn() -> bool,
+    ) -> Result<(), &'static str> {
+        const CHANGED: &str = "The owned Roblox window changed.";
+        const CANCELLED: &str = "Zenith stopped this window action.";
+        if !permitted() {
+            return Err(CANCELLED);
+        }
+        let handle = self
+            .find_matching_window(false, true)
+            .ok_or("This client needs one visible Roblox window.")?;
+        let target = PinnedWindow::new(handle, self.identity().ok_or(CHANGED)?).ok_or(CHANGED)?;
+        let minimize = matches!(visibility, WindowVisibility::Minimize);
+        if target.minimized().ok_or(CHANGED)? == minimize {
+            return permitted().then_some(()).ok_or(CANCELLED);
+        }
+        if !permitted() {
+            return Err(CANCELLED);
+        }
+        let command = if minimize { SC_MINIMIZE } else { SC_RESTORE };
+        // SAFETY: the target is a revalidated child-process window. This is a system
+        // message with scalar arguments, sent from a worker with a bounded wait.
+        let sent = unsafe {
+            SendMessageTimeoutW(
+                handle,
+                WM_SYSCOMMAND,
+                WPARAM(command as usize),
+                LPARAM(0),
+                SMTO_ABORTIFHUNG | SMTO_BLOCK | SMTO_ERRORONEXIT,
+                300,
+                None,
+            )
+        };
+        if !permitted() {
+            return Err(CANCELLED);
+        }
+        if sent.0 == 0 || target.minimized().ok_or(CHANGED)? != minimize {
+            return Err("Windows did not confirm the window change.");
+        }
+        Ok(())
+    }
 }
 
 pub fn tile_owned_players(
@@ -56,6 +110,7 @@ pub fn tile_owned_players(
                 .identity()
                 .ok_or("A Roblox process identity is unavailable.")?,
         )
+        .filter(|target| normal_window(target.handle))
         .ok_or("A Roblox window changed before arrangement. Refresh and try again.")?;
         targets.push(target);
     }
@@ -68,9 +123,16 @@ pub(super) fn normal_window(window: HWND) -> bool {
         let style = GetWindowLongW(window, GWL_STYLE) as u32;
         style & WS_THICKFRAME.0 != 0
             && style & WS_POPUP.0 == 0
-            && IsWindowVisible(window).as_bool()
             && !IsIconic(window).as_bool()
             && !IsZoomed(window).as_bool()
+            && visible_top_level(window)
+    }
+}
+
+fn visible_top_level(window: HWND) -> bool {
+    // SAFETY: these calls only query the supplied window.
+    unsafe {
+        IsWindowVisible(window).as_bool()
             && GetAncestor(window, GA_ROOT) == window
             && GetWindow(window, GW_OWNER).is_err()
     }
@@ -92,10 +154,14 @@ impl PinnedWindow {
             process,
             thread,
         };
-        window.current().then_some(window)
+        window.matches_process().then_some(window)
     }
 
     fn current(self) -> bool {
+        self.matches_process() && normal_window(self.handle)
+    }
+
+    fn matches_process(self) -> bool {
         let mut pid = 0;
         // SAFETY: the process output is writable for the lifetime of this call.
         let thread = unsafe { GetWindowThreadProcessId(self.handle, Some(&mut pid)) };
@@ -103,7 +169,13 @@ impl PinnedWindow {
             && thread == self.thread
             && pid == self.process.pid
             && current_process_identity(pid) == Some(self.process)
-            && normal_window(self.handle)
+    }
+
+    fn minimized(self) -> Option<bool> {
+        (self.matches_process() && visible_top_level(self.handle)).then(|| {
+            // SAFETY: the HWND belongs to the expected top-level window.
+            unsafe { IsIconic(self.handle) }.as_bool()
+        })
     }
 
     fn minimum(self, destination_dpi: u32) -> Option<(i32, i32)> {
@@ -346,8 +418,8 @@ mod tests {
                     WS_OVERLAPPEDWINDOW,
                     50,
                     50,
-                    350,
-                    260,
+                    640,
+                    400,
                     None,
                     None,
                     None,
@@ -378,9 +450,13 @@ mod tests {
 
     impl FixturePlayer {
         fn start(windows: u8) -> Self {
+            Self::with_mode(&windows.to_string())
+        }
+
+        fn with_mode(mode: &str) -> Self {
             let mut child = Command::new(std::env::current_exe().unwrap())
                 .args(["--exact", TEST_NAME, "--nocapture"])
-                .env(FIXTURE_ENV, windows.to_string())
+                .env(FIXTURE_ENV, mode)
                 .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
                 .stdout(Stdio::piped())
                 .spawn()
@@ -420,6 +496,10 @@ mod tests {
         if let Ok(count) = std::env::var(FIXTURE_ENV) {
             let _second = (count == "2").then(FixtureWindow::open);
             println!("zenith-layout-ready");
+            if count == "stalled" {
+                std::thread::sleep(Duration::from_secs(10));
+                return;
+            }
             let deadline = Instant::now() + Duration::from_secs(10);
             let mut message = MSG::default();
             while Instant::now() < deadline {
@@ -462,5 +542,64 @@ mod tests {
         assert!(PinnedWindow::new(first_window, wrong_process).is_none());
         assert!(tile_owned_players(anchor.0.0 as isize, &players, || true).is_err());
         assert_eq!(observed_bounds(first_window), Some(a));
+    }
+
+    #[test]
+    fn native_window_visibility_confirms_only_the_owned_unique_window() {
+        use std::cell::Cell;
+
+        let _dpi = PhysicalDpi::enter().unwrap();
+        let mut target = FixturePlayer::start(1);
+        let other = FixturePlayer::start(1);
+        let ambiguous = FixturePlayer::start(2);
+        let stalled = FixturePlayer::with_mode("stalled");
+        let window = target.0.find_matching_window(false, true).unwrap();
+        let other_window = other.0.find_matching_window(false, true).unwrap();
+        let original = observed_bounds(window).unwrap();
+        let checks = Cell::new(0);
+        assert!(
+            target
+                .0
+                .set_window_visibility(WindowVisibility::Minimize, || {
+                    let previous = checks.replace(checks.get() + 1);
+                    previous == 0
+                })
+                .is_err()
+        );
+        assert!(!unsafe { IsIconic(window) }.as_bool());
+        assert!(
+            ambiguous
+                .0
+                .set_window_visibility(WindowVisibility::Minimize, || true)
+                .is_err()
+        );
+        target
+            .0
+            .set_window_visibility(WindowVisibility::Minimize, || true)
+            .unwrap();
+        assert!(unsafe { IsIconic(window) }.as_bool());
+        assert!(!unsafe { IsIconic(other_window) }.as_bool());
+        target
+            .0
+            .set_window_visibility(WindowVisibility::Restore, || true)
+            .unwrap();
+        assert!(!unsafe { IsIconic(window) }.as_bool());
+        assert_eq!(observed_bounds(window), Some(original));
+
+        let started = Instant::now();
+        assert_eq!(
+            stalled
+                .0
+                .set_window_visibility(WindowVisibility::Minimize, || true),
+            Err("Windows did not confirm the window change.")
+        );
+        assert!(started.elapsed() < Duration::from_secs(2));
+        target.0.stop().unwrap();
+        assert!(
+            target
+                .0
+                .set_window_visibility(WindowVisibility::Minimize, || true)
+                .is_err()
+        );
     }
 }

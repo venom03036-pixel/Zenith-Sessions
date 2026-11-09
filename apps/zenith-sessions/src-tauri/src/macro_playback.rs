@@ -134,6 +134,10 @@ impl MacroPlayback {
             .clone()
     }
 
+    pub fn is_active(&self) -> bool {
+        self.current().is_some_and(|run| !run.status().finished())
+    }
+
     pub fn publish_review(
         &self,
         review: Option<(ReviewKey, MacroWindow)>,

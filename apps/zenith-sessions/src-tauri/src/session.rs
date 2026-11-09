@@ -21,7 +21,8 @@ use zenith_session_launch::{
     windows::{
         EfficiencyAction, EfficiencyState, OwnedPlayer, PairLease, Placement, PriorityAction,
         PriorityState, ProcessIdentity, ProcessMetrics, ProcessSample, SavedIdentity,
-        VerifiedPlayer, ensure_compatible_player_start, memory_sample, tile_owned_players,
+        VerifiedPlayer, WindowVisibility, ensure_compatible_player_start, memory_sample,
+        tile_owned_players,
     },
 };
 
@@ -487,6 +488,27 @@ impl SessionOwner {
 
     pub fn focus(&self, id: Uuid) -> Result<(), String> {
         self.attempt(id)?.focus()
+    }
+
+    pub fn set_window_visibility(
+        &self,
+        id: Uuid,
+        visibility: WindowVisibility,
+        permitted: impl Fn() -> bool,
+    ) -> Result<(), String> {
+        if self.closing {
+            return Err("Zenith is closing.".into());
+        }
+        let attempt = self.attempt(id)?;
+        if attempt.cancelled || attempt.row.phase != Phase::Running {
+            return Err("The account's Roblox window has not been confirmed.".into());
+        }
+        attempt
+            .player
+            .as_ref()
+            .ok_or("The owned Roblox process is unavailable.")?
+            .set_window_visibility(visibility, permitted)
+            .map_err(str::to_owned)
     }
 
     pub fn client_performance(&mut self) -> Vec<ClientPerformance> {
@@ -1100,6 +1122,42 @@ mod tests {
         assert!(owner.tile_windows(&[Uuid::new_v4()], 0, || false).is_err());
         assert!(owner.tile_windows(&[id, id], 0, || false).is_err());
         assert!(owner.tile_windows(&[id], 0, || false).is_err());
+    }
+
+    #[test]
+    fn window_visibility_rejects_unconfirmed_cancelled_and_stale_attempts() {
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            username: "Fixture".into(),
+            user_id: 42,
+        };
+        let mut owner = SessionOwner::default();
+        let mut attempt = Attempt::new(&account, &Target::public(1818, None), None);
+        let id = attempt.row.attempt_id;
+        attempt.row.phase = Phase::Unconfirmed;
+        owner.attempts.push(attempt);
+        let change = |owner: &SessionOwner| {
+            owner.set_window_visibility(id, WindowVisibility::Minimize, || unreachable!())
+        };
+        assert!(
+            change(&owner)
+                .unwrap_err()
+                .contains("has not been confirmed")
+        );
+        owner.attempts[0].row.phase = Phase::Running;
+        assert!(
+            change(&owner)
+                .unwrap_err()
+                .contains("process is unavailable")
+        );
+        owner.attempts[0].cancelled = true;
+        assert!(
+            change(&owner)
+                .unwrap_err()
+                .contains("has not been confirmed")
+        );
+        owner.attempts.clear();
+        assert!(change(&owner).unwrap_err().contains("session has changed"));
     }
 
     #[test]

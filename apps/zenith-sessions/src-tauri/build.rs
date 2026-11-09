@@ -35,6 +35,7 @@ fn main() {
             "panic_stop",
             "resume_launches",
             "focus_session",
+            "set_window_visibility",
             "client_performance",
             "set_client_priority",
             "set_client_efficiency",

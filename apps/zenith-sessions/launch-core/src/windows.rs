@@ -4,7 +4,7 @@ mod pair_lease;
 mod publisher;
 mod telemetry;
 
-pub use arrange::{Placement, tile_owned_players};
+pub use arrange::{Placement, WindowVisibility, tile_owned_players};
 pub use efficiency::{EfficiencyAction, EfficiencyPolicy, EfficiencyState};
 pub use pair_lease::PairLease;
 pub use telemetry::{PriorityAction, PriorityState, ProcessMetrics, ProcessSample};

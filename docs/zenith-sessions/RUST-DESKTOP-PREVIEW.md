@@ -22,6 +22,16 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.26 minimize and restore owned windows
+
+After a client reaches **Arrival confirmed**, open **Windows** and use **Minimize Roblox** or **Restore Roblox** on that client's card. The preview finds one visible top-level window for the owned process and checks the window handle, thread, process ID, and process creation time. It sends the standard window command with a 300 ms timeout on a worker. Confirmation requires a Windows readback of the same window. Foreground macro playback and Panic hold these controls. Restore brings a minimized window back according to Windows' placement rules. [Windows system commands](https://learn.microsoft.com/en-us/windows/win32/menurc/wm-syscommand), [Windows readback](https://learn.microsoft.com/en-us/windows/win32/api/winuser/nf-winuser-isiconic)
+
+The browser regression failed on the previous preview and passed with the new controls. It checks the target attempt, a failed readback, and the foreground-playback hold. Windows tests used disposable windows to verify minimize and restore, unrelated-window isolation, ambiguous targets, revocation before dispatch, and bounded failure on a stalled window. An unconfirmed action may have reached the target.
+
+For an attended trial, launch a designated Roblox account and wait for **Arrival confirmed**. In **Windows**, minimize it and verify the client is still running in the taskbar. Restore it, check its prior usable placement, and use **Focus Roblox** if needed. With a second confirmed client, repeat on only one card and check the other client stays in its previous state. Repeat while a foreground macro is active and verify Minimize and Restore are disabled until it finishes. Real Roblox window behavior remains unverified.
+
+The 1.26 executable has SHA-256 `C794BCD6E6CC38131D047F6F72A3285E527FA5487E02DD3B742CC131D8CB5A43`. Seventy-eight offline Rust tests, nineteen browser checks, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both runs of the staged executable passed all seven self-check stages.
+
 ## Preview 1.25 account selection and sign-in closure
 
 Open **Accounts** and select an account's name or portrait. The inspector shows that account's Roblox headshot, display name, join date, public favorites, friends and Robux balance. Selecting a favorite fills the Sessions destination for that account. The account cell is a full-width selection target. Refreshing checks the selected account's details and the library's headshots. Initials appear while Roblox prepares an image or when the image is unavailable. [Roblox headshots](https://create.roblox.com/docs/cloud/reference/features/thumbnails)

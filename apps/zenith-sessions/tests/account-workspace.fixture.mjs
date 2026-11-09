@@ -20,6 +20,7 @@ function exerciseWorkspace() {
   let stoppedRecovery;
   let reportAttempts = 0;
   let efficiencyChanges = 0;
+  const windowChanges = [];
   let efficiency = { policy: 'system_managed', canRequest: true, canRestore: false };
   let savedInvites = [];
   const inviteLink = 'https://www.roblox.com/games/1819/Fixture?privateServerLinkCode=12345678901234567890123456789012';
@@ -65,6 +66,11 @@ function exerciseWorkspace() {
             efficiency = { policy: 'system_managed', canRequest: true, canRestore: false };
           } else throw new Error('Unexpected efficiency action.');
           return efficiency;
+        case 'set_window_visibility':
+          if (args.attempt !== 'visible-window') throw new Error('The window action targeted another attempt.');
+          windowChanges.push(args.action);
+          if (windowChanges.length === 1) throw 'Windows did not confirm the window change.';
+          return;
         case 'export_support_report':
           if (Object.keys(args).length !== 0) throw new Error('The report export accepted a renderer-supplied path or data.');
           if (++reportAttempts === 1) throw 'Could not save the support report.';
@@ -434,6 +440,34 @@ function exerciseWorkspace() {
         await until(() => button('Request Windows efficiency'), 'restoring did not clear the managed efficiency request');
         if (efficiencyChanges !== 2) throw new Error('Efficiency actions did not run exactly once.');
       } finally {
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
+    await check('Windows minimizes and restores only the confirmed attempt and reports actual readback', async () => {
+      const card = () => find('[aria-label="Roblox windows"] article');
+      const button = label => [...(card()?.querySelectorAll('button') ?? [])].find(element => element.textContent.trim() === label);
+      sessionRows = [{ attemptId: 'visible-window', accountId: 'fixture-6', username: 'Fixture6', placeId: '1819',
+        phase: 'running', pid: 1777, requestedServer: null, observedServer: null, privateServer: false }];
+      find('button[aria-label="Windows"]').click();
+      try {
+        await until(() => button('Minimize Roblox') && button('Restore Roblox'), 'the confirmed window has no visibility controls');
+        macroPlayback = { id: 'fixture-window-macro', name: 'Fixture macro', account: 'Fixture6', phase: 'running', detail: '' };
+        await until(() => button('Minimize Roblox').disabled && button('Restore Roblox').disabled, 'active foreground playback did not hold the window controls');
+        macroPlayback = null;
+        await until(() => !button('Minimize Roblox').disabled, 'completed playback did not release the window controls');
+        button('Minimize Roblox').click();
+        await until(() => find('[role="alert"]')?.textContent.includes('did not confirm'), 'a failed readback was hidden');
+        if (card().textContent.includes('Minimize confirmed')) throw new Error('a failed action was presented as successful');
+        button('Minimize Roblox').click();
+        await until(() => card().textContent.includes('Minimize confirmed'), 'the observed minimize outcome was missing');
+        button('Restore Roblox').click();
+        await until(() => card().textContent.includes('Restore confirmed'), 'the observed restore outcome was missing');
+        if (windowChanges.join(',') !== 'minimize,minimize,restore') throw new Error('unexpected window actions');
+        sessionRows = [{ ...sessionRows[0], attemptId: 'unconfirmed-window', phase: 'unconfirmed' }];
+        await until(() => !button('Minimize Roblox') && !button('Restore Roblox'), 'an unconfirmed attempt offered window actions');
+      } finally {
+        macroPlayback = null;
+        sessionRows = [];
         find('button[aria-label="Accounts"]').click();
       }
     });

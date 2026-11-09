@@ -42,6 +42,7 @@ type WindowPlacement = {
   attemptId: string;
   placement: 'placed' | 'changed' | 'rejected' | 'unconfirmed' | 'cancelled';
 };
+type WindowVisibility = 'minimize' | 'restore';
 type MigrationReport = { profiles: number; added: number; signInsAdded: number; existingKept: number };
 
 const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window'], ['Automation', 'workflow'], ['Performance', 'bolt']];
@@ -125,6 +126,8 @@ function App() {
   const [signInBusy, setSignInBusy] = useState(false);
   const [arranging, setArranging] = useState(false);
   const [placements, setPlacements] = useState<WindowPlacement[]>([]);
+  const [changingWindow, setChangingWindow] = useState(false);
+  const [windowResult, setWindowResult] = useState<{ attemptId: string; action: WindowVisibility }>();
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [avatarRevision, setAvatarRevision] = useState(0);
   const [headshotNotice, setHeadshotNotice] = useState('');
@@ -145,6 +148,8 @@ function App() {
   const launchState = snapshot?.launch;
   const panic = snapshot?.panic;
   const recovery = snapshot?.recovery;
+  const playback = snapshot?.macroPlayback;
+  const foregroundBusy = !!playback && playback.phase !== 'finished' && playback.phase !== 'disconnected';
   const hasRecovery = recovery && (recovery.issue || recovery.attempts.length > 0);
   const active = launchState?.active ?? 0;
   const pairEnabled = active > 0 ? launchState?.pairEnabled === true : pairRequested;
@@ -346,6 +351,17 @@ function App() {
     }
   }
 
+  async function changeWindowVisibility(attemptId: string, action: WindowVisibility) {
+    if (arranging || changingWindow || foregroundBusy || panic?.held) return;
+    setChangingWindow(true);
+    setWindowResult(undefined);
+    try {
+      if (await act('set_window_visibility', { attempt: attemptId, action })) {
+        setWindowResult({ attemptId, action });
+      }
+    } finally { setChangingWindow(false); }
+  }
+
   return <main className="app-shell" data-theme={theme}>
     <header className="topbar">
       <div className="brand-zone">
@@ -518,7 +534,7 @@ function App() {
         <section className="account-panel preview-panel">
           <h2>Desktop layout</h2>
           <p>Tile confirmed windows on the monitor containing Zenith. Use restored, resizable Roblox windows.</p>
-          <button className="primary-button" disabled={arranging || panic?.held || !confirmedWindows.length} onClick={() => void tileWindows()}>
+          <button className="primary-button" disabled={arranging || changingWindow || panic?.held || !confirmedWindows.length} onClick={() => void tileWindows()}>
             <Icon name="grid" size={16}/>{arranging ? 'Arranging…' : 'Tile confirmed windows'}
           </button>
           {!confirmedWindows.length && <p>No Roblox windows are confirmed yet.</p>}
@@ -529,8 +545,17 @@ function App() {
             return <article key={session.attemptId} className="account-panel preview-panel session-status">
               <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
               {session.pid && <p>PID {session.pid} · Place {session.placeId}</p>}
-              {session.phase === 'running' && <button className="secondary-button" disabled={arranging}
-                onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>}
+              {session.phase === 'running' && <div className="row-actions window-actions">
+                <button className="secondary-button" disabled={arranging || changingWindow || panic?.held}
+                  onClick={() => void act('focus_session', { attempt: session.attemptId })}>Focus Roblox</button>
+                <button className="secondary-button" disabled={arranging || changingWindow || foregroundBusy || panic?.held}
+                  onClick={() => void changeWindowVisibility(session.attemptId, 'minimize')}>Minimize Roblox</button>
+                <button className="secondary-button" disabled={arranging || changingWindow || foregroundBusy || panic?.held}
+                  onClick={() => void changeWindowVisibility(session.attemptId, 'restore')}>Restore Roblox</button>
+              </div>}
+              {session.phase === 'running' && foregroundBusy && <p>Finish foreground playback to minimize or restore a client.</p>}
+              {session.phase === 'running' && !panic?.held && windowResult?.attemptId === session.attemptId &&
+                <p role="status">Last visibility request · {windowResult.action === 'minimize' ? 'Minimize confirmed' : 'Restore confirmed'}</p>}
               {result && <p role="status">{placementLabel[result.placement]}</p>}
             </article>;
           })}

@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust per-client minimize and restore (1.26)
+
+**CAP-11-03, CAP-13-04, PROD-UI-05.** Windows exposes bounded minimize and restore on a confirmed owned client. The native path rechecks the exact process and window, requires observed state, and rejects revoked requests, ambiguous targets and stale attempts. The browser checks foreground-playback gating and readback feedback. The native cross-process fixture passed. Bulk visibility changes and the attended Roblox window trial remain open. [Preview 1.26](RUST-DESKTOP-PREVIEW.md#preview-126-minimize-and-restore-owned-windows)
+
 ## Rust account selection and sign-in closure (1.25)
 
 **VA-04-03, VA-07-03, CHAT-20.** Each saved account has a full-width inspection target and its own Roblox headshot and details. After a verified save, Zenith selects that profile and prevents a second sign-in until the first window is destroyed. Synthetic account and native lifecycle tests cover separate account data, auto-save feedback and stale close events. Real private profile reads and actual sign-in-window closure remain attended checks. [Preview 1.25](RUST-DESKTOP-PREVIEW.md#preview-125-account-selection-and-sign-in-closure)

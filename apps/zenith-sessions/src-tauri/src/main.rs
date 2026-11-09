@@ -50,7 +50,7 @@ use zenith_session_launch::{
     target::Target,
     windows::{
         EfficiencyAction, EfficiencyState, MAX_LEGACY_MIGRATION_BYTES, PriorityAction,
-        PriorityState, SavedIdentity, memory_sample,
+        PriorityState, SavedIdentity, WindowVisibility, memory_sample,
     },
 };
 use zeroize::Zeroizing;
@@ -901,6 +901,28 @@ fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), 
 }
 
 #[tauri::command]
+async fn set_window_visibility(
+    state: State<'_, Arc<Workspace>>,
+    attempt: Uuid,
+    action: WindowVisibility,
+) -> Result<(), String> {
+    let epoch = state.panic.permit()?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let owner = state
+            .owner
+            .try_lock()
+            .map_err(|_| "Zenith is updating the session. Try again.")?;
+        if state.macro_playback.is_active() {
+            return Err("Stop foreground macro playback before changing the Roblox window.".into());
+        }
+        owner.set_window_visibility(attempt, action, || state.can_dispatch(epoch))
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn client_performance(
     state: State<'_, Arc<Workspace>>,
 ) -> Result<Vec<ClientPerformance>, String> {
@@ -1111,6 +1133,7 @@ fn main() -> ExitCode {
             panic_stop,
             resume_launches,
             focus_session,
+            set_window_visibility,
             client_performance,
             set_client_priority,
             set_client_efficiency,

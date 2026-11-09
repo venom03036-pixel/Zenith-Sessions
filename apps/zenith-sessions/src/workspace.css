@@ -89,6 +89,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .friends-list li { display: grid; gap: .1rem; padding: .4rem; }
 .friends-list li span { color: var(--muted); }
 .window-cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 18rem), 1fr)); gap: .75rem; }
+.window-actions { flex-wrap: wrap; }
 .legacy-workspace details { margin: .6rem 0; }
 .legacy-workspace summary { cursor: pointer; }
 .legacy-workspace .archived-profile { padding: .4rem .6rem; background: var(--field); border-radius: .5rem; }
