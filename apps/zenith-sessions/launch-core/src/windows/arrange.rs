@@ -389,6 +389,7 @@ mod tests {
             let fixture = Self(OwnedPlayer {
                 identity: process_identity(&child),
                 child,
+                managed_priority: false,
             });
             let (ready, wait) = mpsc::sync_channel(1);
             std::thread::spawn(move || {

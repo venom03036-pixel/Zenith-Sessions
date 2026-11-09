@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AccountInspector, Avatar, type Account } from './account-inspector';
+import { ClientPerformance } from './client-performance';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
 import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { DestinationPicker, type Destination } from './destination-picker';
@@ -26,19 +27,20 @@ type Snapshot = {
   signInAttempt: string | null; signInError: string | null;
   savedSignIn: { attempt: string; profileId: string } | null;
 };
-type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows';
+type Page = 'Overview' | 'Accounts' | 'Sessions' | 'Windows' | 'Performance';
 type WindowPlacement = {
   attemptId: string;
   placement: 'placed' | 'changed' | 'rejected' | 'unconfirmed' | 'cancelled';
 };
 type MigrationReport = { profiles: number; added: number; signInsAdded: number; existingKept: number };
 
-const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window']];
+const pages: [Page, IconName][] = [['Overview', 'grid'], ['Accounts', 'users'], ['Sessions', 'play'], ['Windows', 'window'], ['Performance', 'bolt']];
 const pageDescription: Record<Page, string> = {
   Overview: 'Review your local workspace and launch capacity.',
   Accounts: 'Manage your saved Roblox sign-ins.',
   Sessions: 'Choose a saved account and a Roblox place.',
   Windows: 'Focus or arrange your confirmed Roblox client windows.',
+  Performance: 'Measure the clients Zenith owns and adjust their Windows priority.',
 };
 const placementLabel: Record<WindowPlacement['placement'], string> = {
   placed: 'Position confirmed',
@@ -109,6 +111,7 @@ function App() {
   const [placements, setPlacements] = useState<WindowPlacement[]>([]);
   const [avatars, setAvatars] = useState<Record<string, string>>({});
   const [avatarRevision, setAvatarRevision] = useState(0);
+  const [headshotNotice, setHeadshotNotice] = useState('');
   const [remove, setRemove] = useState<Account | null>(null);
   const file = useRef<HTMLInputElement>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -172,18 +175,44 @@ function App() {
     return () => { current = false; };
   }, [accountKey, legacyOffset, legacyRevision]);
   useEffect(() => {
-    if (!accountKey) return;
+    if (!accountKey) {
+      setAvatars({});
+      setHeadshotNotice('');
+      return;
+    }
     let current = true;
-    void invoke<Record<string, string>>('account_headshots').then(
-      images => { if (current) setAvatars(images); },
-      () => {},
-    );
-    return () => { current = false; };
-  }, [accountKey, avatarRevision]);
+    let retry: number | undefined;
+    const ids = accountKey.split(',');
+    const received = new Set<string>();
+    const delays = [1500, 4500];
+    setHeadshotNotice('');
+    setAvatars(previous => Object.fromEntries(ids.filter(id => previous[id]).map(id => [id, previous[id]])));
+    async function loadHeadshots(attempt: number) {
+      try {
+        const images = await invoke<Record<string, string>>('account_headshots');
+        if (!current) return;
+        const completed = ids.filter(id => images[id]);
+        completed.forEach(id => received.add(id));
+        setAvatars(previous => ({ ...previous, ...Object.fromEntries(completed.map(id => [id, images[id]])) }));
+        if (received.size === ids.length) return;
+      } catch {
+        if (!current) return;
+      }
+      const delay = delays[attempt];
+      if (delay === undefined) {
+        setHeadshotNotice('Some headshots could not be refreshed. Use Refresh to try again.');
+      } else {
+        retry = window.setTimeout(() => void loadHeadshots(attempt + 1), delay);
+      }
+    }
+    void loadHeadshots(0);
+    return () => { current = false; window.clearTimeout(retry); };
+  }, [accountKey, avatarRevision, savedSignIn?.attempt]);
   useEffect(() => {
     if (savedSignIn && seenSignIn.current !== savedSignIn.attempt) {
       seenSignIn.current = savedSignIn.attempt;
       setSelected(savedSignIn.profileId);
+      setQuery('');
     }
   }, [savedSignIn]);
 
@@ -340,6 +369,7 @@ function App() {
       {page === 'Accounts' && <div className={`accounts-workspace${inspected ? ' with-inspector' : ''}`}><section className="account-panel">
         <div className="panel-heading"><div><h2>Account library</h2><p>{filtered.length} of {accounts.length} accounts shown</p></div></div>
         <div className="toolbar"><label className="search-box"><Icon name="search" size={17}/><input ref={search} value={query} onChange={event => setQuery(event.target.value)} placeholder="Search accounts…" aria-label="Search accounts"/><kbd>Ctrl K</kbd></label></div>
+        {accounts.length > 0 && headshotNotice && <p className="headshot-notice" role="status">{headshotNotice}</p>}
         {filtered.length ? <div className="table-wrap"><table>
           <thead><tr><th>Account</th><th>Status</th><th>Actions</th></tr></thead>
           <tbody>{filtered.map(item => {
@@ -347,7 +377,7 @@ function App() {
             return <tr key={item.profileId} className={item.profileId === inspected?.profileId ? 'selected-row' : ''}>
             <td><button className="account-cell account-select" type="button" aria-pressed={item.profileId === inspected?.profileId}
               aria-label={`View details for ${item.username}`} onClick={() => setSelected(item.profileId)}>
-              <Avatar key={avatars[item.profileId] ?? item.profileId} username={item.username} image={avatars[item.profileId]}/>
+              <Avatar key={`${avatarRevision}:${avatars[item.profileId] ?? item.profileId}`} username={item.username} image={avatars[item.profileId]}/>
               <div><strong>{item.username}</strong><span>@{item.username}</span></div>
             </button></td>
             <td><Status session={session}/></td>
@@ -357,7 +387,8 @@ function App() {
         </table></div> : <div className="empty-state"><strong>{accounts.length ? 'No matching accounts' : 'No saved sign-ins'}</strong>
           <span>{accounts.length ? 'Try a different search.' : 'Add an account through Roblox or import a protected bundle from Zenith.'}</span></div>}
       </section>
-      {inspected && <AccountInspector key={inspected.profileId} account={inspected} image={avatars[inspected.profileId]}
+      {inspected && <AccountInspector key={`${inspected.profileId}:${savedSignIn?.profileId === inspected.profileId ? savedSignIn.attempt : ''}`}
+        account={inspected} image={avatars[inspected.profileId]} imageRevision={avatarRevision}
         legacyDetails={legacyWorkspace?.linked[inspected.profileId] && <LegacyProfileDetails profile={legacyWorkspace.linked[inspected.profileId]}/>}
         onFavorite={favorite => {
           setDestination({ place: favorite.placeId, name: favorite.name, job: null });
@@ -429,6 +460,10 @@ function App() {
             </article>;
           })}
         </section>}
+      </>}
+      {page === 'Performance' && <>
+        <ClientPerformance/>
+        <Memory admission={admission}/>
       </>}
     </section>
     {remove && <div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-labelledby="remove-heading">

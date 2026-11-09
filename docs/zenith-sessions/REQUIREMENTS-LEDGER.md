@@ -1,5 +1,11 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust account refresh and client performance (1.09)
+
+**CHAT-22, VA-01-02, VA-04-02, VA-04-03, CAP-03-01.** The Accounts page retries unresolved headshots and refreshes an inspector when its saved sign-in is renewed. A six-account Chromium fixture reproduced both defects in 1.08 and passed in 1.09. The existing official sign-in flow still saves before closing. Its first-party gate and protected persistence pass synthetic tests. Real private reads and automatic WebView sign-in closure remain attended checks.
+
+**CAP-05-03, CAP-05-04, CAP-10-04, PROD-PERF-04.** Confirmed, currently owned children expose Windows CPU, I/O, distinct memory counters, uptime, and optional reversible priority changes. Fixture checks passed for rate freshness, process identity, native readback and restoration, and rejection of uncontrolled attempts. Live measurements, aggregate benchmarks, GPU and policy controls remain pending. See [Preview 1.09](RUST-DESKTOP-PREVIEW.md#preview-109-account-refresh-and-client-performance).
+
 ## Rust launch journal and restart recovery (1.08)
 
 **CAP-08-01, CAP-08-02, CAP-14-03, PROD-CORE-03.** The Rust launch owner persists preparation and dispatch checkpoints before native start, records a PID and process birth when available, and removes receipts after confirmed terminal events. Reopen publishes previous attempts as recovery records without replay or process-control authority. Synthetic tests cover exact surviving and ended processes, PID reuse, write failure, future/corrupt journal preservation, and explicit dismissal. Real Roblox manager restart, takeover of recovered clients, retry/rejoin policies, and rendered recovery interaction remain pending. See the [attended recovery procedure](RUST-DESKTOP-PREVIEW.md#preview-108-launch-recovery).

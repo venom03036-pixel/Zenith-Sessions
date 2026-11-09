@@ -12,7 +12,7 @@ The rebuild branch now has a Tauri desktop workspace with the exported Zenith co
    & ./apps/zenith-sessions/tools/Stage-LaunchProbe.ps1 -Username 'YOUR_ROBLOX_USERNAME'
    ```
 
-   In the preview, choose **Import saved sign-in** and select the returned `probe.dpapi` file. It is protected by Windows for the current Windows user. Keep the staging directory local.
+   In the preview, choose **Import protected file** and select the returned `probe.dpapi` file. It is protected by Windows for the current Windows user. Keep the staging directory local.
 4. Open **Sessions** and choose the account. Search by game name and select a result, or enter a place ID or public Roblox game link. For Anime Card Clash the place ID is `110829983956014`. To target a specific server, choose **Browse public servers** and select a row. **Use any server** clears that selection. Select **Launch** when ready.
 5. Close any other Roblox players, the existing Zenith app and RoALT before the preview starts Roblox. Overview shows the actual memory headroom. **Try one account anyway** appears only when the physical-memory reserve is the limiting factor and the hard physical and commit requirements still pass.
 
@@ -21,6 +21,22 @@ The preview rechecks the signed standard Roblox player and verifies the saved ac
 Server browsing requests one public page at a time. Occupancy is reported by Roblox when the page loads, and seats are assigned when Roblox joins the server. Changing the destination clears the selected server. The initial game-name results are capped at 50. Public links with query parameters and private/share links are rejected by this preview.
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
+
+## Preview 1.09 account refresh and client performance
+
+Select a headshot or username in **Accounts** to open that account's profile, public favorite games, friends, and Robux balance. Headshots that are pending get two automatic retries. Initials remain available when Roblox does not return a usable headshot. The top-bar **Refresh** retries both the lookup and the image load. A successful renewal updates the open inspector for the same saved profile. Official Roblox sign-in closes after the verified sign-in is saved locally. The preview continues to use the same protected account library.
+
+The account browser fixture uses six synthetic accounts. Against 1.08 it reproduced a pending sixth headshot stuck on initials and a stale balance after renewing the selected account. Both cases pass with 1.09, along with switching accounts while an earlier profile request is pending. Reproduce from `apps/zenith-sessions` with `npm run build` followed by `node tests/account-workspace.fixture.mjs`. Set `ZENITH_FIXTURE_BROWSER` to a local Chromium executable if Chrome is installed elsewhere.
+
+Friends pagination uses Roblox's default sort. The request regression exercises the production URL, including escaping an opaque cursor. Live private data and the real Roblox sign-in window still need the attended trial. [Roblox friends API schema](https://prod.docsiteassets.roblox.com/assets/en-us/cloud/legacy/friends/v1.json), [attended account trial](#preview-105-account-details)
+
+**Performance** samples confirmed clients started and still owned by the current Zenith process. It reports CPU as a share of machine capacity, working set, private working set where Windows exposes it, private commit, read/write transfer rates, uptime, and process priority. Rates require two fresh samples of the same process. I/O transfer rates include more than disk activity. Opening another page or hiding the workspace stops the frontend polling. [Windows process memory counters](https://learn.microsoft.com/en-us/windows/win32/api/psapi/ns-psapi-process_memory_counters_ex2), [Windows process I/O counters](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocessiocounters)
+
+**Set Below normal** is opt-in for a client currently at Normal. **Restore original priority** applies to the same live process when Zenith still owns the change. Both actions check the retained process handle and read the resulting class back from Windows. If Zenith exits abruptly and the client survives, the OS can retain the changed priority. The recovered entry remains read-only. [Windows process priority classes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-setpriorityclass)
+
+For the attended performance trial, open **Performance** after confirming one designated account's arrival. Compare the displayed PID and readings with Task Manager or Process Explorer. Set **Below normal**, check the same PID, then restore it and check again. Repeat with a second confirmed client after the pair trial, verifying the second client's priority stays where it was. Compare equivalent workloads and record client and manager CPU and memory separately before drawing conclusions. Roblox performance and any savings remain unmeasured.
+
+The 1.09 executable has SHA-256 `F2900B09EBAD95E08A8318A0A4D234AFFA3F779009AC402B4617FEA980CE336C`. Thirty-nine offline Rust tests, three Chromium fixture checks, formatting, Clippy with warnings denied, the frontend build, and the zero-warning Release build passed. Both packaged self-checks passed all six stages.
 
 ## Preview 1.08 launch recovery
 

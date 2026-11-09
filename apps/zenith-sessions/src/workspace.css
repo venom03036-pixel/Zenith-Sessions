@@ -43,6 +43,7 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .preview-avatar { overflow: hidden; }
 .preview-avatar img { width: 100%; height: 100%; object-fit: contain; }
 .preview-avatar img[hidden] { display: none; }
+.headshot-notice { margin: 0; padding: .5rem 1rem; color: var(--muted); }
 .inspector-avatar { width: 56px; height: 56px; font-size: 1rem; }
 .account-inspector { padding: 1rem; overflow-wrap: anywhere; }
 .inspector-top { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: .75rem; align-items: center; }

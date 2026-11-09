@@ -1,9 +1,11 @@
 mod arrange;
 mod pair_lease;
 mod publisher;
+mod telemetry;
 
 pub use arrange::{Placement, tile_owned_players};
 pub use pair_lease::PairLease;
+pub use telemetry::{PriorityAction, PriorityState, ProcessMetrics, ProcessSample};
 
 use std::{
     fs::{File, OpenOptions},
@@ -400,6 +402,7 @@ impl VerifiedPlayer {
         Ok(OwnedPlayer {
             identity: process_identity(&child),
             child,
+            managed_priority: false,
         })
     }
 }
@@ -452,32 +455,33 @@ mod tests {
         assert!(registered_path(&command_line).is_err());
     }
 
+    fn fixture_player() -> OwnedPlayer {
+        use ::windows::Win32::System::Threading::NORMAL_PRIORITY_CLASS;
+        let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
+        let child = Command::new(windows.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "Start-Sleep -Seconds 20",
+            ])
+            .creation_flags(0x0800_0000 | NORMAL_PRIORITY_CLASS.0) // CREATE_NO_WINDOW
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        OwnedPlayer {
+            identity: process_identity(&child),
+            child,
+            managed_priority: false,
+        }
+    }
+
     #[test]
     fn stopping_an_owned_process_leaves_a_different_process_running() {
-        fn fixture() -> OwnedPlayer {
-            let windows = PathBuf::from(std::env::var_os("SystemRoot").unwrap());
-            let child =
-                Command::new(windows.join(r"System32\WindowsPowerShell\v1.0\powershell.exe"))
-                    .args([
-                        "-NoProfile",
-                        "-NonInteractive",
-                        "-Command",
-                        "Start-Sleep -Seconds 20",
-                    ])
-                    .creation_flags(0x0800_0000) // CREATE_NO_WINDOW
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                    .unwrap();
-            OwnedPlayer {
-                identity: process_identity(&child),
-                child,
-            }
-        }
-
-        let mut owned = fixture();
-        let mut other = fixture();
+        let mut owned = fixture_player();
+        let mut other = fixture_player();
         let owned_identity = owned.identity();
         let other_identity = other.identity();
         let exact = owned_identity.unwrap();
@@ -499,6 +503,46 @@ mod tests {
         assert!(owned_exited.unwrap());
         assert!(!other_exited.unwrap());
         assert_eq!(observe_process(exact), ProcessStatus::Ended);
+    }
+
+    #[test]
+    fn reads_native_metrics_and_restores_only_its_own_priority_change() {
+        use telemetry::PriorityClass::{BelowNormal, Normal};
+
+        let mut owned = fixture_player();
+        let mut unrelated = fixture_player();
+        let no_restore = owned.change_priority(PriorityAction::Restore);
+        let sample = owned.performance_sample();
+        let lowered = owned.change_priority(PriorityAction::Lower);
+        let other_priority = unrelated.performance_sample();
+        let restored = owned.change_priority(PriorityAction::Restore);
+        let cleanup = owned.stop();
+        let other_cleanup = unrelated.stop();
+        cleanup.unwrap();
+        other_cleanup.unwrap();
+
+        assert!(no_restore.is_err());
+        let metrics = sample.unwrap().metrics(None);
+        assert!(metrics.working_set.is_some_and(|bytes| bytes > 0));
+        assert!(metrics.private_commit.is_some_and(|bytes| bytes > 0));
+        assert!(metrics.uptime_seconds.is_some());
+        assert_eq!(metrics.priority.unwrap().class, Normal);
+        let lowered = lowered.unwrap();
+        assert_eq!(lowered.class, BelowNormal);
+        assert!(lowered.can_restore);
+        assert_eq!(
+            other_priority
+                .unwrap()
+                .metrics(None)
+                .priority
+                .unwrap()
+                .class,
+            Normal
+        );
+        let restored = restored.unwrap();
+        assert_eq!(restored.class, Normal);
+        assert!(!restored.can_restore);
+        assert!(owned.change_priority(PriorityAction::Lower).is_err());
     }
 }
 
@@ -549,6 +593,7 @@ pub fn observe_process(expected: ProcessIdentity) -> ProcessStatus {
 pub struct OwnedPlayer {
     identity: Option<ProcessIdentity>,
     child: std::process::Child,
+    managed_priority: bool,
 }
 
 impl OwnedPlayer {

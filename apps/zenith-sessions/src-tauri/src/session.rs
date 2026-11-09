@@ -12,7 +12,8 @@ use zenith_session_launch::{
     evidence::Observed,
     target::{Target, new_tracker, player_uri},
     windows::{
-        OwnedPlayer, PairLease, Placement, ProcessIdentity, SavedIdentity, VerifiedPlayer,
+        OwnedPlayer, PairLease, Placement, PriorityAction, PriorityState, ProcessIdentity,
+        ProcessMetrics, ProcessSample, SavedIdentity, VerifiedPlayer,
         ensure_compatible_player_start, memory_sample, tile_owned_players,
     },
 };
@@ -105,6 +106,15 @@ pub struct LaunchState {
 pub struct WindowPlacement {
     attempt_id: Uuid,
     placement: Placement,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ClientPerformance {
+    attempt_id: Uuid,
+    username: String,
+    pid: u32,
+    metrics: Option<ProcessMetrics>,
 }
 
 #[derive(Default)]
@@ -415,6 +425,47 @@ impl SessionOwner {
         self.attempt(id)?.focus()
     }
 
+    pub fn client_performance(&mut self) -> Vec<ClientPerformance> {
+        self.attempts
+            .iter_mut()
+            .filter(|attempt| attempt.row.phase == Phase::Running)
+            .filter_map(|attempt| {
+                let player = attempt.player.as_mut()?;
+                let sample = player.performance_sample();
+                let metrics = sample
+                    .as_ref()
+                    .map(|sample| sample.metrics(attempt.performance_baseline.as_ref()));
+                attempt.performance_baseline = sample;
+                Some(ClientPerformance {
+                    attempt_id: attempt.row.attempt_id,
+                    username: attempt.row.username.clone(),
+                    pid: player.pid(),
+                    metrics,
+                })
+            })
+            .collect()
+    }
+
+    pub fn set_client_priority(
+        &mut self,
+        id: Uuid,
+        action: PriorityAction,
+    ) -> Result<PriorityState, String> {
+        if self.closing {
+            return Err("Zenith is closing.".into());
+        }
+        let attempt = self.attempt_mut(id)?;
+        if attempt.row.phase != Phase::Running {
+            return Err("Confirm this client's arrival before changing priority.".into());
+        }
+        attempt
+            .player
+            .as_mut()
+            .ok_or("The owned Roblox process is unavailable.")?
+            .change_priority(action)
+            .map_err(str::to_owned)
+    }
+
     pub fn tile_windows(
         &self,
         ids: &[Uuid],
@@ -492,6 +543,7 @@ struct Attempt {
     peer: Option<Uuid>,
     observation: Option<Observation>,
     player: Option<OwnedPlayer>,
+    performance_baseline: Option<ProcessSample>,
     preparing: bool,
     dispatching: bool,
     cancelled: bool,
@@ -538,6 +590,7 @@ impl Attempt {
             peer,
             observation: None,
             player: None,
+            performance_baseline: None,
             preparing: true,
             dispatching: false,
             cancelled: false,
@@ -773,6 +826,45 @@ mod tests {
         assert!(owner.tile_windows(&[Uuid::new_v4()], 0, || false).is_err());
         assert!(owner.tile_windows(&[id, id], 0, || false).is_err());
         assert!(owner.tile_windows(&[id], 0, || false).is_err());
+    }
+
+    #[test]
+    fn performance_requires_a_confirmed_attempt_with_its_owned_child() {
+        let mut owner = SessionOwner::default();
+        let account = SavedIdentity {
+            profile_id: Uuid::new_v4(),
+            username: "Fixture".into(),
+            user_id: 42,
+        };
+        let mut attempt = Attempt::new(
+            &account,
+            &Target {
+                place: 1818,
+                job: None,
+            },
+            None,
+        );
+        let id = attempt.row.attempt_id;
+        attempt.row.phase = Phase::Unconfirmed;
+        owner.attempts.push(attempt);
+        assert!(owner.client_performance().is_empty());
+        assert!(
+            owner
+                .set_client_priority(id, PriorityAction::Lower)
+                .is_err()
+        );
+        owner.attempts[0].row.phase = Phase::Running;
+        assert!(owner.client_performance().is_empty());
+        assert!(
+            owner
+                .set_client_priority(id, PriorityAction::Lower)
+                .is_err()
+        );
+        assert!(
+            owner
+                .set_client_priority(Uuid::new_v4(), PriorityAction::Lower)
+                .is_err()
+        );
     }
 
     #[test]

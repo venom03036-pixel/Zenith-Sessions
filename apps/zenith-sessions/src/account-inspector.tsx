@@ -34,20 +34,22 @@ function dateLabel(date: string) {
   return Number.isNaN(value.valueOf()) ? 'Unavailable' : value.toLocaleDateString();
 }
 
-export function AccountInspector({ account, image, onFavorite, legacyDetails }: {
+export function AccountInspector({ account, image, imageRevision, onFavorite, legacyDetails }: {
   account: Account;
   image?: string;
+  imageRevision: number;
   onFavorite: (favorite: Favorite) => void;
   legacyDetails?: ReactNode;
 }) {
   const [revision, setRevision] = useState(0);
-  return <AccountDetails key={revision} account={account} image={image} onFavorite={onFavorite} legacyDetails={legacyDetails}
+  return <AccountDetails key={revision} account={account} image={image} imageRevision={imageRevision} onFavorite={onFavorite} legacyDetails={legacyDetails}
     onRefresh={() => setRevision(value => value + 1)}/>;
 }
 
-function AccountDetails({ account, image, onFavorite, onRefresh, legacyDetails }: {
+function AccountDetails({ account, image, imageRevision, onFavorite, onRefresh, legacyDetails }: {
   account: Account;
   image?: string;
+  imageRevision: number;
   onFavorite: (favorite: Favorite) => void;
   onRefresh: () => void;
   legacyDetails?: ReactNode;
@@ -111,7 +113,7 @@ function AccountDetails({ account, image, onFavorite, onRefresh, legacyDetails }
 
   return <aside className="account-panel account-inspector" aria-label="Account details">
     <div className="inspector-top">
-      <Avatar key={image ?? id} username={account.username} image={image} large/>
+      <Avatar key={`${imageRevision}:${image ?? id}`} username={account.username} image={image} large/>
       <div><h2>{profile.value?.displayName ?? account.username}</h2><p>@{account.username}</p></div>
       <button className="secondary-button" onClick={onRefresh} aria-label="Refresh account details">Refresh</button>
     </div>

@@ -208,11 +208,7 @@ impl Directory {
         credential: &mut Credential,
         cursor: Option<&str>,
     ) -> Result<Page<Person>, String> {
-        let url = page_url(
-            &format!("https://friends.roblox.com/v1/users/{id}/friends/find"),
-            cursor,
-            &[("userSort", "FriendScore")],
-        )?;
+        let url = friends_url(id, cursor)?;
         let response: FriendsResponse = auth
             .read_profile("Friends list", credential, url.as_str())
             .map_err(|error| error.to_string())?;
@@ -255,6 +251,14 @@ impl Directory {
             .collect();
         Ok(Page { items, next_cursor })
     }
+}
+
+fn friends_url(id: u64, cursor: Option<&str>) -> Result<Url, String> {
+    page_url(
+        &format!("https://friends.roblox.com/v1/users/{id}/friends/find"),
+        cursor,
+        &[],
+    )
 }
 
 fn verified_auth(id: u64, credential: &mut Credential) -> Result<RobloxAuth, String> {
@@ -365,12 +369,7 @@ mod tests {
             serde_json::from_str(r#"{"PageItems":[{"id":42}], "NextCursor":"a&b=c"}"#).unwrap();
         assert_eq!(page.page_items[0].id, 42);
         let cursor = page.next_cursor.as_deref();
-        let url = page_url(
-            "https://friends.roblox.com/v1/users/11/friends/find",
-            cursor,
-            &[],
-        )
-        .unwrap();
+        let url = friends_url(11, cursor).unwrap();
         assert_eq!(url.query(), Some("limit=25&cursor=a%26b%3Dc"));
         assert!(next_cursor(page.next_cursor.clone(), cursor).is_err());
         assert!(serde_json::from_str::<Balance>(r#"{"robux":-1}"#).is_err());

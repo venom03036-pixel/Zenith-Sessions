@@ -19,7 +19,7 @@ use std::{
 
 use library::{LegacyView, Library, MigrationReport};
 use serde::Serialize;
-use session::{LaunchState, Session, SessionOwner, WindowPlacement};
+use session::{ClientPerformance, LaunchState, Session, SessionOwner, WindowPlacement};
 use tauri::ipc::{InvokeBody, Request};
 use tauri::{AppHandle, Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
@@ -28,7 +28,9 @@ use zenith_session_launch::{
     directory::{Directory, Game, ServerPage, public_place},
     profile::{Page, Person, PrivateProfile, Profile},
     target::Target,
-    windows::{MAX_LEGACY_MIGRATION_BYTES, SavedIdentity, memory_sample},
+    windows::{
+        MAX_LEGACY_MIGRATION_BYTES, PriorityAction, PriorityState, SavedIdentity, memory_sample,
+    },
 };
 
 struct Workspace {
@@ -377,6 +379,40 @@ fn focus_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), 
 }
 
 #[tauri::command]
+async fn client_performance(
+    state: State<'_, Arc<Workspace>>,
+) -> Result<Vec<ClientPerformance>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        Ok(state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .client_performance())
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn set_client_priority(
+    state: State<'_, Arc<Workspace>>,
+    attempt: Uuid,
+    action: PriorityAction,
+) -> Result<PriorityState, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
+        if state.exiting.load(Ordering::Acquire) {
+            return Err("Zenith is closing.".into());
+        }
+        owner.set_client_priority(attempt, action)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn tile_windows(
     app: AppHandle,
     state: State<'_, Arc<Workspace>>,
@@ -476,6 +512,8 @@ fn main() -> ExitCode {
             stop_session,
             stop_all_sessions,
             focus_session,
+            client_performance,
+            set_client_priority,
             tile_windows,
             sign_in::begin_sign_in,
             sign_in::finish_sign_in,
