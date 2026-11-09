@@ -20,12 +20,15 @@ use tauri::{Manager, State, WindowEvent, async_runtime::spawn_blocking};
 use uuid::Uuid;
 use zenith_session_launch::{
     admission::Admission,
+    directory::{Directory, Game, ServerPage, public_place},
+    target::Target,
     windows::{SavedIdentity, memory_sample},
 };
 
 struct Workspace {
     library: Mutex<Library>,
     owner: Mutex<SessionOwner>,
+    directory: Directory,
     sign_in: Mutex<Option<sign_in::SignIn>>,
     sign_in_directory: PathBuf,
     logs: PathBuf,
@@ -117,17 +120,42 @@ async fn remove_account(state: State<'_, Arc<Workspace>>, id: Uuid) -> Result<()
 }
 
 #[tauri::command]
+async fn search_public_games(
+    state: State<'_, Arc<Workspace>>,
+    query: String,
+) -> Result<Vec<Game>, String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.directory.search(&query))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn browse_public_servers(
+    state: State<'_, Arc<Workspace>>,
+    place: String,
+    cursor: Option<String>,
+) -> Result<ServerPage, String> {
+    let place = public_place(&place)?;
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || state.directory.servers(place, cursor.as_deref()))
+        .await
+        .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn launch_account(
     state: State<'_, Arc<Workspace>>,
     id: Uuid,
     place_id: String,
+    job: Option<Uuid>,
     try_one: bool,
 ) -> Result<(), String> {
-    let place = place_id
-        .parse::<u64>()
-        .ok()
-        .filter(|place| *place > 0 && *place <= i64::MAX as u64)
-        .ok_or("Enter a valid Roblox place ID")?;
+    let place = public_place(&place_id)?;
+    if job.is_some_and(|job| job.is_nil()) {
+        return Err("Select a valid public server.".into());
+    }
+    let target = Target { place, job };
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
         let (identity, credential, attempt) = {
@@ -137,10 +165,10 @@ async fn launch_account(
                 .lock()
                 .map_err(|_| STATE_ERROR)?
                 .credential(id)?;
-            let attempt = owner.reserve(&identity, place)?;
+            let attempt = owner.reserve(&identity, &target)?;
             (identity, credential, attempt)
         };
-        let prepared = session::prepare(identity, credential, place, try_one, || {
+        let prepared = session::prepare(identity, credential, target, try_one, || {
             state.owner.lock().is_ok_and(|owner| owner.permits(attempt))
         });
         let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
@@ -185,6 +213,7 @@ fn main() {
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
                 owner: Mutex::new(SessionOwner::default()),
+                directory: Directory::new().map_err(std::io::Error::other)?,
                 sign_in: Mutex::new(None),
                 sign_in_directory: root.join("isolated-sign-in"),
                 logs,
@@ -224,6 +253,8 @@ fn main() {
             workspace_snapshot,
             import_account,
             remove_account,
+            search_public_games,
+            browse_public_servers,
             launch_account,
             stop_session,
             focus_session,

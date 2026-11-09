@@ -4,6 +4,8 @@ fn main() {
             "workspace_snapshot",
             "import_account",
             "remove_account",
+            "search_public_games",
+            "browse_public_servers",
             "launch_account",
             "stop_session",
             "focus_session",

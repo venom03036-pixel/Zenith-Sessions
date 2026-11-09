@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
+import { DestinationPicker, type Destination } from './destination-picker';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
 import './workspace.css';
@@ -9,7 +10,7 @@ type Account = { profileId: string; username: string; userId: number };
 type Phase = 'preparing' | 'starting' | 'running' | 'unconfirmed' | 'stopping' | 'stopped' | 'failed';
 type Session = {
   attemptId: string; accountId: string; username: string; placeId: string;
-  phase: Phase; pid: number | null; observedServer: string | null; detail: string | null;
+  phase: Phase; pid: number | null; requestedServer: string | null; observedServer: string | null; detail: string | null;
 };
 type Admission = {
   limitingResource: 'stale' | 'invalid' | 'commit' | 'physical_memory' | null;
@@ -60,7 +61,9 @@ function App() {
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [selected, setSelected] = useState('');
   const [query, setQuery] = useState('');
-  const [place, setPlace] = useState(() => localStorage.getItem('zenith-preview-place') ?? '');
+  const [destination, setDestination] = useState<Destination>(() => ({
+    place: localStorage.getItem('zenith-preview-place') ?? '', name: '', job: null,
+  }));
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('zenith-theme');
     return themes.find(([id]) => id === saved)?.[0] ?? 'graphite-mint';
@@ -82,7 +85,7 @@ function App() {
   const signInAttempt = snapshot?.signInAttempt;
   const busy = isBusy(session);
   const filtered = accounts.filter(item => item.username.toLowerCase().includes(query.trim().toLowerCase()));
-  const placeValid = /^[0-9]{1,19}$/.test(place.trim()) && !/^0+$/.test(place.trim());
+  const placeEntered = Boolean(destination.place.trim());
 
   async function refresh() {
     if (reading.current) return;
@@ -147,10 +150,13 @@ function App() {
   }
 
   async function launch(tryOne: boolean) {
-    if (!account || !placeValid) return;
+    if (!account || !placeEntered) return;
     setLaunching(true);
-    localStorage.setItem('zenith-preview-place', place.trim());
-    try { await act('launch_account', { id: account.profileId, placeId: place.trim(), tryOne }); }
+    try {
+      if (await act('launch_account', { id: account.profileId, placeId: destination.place, job: destination.job, tryOne })) {
+        localStorage.setItem('zenith-preview-place', destination.place.trim());
+      }
+    }
     finally { setLaunching(false); }
   }
 
@@ -248,15 +254,16 @@ function App() {
             <label>Account <select value={account?.profileId ?? ''} disabled={busy || launching} onChange={event => setSelected(event.target.value)}>
               <option value="" disabled>Choose an account</option>{accounts.map(item => <option key={item.profileId} value={item.profileId}>{item.username}</option>)}
             </select></label>
-            <label>Roblox place ID <input value={place} disabled={busy || launching} onChange={event => setPlace(event.target.value)} inputMode="numeric" maxLength={19} placeholder="Enter a place ID"/></label>
           </div>
-          <div className="row-actions"><button className="primary-button" disabled={!account || !placeValid || busy || launching || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> Launch</button>
-            {admission?.canTryOne && <button className="secondary-button" disabled={!account || !placeValid || busy || launching} onClick={() => void launch(true)}>Try one account anyway</button>}
+          <DestinationPicker destination={destination} onChange={setDestination} disabled={busy || launching}/>
+          <div className="row-actions"><button className="primary-button" disabled={!account || !placeEntered || busy || launching || !admission || !!admission.limitingResource} onClick={() => void launch(false)}><Icon name="play" size={15}/> Launch</button>
+            {admission?.canTryOne && <button className="secondary-button" disabled={!account || !placeEntered || busy || launching} onClick={() => void launch(true)}>Try one account anyway</button>}
           </div>
         </section>
         {session && <section className="account-panel preview-panel session-status" aria-label="Current session">
           <div className="session-title"><h2>{session.username}</h2><Status session={session}/></div>
           <p>Place {session.placeId}{session.pid ? ` · PID ${session.pid}` : ''}</p>
+          {session.requestedServer && <p>Requested server {session.requestedServer}</p>}
           {session.detail && <p>{session.detail}</p>}
           {session.observedServer && <p>Confirmed initial server {session.observedServer}</p>}
           {busy && <div className="row-actions">

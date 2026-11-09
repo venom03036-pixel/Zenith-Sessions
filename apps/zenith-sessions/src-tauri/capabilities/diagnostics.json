@@ -3,5 +3,5 @@
   "description": "The local Zenith workspace can manage its protected library and owned session.",
   "windows": ["main"],
   "local": true,
-  "permissions": ["allow-workspace-snapshot", "allow-import-account", "allow-remove-account", "allow-launch-account", "allow-stop-session", "allow-focus-session", "allow-begin-sign-in", "allow-finish-sign-in", "allow-cancel-sign-in"]
+  "permissions": ["allow-workspace-snapshot", "allow-import-account", "allow-remove-account", "allow-search-public-games", "allow-browse-public-servers", "allow-launch-account", "allow-stop-session", "allow-focus-session", "allow-begin-sign-in", "allow-finish-sign-in", "allow-cancel-sign-in"]
 }

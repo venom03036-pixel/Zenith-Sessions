@@ -35,6 +35,7 @@ pub struct Session {
     place_id: String,
     phase: Phase,
     pid: Option<u32>,
+    requested_server: Option<Uuid>,
     observed_server: Option<Uuid>,
     detail: Option<String>,
 }
@@ -47,11 +48,40 @@ pub struct Observation {
     started: Instant,
     expected_user: u64,
     expected_place: u64,
+    expected_job: Option<Uuid>,
 }
 
 impl Observation {
     pub fn read(self, logs: &Path) -> Option<Observed> {
         Observed::for_attempt(logs, self.tracker, self.launched)
+    }
+
+    fn confirms(self, facts: &Observed) -> bool {
+        facts.user_id == Some(self.expected_user)
+            && facts.place_id == Some(self.expected_place)
+            && facts.connected
+            && facts
+                .job_id
+                .is_some_and(|job| self.expected_job.is_none_or(|expected| expected == job))
+    }
+
+    fn mismatch(self, facts: &Observed) -> Option<&'static str> {
+        if facts
+            .user_id
+            .is_some_and(|actual| actual != self.expected_user)
+            || facts
+                .place_id
+                .is_some_and(|actual| actual != self.expected_place)
+        {
+            Some("a different account or place")
+        } else if facts.connected
+            && let (Some(expected), Some(actual)) = (self.expected_job, facts.job_id)
+            && expected != actual
+        {
+            Some("a different server")
+        } else {
+            None
+        }
     }
 }
 
@@ -82,7 +112,7 @@ impl SessionOwner {
         }
     }
 
-    pub fn reserve(&mut self, account: &SavedIdentity, place: u64) -> Result<Uuid, String> {
+    pub fn reserve(&mut self, account: &SavedIdentity, target: &Target) -> Result<Uuid, String> {
         if self.closing || self.preparing || self.player.is_some() {
             return Err("Stop the current Zenith session before starting another".into());
         }
@@ -91,9 +121,10 @@ impl SessionOwner {
             attempt_id: id,
             account_id: account.profile_id,
             username: account.username.clone(),
-            place_id: place.to_string(),
+            place_id: target.place.to_string(),
             phase: Phase::Preparing,
             pid: None,
+            requested_server: target.job,
             observed_server: None,
             detail: None,
         });
@@ -146,10 +177,7 @@ impl SessionOwner {
         let tracker = new_tracker();
         let uri = player_uri(
             &request.ticket,
-            &Target {
-                place: request.place,
-                job: None,
-            },
+            &request.target,
             tracker,
             attempt,
             timestamp.as_millis(),
@@ -163,7 +191,8 @@ impl SessionOwner {
             launched,
             started: Instant::now(),
             expected_user: request.user_id,
-            expected_place: request.place,
+            expected_place: request.target.place,
+            expected_job: request.target.job,
         });
         self.preparing = false;
         if let Some(row) = self.row.as_mut() {
@@ -208,30 +237,23 @@ impl SessionOwner {
             return;
         };
         if let Some(facts) = facts {
-            if facts
-                .user_id
-                .is_some_and(|actual| actual != observation.expected_user)
-                || facts
-                    .place_id
-                    .is_some_and(|actual| actual != observation.expected_place)
-            {
+            if let Some(mismatch) = observation.mismatch(&facts) {
                 self.observation = None;
                 if player.stop().is_ok() {
                     self.player = None;
                     row.phase = Phase::Failed;
-                    row.detail = Some("Roblox reported a different account or place. Zenith stopped the owned process.".into());
+                    row.detail = Some(format!(
+                        "Roblox reported {mismatch}. Zenith stopped the owned process."
+                    ));
                 } else {
                     row.phase = Phase::Unconfirmed;
-                    row.detail = Some("Roblox reported a different account or place and the process could not be stopped".into());
+                    row.detail = Some(format!(
+                        "Roblox reported {mismatch} and the process could not be stopped."
+                    ));
                 }
                 return;
             }
-            if facts.user_id == Some(observation.expected_user)
-                && facts.place_id == Some(observation.expected_place)
-                && facts.connected
-                && facts.job_id.is_some()
-                && player.has_window()
-            {
+            if observation.confirms(&facts) && player.has_window() {
                 self.observation = None;
                 row.phase = Phase::Running;
                 row.observed_server = facts.job_id;
@@ -299,13 +321,13 @@ pub struct Prepared {
     player: VerifiedPlayer,
     ticket: zeroize::Zeroizing<String>,
     user_id: u64,
-    place: u64,
+    target: Target,
 }
 
 pub fn prepare(
     identity: SavedIdentity,
     mut credential: Credential,
-    place: u64,
+    target: Target,
     try_one: bool,
     permits: impl Fn() -> bool,
 ) -> Result<Prepared, String> {
@@ -332,7 +354,7 @@ pub fn prepare(
         player,
         ticket,
         user_id: identity.user_id,
-        place,
+        target,
     })
 }
 
@@ -359,6 +381,34 @@ mod tests {
     use super::*;
 
     #[test]
+    fn a_different_server_at_the_same_place_cannot_confirm_arrival() {
+        let mut launch = Observation {
+            attempt: Uuid::new_v4(),
+            tracker: 42,
+            launched: SystemTime::now(),
+            started: Instant::now(),
+            expected_user: 42,
+            expected_place: 1818,
+            expected_job: Some(Uuid::from_u128(1)),
+        };
+        let mut facts = Observed {
+            user_id: Some(42),
+            place_id: Some(1818),
+            job_id: Some(Uuid::from_u128(2)),
+            connected: true,
+        };
+        assert!(!launch.confirms(&facts));
+        assert_eq!(launch.mismatch(&facts), Some("a different server"));
+        facts.job_id = launch.expected_job;
+        assert!(launch.confirms(&facts));
+        facts.connected = false;
+        assert!(!launch.confirms(&facts));
+        facts.connected = true;
+        launch.expected_job = None;
+        assert!(launch.confirms(&facts));
+    }
+
+    #[test]
     fn a_cancelled_attempt_cannot_dispatch_or_overwrite_a_new_session() {
         let mut owner = SessionOwner::default();
         let account = SavedIdentity {
@@ -366,16 +416,31 @@ mod tests {
             username: "ZenithFixture".into(),
             user_id: 4242,
         };
-        let first = owner.reserve(&account, 1818).unwrap();
-        assert!(owner.reserve(&account, 1818).is_err());
+        let initial = Target {
+            place: 1818,
+            job: None,
+        };
+        let first = owner.reserve(&account, &initial).unwrap();
+        assert!(owner.reserve(&account, &initial).is_err());
         owner.stop(false).unwrap();
         assert!(!owner.permits(first));
-        assert!(owner.reserve(&account, 1818).is_err());
+        assert!(owner.reserve(&account, &initial).is_err());
         owner.fail_preparation(first, "cancelled worker".into());
-        let second = owner.reserve(&account, 1919).unwrap();
+        let job = Uuid::from_u128(42);
+        let second = owner
+            .reserve(
+                &account,
+                &Target {
+                    place: 1919,
+                    job: Some(job),
+                },
+            )
+            .unwrap();
         owner.fail_preparation(first, "late old failure".into());
         assert!(owner.permits(second));
         assert!(owner.require_attempt(first).is_err());
-        assert_eq!(owner.row().unwrap().place_id, "1919");
+        let row = owner.row().unwrap();
+        assert_eq!(row.place_id, "1919");
+        assert_eq!(row.requested_server, Some(job));
     }
 }

@@ -1,5 +1,6 @@
 pub mod admission;
 pub mod auth;
+pub mod directory;
 pub mod evidence;
 pub mod target;
 #[cfg(windows)]
