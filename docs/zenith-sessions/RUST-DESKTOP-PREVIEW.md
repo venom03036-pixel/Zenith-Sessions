@@ -22,6 +22,14 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.29 automatic game details
+
+In **Sessions**, the **Automatically show game details** setting is on by default and saved on this PC. Choose a search result or finish entering a public place ID or game link by pressing **Enter** or leaving the field. Zenith loads the experience details and artwork in the picker. With the setting off, **Load game details** is available whenever a public destination is entered.
+
+The browser regression checks the saved preference, manual mode, search-result selection, and entering a place. It also checks that switching off an in-flight automatic lookup discards its result and that the latest selected place loads after an older automatic lookup finishes. Details and artwork preserve the exact launch place and selected server.
+
+The 1.29 executable has SHA-256 `F10049F92FA160D14A2BF412E2B1861240F42DFA51A455FF7099D636E8D12273`. Eighty-one offline Rust tests, twenty-three browser checks against the Release assets, formatting, Clippy with warnings denied, and a zero-warning Release build passed. Both runs of the staged executable passed all seven self-check stages.
+
 ## Preview 1.28 public server browser
 
 In **Sessions**, enter a place and select **Browse public servers**. Choose **Fewest players first** or **Most players first**, and turn on **Show full servers** to inspect full rows. Each page shows reported player counts, plus ping and server FPS when Roblox provides them. **Previous 25 servers** and **Next 25 servers** reuse up to eight pages already loaded under the current filters. A page outside that cache is requested with Roblox's cursor. [Roblox public server API](https://create.roblox.com/docs/cloud/reference/domains/games#places)
@@ -111,6 +119,8 @@ For an attended trial, obtain a Roblox private invitation for a place the design
 The 1.21 executable has SHA-256 `42A31D61FD8642CE6D05E5B81BF1C4378CEA48FBA4FA468A4242EB02C4575645`. The browser regression failed on 1.20 and passed on 1.21 for save, rename, private dispatch arguments, and removal without selecting a public target. Sixty-five offline Rust tests, thirteen Chromium checks, formatting, Clippy with warnings denied, and a zero-warning Release build passed. The packaged self-check passed all six stages twice. The matching Personal editor is in the same preview folder.
 
 ## Preview 1.20 public game details and artwork
+
+The [automatic-details setting](#preview-129-automatic-game-details) controls when the following panel loads. The manual steps apply with that setting off.
 
 In **Sessions**, enter a public place ID or game link, or select a name search result. Choose **Load game details** to see the experience name, creator, description, population, listed server limit, visit count when available, and Roblox artwork. The panel separates the requested place from the experience's root place. It fetches the public icon and up to six public thumbnails after the text loads. Missing images and API errors leave the destination and server picker usable. [Roblox public game API](https://create.roblox.com/docs/cloud/reference/domains/games), [Roblox thumbnails API](https://create.roblox.com/docs/cloud/reference/domains/thumbnails)
 

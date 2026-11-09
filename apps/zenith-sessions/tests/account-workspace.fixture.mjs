@@ -44,6 +44,8 @@ function exerciseWorkspace() {
   localStorage.setItem('zenith-preview-place', '1818');
   let headshotRequests = 0;
   let releaseGame;
+  let releaseAutomaticGame;
+  const gameDetailRequests = [];
   const serverRequests = [];
   const longServerRequests = [];
   const sparseServer = '22222222-0000-0000-0000-000000000001';
@@ -209,12 +211,16 @@ function exerciseWorkspace() {
             ? { servers: [busy], nextCursor: 'busy-next', previousCursor: null }
             : { servers: [sparse], nextCursor: null, previousCursor: null };
         }
+        case 'search_public_games':
+          return [{ placeId: '1832', name: 'Fixture search result' }];
         case 'public_game_details': {
+          gameDetailRequests.push(place);
           if (place === '1818') {
             detailsRequested = true;
             await new Promise(resolve => { releaseGame = resolve; });
             detailsResolved = true;
           }
+          if (place === '1830') await new Promise(resolve => { releaseAutomaticGame = resolve; });
           return { requestedPlaceId: place, rootPlaceId: '4000', universeId: place === '1818' ? '5000' : '5001',
             name: place === '1818' ? 'Superseded game' : 'Fixture experience', creator: 'Fixture studio',
             playing: '1234', visits: '9007199254740999', maxPlayers: 10, description: 'Fixture description.' };
@@ -356,8 +362,62 @@ function exerciseWorkspace() {
       await until(() => !add.disabled && !find('.sign-in-saved')?.textContent.includes('Closing'),
         'the next account could not sign in after window closure');
     });
+    await check('automatic game details can be toggled and skip drafts and superseded requests', async () => {
+      const setting = () => find('input[aria-label="Automatically show game details"]');
+      const panel = () => find('[aria-label="Public game details"]');
+      const key = 'zenith-auto-game-details';
+      const waitForEffect = () => new Promise(resolve => setTimeout(resolve, 100));
+      const field = () => find('input[placeholder="Enter a place ID or game link"]');
+      const type = place => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(field(), place);
+        field().dispatchEvent(new Event('input', { bubbles: true }));
+      };
+      const commit = () => field().dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+      find('button[aria-label="Sessions"]').click();
+      try {
+        await until(() => setting()?.checked && detailsRequested, 'the setting did not default to automatic details');
+        setting().click();
+        await until(() => localStorage.getItem(key) === 'off' && panel()?.textContent.includes('Load game details'), 'turning it off did not save manual mode');
+        releaseGame();
+        await waitForEffect();
+        if (panel().textContent.includes('Superseded game')) throw new Error('turning it off published an unfinished automatic lookup');
+        type('1830');
+        setting().click();
+        await until(() => localStorage.getItem(key) === 'on', 'automatic mode was not saved');
+        await waitForEffect();
+        if (gameDetailRequests.includes('1830')) throw new Error('typing requested details for a draft');
+        commit();
+        await until(() => releaseAutomaticGame, 'committing the place did not load details');
+        type('1831');
+        commit();
+        await waitForEffect();
+        if (gameDetailRequests.includes('1831')) throw new Error('a second automatic request overlapped the first');
+        releaseAutomaticGame();
+        await until(() => panel()?.textContent.includes('Fixture experience') && panel()?.textContent.includes('1831'), 'the latest place did not load');
+        if (panel().textContent.includes('1830')) throw new Error('superseded place details leaked into the panel');
+        const search = find('input[placeholder="Search Roblox games"]');
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(search, 'Fixture search result');
+        search.dispatchEvent(new Event('input', { bubbles: true }));
+        const searchButton = search.closest('form').querySelector('button');
+        await until(() => !searchButton.disabled, 'search input was not accepted');
+        searchButton.click();
+        await until(() => find('[aria-label="Game results"] button'), 'no game result appeared');
+        find('[aria-label="Game results"] button').click();
+        await until(() => field().value === '1832' && panel()?.textContent.includes('1832'), 'selecting a result did not load details');
+        setting().click();
+        await until(() => localStorage.getItem(key) === 'off', 'manual mode was not persisted again');
+        type('1818');
+        commit();
+      } finally {
+        releaseGame?.();
+        releaseAutomaticGame?.();
+        find('button[aria-label="Accounts"]').click();
+      }
+    });
     await check('game details and artwork keep the exact requested destination', async () => {
       const button = label => [...document.querySelectorAll('button')].find(element => element.textContent.trim() === label);
+      detailsRequested = false;
+      detailsResolved = false;
       find('button[aria-label="Sessions"]').click();
       try {
         await until(() => button('Load game details'), 'the Sessions picker does not offer public game details');

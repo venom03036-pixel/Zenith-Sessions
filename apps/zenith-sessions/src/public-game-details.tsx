@@ -14,6 +14,7 @@ type GameDetails = {
 };
 type Outcome<T> = { Ok: T } | { Err: string };
 type GameArt = { icon: Outcome<string | null>; thumbnails: Outcome<string[]> };
+let pendingAutomaticLookup: Promise<void> | undefined;
 
 function GameImage({ source, label, className }: { source: string; label: string; className?: string }) {
   const [failed, setFailed] = useState(false);
@@ -21,17 +22,19 @@ function GameImage({ source, label, className }: { source: string; label: string
     : <img className={className} src={source} alt={label} referrerPolicy="no-referrer" onError={() => setFailed(true)}/>;
 }
 
-export function PublicGameDetails({ place, disabled }: { place: string; disabled: boolean }) {
+export function PublicGameDetails({ place, disabled, autoLoad }: { place: string; disabled: boolean; autoLoad: boolean }) {
   const [request, setRequest] = useState(0);
   const [details, setDetails] = useState<GameDetails | null>(null);
   const [art, setArt] = useState<GameArt | null>(null);
   const [loading, setLoading] = useState(false);
   const [detailError, setDetailError] = useState('');
   const [artError, setArtError] = useState('');
+  const requested = autoLoad || request > 0;
 
   useEffect(() => {
-    if (!request) return;
+    if (!requested) return;
     let current = true;
+    setLoading(true);
     async function load() {
       try {
         const game = await invoke<GameDetails>('public_game_details', { place });
@@ -49,9 +52,20 @@ export function PublicGameDetails({ place, disabled }: { place: string; disabled
         if (current) setLoading(false);
       }
     }
-    void load();
+    async function start() {
+      // A superseded automatic lookup can still occupy the native public directory.
+      await pendingAutomaticLookup;
+      if (!current) return;
+      const lookup = load();
+      if (!request) pendingAutomaticLookup = lookup;
+      try { await lookup; }
+      finally {
+        if (pendingAutomaticLookup === lookup) pendingAutomaticLookup = undefined;
+      }
+    }
+    void start();
     return () => { current = false; };
-  }, [place, request]);
+  }, [place, request, requested]);
 
   function refresh() {
     setLoading(true);

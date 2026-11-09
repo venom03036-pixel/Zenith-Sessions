@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust automatic game details preference (1.29)
+
+**CAP-12-04, PROD-UI-03.** Sessions saves an automatic-details setting that defaults on. A selected search result or committed place loads the existing public metadata and art. Manual mode retains the explicit load button. A superseded lookup cannot publish its results or alter the selected server. The browser fixture checks the setting, destination edits, late completion, and both load modes. [Preview 1.29](RUST-DESKTOP-PREVIEW.md#preview-129-automatic-game-details)
+
 ## Rust public server filters and paging (1.28)
 
 **CAP-12-02, CAP-12-03, PROD-UI-03.** Public browsing accepts typed player-count order and a full-server filter. Forward and back cursors stay with the chosen filters, and up to eight loaded pages can be revisited without a request. Occupancy, ping and server FPS are provider observations. Full rows cannot become new selections. Sorting, filtering and paging retain an explicitly pinned launch target, and place edits discard late results. The browser and native regressions cover these boundaries. Exact live client arrival and server history remain separate. [Preview 1.28](RUST-DESKTOP-PREVIEW.md#preview-128-public-server-browser)

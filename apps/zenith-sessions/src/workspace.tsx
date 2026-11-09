@@ -105,6 +105,7 @@ function App() {
   const [destination, setDestination] = useState<Destination>(() => ({
     place: localStorage.getItem('zenith-preview-place') ?? '', name: '', job: null,
   }));
+  const [autoShowDetails, setAutoShowDetails] = useState(() => localStorage.getItem('zenith-auto-game-details') !== 'off');
   const [privateSelection, setPrivateServer] = useState<PrivateServer | 'removed' | null>(null);
   const privateServer = privateSelection === 'removed' ? null : privateSelection;
   const privateMode = privateSelection !== null;
@@ -197,6 +198,7 @@ function App() {
     return () => window.removeEventListener('keydown', listener);
   }, []);
   useEffect(() => localStorage.setItem('zenith-theme', theme), [theme]);
+  useEffect(() => localStorage.setItem('zenith-auto-game-details', autoShowDetails ? 'on' : 'off'), [autoShowDetails]);
   useEffect(() => {
     let current = true;
     void invoke<LegacyWorkspace | null>('legacy_workspace', { offset: legacyOffset }).then(
@@ -500,7 +502,8 @@ function App() {
             {privateServer ? <p>Private invite · <strong>{privateServer.name}</strong> · Place {privateServer.placeId}</p>
               : <p role="status">The selected invite was removed. Choose another invite to launch privately.</p>}
             <button className="secondary-button" disabled={launching} onClick={() => setPrivateServer(null)}>Use a public game</button>
-          </div> : <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}/>}
+          </div> : <DestinationPicker destination={destination} onChange={setDestination} disabled={launching}
+            autoShowDetails={autoShowDetails} onAutoShowDetailsChange={setAutoShowDetails}/>}
           {!privateMode && <label className="pair-choice">
             <input type="checkbox" checked={pairEnabled} disabled={active > 0 || launching} onChange={event => setPairRequested(event.target.checked)}/>
             Enable two-account trial

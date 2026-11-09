@@ -13,10 +13,12 @@ const MAX_CACHED_SERVER_PAGES = 8;
 
 export type Destination = { place: string; name: string; job: string | null };
 
-export function DestinationPicker({ destination, onChange, disabled }: {
+export function DestinationPicker({ destination, onChange, disabled, autoShowDetails, onAutoShowDetailsChange }: {
   destination: Destination;
   onChange: (destination: Destination) => void;
   disabled: boolean;
+  autoShowDetails: boolean;
+  onAutoShowDetailsChange: (enabled: boolean) => void;
 }) {
   const [query, setQuery] = useState('');
   const [games, setGames] = useState<Game[] | null>(null);
@@ -26,6 +28,7 @@ export function DestinationPicker({ destination, onChange, disabled }: {
   const [browsing, setBrowsing] = useState(false);
   const [searchError, setSearchError] = useState('');
   const [serverError, setServerError] = useState('');
+  const [editingPlace, setEditingPlace] = useState(false);
   const searches = useRef(0);
   const pages = useRef(0);
   const pendingPage = useRef<number | null>(null);
@@ -117,10 +120,14 @@ export function DestinationPicker({ destination, onChange, disabled }: {
     {games?.length === 0 && <p role="status">No public games matched that name.</p>}
     {!!games?.length && <ul className="directory-results" aria-label="Game results">
       {games.map(game => <li key={game.placeId}><button className="secondary-button" disabled={disabled}
-        onClick={() => { changePlace(game.placeId, game.name); setGames(null); }}>{game.name}</button></li>)}
+        onClick={() => { setEditingPlace(false); changePlace(game.placeId, game.name); setGames(null); }}>{game.name}</button></li>)}
     </ul>}
     <div className="destination-input">
-      <label>Place ID or public Roblox game link <input value={destination.place} onChange={event => changePlace(event.target.value)}
+      <label>Place ID or public Roblox game link <input value={destination.place}
+        onChange={event => { setEditingPlace(true); changePlace(event.target.value); }}
+        onBlur={() => setEditingPlace(false)} onKeyDown={event => {
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing) setEditingPlace(false);
+        }}
         maxLength={512} placeholder="Enter a place ID or game link" disabled={disabled}/></label>
       <button className="secondary-button" disabled={disabled || browsing || !destination.place.trim()} onClick={() => void browse(null)}>
         {browsing ? 'Loading…' : 'Browse public servers'}
@@ -136,7 +143,14 @@ export function DestinationPicker({ destination, onChange, disabled }: {
         onChange={event => changeFilters({ ...filters, includeFull: event.target.checked })}/> Show full servers</label>
     </div>
     {destination.name && <p>Game selected · {destination.name}</p>}
-    {destination.place.trim() && <PublicGameDetails key={destination.place} place={destination.place} disabled={disabled}/>}
+    <label className="pair-choice">
+      <input type="checkbox" aria-label="Automatically show game details" checked={autoShowDetails}
+        onChange={event => onAutoShowDetailsChange(event.target.checked)}/> Automatically show game details
+    </label>
+    {autoShowDetails && editingPlace && destination.place.trim() &&
+      <p className="public-game-note">Press Enter or leave the place field to show game details.</p>}
+    {destination.place.trim() && <PublicGameDetails key={`${autoShowDetails}:${destination.place}`} place={destination.place}
+      autoLoad={autoShowDetails && !editingPlace} disabled={disabled}/>}
     {destination.job && <div className="row-actions directory-selection">
       <p>Selected server · <code>{destination.job}</code></p>
       <button className="secondary-button" disabled={disabled} onClick={() => onChange({ ...destination, job: null })}>Use any server</button>
