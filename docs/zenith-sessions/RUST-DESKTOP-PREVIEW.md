@@ -22,6 +22,16 @@ Server browsing requests one public page at a time. Occupancy is reported by Rob
 
 The account list contains authenticated or imported identities. Removing an account removes its preview sign-in and profile. A damaged credential leaves the profile visible and is refused at launch. Renewal replaces the encrypted credential for the same Roblox user ID and keeps the existing profile.
 
+## Preview 1.08 launch recovery
+
+Zenith writes a bounded journal to `library\launch-journal.json`. It records the attempt, selected profile, requested place and server, and the startup checkpoint. Before creating a process it records dispatch intent. After startup it records the PID and creation time when Windows can provide both. The journal carries no sign-in material, launch ticket, or native command line.
+
+On restart, **Sessions → Launch recovery** separates interrupted preparation, uncertain startup, a surviving exact process, and an ended process. Process creation time prevents a reused PID from inheriting a launch receipt. A surviving process is a Windows observation. Roblox account and arrival evidence remain separate. Uncertain and surviving records hold new starts. Close surviving clients using their own windows, then dismiss the entries. **Check and dismiss** on an uncertain start requires a clean Roblox process inventory. An unreadable or newer journal holds starts until explicitly archived. [Windows process creation times](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes), [Windows process wait results](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+
+For the attended trial, start one designated client and confirm its arrival. In Windows Task Manager end the Zenith Preview process while leaving Roblox running, then reopen this preview. Verify that the same PID appears as surviving, that no new launch starts, and that Focus and Stop are unavailable for that recovered entry. Close Roblox manually, confirm the entry changes to ended, and dismiss it. Repeat with two designated clients after the two-account trial succeeds. Manager restart with real Roblox and rendered recovery controls remain unverified. Automatic restart, rejoin, adoption of recovered clients, and retry backoff remain separate work.
+
+The 1.08 executable has SHA-256 `DFA5D1DF2471561A6ED53F5BD371F698C9D9BFC6731D19AE35EB77B8CD8FF960`. Thirty-six offline Rust tests, formatting, Clippy with warnings denied, the frontend checks, and the Release build passed. The six-stage packaged self-check passed twice. Its journal stage wrote a synthetic dispatch into a disposable directory and reopened it for review.
+
 ## Preview 1.07 legacy workspace migration
 
 The full-workspace import preserves legacy profile IDs and notes, aliases, group membership and definitions, saved favorite destinations, recipient bundles, macro assignment references, and a portable subset of preferences. The Accounts view shows imported details for matching verified profiles, archived profiles, and legacy favorite destinations. A favorite can preselect an exact place and optional public server in Sessions. Applying a supported theme is a separate action. Group and bundle editing, macro execution, and applying other archived preferences remain pending.

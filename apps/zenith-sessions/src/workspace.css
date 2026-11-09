@@ -63,4 +63,6 @@ button:disabled { cursor: not-allowed; opacity: .55; }
 .legacy-workspace dl { display: grid; grid-template-columns: auto 1fr; gap: .35rem 1rem; }
 .legacy-workspace dd { margin: 0; }
 .legacy-workspace .account-bio { white-space: pre-wrap; overflow-wrap: anywhere; }
+.recovery-attempt { border-top: 1px solid var(--border); margin-top: .75rem; padding-top: .75rem; }
+.recovery-attempt h3 { font-size: .95rem; margin: 0 0 .35rem; }
 @media (max-width: 950px) { .accounts-workspace.with-inspector { grid-template-columns: minmax(0, 1fr); } }

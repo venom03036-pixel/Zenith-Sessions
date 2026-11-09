@@ -14,6 +14,8 @@ fn main() {
             "search_public_games",
             "browse_public_servers",
             "launch_account",
+            "dismiss_recovered_launch",
+            "archive_launch_journal",
             "stop_session",
             "stop_all_sessions",
             "focus_session",

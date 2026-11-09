@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod library;
+mod recovery;
 mod self_check;
 mod session;
 mod sign_in;
@@ -46,6 +47,7 @@ struct Snapshot {
     accounts: Vec<SavedIdentity>,
     sessions: Vec<Session>,
     launch: LaunchState,
+    recovery: recovery::RecoveryView,
     admission: Option<Admission>,
     sign_in_attempt: Option<Uuid>,
     sign_in_error: Option<String>,
@@ -60,10 +62,10 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
     spawn_blocking(move || {
         let observation = state.owner.lock().map_err(|_| STATE_ERROR)?.observation();
         let evidence = observation.map(|sample| (sample, sample.read(&state.logs)));
-        let (sessions, launch) = {
+        let (sessions, launch, recovery) = {
             let mut owner = state.owner.lock().map_err(|_| STATE_ERROR)?;
             owner.reconcile(evidence);
-            (owner.rows(), owner.launch_state())
+            (owner.rows(), owner.launch_state(), owner.recovery())
         };
         let accounts = state.library.lock().map_err(|_| STATE_ERROR)?.accounts();
         let admission = memory_sample()
@@ -74,6 +76,7 @@ async fn workspace_snapshot(state: State<'_, Arc<Workspace>>) -> Result<Snapshot
             accounts,
             sessions,
             launch,
+            recovery,
             admission,
             sign_in_attempt: sign_in.active.as_ref().map(|flow| flow.attempt),
             sign_in_error: sign_in.active.as_ref().and_then(|flow| flow.error.clone()),
@@ -315,6 +318,37 @@ async fn launch_account(
 }
 
 #[tauri::command]
+async fn dismiss_recovered_launch(
+    state: State<'_, Arc<Workspace>>,
+    attempt: Uuid,
+) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .dismiss_recovered(attempt)
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
+async fn archive_launch_journal(state: State<'_, Arc<Workspace>>) -> Result<(), String> {
+    let state = Arc::clone(state.inner());
+    spawn_blocking(move || {
+        state
+            .owner
+            .lock()
+            .map_err(|_| STATE_ERROR)?
+            .archive_unreadable_journal()
+    })
+    .await
+    .map_err(|_| STATE_ERROR.to_owned())?
+}
+
+#[tauri::command]
 async fn stop_session(state: State<'_, Arc<Workspace>>, attempt: Uuid) -> Result<(), String> {
     let state = Arc::clone(state.inner());
     spawn_blocking(move || {
@@ -384,7 +418,9 @@ fn main() -> ExitCode {
             let logs = app.path().local_data_dir()?.join("Roblox").join("logs");
             app.manage(Arc::new(Workspace {
                 library: Mutex::new(library),
-                owner: Mutex::new(SessionOwner::default()),
+                owner: Mutex::new(SessionOwner::open(
+                    root.join("library").join("launch-journal.json"),
+                )),
                 directory: Directory::new().map_err(std::io::Error::other)?,
                 sign_in: Mutex::new(sign_in::SignInState::default()),
                 sign_in_directory: root.join("isolated-sign-in"),
@@ -435,6 +471,8 @@ fn main() -> ExitCode {
             search_public_games,
             browse_public_servers,
             launch_account,
+            dismiss_recovered_launch,
+            archive_launch_journal,
             stop_session,
             stop_all_sessions,
             focus_session,

@@ -197,7 +197,7 @@ impl Library {
     }
 }
 
-fn read_limit(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
+pub(crate) fn read_limit(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     let mut bytes = Vec::new();
     File::open(path)?
         .take(max as u64 + 1)
@@ -208,7 +208,7 @@ fn read_limit(path: &Path, max: usize) -> std::io::Result<Vec<u8>> {
     Ok(bytes)
 }
 
-fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+pub(crate) fn atomic_write(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let temporary = path.with_extension(format!("{}.tmp", Uuid::new_v4()));
     let result = (|| {
         let mut file = OpenOptions::new()

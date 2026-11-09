@@ -1,7 +1,9 @@
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
+
+use crate::recovery::{Checkpoint, Journal, MAX_ENTRIES, Record, RecoveryView, ReviewState};
 
 use serde::Serialize;
 use uuid::Uuid;
@@ -111,9 +113,20 @@ pub struct SessionOwner {
     pair: Option<PairLease>,
     closing: bool,
     last_start: Option<Instant>,
+    journal: Journal,
+    recovered: Vec<Record>,
 }
 
 impl SessionOwner {
+    pub fn open(path: PathBuf) -> Self {
+        let (journal, recovered) = Journal::open(path);
+        Self {
+            journal,
+            recovered,
+            ..Self::default()
+        }
+    }
+
     pub fn rows(&self) -> Vec<Session> {
         self.attempts
             .iter()
@@ -130,6 +143,54 @@ impl SessionOwner {
         }
     }
 
+    pub fn recovery(&self) -> RecoveryView {
+        RecoveryView {
+            issue: self.journal.issue(),
+            can_archive: self.journal.can_archive(),
+            attempts: self.recovered.iter().map(Record::view).collect(),
+        }
+    }
+
+    fn recovery_records(&self) -> Vec<Record> {
+        self.recovered
+            .iter()
+            .cloned()
+            .chain(self.attempts.iter().filter_map(Attempt::recovery_record))
+            .collect()
+    }
+
+    fn sync_journal(&mut self) -> Result<(), String> {
+        let records = self.recovery_records();
+        self.journal.save(records)
+    }
+
+    pub fn dismiss_recovered(&mut self, id: Uuid) -> Result<(), String> {
+        let record = self
+            .recovered
+            .iter()
+            .find(|record| record.attempt_id == id)
+            .ok_or("That recovered attempt is no longer listed.")?;
+        match record.review() {
+            ReviewState::Surviving => {
+                return Err(
+                    "Close the surviving Roblox client before dismissing this attempt.".into(),
+                );
+            }
+            ReviewState::Unknown => ensure_compatible_player_start(&[])?,
+            ReviewState::Interrupted | ReviewState::Ended => (),
+        }
+        let mut records = self.recovery_records();
+        records.retain(|record| record.attempt_id != id);
+        self.journal.save(records)?;
+        self.recovered.retain(|record| record.attempt_id != id);
+        Ok(())
+    }
+
+    pub fn archive_unreadable_journal(&mut self) -> Result<(), String> {
+        ensure_compatible_player_start(&[])?;
+        self.journal.archive_unreadable()
+    }
+
     fn active(&self) -> impl Iterator<Item = &Attempt> {
         self.attempts.iter().filter(|attempt| attempt.active())
     }
@@ -138,7 +199,20 @@ impl SessionOwner {
         if self.closing {
             return Some("Zenith is closing.".into());
         }
+        if let Some(issue) = self.journal.issue() {
+            return Some(issue.into());
+        }
+        if self.recovered.iter().any(|record| record.review().holds()) {
+            return Some(
+                "Review the interrupted launch in Sessions before starting Roblox.".into(),
+            );
+        }
         let active: Vec<_> = self.active().collect();
+        if self.recovered.len() + active.len() >= MAX_ENTRIES {
+            return Some(
+                "Dismiss a reviewed recovery entry before starting another launch.".into(),
+            );
+        }
         if active
             .iter()
             .any(|attempt| attempt.row.phase != Phase::Running)
@@ -205,6 +279,12 @@ impl SessionOwner {
         }
         let attempt = Attempt::new(account, target, peer);
         let id = attempt.row.attempt_id;
+        let mut records = self.recovery_records();
+        records.extend(attempt.recovery_record());
+        if let Err(error) = self.journal.save(records) {
+            self.release_idle_pair();
+            return Err(error);
+        }
         self.attempts
             .retain(|attempt| attempt.row.account_id != account.profile_id);
         if self.attempts.len() >= MAX_ROWS
@@ -239,6 +319,7 @@ impl SessionOwner {
             attempt.fail_preparation(error);
         }
         self.release_idle_pair();
+        let _ = self.sync_journal();
     }
 
     pub fn dispatch(
@@ -246,11 +327,18 @@ impl SessionOwner {
         request: Prepared,
         id: Uuid,
         try_one: bool,
-        can_dispatch: impl FnOnce() -> bool,
+        can_dispatch: impl Fn() -> bool,
     ) -> Result<(), String> {
         if !self.permits(id) {
             return Err("The launch was cancelled or the first client stopped.".into());
         }
+        if !can_dispatch() {
+            return Err("Zenith is closing.".into());
+        }
+        // Commit intent before any native process creation. A crash between this write and the
+        // receipt must remain uncertain, even if preparation and the OS call were milliseconds apart.
+        self.attempt_mut(id)?.dispatching = true;
+        self.sync_journal()?;
         let peer = self.attempt(id)?.peer;
         if let Some(peer) = peer {
             let player = self
@@ -269,6 +357,7 @@ impl SessionOwner {
         }
         self.attempt_mut(id)?.dispatch(request)?;
         self.last_start = Some(Instant::now());
+        self.sync_journal()?;
         Ok(())
     }
 
@@ -289,12 +378,14 @@ impl SessionOwner {
             attempt.reconcile(sample);
         }
         self.release_idle_pair();
+        let _ = self.sync_journal();
     }
 
     pub fn stop(&mut self, id: Uuid) -> Result<(), String> {
         let result = self.attempt_mut(id)?.stop();
         self.release_idle_pair();
-        result
+        let saved = self.sync_journal();
+        result.and(saved)
     }
 
     pub fn stop_all(&mut self, closing: bool) -> Result<(), String> {
@@ -312,8 +403,9 @@ impl SessionOwner {
             })
         });
         self.release_idle_pair();
+        let saved = self.sync_journal();
         if all_stopped {
-            return Ok(());
+            return if closing { Ok(()) } else { saved };
         }
         self.closing = false;
         Err("Could not stop every owned Roblox client.".into())
@@ -367,6 +459,10 @@ impl SessionOwner {
 
     pub fn uses(&self, id: Uuid) -> bool {
         self.active().any(|attempt| attempt.row.account_id == id)
+            || self
+                .recovered
+                .iter()
+                .any(|record| record.account_id == id && record.review().holds())
     }
 
     fn attempt(&self, id: Uuid) -> Result<&Attempt, String> {
@@ -397,12 +493,32 @@ struct Attempt {
     observation: Option<Observation>,
     player: Option<OwnedPlayer>,
     preparing: bool,
+    dispatching: bool,
     cancelled: bool,
 }
 
 impl Attempt {
     fn active(&self) -> bool {
         !matches!(self.row.phase, Phase::Stopped | Phase::Failed)
+    }
+
+    fn recovery_record(&self) -> Option<Record> {
+        if !self.active() || self.preparing && self.cancelled {
+            return None;
+        }
+        let checkpoint = match self.player.as_ref().and_then(OwnedPlayer::identity) {
+            Some(process) => Checkpoint::Started(process),
+            None if self.dispatching => Checkpoint::Dispatching,
+            None => Checkpoint::Preparing,
+        };
+        Some(Record {
+            attempt_id: self.row.attempt_id,
+            account_id: self.row.account_id,
+            username: self.row.username.clone(),
+            place_id: self.row.place_id.clone(),
+            requested_server: self.row.requested_server,
+            checkpoint,
+        })
     }
 
     fn new(account: &SavedIdentity, target: &Target, peer: Option<Uuid>) -> Self {
@@ -423,6 +539,7 @@ impl Attempt {
             observation: None,
             player: None,
             preparing: true,
+            dispatching: false,
             cancelled: false,
         }
     }

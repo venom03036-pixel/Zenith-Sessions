@@ -1,5 +1,9 @@
 # Zenith Sessions requirements and acceptance ledger
 
+## Rust launch journal and restart recovery (1.08)
+
+**CAP-08-01, CAP-08-02, CAP-14-03, PROD-CORE-03.** The Rust launch owner persists preparation and dispatch checkpoints before native start, records a PID and process birth when available, and removes receipts after confirmed terminal events. Reopen publishes previous attempts as recovery records without replay or process-control authority. Synthetic tests cover exact surviving and ended processes, PID reuse, write failure, future/corrupt journal preservation, and explicit dismissal. Real Roblox manager restart, takeover of recovered clients, retry/rejoin policies, and rendered recovery interaction remain pending. See the [attended recovery procedure](RUST-DESKTOP-PREVIEW.md#preview-108-launch-recovery).
+
 ## Rust legacy workspace migration (1.07)
 
 **CAP-03-01, CAP-16-02, VA-03-01, VA-03-05.** The C# helper exports a staged legacy workspace into a current-user DPAPI archive. The Rust importer binds protected sign-ins to exact profile identities, preserves existing preview sign-ins, retains profiles whose credentials are expired or unavailable, and presents imported metadata and favorite destinations. The staged workspace retains assignment and preference metadata. Synthetic C#→Rust compatibility tests exercised normal and password-protected SQLite/vault libraries, interruption, retry, renewal state, and preservation of an existing sign-in. Real legacy import and packaged picker interaction remain attended checks. See the [migration and rollback steps](RUST-DESKTOP-PREVIEW.md#preview-107-legacy-workspace-migration).

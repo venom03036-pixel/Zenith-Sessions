@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { AccountInspector, Avatar, type Account } from './account-inspector';
 import { LegacyProfileDetails, LegacyWorkspacePanel, type LegacyWorkspace } from './legacy-workspace';
+import { RecoveryPanel, type Recovery } from './recovery-panel';
 import { DestinationPicker, type Destination } from './destination-picker';
 import { Icon, type IconName } from './design-icons';
 import './zenith-design.css';
@@ -21,6 +22,7 @@ type Admission = {
 type LaunchState = { active: number; pairEnabled: boolean; hold: string | null };
 type Snapshot = {
   accounts: Account[]; sessions: Session[]; launch: LaunchState; admission: Admission | null;
+  recovery: Recovery;
   signInAttempt: string | null; signInError: string | null;
   savedSignIn: { attempt: string; profileId: string } | null;
 };
@@ -121,6 +123,8 @@ function App() {
   const confirmedWindows = sessions.filter(session => session.phase === 'running');
   const windowRows = sessions.filter(session => isBusy(session) || placements.some(result => result.attemptId === session.attemptId));
   const launchState = snapshot?.launch;
+  const recovery = snapshot?.recovery;
+  const hasRecovery = recovery && (recovery.issue || recovery.attempts.length > 0);
   const active = launchState?.active ?? 0;
   const pairEnabled = active > 0 ? launchState?.pairEnabled === true : pairRequested;
   const selectedSession = sessions.find(session => session.accountId === account?.profileId);
@@ -311,6 +315,10 @@ function App() {
       <input ref={file} type="file" accept=".dpapi,.zenith-migration" hidden onChange={event => void importFile(event.currentTarget)}/>
       {loadingError && <p role="alert" className="inline-alert">Zenith could not read the local workspace. Select Refresh to retry.</p>}
       {failure && <p role="alert" className="inline-alert">{failure}</p>}
+      {hasRecovery && page !== 'Sessions' && <div className="inline-alert row-actions">
+        <span>Launch recovery has entries to review.</span>
+        <button className="secondary-button" onClick={() => setPage('Sessions')}>Open Sessions</button>
+      </div>}
       {page === 'Accounts' && legacyNotice && <p role="status" className="inline-alert">{legacyNotice}</p>}
       {signInAttempt && <section className="account-panel preview-panel" aria-label="Roblox sign-in">
         <h2>Roblox sign-in</h2>
@@ -362,6 +370,9 @@ function App() {
           setPage('Sessions');
         }} onTheme={importedTheme ? () => setTheme(importedTheme) : undefined}/>}
       {page === 'Sessions' && <>
+        {hasRecovery && <RecoveryPanel recovery={recovery}
+          onDismiss={attempt => void act('dismiss_recovered_launch', { attempt })}
+          onArchive={() => void act('archive_launch_journal', {})}/>}
         <section className="account-panel preview-panel">
           <h2>Launch Roblox</h2>
           <div className="session-fields">

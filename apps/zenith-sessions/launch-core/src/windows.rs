@@ -18,7 +18,8 @@ use std::{
 use ::windows::{
     Win32::{
         Foundation::{
-            CloseHandle, ERROR_NO_MORE_FILES, FILETIME, HANDLE, HLOCAL, HWND, LPARAM, LocalFree,
+            CloseHandle, ERROR_INVALID_PARAMETER, ERROR_NO_MORE_FILES, FILETIME, HANDLE, HLOCAL,
+            HWND, LPARAM, LocalFree, WAIT_OBJECT_0, WAIT_TIMEOUT,
         },
         Security::Cryptography::{
             CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
@@ -31,7 +32,10 @@ use ::windows::{
             },
             Registry::{HKEY_CURRENT_USER, RRF_RT_REG_SZ, RegGetValueW},
             SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX},
-            Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION},
+            Threading::{
+                GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+                PROCESS_SYNCHRONIZE, WaitForSingleObject,
+            },
         },
         UI::WindowsAndMessaging::{
             EnumWindows, GW_OWNER, GetWindow, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
@@ -476,6 +480,15 @@ mod tests {
         let mut other = fixture();
         let owned_identity = owned.identity();
         let other_identity = other.identity();
+        let exact = owned_identity.unwrap();
+        assert_eq!(observe_process(exact), ProcessStatus::Running);
+        assert_eq!(
+            observe_process(ProcessIdentity {
+                started_filetime: exact.started_filetime - 1,
+                ..exact
+            }),
+            ProcessStatus::Ended
+        );
         let stop_result = owned.stop();
         let owned_exited = owned.exited();
         let other_exited = other.exited();
@@ -485,14 +498,52 @@ mod tests {
         other_cleanup.unwrap();
         assert!(owned_exited.unwrap());
         assert!(!other_exited.unwrap());
+        assert_eq!(observe_process(exact), ProcessStatus::Ended);
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[derive(Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ProcessIdentity {
     pub pid: u32,
     pub started_filetime: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProcessStatus {
+    Running,
+    Ended,
+    Unknown,
+}
+
+pub fn observe_process(expected: ProcessIdentity) -> ProcessStatus {
+    if expected.pid == 0 || expected.started_filetime == 0 {
+        return ProcessStatus::Unknown;
+    }
+    // SAFETY: request only process-query and wait access. The handle is never inherited.
+    let handle = match unsafe {
+        OpenProcess(
+            PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
+            false,
+            expected.pid,
+        )
+    } {
+        Ok(handle) => handle,
+        Err(error) if error.code() == ERROR_INVALID_PARAMETER.to_hresult() => {
+            return ProcessStatus::Ended;
+        }
+        Err(_) => return ProcessStatus::Unknown,
+    };
+    let identity = process_identity_from_handle(handle, expected.pid);
+    // SAFETY: handle is live and held until the non-blocking observation completes.
+    let wait = unsafe { WaitForSingleObject(handle, 0) };
+    let _ = unsafe { CloseHandle(handle) };
+    match (identity, wait) {
+        (_, WAIT_OBJECT_0) => ProcessStatus::Ended,
+        (Some(identity), WAIT_TIMEOUT) if identity == expected => ProcessStatus::Running,
+        (Some(_), WAIT_TIMEOUT) => ProcessStatus::Ended,
+        _ => ProcessStatus::Unknown,
+    }
 }
 
 pub struct OwnedPlayer {

@@ -1,4 +1,5 @@
 use std::{
+    fs,
     process::ExitCode,
     time::{Instant, SystemTime, UNIX_EPOCH},
 };
@@ -11,6 +12,11 @@ use zenith_session_launch::{
     windows::{SavedIdentity, VerifiedPlayer, memory_sample, open_saved_bundle, seal_saved_bundle},
 };
 use zeroize::Zeroizing;
+
+use crate::{
+    recovery::{Checkpoint, Journal, Record},
+    session::SessionOwner,
+};
 
 pub fn run(context: &Context<Wry>) -> ExitCode {
     let frontend = check_assets(context);
@@ -36,6 +42,7 @@ pub fn run(context: &Context<Wry>) -> ExitCode {
         ("Current-user encryption", vault),
         ("Memory sampling", resources),
         ("Roblox installation", publisher),
+        ("Launch recovery journal", check_journal()),
     ] {
         match result {
             Ok(detail) => println!("PASS {stage} · {detail}"),
@@ -50,6 +57,33 @@ pub fn run(context: &Context<Wry>) -> ExitCode {
     } else {
         ExitCode::SUCCESS
     }
+}
+
+fn check_journal() -> Result<String, String> {
+    let directory = std::env::temp_dir().join(format!("zenith-self-check-{}", Uuid::new_v4()));
+    fs::create_dir(&directory).map_err(|_| "Could not create a disposable recovery directory.")?;
+    let path = directory.join("launch-journal.json");
+    let result = (|| {
+        let (mut journal, _) = Journal::open(path.clone());
+        let attempt = Record {
+            attempt_id: Uuid::new_v4(),
+            account_id: Uuid::new_v4(),
+            username: "ZenithSelfCheck".into(),
+            place_id: "1818".into(),
+            requested_server: None,
+            checkpoint: Checkpoint::Dispatching,
+        };
+        journal.save(vec![attempt])?;
+        let owner = SessionOwner::open(path.clone());
+        let recovery = owner.recovery();
+        if recovery.attempts.len() != 1 || recovery.issue.is_some() || !owner.rows().is_empty() {
+            return Err("The journal did not reopen as a review-only attempt.".into());
+        }
+        Ok("A synthetic dispatch reopened for review without starting a client.".into())
+    })();
+    let _ = fs::remove_file(path);
+    fs::remove_dir(directory).map_err(|_| "Could not remove the disposable recovery directory.")?;
+    result
 }
 
 fn check_assets(context: &Context<Wry>) -> Result<String, String> {
